@@ -26,6 +26,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish logs` - stream a running trial's live transcript and cost estimate
 - `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
+- `oddish assign` - assign QA review ownership for a batch of task IDs
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
@@ -849,6 +850,37 @@ Options
 - `EXPERIMENT_ID` - Experiment ID (or name) to publish/unpublish
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
+
+## Assign QA review work
+
+Assign current task versions to an organization member without selecting a
+delivery. Active delivery boards show the same owner on their next refresh.
+Use a full-scope API key; hosted assignment requires administrator access.
+
+```bash
+# Assign explicit task IDs using an email, user ID, or GitHub handle
+oddish assign task-1 task-2 --to alice@example.com
+
+# Assign a batch of 200 IDs from a text file, one ID per line
+oddish assign --tasks-file task-ids.txt --to @alice --json
+
+# Intentionally replace other people's existing assignments
+oddish assign --tasks-file task-ids.txt --to alice@example.com --replace
+```
+
+The command accepts up to 1,000 unique task IDs. File contents are separated by
+whitespace; repeated IDs are processed once. It skips tasks owned by someone
+else unless `--replace` is set, and reports those IDs. Tasks already owned by
+the selected person retain their original claim time. Notes and issue categories
+are preserved. `--json` returns `owner_user_id`, `assigned_task_ids`,
+`unchanged_task_ids`, and `skipped_task_ids`.
+
+All IDs must belong to your organization and have a current version; otherwise
+the whole request fails without changing ownership. An unknown or ambiguous
+assignee also fails; use the person's user ID to disambiguate. Assignments apply
+to the current version, so a new version starts unassigned. Finalized delivery
+snapshots remain unchanged. Standalone servers accept a local owner identifier
+instead of resolving an organization member.
 
 ## Deliveries
 

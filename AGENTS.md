@@ -459,6 +459,16 @@ resolution stays in the delivery router; standalone coordination uses `local`.
 The board's task rows are keyed by version so a version change closes any open
 QA-work draft before it can be saved against the replacement version.
 
+`oddish assign` calls `POST /tasks/qa-work/assign` with up to 1,000 task IDs,
+an assignee, and optional `replace`. Hosted assignment requires admin access
+(a full-scope API key) and resolves email, user ID, or GitHub handle inside the
+caller's organization. `oddish.core.qa_work` locks tasks then their current
+versions in stable order, checks the whole batch before writing, and updates
+the same `task_versions.qa_work` metadata used by delivery claims. Other owners
+are skipped unless replacement is explicit; repeat assignments preserve claim
+times, and notes/categories are retained. No delivery membership is required.
+Active boards reflect the assignments; finalized snapshots remain unchanged.
+
 QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
 It runs the same strict validator used by the verifier and importer, allowing
 one initial submission and two repairs. Missing fields remain validation errors.

@@ -2694,6 +2694,19 @@ class QAWorkClaim(BaseModel):
     limit: int = Field(default=25, ge=1, le=100)
 
 
+class QAWorkAssign(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=1000)
+    assignee: str = Field(min_length=1, max_length=320)
+    replace: bool = False
+
+
+class QAWorkAssignResponse(BaseModel):
+    owner_user_id: str
+    assigned_task_ids: list[str] = Field(default_factory=list)
+    unchanged_task_ids: list[str] = Field(default_factory=list)
+    skipped_task_ids: list[str] = Field(default_factory=list)
+
+
 class DeliveryQAStatus(BaseModel):
     status: Literal[
         "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
