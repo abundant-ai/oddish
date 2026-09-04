@@ -333,13 +333,14 @@ async def create_task_sweep(
 
     from oddish.core.sweeps import validate_sweep_submission
 
-    validate_sweep_submission(submission)
-
-    # Fingerprint the raw client submission BEFORE the backend mutates it
-    # (identity / GitHub attribution). Those defaults can resolve differently
+    # Fingerprint the raw client submission BEFORE anything on the server
+    # mutates it -- curated model canonicalization in validate_sweep_submission,
+    # then identity / GitHub attribution. Those defaults can resolve differently
     # between attempts, so hashing post-mutation would spuriously 409 an honest
     # retry; hashing the raw body keeps retries faithful.
     request_hash = compute_request_hash(submission)
+
+    validate_sweep_submission(submission)
 
     async with get_session() as session:
         # A COMPLETED, hash-matched, unexpired idempotency record normally

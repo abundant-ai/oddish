@@ -853,19 +853,12 @@ def run(
         if not agent:
             agent = "claude-code"
 
-        # Build single config
-        if model and not provider:
-            from oddish.config import auto_resolve_curated_model
-
-            try:
-                auto_model, auto_reason = auto_resolve_curated_model(agent, model)
-            except ValueError as exc:
-                error_console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(1) from exc
-            if auto_reason and auto_model:
-                console.print(f"[dim]Model: {auto_reason}[/dim]")
-                model = auto_model
-
+        # Build single config. The model id is sent exactly as the user typed
+        # it: the API owns curated alias canonicalization and provider choice.
+        # Resolving here would bake this machine's answer into the payload --
+        # the CLI's alias table can lag the deploy's ODDISH_MODEL_CATALOG_OVERLAY,
+        # and an explicit prefix leaves the server nothing to correct. Use
+        # --provider to pin one deliberately.
         configs = [
             {
                 "agent": agent,

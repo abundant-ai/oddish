@@ -955,11 +955,24 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `_FIREWORKS_SHORT_MODEL_IDS` / `_DEEPSEEK_MODEL_ALIASES`, with optional
   private overlays via `ODDISH_MODEL_CATALOG_OVERLAY`. A bare curated id
   (e.g. `deepseek-v4-flash`) auto-pins to Fireworks when listed there, else
-  DeepSeek, preferring a route whose credential is visible in-process.
-  Provider NotFound/auth with no real agent work settles FAILED (not SUCCESS)
-  and is excluded from QA. List spellings with `oddish models`.
+  DeepSeek. Provider NotFound/auth with no real agent work settles FAILED (not
+  SUCCESS) and is excluded from QA. List spellings with `oddish models`.
   Self-host may set `ODDISH_ENFORCE_MODEL_CREDENTIALS=1` to 422 when the API
   process lacks the provider key; hosted API containers leave it off.
+- **The API owns model resolution, and resolution is credential-independent.**
+  `auto_resolve_curated_model` is a pure function of
+  `(agent, model, explicit_provider)` plus the curated alias tables. It must
+  never consult `has_provider_credential` or any other environment read: it
+  runs on whichever API container serves the request, and hosted containers do
+  not all carry the same provider secrets, so a credential-dependent answer
+  makes both the stored model and the sweep's idempotency fingerprint depend on
+  where the request landed (an honest retry then 409s). Credential visibility
+  belongs only in reporting (`list_curated_models`) and in the opt-in
+  `ODDISH_ENFORCE_MODEL_CREDENTIALS` *rejection* — neither rewrites an id.
+  The CLI correspondingly submits the model spelling the user typed and never
+  pins a provider prefix of its own; `--provider` / YAML `provider:` remain the
+  deliberate pin. `POST /tasks/sweep` fingerprints the raw client body with
+  `compute_request_hash` **before** `validate_sweep_submission` mutates it.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in

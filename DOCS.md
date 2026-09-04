@@ -116,7 +116,7 @@ Options
 - `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
-- `--provider TEXT` - LLM provider pin for a bare `-m` id (e.g. `fireworks`); not the sandbox `--env`. Bare curated ids without a pin auto-select Fireworks when listed there.
+- `--provider TEXT` - LLM provider pin for a bare `-m` id (e.g. `fireworks`); not the sandbox `--env`. Without a pin, the API resolves a bare curated id (auto-selecting Fireworks when listed there). The CLI submits `-m` exactly as you type it, so the choice never depends on which provider keys your machine happens to have.
 - `--allow-unknown-model` - Send an unlisted curated Fireworks/DeepSeek id anyway
 - `--harbor TEXT` - Override the Harbor source/ref for this run (`main`, a tag/SHA, `org/repo@ref`, or a git URL@ref); defaults to the locked fork commit (env: `ODDISH_HARBOR`)
 - `--n-trials INTEGER` - Number of trials per task

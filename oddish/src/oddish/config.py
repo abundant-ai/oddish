@@ -659,7 +659,11 @@ def list_curated_models(*, agent: str | None = None) -> list[dict[str, object]]:
 
 
 def _curated_bare_candidates(bare: str) -> list[tuple[str, str]]:
-    """Fireworks auto-pin only for DeepSeek-family misses; GLM/MiniMax/Kimi stay native."""
+    """Curated routes for a bare id, best first.
+
+    Fireworks auto-pin only for DeepSeek-family misses; GLM/MiniMax/Kimi stay
+    native. Order is the resolution rule -- see ``auto_resolve_curated_model``.
+    """
     low = bare.strip().lower()
     out: list[tuple[str, str]] = []
     fireworks_canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low)
@@ -673,12 +677,23 @@ def _curated_bare_candidates(bare: str) -> list[tuple[str, str]]:
 
 
 def auto_resolve_curated_model(
-    agent: str,
+    agent: str | None,
     model: str | None,
     *,
     explicit_provider: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Pin a bare curated id. Explicit provider/prefix wins. Returns ``(model, reason)``."""
+    """Pin a bare curated id. Explicit provider/prefix wins. Returns ``(model, reason)``.
+
+    Resolution is a pure function of ``(agent, model, explicit_provider)`` and the
+    curated alias tables. It must NEVER consult process credentials: this runs on
+    whichever API container serves the request, and hosted containers do not all
+    carry the same provider secrets. A credential-dependent answer made the stored
+    model -- and the sweep's idempotency fingerprint -- depend on where the request
+    landed, so an honest retry could 409 with "already used with a different
+    request". Credential visibility belongs in reporting (``list_curated_models``)
+    and in the opt-in ``ODDISH_ENFORCE_MODEL_CREDENTIALS`` rejection, neither of
+    which rewrites the id.
+    """
     if explicit_provider and str(explicit_provider).strip():
         return model, None
     cleaned = normalize_model_id(model)
@@ -691,7 +706,7 @@ def auto_resolve_curated_model(
     if not candidates:
         return cleaned, None
 
-    locked = PROVIDER_LOCKED_AGENTS.get(agent.strip().lower())
+    locked = PROVIDER_LOCKED_AGENTS.get((agent or "").strip().lower())
     if locked:
         candidates = [c for c in candidates if c[0] == locked]
         if not candidates:
@@ -701,14 +716,9 @@ def auto_resolve_curated_model(
                 f"{locked}/… id or a different agent."
             )
 
-    with_cred = [c for c in candidates if has_provider_credential(c[0])]
-    provider, canonical = (with_cred or candidates)[0]
+    provider, canonical = candidates[0]
     resolved = f"{provider}/{canonical}"
-    if with_cred:
-        reason = f"auto-selected {resolved} (credential present for {provider})"
-    else:
-        reason = f"auto-selected {resolved} for bare id {bare!r}"
-    return resolved, reason
+    return resolved, f"auto-selected {resolved} for bare id {bare!r}"
 
 
 def pin_model_provider(model: str | None, provider: str | None) -> str | None:
