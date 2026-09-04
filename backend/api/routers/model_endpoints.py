@@ -16,6 +16,8 @@ from oddish.config import (
     settings,
     to_anthropic_api_model_id,
 )
+from oddish.core.endpoints import browse_task_facets_core
+from oddish.db import get_session
 from pydantic import BaseModel, Field, field_validator
 
 from auth import AuthContext, require_auth
@@ -65,14 +67,21 @@ class ModelEndpointCheckResponse(BaseModel):
 async def list_model_endpoints(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ModelEndpointCatalogResponse:
-    """List configured model queue keys for members of the operator org."""
+    """List configured and previously used models for the operator org."""
     auth.require_scope(APIKeyScope.READ)
     allowed = is_operator_org(auth)
     if not allowed:
         return ModelEndpointCatalogResponse(allowed=False, models=[])
 
+    async with get_session() as session:
+        facets = await browse_task_facets_core(session, org_id=auth.org_id)
+
+    model_ids = {
+        settings.normalize_queue_key(model)
+        for model in (*settings.get_known_queue_keys(), *facets.models)
+    }
     models = []
-    for model in sorted(settings.get_known_queue_keys()):
+    for model in sorted(model_ids):
         provider = infer_model_provider_prefix(model)
         if provider:
             models.append(ModelEndpointSummary(model=model, provider=provider))

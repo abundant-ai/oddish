@@ -1,5 +1,6 @@
 """Tests for the model catalog and direct provider completion checks."""
 
+from contextlib import asynccontextmanager
 import sys
 from types import SimpleNamespace
 
@@ -33,7 +34,7 @@ def operator_org(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_model_catalog_lists_only_configured_model_queue_keys(monkeypatch):
+async def test_model_catalog_unions_configured_and_previously_used_models(monkeypatch):
     settings_type = type(model_endpoints_router.settings)
     monkeypatch.setattr(
         settings_type,
@@ -43,6 +44,31 @@ async def test_model_catalog_lists_only_configured_model_queue_keys(monkeypatch)
             "openai/gpt-5.4-mini",
             "task_expand",
         },
+    )
+
+    session = object()
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_browse_task_facets_core(received_session, *, org_id):
+        assert received_session is session
+        assert org_id == "org-1"
+        return SimpleNamespace(
+            models=[
+                "global.anthropic.claude-opus-5",
+                "google/gemini-3.7-flash",
+                "openai/gpt-5.6-sol",
+                "nop_oracle",
+            ]
+        )
+
+    monkeypatch.setattr(model_endpoints_router, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        model_endpoints_router,
+        "browse_task_facets_core",
+        fake_browse_task_facets_core,
     )
 
     async with AsyncClient(
@@ -58,7 +84,9 @@ async def test_model_catalog_lists_only_configured_model_queue_keys(monkeypatch)
                 "model": "global.anthropic.claude-opus-5",
                 "provider": "bedrock",
             },
+            {"model": "google/gemini-3.7-flash", "provider": "gemini"},
             {"model": "openai/gpt-5.4-mini", "provider": "openai"},
+            {"model": "openai/gpt-5.6-sol", "provider": "openai"},
         ],
     }
 
