@@ -315,6 +315,7 @@ async def create_analysis_trial(
     payload: dict | None = None,
     experiment_id: str | None = None,
     model: str | None = None,
+    environment: str | None = None,
     billed_user_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
@@ -375,6 +376,7 @@ async def create_analysis_trial(
         provider=settings.get_provider_for_trial(analysis_agent, normalized_model),
         queue_key=settings.get_queue_key_for_trial(analysis_agent, normalized_model),
         model=normalized_model,
+        environment=environment,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
         is_probe=False,

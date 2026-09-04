@@ -203,6 +203,7 @@ async def create_qa_eval_core(
             task_version_id=task_version_id,
             experiment_id=experiment.id,
             model=canonical_model,
+            environment=request.environment,
             billed_user_id=billed_user_id,
             payload={
                 "trial_ids": [source.id],
