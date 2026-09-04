@@ -3,19 +3,21 @@ from __future__ import annotations
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
-from auth import require_admin
+import pytest
+from auth import require_admin, require_auth
+from fastapi import HTTPException
 
-_ROUTER_PATH = (
-    Path(__file__).resolve().parents[1] / "api" / "routers" / "deliveries.py"
-)
+_ROUTER_PATH = Path(__file__).resolve().parents[1] / "api" / "routers" / "deliveries.py"
 _SPEC = spec_from_file_location("deliveries_route_under_test", _ROUTER_PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 deliveries = module_from_spec(_SPEC)
 _SPEC.loader.exec_module(deliveries)
 
 
-def test_every_mutation_requires_admin() -> None:
-    """POST/PATCH/PUT/DELETE delivery routes must depend on require_admin."""
+def test_readiness_mutations_require_admin_and_work_coordination_requires_auth() -> (
+    None
+):
+    """Only work coordination is available to ordinary task-scoped members."""
     mutations = 0
     for route in deliveries.router.routes:
         methods = getattr(route, "methods", set()) or set()
@@ -25,7 +27,16 @@ def test_every_mutation_requires_admin() -> None:
         dependant = getattr(route, "dependant", None)
         assert dependant is not None
         calls = [d.call for d in dependant.dependencies]
-        assert require_admin in calls, (
+        required = (
+            require_auth
+            if route.path
+            in {
+                "/deliveries/{delivery_id}/qa-work",
+                "/deliveries/{delivery_id}/qa-work/claim",
+            }
+            else require_admin
+        )
+        assert required in calls, (
             f"{route.path} {methods} is a mutation without require_admin"
         )
     assert mutations >= 5  # the router actually carries its mutations
@@ -43,6 +54,7 @@ def test_fill_user_names_fallback_chain() -> None:
         DeliveryDefect,
         DeliveryResponse,
         DeliveryTaskBoardRow,
+        QAWorkMetadata,
     )
 
     def check(key: str, user_id: str) -> DeliveryCheckResult:
@@ -80,6 +92,7 @@ def test_fill_user_names_fallback_chain() -> None:
                 sort_order=0,
                 customer_note=None,
                 internal_note=None,
+                qa_work=QAWorkMetadata(owner_user_id="u-named"),
                 checks=[check("signoff", "u-named"), check("proof", "u-email")],
                 defects=[
                     DeliveryDefect(
@@ -111,8 +124,33 @@ def test_fill_user_names_fallback_chain() -> None:
     asyncio.run(deliveries._fill_user_names(session, "org1", board))
 
     row = board.tasks[0]
+    assert row.qa_owner_name == "Ada Lovelace"
     assert row.checks[0].checked_by_name == "Ada Lovelace"
     assert row.checks[1].checked_by_name == "pfbyjy"
     assert row.defects[0].acknowledged_by_name == "@pfbyjy"
     # No user row: the UI falls back to the id.
     assert board.delivery_checks[0].checked_by_name is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["claim", "patch"])
+@pytest.mark.parametrize("has_identity", [True, False])
+async def test_qa_work_requires_task_scope_and_a_user(operation, has_identity):
+    from auth import APIKeyScope, AuthContext
+    from auth.types import AuthMethod
+    from oddish.schemas import QAWorkClaim, QAWorkPatch
+
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org1",
+        user_id="user1" if has_identity else None,
+        scope=APIKeyScope.READ if has_identity else APIKeyScope.TASKS,
+    )
+    with pytest.raises(HTTPException) as exc:
+        if operation == "claim":
+            await deliveries.claim_qa_work("d1", QAWorkClaim(version_ids=["v1"]), auth)
+        else:
+            await deliveries.patch_qa_work(
+                "d1", QAWorkPatch(version_id="v1", note="edit"), auth
+            )
+    assert exc.value.status_code == 403

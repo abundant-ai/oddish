@@ -821,6 +821,9 @@ class TaskVersionModel(TimestampedMixin, Base):
         server_default=text("'{}'::text[]"),
     )
 
+    # Human coordination is shared by every delivery of this version.
+    qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
     pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

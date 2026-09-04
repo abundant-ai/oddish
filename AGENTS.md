@@ -435,6 +435,25 @@ audit no longer matches instead of repeatedly importing it. Audit writes also
 check the latest audit trial under the version lock, and duplicate successful
 imports preserve the original timestamps and exploitation annotations.
 
+Delivery boards expose the latest QA run's evidence coverage and completion time.
+`oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
+audit with the current default version, using the same eligibility clauses and
+evidence serialization as QA admission. A recent timestamp alone does not make
+a result current. The board's seven-day/24-hour counter includes current accepted
+and rejected results, excluding execution failures and in-flight runs; it does
+not change the existing delivery sign-off requirements.
+
+`task_versions.qa_work` stores owner user ID, claim time, issue categories (first
+is primary), and handoff note once per version across deliveries. TASKS-scoped
+authenticated users may POST `/deliveries/{id}/qa-work/claim`; version locks and
+SKIP LOCKED prevent duplicate claims across deliveries. PATCH
+`/deliveries/{id}/qa-work` requires ownership or an admin and supports release.
+Both require an active delivery and current version membership. Claims carry
+candidate version IDs from the displayed filters, so stale browsers cannot
+silently claim a newer version. New versions start unassigned. Finalized boards
+retain their QA state and time cutoff in the existing snapshot. Hosted user-name
+resolution stays in the delivery router; standalone coordination uses `local`.
+
 QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
 It runs the same strict validator used by the verifier and importer, allowing
 one initial submission and two repairs. Missing fields remain validation errors.

@@ -16,6 +16,7 @@ from sqlalchemy import case, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.delivery_qa import delivery_qa_statuses
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -38,10 +39,14 @@ from oddish.schemas import (
     DeliveryDefect,
     DeliveryListItem,
     DeliveryPatch,
+    DeliveryQAStatus,
     DeliveryResponse,
     DeliveryTaskBoardRow,
     DeliveryTasksAdd,
     ManualCheckSet,
+    QAWorkClaim,
+    QAWorkMetadata,
+    QAWorkPatch,
     TaskQAHistoryFinding,
     TaskQAHistoryResponse,
     TaskQAHistoryRun,
@@ -752,6 +757,94 @@ async def set_manual_check_core(
 # =============================================================================
 
 
+async def claim_delivery_qa_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    user_id: str,
+    data: QAWorkClaim,
+) -> list[str]:
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
+    _require_active(delivery)
+    # The version lock also arbitrates claims made through another delivery.
+    # Candidate version IDs keep a stale browser from claiming a new version.
+    versions = (
+        await session.scalars(
+            select(TaskVersionModel)
+            .join(TaskModel, TaskModel.current_version_id == TaskVersionModel.id)
+            .join(DeliveryTaskModel, DeliveryTaskModel.task_id == TaskModel.id)
+            .where(
+                DeliveryTaskModel.delivery_id == delivery_id,
+                TaskModel.org_id == org_id,
+                TaskVersionModel.id.in_(data.version_ids),
+                TaskVersionModel.qa_work["owner_user_id"].astext.is_(None),
+            )
+            .order_by(
+                case(
+                    {
+                        version_id: index
+                        for index, version_id in enumerate(data.version_ids)
+                    },
+                    value=TaskVersionModel.id,
+                )
+            )
+            .limit(data.limit)
+            .with_for_update(of=TaskVersionModel, skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    for version in versions:
+        work = QAWorkMetadata.model_validate(version.qa_work or {})
+        work.owner_user_id, work.claimed_at = user_id, utcnow()
+        version.qa_work = work.model_dump(mode="json")
+    await session.flush()
+    return [version.id for version in versions]
+
+
+async def patch_delivery_qa_work_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    user_id: str,
+    is_admin: bool,
+    data: QAWorkPatch,
+) -> None:
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
+    _require_active(delivery)
+    version = await session.scalar(
+        select(TaskVersionModel)
+        .join(TaskModel, TaskModel.current_version_id == TaskVersionModel.id)
+        .join(DeliveryTaskModel, DeliveryTaskModel.task_id == TaskModel.id)
+        .where(
+            DeliveryTaskModel.delivery_id == delivery_id,
+            TaskModel.org_id == org_id,
+            TaskVersionModel.id == data.version_id,
+        )
+        .with_for_update(of=TaskVersionModel)
+        .execution_options(populate_existing=True)
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Task version changed or left this delivery; refresh the board",
+        )
+    work = QAWorkMetadata.model_validate(version.qa_work or {})
+    if work.owner_user_id != user_id and not is_admin:
+        raise HTTPException(
+            status_code=403, detail="Claim this task before editing its QA work"
+        )
+    if data.release:
+        work.owner_user_id, work.claimed_at = None, None
+    if data.issue_categories is not None:
+        work.issue_categories = list(dict.fromkeys(data.issue_categories))
+    if data.note is not None:
+        work.note = data.note
+    version.qa_work = work.model_dump(mode="json")
+    await session.flush()
+
+
 def _check(
     key: str,
     *,
@@ -848,9 +941,7 @@ async def _compute_board(
                     *_verdict_qa_clauses(),
                 )
                 .order_by(
-                    func.coalesce(
-                        TrialModel.finished_at, TrialModel.created_at
-                    ).desc()
+                    func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
                 )
             )
         ).all()
@@ -865,6 +956,8 @@ async def _compute_board(
             )
         ).all():
             max_versions[task_id] = highest
+
+    qa_statuses = await delivery_qa_statuses(session, tasks=tasks, versions=versions)
 
     ticks = (
         await session.scalars(
@@ -899,9 +992,7 @@ async def _compute_board(
                         _check(
                             "task_exists",
                             passed=False,
-                            detail=(
-                                "task was deleted; remove it from this delivery"
-                            ),
+                            detail=("task was deleted; remove it from this delivery"),
                             label="Task exists",
                         )
                     ],
@@ -951,9 +1042,7 @@ async def _compute_board(
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
                 ack = task_ticks.get((member.id, ACK_CHECK_PREFIX + item["id"]))
-                acknowledged = (
-                    ack is not None and ack.task_version_id == version.id
-                )
+                acknowledged = ack is not None and ack.task_version_id == version.id
                 defects.append(
                     DeliveryDefect(
                         id=item["id"],
@@ -1022,8 +1111,10 @@ async def _compute_board(
         # Every task needs a person's sign-off, bound to the version they
         # looked at. The tick records who signed and when.
         signoff = task_ticks.get((member.id, SIGNOFF_CHECK_KEY))
-        if signoff is not None and version is not None and (
-            signoff.task_version_id == version.id
+        if (
+            signoff is not None
+            and version is not None
+            and (signoff.task_version_id == version.id)
         ):
             checks.append(
                 _check(
@@ -1098,8 +1189,8 @@ async def _compute_board(
                 version=version.version if version else None,
                 pinned_version_id=member.pinned_version_id,
                 newer_version_exists=bool(
-                    version and max_versions.get(task.id, version.version)
-                    > version.version
+                    version
+                    and max_versions.get(task.id, version.version) > version.version
                 ),
                 is_visible=member.is_visible,
                 sort_order=member.sort_order,
@@ -1107,6 +1198,10 @@ async def _compute_board(
                 internal_note=member.internal_note,
                 checks=checks,
                 defects=defects,
+                qa=qa_statuses.get(task.id, DeliveryQAStatus()),
+                qa_work=QAWorkMetadata.model_validate(version.qa_work or {})
+                if version
+                else QAWorkMetadata(),
                 ready=all(c.status in ("pass", "off", "waived") for c in checks),
             )
         )
@@ -1135,6 +1230,7 @@ async def _compute_board(
         and all(c.status == "pass" for c in delivery_checks)
     )
     return DeliveryBoardResponse(
+        qa_as_of=utcnow(),
         delivery=DeliveryResponse.model_validate(delivery),
         check_config=config,
         tasks=rows,
@@ -1173,8 +1269,16 @@ def _customer_safe_board(board: DeliveryBoardResponse) -> dict:
     """The snapshot variant a future share page serves: no internal notes,
     no hidden tasks."""
     public = board.model_dump(mode="json")
+    public.pop("qa_viewer_user_id", None)
     public["tasks"] = [
-        {**row, "internal_note": None}
+        {
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in {"qa", "qa_work", "qa_owner_name"}
+            },
+            "internal_note": None,
+        }
         for row in public["tasks"]
         if row["is_visible"]
     ]
