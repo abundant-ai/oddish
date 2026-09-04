@@ -124,3 +124,111 @@ def test_stamp_sandbox_outcome_ignores_other_providers_and_errors(monkeypatch):
             status="success",
         )
     )
+
+
+def test_stamp_trial_outcome_on_provider_routes_to_backend(monkeypatch):
+    """The stamp that actually runs: after the trial returns, by trial id."""
+    from harbor.models.environment_type import EnvironmentType
+
+    calls: list[dict] = []
+
+    class _Backend:
+        async def stamp_trial_outcome(self, trial_id, *, reward, status, error=None):
+            calls.append(
+                {
+                    "trial_id": trial_id,
+                    "reward": reward,
+                    "status": status,
+                    "error": error,
+                }
+            )
+            return 1
+
+    monkeypatch.setattr(
+        trial_handler,
+        "get_backend",
+        lambda name: _Backend() if name == "numinous" else None,
+    )
+    ok = SimpleNamespace(reward=1.0, error=None)
+    asyncio.run(
+        trial_handler._stamp_trial_outcome_on_provider(
+            EnvironmentType.NUMINOUS, trial_id="t-1", outcome=ok, execution_error=None
+        )
+    )
+    bad = SimpleNamespace(reward=None, error="verifier crashed")
+    asyncio.run(
+        trial_handler._stamp_trial_outcome_on_provider(
+            EnvironmentType.NUMINOUS, trial_id="t-2", outcome=bad, execution_error=None
+        )
+    )
+    asyncio.run(
+        trial_handler._stamp_trial_outcome_on_provider(
+            EnvironmentType.NUMINOUS,
+            trial_id="t-3",
+            outcome=None,
+            execution_error="RuntimeError: boom",
+        )
+    )
+    asyncio.run(
+        trial_handler._stamp_trial_outcome_on_provider(
+            EnvironmentType.MODAL, trial_id="t-4", outcome=ok, execution_error=None
+        )
+    )
+    assert calls == [
+        {"trial_id": "t-1", "reward": 1.0, "status": "success", "error": None},
+        {
+            "trial_id": "t-2",
+            "reward": None,
+            "status": "failed",
+            "error": "verifier crashed",
+        },
+        {
+            "trial_id": "t-3",
+            "reward": None,
+            "status": "failed",
+            "error": "RuntimeError: boom",
+        },
+    ]
+
+
+def test_backend_stamp_trial_outcome_looks_up_by_label_and_patches(monkeypatch):
+    import httpx
+
+    from oddish.runtime.backends.numinous import NuminousBackend
+
+    seen: list[tuple[str, str, dict | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (
+                request.method,
+                str(request.url),
+                None
+                if not request.content
+                else __import__("json").loads(request.content),
+            )
+        )
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"items": [{"id": "sbx_a"}, {"id": "sbx_b"}], "total": 2}
+            )
+        return httpx.Response(200, json={"id": "x", "labels": {}})
+
+    transport = httpx.MockTransport(handler)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)
+    )
+    monkeypatch.setenv("NUMINOUS_API_URL", "https://cp.test")
+    monkeypatch.setenv("NUMINOUS_API_KEY", "nk_test")
+    n = asyncio.run(
+        NuminousBackend().stamp_trial_outcome("trial-9", reward=0.0, status="success")
+    )
+    assert n == 2
+    assert seen[0][0] == "GET" and "label=oddish.trial_id%3Atrial-9" in seen[0][1]
+    assert seen[1] == (
+        "PATCH",
+        "https://cp.test/v1/sandboxes/sbx_a/labels",
+        {"labels": {"oddish.status": "success", "oddish.reward": "0.0"}},
+    )
+    assert seen[2][1].endswith("/v1/sandboxes/sbx_b/labels")

@@ -1269,6 +1269,28 @@ async def _upload_probe_assets(
         shutil.rmtree(harness_mount, ignore_errors=True)
 
 
+async def _stamp_trial_outcome_on_provider(
+    env_type: EnvironmentType,
+    *,
+    trial_id: str,
+    outcome: HarborOutcome | None,
+    execution_error: str | None,
+) -> None:
+    """Best effort, provider-agnostic entry: only backends exposing
+    ``stamp_trial_outcome`` (Numinous) participate. Never fails a trial."""
+    backend = get_backend(env_type.value)
+    stamp = getattr(backend, "stamp_trial_outcome", None)
+    if stamp is None:
+        return
+    reward = outcome.reward if outcome is not None else None
+    error = (outcome.error if outcome is not None else None) or execution_error
+    status = "success" if reward is not None else "failed" if error else "ended"
+    try:
+        await stamp(trial_id, reward=reward, status=status, error=error)
+    except Exception:  # noqa: BLE001 - metadata must never fail a trial
+        logger.info("metric=numinous.outcome_stamp trial_id=%s raised", trial_id)
+
+
 async def _stamp_sandbox_outcome(
     hook_event: Any, *, reward: float | None, status: str
 ) -> None:
@@ -1686,6 +1708,17 @@ async def _execute_trial(
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
+
+    # The provider's console shows the same graded outcome oddish records.
+    # Addressed by the oddish.trial_id label the environment wrote at create,
+    # so it does not depend on lifecycle hooks (the ephemeral child forwards
+    # none of them past environment-provisioned).
+    await _stamp_trial_outcome_on_provider(
+        env_type,
+        trial_id=trial_id,
+        outcome=outcome,
+        execution_error=execution_error,
+    )
 
     return TrialExecutionResult(
         outcome=outcome,

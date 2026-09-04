@@ -110,6 +110,65 @@ class NuminousBackend:
             )
             return False
 
+    async def stamp_trial_outcome(
+        self,
+        trial_id: str,
+        *,
+        reward: float | None,
+        status: str,
+        error: str | None = None,
+    ) -> int:
+        """Stamp the graded outcome on every sandbox this trial created.
+
+        Addresses sandboxes by the ``oddish.trial_id`` label the environment
+        wrote at create, so it needs no hook plumbing and works whether the
+        trial ran in-process or in the ephemeral child. Returns how many
+        sandboxes were stamped. Metadata: never raises."""
+        if not trial_id:
+            return 0
+        labels: dict[str, str | None] = {
+            "oddish.status": status,
+            "oddish.reward": None if reward is None else str(reward),
+        }
+        if error:
+            labels["oddish.error"] = str(error)[:256]
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.get(
+                    "/v1/sandboxes",
+                    params={"label": f"oddish.trial_id:{trial_id}", "limit": 50},
+                )
+                if r.status_code >= 400:
+                    logger.info(
+                        "metric=numinous.outcome_stamp trial_id=%s lookup_status=%s",
+                        trial_id,
+                        r.status_code,
+                    )
+                    return 0
+                body = r.json()
+                items = body.get("items", body) if isinstance(body, dict) else body
+                stamped = 0
+                for sb in items or []:
+                    pr = await client.patch(
+                        f"/v1/sandboxes/{sb['id']}/labels", json={"labels": labels}
+                    )
+                    stamped += pr.status_code < 400
+                logger.info(
+                    "metric=numinous.outcome_stamp trial_id=%s sandboxes=%d stamped=%d",
+                    trial_id,
+                    len(items or []),
+                    stamped,
+                )
+                return stamped
+        except Exception:
+            logger.info("metric=numinous.outcome_stamp trial_id=%s failed", trial_id)
+            return 0
+
     async def teardown(self, external_id: str) -> bool:
         """Best-effort terminate by sandbox id. The response carries a
         teardown proof; expired sandboxes are already gone (the TTL is
