@@ -10,7 +10,8 @@ from oddish.workers.harbor import runner as harbor_runner
 from oddish.workers.queue import trial_handler
 
 
-def test_numinous_trial_labels_merge_and_drop_empty():
+def test_numinous_trial_labels_merge_and_drop_empty(monkeypatch):
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-1425")
     labels = harbor_runner._numinous_trial_labels(
         existing={"custom": "keep", "gone": None},
         trial_id="zstd-decoder-b53934e2-90",
@@ -23,6 +24,7 @@ def test_numinous_trial_labels_merge_and_drop_empty():
     )
     assert labels == {
         "custom": "keep",
+        "oddish.deployment": "oddish-pr-1425",
         "oddish.experiment_id": "8d2e9470",
         "oddish.experiment_name": "SWE marathon",
         "oddish.trial_id": "zstd-decoder-b53934e2-90",
@@ -32,7 +34,8 @@ def test_numinous_trial_labels_merge_and_drop_empty():
     }
 
 
-def test_numinous_trial_labels_without_experiment():
+def test_numinous_trial_labels_without_experiment(monkeypatch):
+    monkeypatch.delenv("MODAL_APP_NAME", raising=False)
     labels = harbor_runner._numinous_trial_labels(
         existing=None,
         trial_id="t1",

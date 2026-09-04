@@ -1334,7 +1334,12 @@ def _numinous_trial_labels(
     labels: dict[str, str] = {}
     if isinstance(existing, dict):
         labels.update({str(k): str(v) for k, v in existing.items() if v is not None})
+    # Which oddish deployment this trial belongs to (prod / staging / pr-N),
+    # so a provider console can link back to the right dashboard instead of
+    # assuming one. MODAL_APP_NAME is baked into every worker container.
+    deployment = os.environ.get("MODAL_APP_NAME") or None
     for key, value in (
+        ("oddish.deployment", deployment),
         ("oddish.experiment_id", experiment_id),
         ("oddish.experiment_name", experiment_name),
         ("oddish.trial_id", trial_id),
