@@ -180,14 +180,18 @@ export function ModelsClient() {
                 No model queue keys are configured.
               </div>
             ) : (
-              <Table>
+              <Table className="table-fixed sm:table-auto">
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Latency</TableHead>
-                    <TableHead>Tested</TableHead>
-                    <TableHead className="text-right" />
+                    <TableHead className="w-[48%] sm:w-auto">Model</TableHead>
+                    <TableHead className="w-[28%] sm:w-auto">Status</TableHead>
+                    <TableHead className="hidden md:table-cell">
+                      Latency
+                    </TableHead>
+                    <TableHead className="hidden md:table-cell">
+                      Tested
+                    </TableHead>
+                    <TableHead className="w-[24%] text-right sm:w-auto" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -210,7 +214,7 @@ export function ModelsClient() {
                     return (
                       <Fragment key={model}>
                         <TableRow>
-                          <TableCell className="py-3">
+                          <TableCell className="overflow-hidden py-3">
                             <div className="flex items-center gap-3">
                               <div className="bg-background flex h-9 w-9 shrink-0 items-center justify-center rounded-md border">
                                 <QueueKeyIcon queueKey={model} size={18} />
@@ -219,7 +223,7 @@ export function ModelsClient() {
                                 <div className="truncate font-mono text-sm font-medium">
                                   {model}
                                 </div>
-                                <div className="text-muted-foreground mt-0.5 text-xs">
+                                <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block">
                                   {provider} · litellm completion
                                 </div>
                               </div>
@@ -255,10 +259,10 @@ export function ModelsClient() {
                               </span>
                             )}
                           </TableCell>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell className="hidden font-mono text-xs md:table-cell">
                             {result ? `${result.latency_ms}ms` : "—"}
                           </TableCell>
-                          <TableCell className="text-muted-foreground text-xs">
+                          <TableCell className="text-muted-foreground hidden text-xs md:table-cell">
                             {testedAt}
                           </TableCell>
                           <TableCell className="text-right">
