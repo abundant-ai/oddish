@@ -79,6 +79,38 @@ Each action item carries a server-computed `id` (the target of other items'
 `exploit_evidence`, `causal`). Task status can trim embedded trial analysis;
 use `oddish status <trial_id> --json` for the full record.
 
+## Batch feedback export
+
+```bash
+oddish qa export <task_id> <another_task_id> --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --output qa-findings.csv
+```
+
+This read-only command uses the existing task-detail bundle, which includes
+full trial analysis and version audit findings. It does not run QA. The input
+file contains one exact task ID per line; blank lines and duplicate IDs are
+ignored. Names are not resolved.
+
+It writes one finding occurrence per row plus `qa-findings-tasks.csv`, with
+one row per requested ID including empty results and fetch errors. Full QA
+text and file/line anchors are preserved. Separate runs reporting the same
+finding remain separate rows; version-audit findings are emitted once.
+Blank `group`, `assignee`, and `resolution` columns support manual triage.
+
+Defaults: current version, `must_fix` and `should_fix`, four concurrent reads.
+Use repeatable `--tier` to change severity selection (including `optional`),
+`--all-versions` to include older versions, `--concurrency` (1–16) to bound
+requests, and `--api` to select an API. Existing output files are overwritten.
+`current_verdict*` columns always refer to the current task verdict, not a
+historical verdict. The export excludes replaced runs and combine copies
+through the existing detail endpoint; it cannot reconstruct overwritten QA.
+
+The task summary includes full verdict JSON, audit and QA-run statuses/errors,
+agent analysis-status counts, and counts of exported finding occurrences.
+Zero findings is not proof of completed or passing QA. Fetch errors leave
+counts blank and cause exit 1 after successful tasks have been exported.
+Exit 0 means all fetches succeeded, even if tasks have defects or pending QA.
+
 ## Replacement and backfill semantics
 
 `oddish backfill-analysis --task <task_id>` and

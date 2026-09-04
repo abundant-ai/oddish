@@ -33,7 +33,7 @@ auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
 Current top-level commands are `run`, `upload`, `preflight`, `ls`, `status`,
 `skill`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
 `cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`, `pull`,
-`publish`, `unpublish`, `probe`, `delivery`, and `assign`.
+`publish`, `unpublish`, `probe`, `delivery`, `assign`, and `qa`.
 
 `oddish assign task-1 task-2 --to alice@example.com` assigns QA review ownership
 to an org member identified by email, user ID, or GitHub handle. For a large

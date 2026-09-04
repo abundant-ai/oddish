@@ -61,6 +61,8 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
