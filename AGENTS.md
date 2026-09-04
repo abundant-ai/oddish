@@ -164,6 +164,11 @@ High-level flow:
    successful import copies the policy hash into `task_versions.pre_trial`, so
    operators can select versions that need a newer policy rerun. Historical
    audit trials and stored results can omit the hash.
+   QA rerun and pre-trial audit endpoints accept an optional `environment`
+   (`modal` or `daytona`); omitted/null retains the worker default. The task
+   panel and bulk Run QA toolbar expose this choice. Explicit selections are
+   stored on the new trial and survive retries; they do not change the global
+   default or the environment of automatically enqueued follow-up QA.
    Replacement QA requests preflight every eligible source through the same
    result, verifier, and trajectory readers exposed to the analysis sandbox.
    Missing started-trial result/verifier evidence or a `has_trajectory = true`

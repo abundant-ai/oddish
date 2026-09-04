@@ -509,7 +509,8 @@ def _good_qa_entry(trial_id: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environment):
     from oddish.db import TaskVersionModel, TrialStatus, VerdictStatus
     from oddish.worker.analysis_result_check import check_analysis_result
     from oddish.workers.analysis_trials import analysis_check_payload, create_qa_trial
@@ -575,8 +576,10 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         task=task,
         eligible_trial_ids=["trial-1"],
         with_verdict=False,
+        environment=environment,
     )
 
+    assert captured["environment"] == environment
     payload = captured["payload"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert payload["pre_trial_must_fix_ids"] == ["audit-1"]

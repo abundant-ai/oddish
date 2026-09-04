@@ -251,6 +251,7 @@ async def rerun_task_qa_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """Create a replacement qa-kind trial for a finished task.
 
@@ -264,6 +265,7 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
+        environment=environment,
     )
 
 
@@ -274,6 +276,7 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA for a task.
 
@@ -391,7 +394,7 @@ async def backfill_task_analysis_core(
             reset_count += 1
 
     task.finished_at = None
-    await start_qa_for_task(session, task)
+    await start_qa_for_task(session, task, environment=environment)
 
     await session.commit()
     return {

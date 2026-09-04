@@ -643,8 +643,8 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
-class PreTrialAuditRequest(BaseModel):
-    """Optional execution settings for a fresh source audit."""
+class QARunRequest(BaseModel):
+    """Optional sandbox selection for a QA or pre-trial audit rerun."""
 
     environment: Literal["modal", "daytona"] | None = Field(
         None,
