@@ -1285,21 +1285,35 @@ async def _stamp_sandbox_outcome(
     if callable(setter):
         try:
             setter(labels)
+            logger.info("metric=numinous.outcome_stamp route=environment")
             return
         except Exception:  # noqa: BLE001 - metadata must never fail a trial
-            logger.debug("sandbox outcome stamp via environment failed", exc_info=True)
+            logger.info(
+                "metric=numinous.outcome_stamp route=environment failed", exc_info=True
+            )
     provider = (getattr(hook_event, "environment_provider", None) or "").strip().lower()
     external_id = getattr(hook_event, "environment_external_id", None)
     if provider != "numinous" or not external_id:
+        logger.info(
+            "metric=numinous.outcome_stamp route=skipped provider=%r external_id=%r",
+            provider,
+            external_id,
+        )
         return
     backend = get_backend("numinous")
     stamp = getattr(backend, "set_labels", None)
     if stamp is None:
+        logger.info("metric=numinous.outcome_stamp route=skipped reason=no_backend")
         return
     try:
-        await stamp(external_id, labels)
+        ok = await stamp(external_id, labels)
+        logger.info(
+            "metric=numinous.outcome_stamp route=backend external_id=%s ok=%s",
+            external_id,
+            ok,
+        )
     except Exception:  # noqa: BLE001
-        logger.debug("sandbox outcome stamp via backend failed", exc_info=True)
+        logger.info("metric=numinous.outcome_stamp route=backend failed", exc_info=True)
 
 
 async def _handle_harbor_event(
