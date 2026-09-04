@@ -39,12 +39,13 @@ sets request concurrency (default 8), and `RAW_CACHE=path` reuses a previous
 
 ## Columns of `task_metrics.csv`
 
-* `doc_category`: a re-labelled category. The catalogue's single `DB debug`
-  bucket is split by the system under repair (`DuckDB`, `SQLite`, `RocksDB`,
-  `TimescaleDB`, `Qdrant`, `etcd`, `FAISS`); the other buckets get doc-facing
-  names (`Scientific Data Analysis`, `Numerical Methods Reproduction`,
-  `Spreadsheet Model Reconstruction`, `Model Post-Training`,
-  `Software & Systems Engineering`).
+* `doc_category`: a coarse 4-bucket grouping for the overview doc —
+  `Database & Datastore Bug Repair` (all seven DB systems),
+  `Scientific & Numerical Computing` (Science + numerical-method reproduction),
+  `Spreadsheet Model Reconstruction`, and `Software & Model Engineering`
+  (model post-training + build/optimize/exploit tasks).
+* `db_system`: for database tasks, the system under repair (`DuckDB`, `SQLite`,
+  `RocksDB`, `TimescaleDB`, `Qdrant`, `etcd`, `FAISS`); blank otherwise.
 * `model_used`, `model_tier`, `model_variants`: the model summarised.
 * `n_trials`, `passes`: measured trials of that model and how many scored
   reward 1.0. `n_timeouts`, `n_exit_errors`, `n_excluded` break down the
@@ -70,7 +71,7 @@ sets request concurrency (default 8), and `RAW_CACHE=path` reuses a previous
 * `task_metrics_avg_steps_ge75.csv` — the 267 tasks whose mean steps are >= 75
   (the long-horizon tail), same columns as `task_metrics.csv`.
 * `CANDIDATE_SET.md` — a candidate-set overview built on that filtered set, with
-  the 12 `doc_category` categories, per-category complexity and pass rates, and
+  the 4 `doc_category` categories (and the seven-system database breakdown), per-category complexity and pass rates, and
   highlighted examples.
 
 Snapshot facts: all 784 tasks resolved; 783 are measured on Opus 4.8 and one
