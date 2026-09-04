@@ -523,8 +523,13 @@ new results replace them:
 - `--trial <id> --force`: clears just that trial's stored analysis first.
 
 A pass only starts once all of the task's trials are finished, and is refused
-while another QA pass or a pre-trial audit is live. The previously published
-verdict stays visible until the replacement lands.
+while another QA pass or a pre-trial audit is live. Before changing stored
+analysis or queuing the replacement, Oddish reads every eligible source trial's
+Harbor result, verifier output or exception, and every trajectory advertised by
+`has_trajectory`. If that evidence is unavailable, the command is refused with
+the blocking trial IDs; no QA model attempts are launched and existing analysis
+and verdict data remain unchanged. If the check passes, queuing the replacement
+withdraws the previously published verdict until the new pass completes.
 
 ```bash
 oddish backfill-analysis --task <task_id>

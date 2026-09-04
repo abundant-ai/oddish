@@ -17,6 +17,7 @@ from oddish.core.endpoints.qa import cancel_task_qa_core, rerun_pre_trial_audit_
 from oddish.core.verdict_state import queue_verdict
 from oddish.core.verdict_sync import apply_deterministic_verdict_rules
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -230,6 +231,44 @@ async def create_qa(task_id):
         )
         assert qa.harbor_config["analysis_payload"]["with_verdict"] is False
         return qa.id
+
+
+@pytest.mark.asyncio
+async def test_backfill_rejects_unreadable_source_before_reset(audit_task):
+    from fastapi import HTTPException
+    from oddish.core.endpoints.qa import backfill_task_analysis_core
+
+    task_id, _, source_id, _ = audit_task
+    async with get_session() as session:
+        source = await session.get(TrialModel, source_id)
+        source.analysis_status = AnalysisStatus.SUCCESS
+        source.analysis = {"classification": "GOOD_FAILURE"}
+
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as error:
+            await backfill_task_analysis_core(
+                session,
+                task_id=task_id,
+                trial_ids=[source_id],
+                force=True,
+            )
+        assert error.value.status_code == 409
+        assert source_id in error.value.detail
+        assert "no readable trajectory JSON object" in error.value.detail
+
+    async with get_session() as session:
+        source = await session.get(TrialModel, source_id)
+        assert source.analysis_status == AnalysisStatus.SUCCESS
+        assert source.analysis == {"classification": "GOOD_FAILURE"}
+        assert (
+            await session.scalar(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.kind == "qa",
+                )
+            )
+            is None
+        )
 
 
 def qa_artifact(source_id, *, findings=True):

@@ -1361,7 +1361,8 @@ class TrialResponse(BaseModel):
 
     # Trajectory
     has_trajectory: bool = Field(
-        False, description="Whether an ATIF trajectory file exists for this trial"
+        False,
+        description="Whether this trial has a readable ATIF trajectory JSON object",
     )
 
     analysis_status: AnalysisStatus | None = None
@@ -2006,7 +2007,11 @@ class ImportedTrialSpec(BaseModel):
         ),
     )
     has_trajectory: bool = Field(
-        False, description="Whether the uploaded archive contains a trajectory file"
+        False,
+        description=(
+            "Whether the uploaded archive contains a readable ATIF trajectory "
+            "JSON object"
+        ),
     )
     harbor_config: dict | None = Field(
         None,

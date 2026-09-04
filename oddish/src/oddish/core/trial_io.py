@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import re
 import time
-from collections.abc import Hashable, MutableMapping
+from collections.abc import Awaitable, Hashable, MutableMapping
 from contextlib import suppress
 from pathlib import Path
 
@@ -901,6 +901,72 @@ async def read_trial_trajectory(trial: TrialModel) -> dict | None:
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
+
+
+async def qa_source_evidence_errors(trial: TrialModel) -> tuple[str, ...]:
+    """Return evidence contradictions that make a source trial unsafe to QA."""
+    reads: dict[str, object] = {}
+    pending: list[tuple[str, Awaitable[object]]] = []
+    if trial.started_at is not None:
+        pending.extend(
+            (
+                ("result", read_trial_result(trial)),
+                ("verifier", read_trial_logs_structured(trial, verifier_only=True)),
+            )
+        )
+    if trial.has_trajectory:
+        pending.append(("trajectory", read_trial_trajectory(trial)))
+
+    if pending:
+        values = await asyncio.gather(
+            *(awaitable for _, awaitable in pending),
+            return_exceptions=True,
+        )
+        reads.update(
+            (name, value) for (name, _), value in zip(pending, values, strict=True)
+        )
+
+    def failure(name: str) -> str | None:
+        value = reads.get(name)
+        if not isinstance(value, BaseException):
+            return None
+        detail = getattr(value, "detail", None) or str(value) or type(value).__name__
+        return f"{name} read failed: {type(value).__name__}: {detail}"
+
+    errors = [message for name in reads if (message := failure(name)) is not None]
+    result = reads.get("result")
+    if trial.started_at is not None and not isinstance(result, BaseException):
+        if not isinstance(result, dict):
+            errors.append("result JSON object is unavailable")
+    trajectory = reads.get("trajectory")
+    if trial.has_trajectory and not isinstance(trajectory, BaseException):
+        if not isinstance(trajectory, dict):
+            errors.append(
+                "has_trajectory=true but no readable trajectory JSON object was found"
+            )
+
+    verifier = reads.get("verifier")
+    if trial.started_at is not None and not isinstance(verifier, BaseException):
+        verifier_streams = (
+            verifier.get("verifier") if isinstance(verifier, dict) else None
+        )
+        verifier_exception = (
+            verifier.get("exception") if isinstance(verifier, dict) else None
+        )
+        stdout = (
+            verifier_streams.get("stdout")
+            if isinstance(verifier_streams, dict)
+            else None
+        )
+        stderr = (
+            verifier_streams.get("stderr")
+            if isinstance(verifier_streams, dict)
+            else None
+        )
+        if not any((stdout, stderr, verifier_exception)):
+            errors.append("verifier stdout, stderr, and exception are unavailable")
+
+    return tuple(errors)
 
 
 async def read_trial_summary_inputs(
