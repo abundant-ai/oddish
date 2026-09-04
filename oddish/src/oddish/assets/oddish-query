@@ -96,7 +96,7 @@ async function cmdTrialResource(a) {
 }
 
 async function cmdTrialVerifier(a) {
-  const data = await get(`/trials/${a.trialId}/logs/structured`);
+  const data = await get(`/trials/${a.trialId}/logs/structured?verifier_only=true`);
   out(JSON.stringify({
     trial_id: a.trialId,
     verifier: data?.verifier || { stdout: null, stderr: null },

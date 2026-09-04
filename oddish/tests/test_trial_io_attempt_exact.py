@@ -879,6 +879,102 @@ def test_structured_logs_use_the_manifest_selected_harbor_directory(monkeypatch)
     assert stale_key not in storage.download_calls
 
 
+def test_verifier_only_logs_ignore_broken_auxiliary_session_files(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    child = f"{prefix}current-run/"
+    stdout_key = f"{child}verifier/test-stdout.txt"
+    broken_session_key = f"{child}agent/session/history.log"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stdout_key: "PASS\n",
+        },
+        listed=[stdout_key, broken_session_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(
+            _trial(prefix=prefix, attempts=2), verifier_only=True
+        )
+    )
+
+    assert result["verifier"] == {"stdout": "PASS\n", "stderr": None}
+    assert broken_session_key not in storage.download_calls
+
+
+def test_verifier_only_logs_keep_pre_sandbox_database_exception(monkeypatch):
+    _clear_cache()
+    storage = _Storage({})
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial(prefix=None)
+    trial.error_message = "Failed to create sandbox: CPU capacity exhausted"
+
+    result = asyncio.run(trial_io.read_trial_logs_structured(trial, verifier_only=True))
+
+    assert result["verifier"] == {"stdout": None, "stderr": None}
+    assert result["exception"] == "Failed to create sandbox: CPU capacity exhausted"
+
+
+def test_verifier_only_logs_leave_missing_verifier_evidence_null(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    child = f"{prefix}current-run/"
+    session_key = f"{child}agent/session/history.log"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            session_key: "agent history\n",
+        },
+        listed=[session_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(
+            _trial(prefix=prefix, attempts=2), verifier_only=True
+        )
+    )
+
+    assert result["verifier"] == {"stdout": None, "stderr": None}
+    assert result["exception"] is None
+
+
+def test_structured_log_cache_separates_verifier_only_and_full_responses(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    child = f"{prefix}current-run/"
+    stdout_key = f"{child}verifier/test-stdout.txt"
+    session_key = f"{child}agent/session/history.log"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stdout_key: "PASS\n",
+            session_key: "agent history\n",
+        },
+        listed=[stdout_key, session_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial(prefix=prefix, attempts=2)
+
+    verifier_only = asyncio.run(
+        trial_io.read_trial_logs_structured(trial, verifier_only=True)
+    )
+    full = asyncio.run(trial_io.read_trial_logs_structured(trial))
+
+    assert verifier_only["other"] == []
+    assert full["other"] == [
+        {"name": "agent/session/history.log", "content": "agent history\n"}
+    ]
+
+
 def test_structured_logs_skip_binary_artifacts_and_keep_verifier_evidence(monkeypatch):
     _clear_cache()
     prefix = "tasks/task-1/trials/task-1-7/attempt-2/"

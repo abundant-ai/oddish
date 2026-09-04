@@ -34,10 +34,10 @@ from oddish.workers.agents.grok_build_trajectory import (
 
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
-_STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
+_STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None, bool], tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[tuple[str, int, str | None], tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
-_STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
+_STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None, bool], asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _ARTIFACT_FALLBACK_ERRORS = (
@@ -259,10 +259,13 @@ async def read_trial_logs(trial: TrialModel) -> dict:
     return {"trial_id": trial.id, "logs": "\n".join(logs_parts) if logs_parts else ""}
 
 
-async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
+async def _read_trial_logs_structured_uncached(
+    trial: TrialModel, *, verifier_only: bool = False
+) -> dict:
     """Read trial logs structured by category (agent, verifier, exception).
 
-    Uses parallel S3 downloads for improved performance.
+    ``verifier_only`` downloads only the named verifier streams and exception,
+    leaving auxiliary agent and session files out of the download plan.
     """
     result: dict = {
         "trial_id": trial.id,
@@ -296,17 +299,23 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
         for key in files:
             # Agent logs
-            if key.endswith(("/agent/oracle.txt", "/oracle.txt")):
+            if not verifier_only and key.endswith(("/agent/oracle.txt", "/oracle.txt")):
                 if oracle_key is None:
                     oracle_key = key
                     download_plan.append((key, "oracle", None))
                     matched_keys.add(key)
-            elif key.endswith(("/agent/setup/stdout.txt", "/setup/stdout.txt")):
+            elif not verifier_only and key.endswith(
+                ("/agent/setup/stdout.txt", "/setup/stdout.txt")
+            ):
                 if setup_key is None:
                     setup_key = key
                     download_plan.append((key, "setup", None))
                     matched_keys.add(key)
-            elif "/agent/command-" in key and key.endswith("/stdout.txt"):
+            elif (
+                not verifier_only
+                and "/agent/command-" in key
+                and key.endswith("/stdout.txt")
+            ):
                 match = re.search(r"(command-\d+)/stdout\.txt$", key)
                 if match:
                     cmd_name = match.group(1)
@@ -328,21 +337,22 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 download_plan.append((key, "exception", None))
                 matched_keys.add(key)
 
-        # Add other log files that weren't matched
-        for key in files:
-            if key in matched_keys:
-                continue
-            s3_path = Path(key)
-            is_log_file = s3_path.suffix in (".log", ".txt")
-            is_log_dir = any(
-                part in s3_path.parts for part in ("logs", "agent", "verifier")
-            )
-            if (is_log_file or is_log_dir) and s3_path.suffix not in (
-                ".json",
-                ".patch",
-            ):
-                rel_path = key.replace(s3_prefix, "").strip("/")
-                download_plan.append((key, "other", rel_path))
+        if not verifier_only:
+            # Add other log files that weren't matched.
+            for key in files:
+                if key in matched_keys:
+                    continue
+                s3_path = Path(key)
+                is_log_file = s3_path.suffix in (".log", ".txt")
+                is_log_dir = any(
+                    part in s3_path.parts for part in ("logs", "agent", "verifier")
+                )
+                if (is_log_file or is_log_dir) and s3_path.suffix not in (
+                    ".json",
+                    ".patch",
+                ):
+                    rel_path = key.replace(s3_prefix, "").strip("/")
+                    download_plan.append((key, "other", rel_path))
 
         # Phase 2: Download all files in parallel
         if download_plan:
@@ -429,27 +439,28 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     agent_dir = trial_paths.agent_dir
     verifier_dir = trial_paths.verifier_dir
 
-    # Agent: oracle.txt
-    oracle_path = agent_dir / "oracle.txt"
-    if oracle_path.exists():
-        with suppress(OSError):
-            result["agent"]["oracle"] = oracle_path.read_text(errors="replace")
-
-    # Agent: setup/stdout.txt
-    setup_path = agent_dir / "setup" / "stdout.txt"
-    if setup_path.exists():
-        with suppress(OSError):
-            result["agent"]["setup"] = setup_path.read_text(errors="replace")
-
-    # Agent: command-*/stdout.txt
-    for cmd_dir in sorted(agent_dir.glob("command-*")):
-        stdout_path = cmd_dir / "stdout.txt"
-        if stdout_path.exists():
+    if not verifier_only:
+        # Agent: oracle.txt
+        oracle_path = agent_dir / "oracle.txt"
+        if oracle_path.exists():
             with suppress(OSError):
-                content = stdout_path.read_text(errors="replace")
-                result["agent"]["commands"].append(
-                    {"name": cmd_dir.name, "content": content}
-                )
+                result["agent"]["oracle"] = oracle_path.read_text(errors="replace")
+
+        # Agent: setup/stdout.txt
+        setup_path = agent_dir / "setup" / "stdout.txt"
+        if setup_path.exists():
+            with suppress(OSError):
+                result["agent"]["setup"] = setup_path.read_text(errors="replace")
+
+        # Agent: command-*/stdout.txt
+        for cmd_dir in sorted(agent_dir.glob("command-*")):
+            stdout_path = cmd_dir / "stdout.txt"
+            if stdout_path.exists():
+                with suppress(OSError):
+                    content = stdout_path.read_text(errors="replace")
+                    result["agent"]["commands"].append(
+                        {"name": cmd_dir.name, "content": content}
+                    )
 
     # Verifier: test-stdout.txt, test-stderr.txt
     stdout_path = trial_paths.test_stdout_path
@@ -467,38 +478,42 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         with suppress(OSError):
             result["exception"] = exception_path.read_text(errors="replace")
 
-    # Capture other log files as fallback
-    matched_paths: set[Path] = set()
-    if agent_dir.exists():
-        if (agent_dir / "oracle.txt").exists():
-            matched_paths.add(agent_dir / "oracle.txt")
-        if (agent_dir / "setup" / "stdout.txt").exists():
-            matched_paths.add(agent_dir / "setup" / "stdout.txt")
-        for cmd_dir in agent_dir.glob("command-*"):
-            if (cmd_dir / "stdout.txt").exists():
-                matched_paths.add(cmd_dir / "stdout.txt")
-    if verifier_dir.exists():
-        if (verifier_dir / "test-stdout.txt").exists():
-            matched_paths.add(verifier_dir / "test-stdout.txt")
-        if (verifier_dir / "test-stderr.txt").exists():
-            matched_paths.add(verifier_dir / "test-stderr.txt")
+    if not verifier_only:
+        # Capture other log files as fallback.
+        matched_paths: set[Path] = set()
+        if agent_dir.exists():
+            if (agent_dir / "oracle.txt").exists():
+                matched_paths.add(agent_dir / "oracle.txt")
+            if (agent_dir / "setup" / "stdout.txt").exists():
+                matched_paths.add(agent_dir / "setup" / "stdout.txt")
+            for cmd_dir in agent_dir.glob("command-*"):
+                if (cmd_dir / "stdout.txt").exists():
+                    matched_paths.add(cmd_dir / "stdout.txt")
+        if verifier_dir.exists():
+            if (verifier_dir / "test-stdout.txt").exists():
+                matched_paths.add(verifier_dir / "test-stdout.txt")
+            if (verifier_dir / "test-stderr.txt").exists():
+                matched_paths.add(verifier_dir / "test-stderr.txt")
 
-    for p in sorted(trial_dir.rglob("*")):
-        if not p.is_file() or p in matched_paths:
-            continue
-        is_log_file = p.suffix in (".log", ".txt")
-        is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
-        if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
-            with suppress(OSError, ValueError):
-                rel = p.relative_to(trial_dir)
-                content = p.read_text(errors="replace")
-                result["other"].append({"name": str(rel), "content": content})
+        for p in sorted(trial_dir.rglob("*")):
+            if not p.is_file() or p in matched_paths:
+                continue
+            is_log_file = p.suffix in (".log", ".txt")
+            is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
+            if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
+                with suppress(OSError, ValueError):
+                    rel = p.relative_to(trial_dir)
+                    content = p.read_text(errors="replace")
+                    result["other"].append({"name": str(rel), "content": content})
 
     return result
 
 
-async def read_trial_logs_structured(trial: TrialModel) -> dict:
-    cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
+async def read_trial_logs_structured(
+    trial: TrialModel, *, verifier_only: bool = False
+) -> dict:
+    """Read structured logs, optionally limited to verifier evidence."""
+    cache_key = (trial.id, trial.attempts, trial.trial_s3_key, verifier_only)
     if _should_cache_trial(trial):
         cached = _cache_get(_STRUCTURED_LOGS_CACHE, cache_key)
         if cached is not None:
@@ -511,7 +526,9 @@ async def read_trial_logs_structured(trial: TrialModel) -> dict:
             if cached is not None:
                 return cached  # type: ignore[return-value]
 
-        result = await _read_trial_logs_structured_uncached(trial)
+        result = await _read_trial_logs_structured_uncached(
+            trial, verifier_only=verifier_only
+        )
         if _should_cache_trial(trial):
             _cache_set(_STRUCTURED_LOGS_CACHE, cache_key, result)
         return result
