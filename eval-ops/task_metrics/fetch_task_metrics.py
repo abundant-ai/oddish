@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
 """Per-task trajectory metrics (steps, agent runtime, tokens) from the oddish API.
 
-Input : tasks.tsv  (task, category, opus_table, learn_table, experiments)
-Output: raw_trials.json (every trial fetched, keyed by task name)
+Input : tasks.tsv  (task, category, opus_table, learn_table, experiments[, alt_names])
+Output: raw_trials.json  (every trial fetched, keyed by task name; reused as a cache)
         task_metrics.csv (one row per task)
 
 Selection rules, per task:
-  * exact task-name match via GET /tasks/browse?query=<name>; when several task
-    ids share a name, keep the ones whose linked experiments intersect the
-    sheet's experiment ids (fallback: all of them).
-  * trials: kind == "agent", not a probe, not superseded, agent not nop/oracle.
+  * Task lookup: GET /tasks/browse?query=<name>, exact match on the sheet name
+    or one of its ``alt_names``; if nothing matches, the name with its last
+    ".xxx" suffix removed is tried too (oddish stores "post-train-apps-qwen2.5-1"
+    for "post-train-apps-qwen2.5-1.5b"). When several task ids match, the ones
+    whose linked experiments intersect the sheet's experiment ids win.
+  * Trials: kind == "agent", not a probe, not superseded, agent not nop/oracle.
     Restricted to the sheet's linked experiment ids when the task has trials
     there (fallback: every experiment), then to the latest task_version seen in
-    that set (fallback: every version) -- this mirrors the sheet's
-    "latest experiment version only" rule.
-  * valid attempt: terminal status, error_message empty or an agent/verifier
-    timeout, and total_steps present. Harness errors (exit 137/143, missing
-    reward file, ...) are dropped, matching the sheet's denominators.
-  * model preference: opus-4-8 > any other opus > the non-opus model with the
-    most valid trials (ties -> most recently finished).
+    that set (versions are pooled only when that reproduces the sheet's Opus
+    denominator) -- this mirrors the sheet's "latest experiment version only".
+  * A trial counts when it produced a real trajectory: terminal status,
+    ``total_steps`` present, and non-zero token usage. Agent timeouts and
+    runs that ended with a non-zero agent exit but still have a trajectory are
+    kept (and counted in ``n_timeouts`` / ``n_exit_errors``); sandbox failures
+    and zero-token runs are dropped (``n_excluded``).
+  * Model preference: opus-4-8 (its provider spellings pooled) > any other
+    opus > the non-opus model with the most valid trials, ties -> most recent.
 
 Metrics per trial:
   steps        = total_steps (ATIF trajectory steps)
@@ -26,6 +30,10 @@ Metrics per trial:
                  trajectory_duration_seconds, else finished_at - started_at
   tokens_in    = input_tokens (includes cache reads)   tokens_cache = cache_tokens
   tokens_out   = output_tokens                          tokens_total = in + out
+
+Environment: ODDISH_API_KEY (required), ODDISH_API_URL, TASKS_FILE, WORKERS,
+RAW_CACHE (path of a previous raw_trials.json to reuse; default: the one next
+to this script if present). Tasks with ``alt_names`` are always refetched.
 """
 from __future__ import annotations
 
@@ -44,7 +52,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.environ.get("ODDISH_API_URL", "https://abundant-ai--api.modal.run").rstrip("/")
-KEY = os.environ["ODDISH_API_KEY"]
+KEY = os.environ.get("ODDISH_API_KEY", "")
 WORKERS = int(os.environ.get("WORKERS", "8"))
 
 TIMEOUT_ERR = ("agenttimeouterror", "verifiertimeouterror", "timed out after")
@@ -60,6 +68,8 @@ def log(msg: str) -> None:
 
 
 def get(path: str, tries: int = 4, **params):
+    if not KEY:
+        raise RuntimeError("ODDISH_API_KEY is not set")
     url = BASE + path + ("?" + urllib.parse.urlencode(params) if params else "")
     last = None
     for attempt in range(tries):
@@ -83,20 +93,33 @@ def parse_dt(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def is_valid(tr: dict) -> bool:
+def is_solver(tr: dict) -> bool:
+    """A real solution attempt row (not baseline, probe, or superseded)."""
     if tr.get("kind", "agent") != "agent" or tr.get("is_probe"):
         return False
     if tr.get("superseded_by_trial_id"):
         return False
-    if (tr.get("agent") or "").lower() in BASELINE_AGENTS:
-        return False
-    status = (tr.get("status") or "").lower()
-    if status not in TERMINAL:
-        return False
+    return (tr.get("agent") or "").lower() not in BASELINE_AGENTS
+
+
+def is_timeout(tr: dict) -> bool:
     err = (tr.get("error_message") or "").lower()
-    if err and not any(k in err for k in TIMEOUT_ERR):
+    return any(k in err for k in TIMEOUT_ERR)
+
+
+def is_valid(tr: dict) -> bool:
+    """The trial produced a real trajectory we can measure."""
+    if not is_solver(tr):
         return False
-    return tr.get("total_steps") is not None
+    if (tr.get("status") or "").lower() not in TERMINAL:
+        return False
+    steps = tr.get("total_steps")
+    if steps is None:
+        return False
+    tin, tout = tr.get("input_tokens"), tr.get("output_tokens")
+    if tin is None and tout is None:  # usage unknown (older rows): require a real trajectory
+        return steps >= 2
+    return (tin or 0) + (tout or 0) > 0
 
 
 def runtime_seconds(tr: dict) -> float | None:
@@ -126,7 +149,7 @@ def canon_model(model: str | None) -> str:
     return m.lower()
 
 
-def model_rank(model: str) -> int:
+def model_rank(model: str | None) -> int:
     m = canon_model(model)
     if "opus" in m and ("4-8" in m or "4.8" in m or "4_8" in m):
         return 0
@@ -135,12 +158,12 @@ def model_rank(model: str) -> int:
     return 2
 
 
-def choose_model(trials: list[dict]) -> str | None:
-    """Return the canonical model whose trials should be reported for this task.
+MODEL_TIER = ["opus-4-8", "other-opus", "non-opus"]
 
-    opus-4-8 first, then any other opus, then the non-opus model with the most
-    trials; ties broken by most recent finish.
-    """
+
+def choose_model(trials: list[dict]) -> str | None:
+    """Canonical model whose trials are reported: opus-4-8 > other opus >
+    the non-opus model with the most trials; ties -> most recent finish."""
     by_model: dict[str, list[dict]] = {}
     for tr in trials:
         by_model.setdefault(canon_model(tr.get("model")), []).append(tr)
@@ -154,58 +177,79 @@ def choose_model(trials: list[dict]) -> str | None:
     return min(by_model, key=lambda m: (model_rank(m), -len(by_model[m]), -latest_ts(by_model[m])))
 
 
-def pick_task_ids(items: list[dict], name: str, sheet_exps: set[str]) -> list[dict]:
-    exact = [it for it in items if it.get("name") == name]
-    if not exact:
-        return []
+def task_id_of(tr: dict) -> str:
+    return tr["id"].rsplit("-", 1)[0]
+
+
+def resolve_task_ids(name: str, alt_names: list[str], sheet_exps: set[str]) -> tuple[list[dict], str]:
+    """Browse for the task; return (matching browse items, note)."""
+    wanted = [name] + alt_names
+    if "." in name:
+        wanted.append(name.rsplit(".", 1)[0])
+    seen: dict[str, dict] = {}
+    matched_as = ""
+    for q in wanted:
+        for it in get("/tasks/browse", query=q, limit=100).get("items", []):
+            if it.get("name") in wanted and it["id"] not in seen:
+                seen[it["id"]] = it
+        if seen:
+            break
+    items = list(seen.values())
+    if not items:
+        return [], ""
     if sheet_exps:
-        hit = [it for it in exact if {e["id"] for e in it.get("experiments", [])} & sheet_exps]
+        hit = [it for it in items if {e["id"] for e in it.get("experiments", [])} & sheet_exps]
         if hit:
-            return hit
-    return exact
+            items = hit
+    if any(it["name"] != name for it in items):
+        matched_as = ";".join(sorted({it["name"] for it in items if it["name"] != name}))
+    return items, matched_as
 
 
-def process(row: dict) -> dict:
+def process(row: dict, cache: dict | None) -> dict:
     name = row["task"]
     sheet_exps = {e for e in (row.get("experiments") or "").split(";") if e}
+    alt_names = [a for a in (row.get("alt_names") or "").split(";") if a]
     out = {**row, "task_ids": "", "task_version": "", "experiments_used": "", "note": ""}
     notes: list[str] = []
-    try:
-        browse = get("/tasks/browse", query=name, limit=100)
-    except Exception as e:  # noqa: BLE001
-        out["note"] = f"browse failed: {e}"
-        out["_raw"] = []
-        return out
-    picked = pick_task_ids(browse.get("items", []), name, sheet_exps)
-    if not picked:
-        out["note"] = "task not found by exact name"
-        out["_raw"] = []
-        return out
-    if len(picked) > 1:
-        notes.append(f"{len(picked)} task ids share this name; pooled")
-    out["task_ids"] = ";".join(it["id"] for it in picked)
 
     raw: list[dict] = []
-    for it in picked:
+    if cache and not alt_names:
+        raw = list(cache.get("trials") or [])
+    if not raw:
         try:
-            raw.extend(get(f"/tasks/{it['id']}/trials"))
+            items, matched_as = resolve_task_ids(name, alt_names, sheet_exps)
         except Exception as e:  # noqa: BLE001
-            notes.append(f"trials fetch failed for {it['id']}: {e}")
+            out["note"] = f"browse failed: {e}"
+            out["_raw"] = []
+            return out
+        if not items:
+            out["note"] = "task not found by exact name"
+            out["_raw"] = []
+            return out
+        if matched_as:
+            notes.append(f"matched oddish task name {matched_as}")
+        for it in items:
+            try:
+                raw.extend(get(f"/tasks/{it['id']}/trials"))
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"trials fetch failed for {it['id']}: {e}")
     out["_raw"] = raw
+    task_ids = sorted({task_id_of(tr) for tr in raw})
+    out["task_ids"] = ";".join(task_ids)
+    if len(task_ids) > 1:
+        notes.append(f"{len(task_ids)} task ids share this name; pooled")
 
-    cand = [tr for tr in raw if tr.get("kind", "agent") == "agent" and not tr.get("is_probe")
-            and not tr.get("superseded_by_trial_id")
-            and (tr.get("agent") or "").lower() not in BASELINE_AGENTS]
-    # restrict to the sheet's experiments when possible
+    cand = [tr for tr in raw if is_solver(tr)]
     if sheet_exps:
         in_exp = [tr for tr in cand if tr.get("experiment_id") in sheet_exps]
         if in_exp:
             cand = in_exp
         else:
             notes.append("no trials in sheet experiments; used all experiments")
-    # Latest task version among candidates (the sheet's "latest experiment
-    # version only" rule). Pool versions only when that is what reproduces the
-    # sheet's opus denominator (a few multi-version sweeps were tallied that way).
+
+    # Latest task version (the sheet's "latest experiment version only" rule);
+    # pool versions only when that is what reproduces the sheet's Opus denominator.
     versions = [tr.get("task_version") for tr in cand if tr.get("task_version") is not None]
     want_n = int(row["opus_table"].split("/")[1]) if row.get("opus_table") else None
 
@@ -230,14 +274,15 @@ def process(row: dict) -> dict:
     valid = [tr for tr in cand if is_valid(tr)]
     model = choose_model(valid)
     if model is None:
-        out["note"] = "; ".join(notes + [f"no valid solver trials ({len(cand)} candidates all errored/non-terminal)"])
+        out["note"] = "; ".join(notes + [f"no measurable solver trials ({len(cand)} candidates, none produced a trajectory)"])
         return out
     rows = [tr for tr in valid if canon_model(tr.get("model")) == model]
-    n_errored = sum(1 for tr in cand if canon_model(tr.get("model")) == model and not is_valid(tr))
-    if n_errored:
-        notes.append(f"{n_errored} {model} trials errored/non-terminal (excluded)")
+    n_excluded = sum(1 for tr in cand if canon_model(tr.get("model")) == model and not is_valid(tr))
+    n_timeouts = sum(1 for tr in rows if is_timeout(tr))
+    n_exit_errors = sum(1 for tr in rows if tr.get("error_message") and not is_timeout(tr))
     other_models = sorted({canon_model(tr.get("model")) for tr in valid if canon_model(tr.get("model")) != model})
-    out["model_variants"] = ";".join(sorted({tr.get("model") or "?" for tr in rows}))
+    if n_excluded:
+        notes.append(f"{n_excluded} {model} trials without a trajectory excluded")
 
     steps = [tr["total_steps"] for tr in rows]
     rts = [r for r in (runtime_seconds(tr) for tr in rows) if r is not None]
@@ -254,40 +299,84 @@ def process(row: dict) -> dict:
     def mean(xs):
         return round(statistics.fmean(xs), 1) if xs else ""
 
+    # "Clean" subset: runs with no error string at all (no timeout, no non-zero
+    # agent exit). This is the population the DB-debug sheet used for its
+    # pass-rate denominators.
+    clean = [tr for tr in rows if not tr.get("error_message")]
+    clean_rts = [r for r in (runtime_seconds(tr) for tr in clean) if r is not None]
+    clean_tot = [(tr.get("input_tokens") or 0) + (tr.get("output_tokens") or 0) for tr in clean
+                 if tr.get("input_tokens") is not None or tr.get("output_tokens") is not None]
+
     out.update({
         "model_used": model,
-        "model_tier": ["opus-4-8", "other-opus", "non-opus"][model_rank(model)],
+        "model_tier": MODEL_TIER[model_rank(model)],
+        "model_variants": ";".join(sorted({tr.get("model") or "?" for tr in rows})),
         "n_trials": len(rows),
         "passes": passes,
+        "n_timeouts": n_timeouts,
+        "n_exit_errors": n_exit_errors,
+        "n_excluded": n_excluded,
         "steps_median": med(steps), "steps_mean": mean(steps),
         "steps_min": min(steps) if steps else "", "steps_max": max(steps) if steps else "",
         "runtime_min_median": med([r / 60 for r in rts]), "runtime_min_mean": mean([r / 60 for r in rts]),
+        "runtime_min_max": round(max(rts) / 60, 1) if rts else "",
         "tokens_total_median": med(ttot), "tokens_total_mean": mean(ttot),
         "tokens_in_median": med(tin), "tokens_out_median": med(tout), "tokens_cache_median": med(tcache),
+        "n_clean": len(clean),
+        "passes_clean": sum(1 for tr in clean if (tr.get("reward") or 0) >= 1.0 - 1e-9),
+        "steps_median_clean": med([tr["total_steps"] for tr in clean]),
+        "runtime_min_median_clean": med([r / 60 for r in clean_rts]),
+        "tokens_total_median_clean": med(clean_tot),
         "other_models_available": ";".join(other_models),
     })
-    # cross-check against the sheet's opus denominator
     if row.get("opus_table") and model_rank(model) == 0:
-        want_n = int(row["opus_table"].split("/")[1])
-        want_p = int(row["opus_table"].split("/")[0])
+        want_p, want_n = (int(x) for x in row["opus_table"].split("/"))
         if want_n != len(rows) or want_p != passes:
             notes.append(f"sheet opus {row['opus_table']} vs fetched {passes}/{len(rows)}")
     out["note"] = "; ".join(notes)
     return out
 
 
+COLS = ["task", "category", "model_used", "model_tier", "model_variants",
+        "n_trials", "passes", "n_timeouts", "n_exit_errors", "n_excluded",
+        "steps_median", "steps_mean", "steps_min", "steps_max",
+        "runtime_min_median", "runtime_min_mean", "runtime_min_max",
+        "tokens_total_median", "tokens_total_mean",
+        "tokens_in_median", "tokens_out_median", "tokens_cache_median",
+        "n_clean", "passes_clean", "steps_median_clean", "runtime_min_median_clean", "tokens_total_median_clean",
+        "opus_table", "learn_table", "other_models_available",
+        "task_ids", "task_version", "experiments", "experiments_used", "note"]
+
+
+def load_cache(path: str) -> dict[str, dict]:
+    if not path or not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    cache: dict[str, dict] = {}
+    for name, val in data.items():
+        if isinstance(val, list):  # older cache layout: bare trial list
+            cache[name] = {"trials": val}
+        elif isinstance(val, dict):
+            cache[name] = val
+    return cache
+
+
 def main() -> None:
-    with open(os.path.join(HERE, os.environ.get("TASKS_FILE", "tasks.tsv")), newline="") as f:
+    tasks_file = os.path.join(HERE, os.environ.get("TASKS_FILE", "tasks.tsv"))
+    with open(tasks_file, newline="") as f:
         rows = list(csv.DictReader(f, delimiter="\t"))
-    log(f"{len(rows)} tasks, {WORKERS} workers")
+    cache_path = os.environ.get("RAW_CACHE", os.path.join(HERE, "raw_trials.json"))
+    cache = load_cache(cache_path)
+    log(f"{len(rows)} tasks, {WORKERS} workers, {sum(1 for r in rows if cache.get(r['task'], {}).get('trials'))} cached")
     results: list[dict] = []
-    raw_by_task: dict[str, list[dict]] = {}
+    raw_by_task: dict[str, dict] = {}
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        futs = {ex.submit(process, r): r["task"] for r in rows}
+        futs = {ex.submit(process, r, cache.get(r["task"])): r["task"] for r in rows}
         for i, fut in enumerate(as_completed(futs), 1):
             res = fut.result()
-            raw_by_task[res["task"]] = res.pop("_raw", [])
+            raw_by_task[res["task"]] = {"trials": res.pop("_raw", [])}
             results.append(res)
             if i % 25 == 0 or i == len(rows):
                 log(f"  {i}/{len(rows)} done ({time.time()-t0:.0f}s)")
@@ -296,19 +385,11 @@ def main() -> None:
 
     with open(os.path.join(HERE, "raw_trials.json"), "w") as f:
         json.dump(raw_by_task, f)
-
-    cols = ["task", "category", "model_used", "model_tier", "model_variants", "n_trials", "passes",
-            "steps_median", "steps_mean", "steps_min", "steps_max",
-            "runtime_min_median", "runtime_min_mean",
-            "tokens_total_median", "tokens_total_mean",
-            "tokens_in_median", "tokens_out_median", "tokens_cache_median",
-            "opus_table", "learn_table", "other_models_available",
-            "task_ids", "task_version", "experiments", "experiments_used", "note"]
     with open(os.path.join(HERE, "task_metrics.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=COLS, extrasaction="ignore")
         w.writeheader()
         for r in results:
-            w.writerow({c: r.get(c, "") for c in cols})
+            w.writerow({c: r.get(c, "") for c in COLS})
     log(f"wrote task_metrics.csv ({len(results)} rows) in {time.time()-t0:.0f}s")
 
 
