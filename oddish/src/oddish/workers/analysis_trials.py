@@ -10,6 +10,7 @@ owned columns.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -231,6 +232,12 @@ def _prompt(name: str) -> str:
     return resources.files("oddish.analyze").joinpath(name).read_text()
 
 
+def audit_policy_hash() -> str:
+    """SHA-256 of the policy text pinned into every new source audit."""
+    policy = _prompt("prompts/pre_trial_qa.txt")
+    return hashlib.sha256(policy.encode()).hexdigest()
+
+
 async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) -> str:
     """Analysis trials live in a shadow experiment, not in the experiment
     they grade. Find the task's live (non-shadow) experiment, get-or-create
@@ -347,6 +354,7 @@ async def create_analysis_trial(
     harbor_config: dict = {"extra_instructions": brief}
     if kind == "audit":
         payload = dict(payload or {})
+        payload["audit_policy_hash"] = audit_policy_hash()
         if version is not None and version.content_hash:
             # Pin the audited bytes. An in-place overwrite keeps the version id
             # while replacing its content, so the importer needs more than the
@@ -1590,7 +1598,10 @@ async def _import_audit_result(trial: TrialModel) -> None:
     await sync_pre_trial_to_task_version(
         version_id,
         payload=build_pre_trial_payload(
-            items, cost_usd=trial.cost_usd, block_id=trial.id
+            items,
+            cost_usd=trial.cost_usd,
+            block_id=trial.id,
+            audit_policy_hash=audit_payload.audit_policy_hash,
         ),
         error=None,
         expected_content_hash=pinned_hash,

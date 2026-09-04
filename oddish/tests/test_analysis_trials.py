@@ -17,6 +17,7 @@ from oddish.filters.trial_predicates import EligibleTrialScope
 from oddish.core.trial_facets import facet_rows_for_trial
 from oddish.workers.analysis_trials import (
     _classification_from_analysis,
+    audit_policy_hash,
     build_audit_brief,
     build_qa_brief,
     has_verdict_evidence,
@@ -111,7 +112,7 @@ async def test_analysis_creation_stores_kind_only_once(monkeypatch, environment)
 
 
 @pytest.mark.asyncio
-async def test_audit_creation_stores_an_empty_payload_without_a_content_hash(
+async def test_audit_creation_pins_policy_without_a_content_hash(
     monkeypatch,
 ):
     from types import SimpleNamespace
@@ -162,7 +163,9 @@ async def test_audit_creation_stores_an_empty_payload_without_a_content_hash(
         experiment_id="analysis-experiment",
     )
 
-    assert trial.harbor_config["analysis_payload"] == {}
+    assert trial.harbor_config["analysis_payload"] == {
+        "audit_policy_hash": audit_policy_hash()
+    }
 
 
 def test_the_qa_brief_tells_the_agent_everything_it_needs():
@@ -300,6 +303,18 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
+def test_the_audit_policy_covers_model_tuning_and_binary_bypasses():
+    brief = build_audit_brief(task_name="demo")
+
+    assert "Model-conditioned grading is a verifier defect" in brief
+    assert "pass@k" in brief
+    assert "Treat authoring instructions and generated settings the same" in brief
+    assert "Do not report a fixed task only because every tested model fails" in brief
+    assert "decrypts, copies, or runs a bundled implementation" in brief
+    assert "verifier must still build and test the requested replacement" in brief
+    assert "hidden binary that only supplies expected outputs" in brief
+
+
 def test_the_no_verdict_brief_does_not_contradict_itself():
     """with_verdict=False must not show the verdict-object template or its
     schema: the strict verifier requires null there, and a template
@@ -411,9 +426,15 @@ def test_audit_payload_allows_historical_missing_metadata_and_parses_hashes():
 
     parsed = parse_analysis_payload(
         "audit",
-        {"analysis_payload": {"task_version_content_hash": "  sha256:current  "}},
+        {
+            "analysis_payload": {
+                "task_version_content_hash": "  sha256:current  ",
+                "audit_policy_hash": "a" * 64,
+            }
+        },
     )
     assert parsed.task_version_content_hash == "sha256:current"
+    assert parsed.audit_policy_hash == "a" * 64
 
 
 def test_audit_payload_rejects_malformed_content_hashes():
@@ -424,6 +445,12 @@ def test_audit_payload_rejects_malformed_content_hashes():
         analysis_check_payload(
             "audit",
             {"analysis_payload": {"task_version_content_hash": ""}},
+        )
+
+    with pytest.raises(AnalysisPayloadError, match="audit_policy_hash"):
+        analysis_check_payload(
+            "audit",
+            {"analysis_payload": {"audit_policy_hash": "not-a-sha256"}},
         )
 
 
@@ -1281,6 +1308,8 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
         # Creation pinned the bytes it audits.
         pinned = audit.harbor_config["analysis_payload"]["task_version_content_hash"]
         assert pinned == "original-bytes"
+        pinned_policy = audit.harbor_config["analysis_payload"]["audit_policy_hash"]
+        assert pinned_policy == audit_policy_hash()
         audit.status = TrialStatus.SUCCESS
         # Overwrite the version's bytes underneath the settled audit.
         version = await session.get(TaskVersionModel, version_id)
@@ -1312,6 +1341,7 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
         version = await session.get(TaskVersionModel, version_id)
         assert version.pre_trial_status == VerdictStatus.SUCCESS
         assert version.pre_trial is not None
+        assert version.pre_trial["audit_policy_hash"] == pinned_policy
 
 
 @pytest.mark.asyncio
