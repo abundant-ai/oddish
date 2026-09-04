@@ -421,7 +421,7 @@ async def create_analysis_trial(
 # A verdict needs enough evidence to be worth trusting: a handful of runs
 # from more than one or two agents. Below this the task completes with its
 # per-trial analysis and no verdict, rather than a confident call on noise.
-MIN_VERDICT_TRIALS = 5
+MIN_VERDICT_TRIALS = 3
 MIN_VERDICT_AGENTS = 3
 
 

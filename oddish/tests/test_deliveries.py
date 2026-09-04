@@ -1066,8 +1066,25 @@ async def test_customer_create_race_recovers(session):
 
 
 @pytest.mark.asyncio
-async def test_agent_count_matches_verdict_evidence_bar(session):
-    """Agent variants that differ only in case or spacing count once."""
+@pytest.mark.parametrize(
+    ("agents", "minimum", "expected_status", "expected_detail"),
+    [
+        (["codex", "gpt"], None, "fail", "2/3 trials, 2/3 agents"),
+        (["codex", "gpt", "gemini"], None, "pass", "3/3 trials, 3/3 agents"),
+        ([" Codex", "codex", "gpt"], None, "fail", "3/3 trials, 2/3 agents"),
+        (
+            [" Codex", "codex", "CODEX", "gpt", "gemini"],
+            None,
+            "pass",
+            "5/3 trials, 3/3 agents",
+        ),
+        (["codex", "gpt", "gemini"], 5, "fail", "3/5 trials, 3/3 agents"),
+    ],
+)
+async def test_agent_count_matches_verdict_evidence_bar(
+    session, agents, minimum, expected_status, expected_detail
+):
+    """Require three runs and agents by default; preserve explicit minimums."""
     experiment = ExperimentModel(name="exp-deliv-agents", org_id=ORG)
     task = _task("deliv-agents")
     session.add_all([experiment, task])
@@ -1076,20 +1093,26 @@ async def test_agent_count_matches_verdict_evidence_bar(session):
     session.add(version)
     await session.flush()
     task.current_version_id = version.id
-    for agent in [" Codex", "codex", "CODEX", "gpt", "gemini"]:
+    for agent in agents:
         session.add(_trial(task, experiment, version.id, agent=agent))
     await session.flush()
 
     delivery = await create_delivery_core(
         session,
-        data=DeliveryCreate(customer="acme", name="batch-agents", task_ids=[task.id]),
+        data=DeliveryCreate(
+            customer="acme",
+            name="batch-agents",
+            task_ids=[task.id],
+            check_config=DeliveryCheckConfig(
+                automated={}
+                if minimum is None
+                else {"min_rollouts": {"min_trials": minimum}}
+            ),
+        ),
         org_id=ORG,
         user_id="u1",
     )
-    board = await get_delivery_board_core(
-        session, delivery_id=delivery.id, org_id=ORG
-    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     check = _checks(board, task.id)["min_rollouts"]
-    # 5 trials, but only 3 distinct agents after normalization.
-    assert "5/5 trials, 3/3 agents" in check.detail
-    assert check.status == "pass"
+    assert expected_detail in check.detail
+    assert check.status == expected_status

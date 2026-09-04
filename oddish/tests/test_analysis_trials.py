@@ -1591,9 +1591,20 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_verdict_needs_enough_evidence():
-    """Below 5 trials or 3 distinct agents the QA trial is created without a
-    verdict request; at the bar it is asked for one."""
+@pytest.mark.parametrize(
+    ("agents", "expected"),
+    [
+        ([], False),
+        (["a", "b"], False),
+        (["a", "a", "b"], False),
+        (["a", "b", "c"], True),
+        (["a", "b", "c", "a"], True),
+        (["a", "a", "b", "b", "a"], False),
+        (["a", "b", "c", "a", "b"], True),
+    ],
+)
+async def test_the_verdict_needs_enough_evidence(agents, expected):
+    """A verdict requires at least 3 trials from 3 distinct agents."""
 
     class _Scalars:
         def __init__(self, agents):
@@ -1609,22 +1620,8 @@ async def test_the_verdict_needs_enough_evidence():
         async def scalars(self, _query):
             return _Scalars(self._agents)
 
-    few = [f"t{i}" for i in range(4)]
-    assert await has_verdict_evidence(_Session(["a", "b", "c", "d"]), few) is False
-
-    five_two_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(_Session(["a", "a", "b", "b", "a"]), five_two_agents)
-        is False
-    )
-
-    five_three_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(
-            _Session(["a", "b", "c", "a", "b"]), five_three_agents
-        )
-        is True
-    )
+    trial_ids = [f"t{i}" for i in range(len(agents))]
+    assert await has_verdict_evidence(_Session(agents), trial_ids) is expected
 
 
 def test_the_verifier_actually_grades_the_artifact(tmp_path):

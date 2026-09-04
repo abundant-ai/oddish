@@ -35,7 +35,7 @@ Rows with `imported_at` set are excluded. A `failed` agent trial can still be
 eligible because QA can classify a harness or task failure from its evidence.
 
 QA always attempts classifications and trajectory summaries for its eligible
-set. It requests a task verdict only when the set has at least 5 trials from at
+set. It requests a task verdict only when the set has at least 3 trials from at
 least 3 distinct agent names. Below that evidence bar, the task can complete
 with classifications and no verdict.
 

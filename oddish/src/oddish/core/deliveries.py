@@ -55,7 +55,7 @@ from oddish.schemas import (
 # (``MIN_VERDICT_TRIALS`` / ``MIN_VERDICT_AGENTS`` in analysis_trials).
 DEFAULT_AUTOMATED_CHECKS: dict[str, dict[str, Any]] = {
     "pre_trial_passed": {"enabled": True},
-    "min_rollouts": {"enabled": True, "min_trials": 5, "min_agents": 3},
+    "min_rollouts": {"enabled": True, "min_trials": 3, "min_agents": 3},
     "verdict_ok": {"enabled": True},
     "no_must_fix": {"enabled": True},
 }
@@ -980,7 +980,7 @@ async def _compute_board(
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
-            min_trials = int(auto["min_rollouts"].get("min_trials", 5))
+            min_trials = int(auto["min_rollouts"].get("min_trials", 3))
             min_agents = int(auto["min_rollouts"].get("min_agents", 3))
             automated(
                 "min_rollouts",

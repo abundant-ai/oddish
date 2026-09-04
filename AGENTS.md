@@ -150,7 +150,7 @@ High-level flow:
    the task verdict into one artifact (`qa_result.json`); on settlement an
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
    `tasks.verdict`. The verdict is only requested above an evidence bar
-   (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
+   (≥3 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
    `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
    QA trial still classifies trials. At completion, a validated current
    audit with `must_fix` findings or a failed deterministic baseline can
