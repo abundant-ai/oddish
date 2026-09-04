@@ -1893,6 +1893,7 @@ export function ExperimentDetailView({
                 allowRerun={allowRetry}
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
+                rejectedTaskCount={qaRollup?.rejected}
                 onTrialSelect={(trial, task, context) => {
                   cancelPendingDeepLink();
                   const taskIndex = tasksForExperiment.findIndex(
