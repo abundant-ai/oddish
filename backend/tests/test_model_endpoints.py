@@ -701,7 +701,40 @@ def test_model_endpoint_rejects_duplicate_while_first_check_is_running():
 
     assert caught.value.status_code == 429
     assert caught.value.detail == "This model route is already being tested"
-    assert caught.value.headers == {"Retry-After": "5"}
+    assert caught.value.headers == {"Retry-After": "20"}
+
+
+def test_model_endpoint_result_ttl_starts_when_provider_check_completes():
+    check = {
+        "org_id": "org-1",
+        "identity": "user-1",
+        "model": "xai/grok-code-fast-1",
+        "route": "xai",
+    }
+    key = (
+        check["org_id"],
+        check["identity"],
+        check["model"],
+        check["route"],
+    )
+    model_endpoints_router._model_check_cache[key] = (
+        model_endpoints_router.monotonic() - 10,
+        None,
+    )
+    result = model_endpoints_router.ModelEndpointCheckResponse(
+        ok=True,
+        model=check["model"],
+        resolved_model=check["model"],
+        provider="xai",
+        route=check["route"],
+        credential="XAI_API_KEY",
+        latency_ms=10_000,
+        response="I am Grok.",
+    )
+
+    model_endpoints_router._complete_model_check(**check, result=result)
+
+    assert model_endpoints_router._begin_model_check(**check) is result
 
 
 @pytest.mark.asyncio

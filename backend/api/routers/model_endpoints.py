@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from math import ceil
 from time import monotonic
 from typing import Annotated, Literal
 
@@ -30,7 +31,8 @@ router = APIRouter(prefix="/models", tags=["Models"])
 logger = logging.getLogger(__name__)
 
 _MODEL_CATALOG_TTL_SECONDS = 30.0
-_MODEL_CHECK_COOLDOWN_SECONDS = 5.0
+_MODEL_CHECK_RESULT_TTL_SECONDS = 5.0
+_MODEL_CHECK_IN_FLIGHT_TTL_SECONDS = 20.0
 
 
 class ModelEndpointSummary(BaseModel):
@@ -165,9 +167,15 @@ def _begin_model_check(
 ) -> ModelEndpointCheckResponse | None:
     """Reuse a fresh result and reject only a duplicate request still in flight."""
     now = monotonic()
-    cutoff = now - _MODEL_CHECK_COOLDOWN_SECONDS
     stale = [
-        key for key, (started, _) in _model_check_cache.items() if started < cutoff
+        key
+        for key, (recorded_at, result) in _model_check_cache.items()
+        if now - recorded_at
+        >= (
+            _MODEL_CHECK_IN_FLIGHT_TTL_SECONDS
+            if result is None
+            else _MODEL_CHECK_RESULT_TTL_SECONDS
+        )
     ]
     for key in stale:
         del _model_check_cache[key]
@@ -178,7 +186,7 @@ def _begin_model_check(
         started, result = previous
         if result is not None:
             return result
-        retry_after = max(1, round(_MODEL_CHECK_COOLDOWN_SECONDS - (now - started)))
+        retry_after = max(1, ceil(_MODEL_CHECK_IN_FLIGHT_TTL_SECONDS - (now - started)))
         raise HTTPException(
             status_code=429,
             detail="This model route is already being tested",
@@ -197,8 +205,7 @@ def _complete_model_check(
     result: ModelEndpointCheckResponse,
 ) -> None:
     key = (org_id, identity, model, route)
-    started = _model_check_cache.get(key, (monotonic(), None))[0]
-    _model_check_cache[key] = (started, result)
+    _model_check_cache[key] = (monotonic(), result)
 
 
 def _safe_failure_message(
