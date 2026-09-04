@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from oddish.config import (
     OPENAI_PROVIDER_AZURE,
     anthropic_hdo_bare_model_id,
+    fireworks_api_model_id,
+    fireworks_bare_model_id,
     infer_model_provider_prefix,
+    meta_bare_model_id,
     settings,
     to_anthropic_api_model_id,
 )
@@ -107,6 +110,24 @@ async def check_model_endpoint(
                 raise RuntimeError("ANTHROPIC_HDO_API_KEY is missing")
             resolved_model = f"anthropic/{api_model}"
             kwargs["api_key"] = hdo_api_key
+        elif provider == "fireworks":
+            fireworks_api_key = (settings.fireworks_api_key or "").strip()
+            if not fireworks_api_key:
+                raise RuntimeError("FIREWORKS_API_KEY is missing")
+            api_model = fireworks_api_model_id(fireworks_bare_model_id(model))
+            resolved_model = f"fireworks_ai/{api_model}"
+            kwargs["api_key"] = fireworks_api_key
+        elif provider == "meta":
+            meta_api_key = (settings.meta_api_key or "").strip()
+            if not meta_api_key:
+                raise RuntimeError("META_API_KEY is missing")
+            resolved_model = f"openai/{meta_bare_model_id(model)}"
+            kwargs.update(
+                {
+                    "api_key": meta_api_key,
+                    "api_base": settings.meta_base_url.rstrip("/"),
+                }
+            )
         elif provider == "gemini" and model.startswith("google/"):
             resolved_model = f"gemini/{model.split('/', 1)[1]}"
         elif (
@@ -131,6 +152,7 @@ async def check_model_endpoint(
         # This is deliberately narrower than a trial: it exercises LiteLLM's
         # completion transport, not an agent CLI or sandbox startup.
         import litellm
+        from openai import OpenAIError
 
         try:
             completion = await litellm.acompletion(
@@ -144,11 +166,7 @@ async def check_model_endpoint(
                 timeout=15,
                 **kwargs,
             )
-        except (
-            litellm.APIError,
-            litellm.Timeout,
-            litellm.APIConnectionError,
-        ) as caught:
+        except OpenAIError as caught:
             failure = caught
             failure_kind = "provider"
         else:

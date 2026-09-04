@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from openai import OpenAIError
 
 from api.app import create_app
 from api.routers import model_endpoints as model_endpoints_router
@@ -186,6 +187,72 @@ async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == ("fireworks_ai/accounts/fireworks/models/minimax-m3")
+        assert kwargs["api_key"] == "fireworks-key"
+        assert kwargs["max_tokens"] == 32
+        return SimpleNamespace(
+            id="fireworks-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="MiniMax."))],
+        )
+
+    monkeypatch.setattr(
+        model_endpoints_router.settings, "fireworks_api_key", "fireworks-key"
+    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "fireworks/minimax-m3"}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == (
+        "fireworks_ai/accounts/fireworks/models/minimax-m3"
+    )
+    assert payload["provider"] == "fireworks"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == "openai/super_nova_ext"
+        assert kwargs["api_key"] == "meta-key"
+        assert kwargs["api_base"] == "https://meta.example/v1"
+        assert kwargs["max_tokens"] == 32
+        return SimpleNamespace(
+            id="meta-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Meta."))],
+        )
+
+    monkeypatch.setattr(model_endpoints_router.settings, "meta_api_key", "meta-key")
+    monkeypatch.setattr(
+        model_endpoints_router.settings,
+        "meta_base_url",
+        "https://meta.example/v1/",
+    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "meta/super_nova_ext"}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == "openai/super_nova_ext"
+    assert payload["provider"] == "meta"
+
+
+@pytest.mark.asyncio
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "azure/oddish-gpt"
@@ -235,10 +302,10 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [403, 404])
 async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_code):
-    class FakeAPIError(Exception):
+    class BadRequestError(OpenAIError):
         pass
 
-    error = FakeAPIError("The model is unavailable")
+    error = BadRequestError("The model is unavailable")
     error.status_code = status_code
     error.request_id = f"provider-request-{status_code}"
 
@@ -248,12 +315,7 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     monkeypatch.setitem(
         sys.modules,
         "litellm",
-        SimpleNamespace(
-            APIError=FakeAPIError,
-            Timeout=FakeAPIError,
-            APIConnectionError=FakeAPIError,
-            acompletion=completion,
-        ),
+        SimpleNamespace(acompletion=completion),
     )
 
     async with AsyncClient(
@@ -270,20 +332,17 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     assert payload["failure_kind"] == "provider"
     assert payload["transport"] == "litellm_completion"
     assert payload["status_code"] == status_code
-    assert payload["error"] == "FakeAPIError: The model is unavailable"
+    assert payload["error"] == "BadRequestError: The model is unavailable"
     assert payload["request_id"] == f"provider-request-{status_code}"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error_name", ["Timeout", "APIConnectionError"])
 async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_name):
-    class FakeAPIError(Exception):
+    class Timeout(OpenAIError):
         pass
 
-    class Timeout(Exception):
-        pass
-
-    class APIConnectionError(Exception):
+    class APIConnectionError(OpenAIError):
         pass
 
     error_type = {
@@ -297,12 +356,7 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
     monkeypatch.setitem(
         sys.modules,
         "litellm",
-        SimpleNamespace(
-            APIError=FakeAPIError,
-            Timeout=Timeout,
-            APIConnectionError=APIConnectionError,
-            acompletion=completion,
-        ),
+        SimpleNamespace(acompletion=completion),
     )
 
     async with AsyncClient(
@@ -322,21 +376,13 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
 
 @pytest.mark.asyncio
 async def test_model_endpoint_does_not_hide_internal_errors(monkeypatch):
-    class FakeAPIError(Exception):
-        pass
-
     async def completion(**_kwargs):
         raise RuntimeError("unexpected integration defect")
 
     monkeypatch.setitem(
         sys.modules,
         "litellm",
-        SimpleNamespace(
-            APIError=FakeAPIError,
-            Timeout=FakeAPIError,
-            APIConnectionError=FakeAPIError,
-            acompletion=completion,
-        ),
+        SimpleNamespace(acompletion=completion),
     )
 
     async with AsyncClient(
