@@ -61,6 +61,8 @@ async def test_completed_qa_covers_current_evidence(session, accepted):
         "primary_issue": "Verifier accepts wrong answers",
     }
     await session.flush()
+    # Discard seeded ORM objects so both load_only projections are exercised.
+    session.expunge_all()
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     assert board.tasks[0].qa.status == ("accepted" if accepted else "needs_fixes")
     assert board.tasks[0].qa.trial_id == qa.id
@@ -121,6 +123,7 @@ async def test_qa_status_tracks_replacement_and_evidence_changes(session, change
         replacement.created_at = utcnow()
         session.add(replacement)
     await session.flush()
+    session.expunge_all()
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     assert board.tasks[0].qa.status == expected
 
