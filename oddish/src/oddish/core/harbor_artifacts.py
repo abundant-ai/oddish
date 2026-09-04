@@ -43,6 +43,7 @@ def write_trial_selection_manifest(
 
 @dataclass(frozen=True)
 class HarborTrajectoryMetrics:
+    has_trajectory: bool = False
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_tokens: int | None = None
@@ -69,13 +70,6 @@ class HarborTrialExtraction:
     request_id: str | None = None
     session_id: str | None = None
     retry_after_seconds: float | None = None
-
-
-def detect_trajectory(path: Path) -> bool:
-    """Return True when a Harbor output tree contains an ATIF trajectory."""
-    if not path or not path.exists():
-        return False
-    return any(path.rglob("trajectory.json")) or any(path.rglob("trajectory.jsonl"))
 
 
 # Benchmark tasks report structured metrics by writing this file from their
@@ -311,15 +305,19 @@ def cache_write_tokens_from_trajectory(data: object) -> int | None:
 
 
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
-    """Read token, step, and cost metrics from ATIF trajectory data."""
+    """Read one valid ATIF JSON object and derive its queryable metrics."""
     if not path or not path.exists():
         return HarborTrajectoryMetrics()
 
-    for traj_path in path.rglob("trajectory.json"):
+    found_readable = False
+    for traj_path in sorted(path.rglob("trajectory.json")):
         try:
             data = json.loads(traj_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, UnicodeError, json.JSONDecodeError):
             continue
+        if not isinstance(data, dict):
+            continue
+        found_readable = True
 
         final_metrics = data.get("final_metrics")
         steps = data.get("steps")
@@ -367,6 +365,7 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
             cache_write_tokens = _cache_write_from_final_metrics(final_metrics)
 
         return HarborTrajectoryMetrics(
+            has_trajectory=True,
             input_tokens=(
                 _as_int(final_metrics.get("total_prompt_tokens"))
                 if isinstance(final_metrics, dict)
@@ -396,7 +395,7 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
             ),
         )
 
-    return HarborTrajectoryMetrics()
+    return HarborTrajectoryMetrics(has_trajectory=found_readable)
 
 
 def extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
@@ -482,7 +481,7 @@ def _extract_token_cost_totals(
 def extract_trial_result_fields(
     trial_result: Any,
     *,
-    artifact_dir: Path | None = None,
+    trajectory: HarborTrajectoryMetrics | None = None,
 ) -> HarborTrialExtraction:
     """Flatten a Harbor TrialResult-like object into Oddish persistence fields."""
     (
@@ -498,8 +497,7 @@ def extract_trial_result_fields(
     )
     total_steps: int | None = None
 
-    if artifact_dir is not None:
-        trajectory = extract_trajectory_metrics(artifact_dir)
+    if trajectory is not None:
         if input_tokens is None and output_tokens is None:
             input_tokens = trajectory.input_tokens
             output_tokens = trajectory.output_tokens

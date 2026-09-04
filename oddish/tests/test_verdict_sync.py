@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from oddish.analyze import Classification, TrialClassification
 from oddish.core.verdict_state import cancel_verdict, fail_verdict
-from oddish.core.verdict_sync import build_verdict_payload
+from oddish.core.verdict_sync import build_pre_trial_payload, build_verdict_payload
 from oddish.db import VerdictStatus
 
 
@@ -68,6 +68,15 @@ def test_counts_ignore_model_supplied_values():
 
     payload = build_verdict_payload(_Lying(), [_c(Classification.GOOD_SUCCESS)])
     assert payload["task_problem_count"] == 0
+
+
+def test_pre_trial_payload_records_the_policy_that_produced_it():
+    policy_hash = "a" * 64
+
+    assert build_pre_trial_payload([], audit_policy_hash=policy_hash) == {
+        "items": [],
+        "audit_policy_hash": policy_hash,
+    }
 
 
 def test_cancel_verdict_discards_the_superseded_success() -> None:

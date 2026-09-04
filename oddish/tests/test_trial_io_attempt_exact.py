@@ -85,7 +85,7 @@ class _BinaryStorage(_Storage):
         return key in self.binary_objects
 
 
-def _trial(*, prefix: str | None, attempts: int = 1):
+def _trial(*, prefix: str | None, attempts: int = 1, kind: str = "agent"):
     return SimpleNamespace(
         id="task-1-7",
         name="display-name-not-used-for-current-layout",
@@ -95,6 +95,7 @@ def _trial(*, prefix: str | None, attempts: int = 1):
         error_message=None,
         finished_at=datetime.now(UTC),
         attempts=attempts,
+        kind=kind,
     )
 
 
@@ -411,6 +412,41 @@ def test_manifest_missing_trajectory_never_falls_back_to_an_old_retry(monkeypatc
     assert storage.list_calls == 0
 
 
+def test_exact_attempt_recovers_malformed_claude_trajectory_from_stream(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-3/"
+    child = f"{prefix}current-run/"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            f"{child}agent/trajectory.json": "{malformed",
+            f"{child}agent/claude-code.txt": "captured stream",
+        }
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    converted: list[tuple[str, str | None]] = []
+
+    def convert(text: str, *, model_name: str | None):
+        converted.append((text, model_name))
+        return {"session_id": "recovered", "steps": []}
+
+    monkeypatch.setattr(
+        trial_io,
+        "convert_claude_code_stream_text_to_trajectory",
+        convert,
+    )
+
+    result = asyncio.run(
+        trial_io.read_trial_trajectory(_trial(prefix=prefix, attempts=3))
+    )
+
+    assert result == {"session_id": "recovered", "steps": []}
+    assert converted == [("captured stream", "openai/gpt-5.5")]
+    assert storage.list_calls == 0
+
+
 def test_exact_attempt_never_falls_back_to_a_stale_local_trajectory(
     monkeypatch, tmp_path
 ):
@@ -624,7 +660,7 @@ def test_manifestless_historical_layout_uses_deterministic_fallback(monkeypatch)
 
 def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
     prefix = "tasks/task-1/trials/task-1-7/"
-    for namespace in ("attempt", "analysis-qa/attempt"):
+    for namespace, kind in (("attempt", "agent"), ("analysis-qa/attempt", "qa")):
         _clear_cache()
         old_key = f"{prefix}{namespace}-1/old-run/agent/trajectory.json"
         partial_current_key = (
@@ -644,12 +680,130 @@ def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
         )
 
         result = asyncio.run(
-            trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
+            trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2, kind=kind))
         )
 
         assert result is None
         assert old_key not in storage.download_calls
         assert storage.list_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "namespaces", "selected_namespace"),
+    (
+        ("agent", ("attempt-1", "analysis-qa/attempt-1"), "attempt-1"),
+        ("qa", ("attempt-1", "analysis-qa/attempt-1"), "analysis-qa/attempt-1"),
+        ("agent", ("analysis-qa/attempt-1",), None),
+        ("qa", ("attempt-1",), None),
+    ),
+)
+def test_missing_pointer_selects_only_the_trial_kinds_attempt_namespace(
+    monkeypatch,
+    kind,
+    namespaces,
+    selected_namespace,
+):
+    _clear_cache()
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = {}
+    run_names = {}
+    for index, namespace in enumerate(namespaces):
+        run_name = f"run-{index}"
+        run_names[namespace] = run_name
+        objects[f"{root_prefix}{namespace}/result.json"] = json.dumps(
+            {"trial_results": [{"trial_name": run_name}]}
+        )
+    storage = _Storage(objects, listed=list(objects))
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=None, kind=kind),
+            storage,
+        )
+    )
+
+    if selected_namespace is None:
+        assert layout.mode is TrialArtifactMode.UNAVAILABLE
+        assert storage.download_calls == []
+    else:
+        selected_prefix = f"{root_prefix}{selected_namespace}/"
+        assert layout.mode is TrialArtifactMode.EXACT
+        assert layout.attempt_prefix == selected_prefix
+        assert layout.artifact_prefix == (
+            f"{selected_prefix}{run_names[selected_namespace]}/"
+        )
+        assert storage.download_calls == [f"{selected_prefix}result.json"]
+
+
+def test_missing_pointer_recovers_one_settled_matching_attempt(monkeypatch):
+    _clear_cache()
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    attempt_prefix = f"{root_prefix}attempt-1/"
+    child = f"{attempt_prefix}current-run/"
+    trajectory_key = f"{child}agent/trajectory.json"
+    objects = {
+        f"{attempt_prefix}result.json": json.dumps(
+            {"trial_results": [{"trial_name": "current-run"}]}
+        ),
+        trajectory_key: json.dumps({"trial_name": "recovered-attempt"}),
+    }
+    storage = _Storage(objects, listed=list(objects))
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_trajectory(_trial(prefix=None, attempts=1))
+    )
+
+    assert result == {"trial_name": "recovered-attempt"}
+    assert storage.list_calls == 1
+    assert trajectory_key in storage.download_calls
+
+
+def test_missing_pointer_does_not_recover_one_stale_attempt(monkeypatch):
+    _clear_cache()
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    attempt_prefix = f"{root_prefix}attempt-1/"
+    child = f"{attempt_prefix}old-run/"
+    trajectory_key = f"{child}agent/trajectory.json"
+    objects = {
+        f"{attempt_prefix}result.json": json.dumps(
+            {"trial_results": [{"trial_name": "old-run"}]}
+        ),
+        trajectory_key: json.dumps({"trial_name": "stale-attempt"}),
+    }
+    storage = _Storage(objects, listed=list(objects))
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
+    )
+
+    assert result is None
+    assert trajectory_key not in storage.download_calls
+
+
+def test_missing_pointer_does_not_recover_an_unsettled_attempt(monkeypatch):
+    _clear_cache()
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    attempt_prefix = f"{root_prefix}attempt-1/"
+    child = f"{attempt_prefix}current-run/"
+    trajectory_key = f"{child}agent/trajectory.json"
+    objects = {
+        f"{attempt_prefix}result.json": json.dumps(
+            {"trial_results": [{"trial_name": "current-run"}]}
+        ),
+        trajectory_key: json.dumps({"trial_name": "still-uploading"}),
+    }
+    storage = _Storage(objects, listed=list(objects))
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial(prefix=None, attempts=1)
+    trial.finished_at = None
+
+    result = asyncio.run(trial_io.read_trial_trajectory(trial))
+
+    assert result is None
+    assert trajectory_key not in storage.download_calls
 
 
 def test_missing_pointer_still_recovers_a_pre_attempt_historical_layout(monkeypatch):
@@ -667,6 +821,33 @@ def test_missing_pointer_still_recovers_a_pre_attempt_historical_layout(monkeypa
     assert result == {"trial_name": "historical"}
     assert storage.download_calls.count(historical_key) == 1
     assert storage.list_calls == 1
+
+
+def test_legacy_layout_recovers_malformed_claude_trajectory_from_stream(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/"
+    child = f"{prefix}display-name-not-used-for-current-layout/"
+    storage = _Storage(
+        {
+            f"{child}agent/trajectory.json": "{malformed",
+            f"{child}agent/claude-code.txt": "captured historical stream",
+        }
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(
+        trial_io,
+        "convert_claude_code_stream_text_to_trajectory",
+        lambda text, *, model_name: {
+            "session_id": "recovered-historical",
+            "steps": [],
+        },
+    )
+    trial = _trial(prefix=prefix)
+    trial.has_trajectory = True
+
+    result = asyncio.run(trial_io.read_trial_trajectory(trial))
+
+    assert result == {"session_id": "recovered-historical", "steps": []}
 
 
 def test_legacy_readers_continue_after_missing_s3_candidates(monkeypatch):
@@ -904,6 +1085,34 @@ def test_verifier_only_logs_ignore_broken_auxiliary_session_files(monkeypatch):
 
     assert result["verifier"] == {"stdout": "PASS\n", "stderr": None}
     assert broken_session_key not in storage.download_calls
+
+
+def test_verifier_only_logs_read_legacy_stdout_filename(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    child = f"{prefix}current-run/"
+    stdout_key = f"{child}verifier/stdout.txt"
+    storage = _Storage(
+        {
+            f"{prefix}result.json": json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stdout_key: "legacy verifier output\n",
+        },
+        listed=[stdout_key],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(
+            _trial(prefix=prefix, attempts=2), verifier_only=True
+        )
+    )
+
+    assert result["verifier"] == {
+        "stdout": "legacy verifier output\n",
+        "stderr": None,
+    }
 
 
 def test_verifier_only_logs_keep_pre_sandbox_database_exception(monkeypatch):

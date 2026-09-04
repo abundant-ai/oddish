@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection
 
 from fastapi import HTTPException
@@ -12,6 +13,7 @@ from oddish.core.endpoints._common import (
     USER_CANCELLED_MESSAGE,
 )
 from oddish.core.verdict_state import cancel_verdict, reset_verdict
+from oddish.core.trial_io import qa_source_evidence_errors
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
@@ -24,6 +26,8 @@ from oddish.db import (
     VerdictStatus,
     utcnow,
 )
+
+_QA_EVIDENCE_READ_CONCURRENCY = 2
 
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
@@ -281,6 +285,7 @@ async def backfill_task_analysis_core(
     """
     from oddish.queue import (
         live_analysis_trial_id,
+        qa_eligible_trial_ids,
         start_qa_for_task,
         task_audit_pending,
     )
@@ -343,6 +348,35 @@ async def backfill_task_analysis_core(
         raise HTTPException(
             status_code=400,
             detail="A pre-trial audit is running or awaiting import; wait for it to finish",
+        )
+
+    eligible_ids = await qa_eligible_trial_ids(
+        session,
+        task.id,
+        task_version_id=task.current_version_id,
+    )
+    trials_by_id = {trial.id: trial for trial in live_trials}
+    evidence_read_slots = asyncio.Semaphore(_QA_EVIDENCE_READ_CONCURRENCY)
+
+    async def check_source_evidence(trial: TrialModel) -> tuple[str, ...]:
+        async with evidence_read_slots:
+            return await qa_source_evidence_errors(trial)
+
+    evidence_checks = await asyncio.gather(
+        *(check_source_evidence(trials_by_id[trial_id]) for trial_id in eligible_ids)
+    )
+    blocked = [
+        f"{trial_id}: {'; '.join(errors)}"
+        for trial_id, errors in zip(eligible_ids, evidence_checks, strict=True)
+        if errors
+    ]
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot queue QA because source evidence is unavailable:\n"
+                + "\n".join(blocked)
+            ),
         )
 
     reset_count = 0

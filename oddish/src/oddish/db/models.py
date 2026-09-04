@@ -1140,7 +1140,7 @@ class TrialModel(TimestampedMixin, Base):
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Whether an ATIF trajectory file exists for this trial
+    # Whether this trial has a readable ATIF trajectory JSON object
     has_trajectory: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
