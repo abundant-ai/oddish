@@ -241,7 +241,9 @@ async def _issue_job_credentials(
         return None
 
 
-async def _revoke_job_credentials(worker_job_id: str, trial_id: str) -> None:
+async def _revoke_job_credentials(
+    worker_job_id: str, trial_id: str, *, attempt: int | None = None
+) -> None:
     """Best-effort revoke a job-scoped token on terminal status; never raises."""
     try:
         from sqlalchemy import update
@@ -250,11 +252,10 @@ async def _revoke_job_credentials(worker_job_id: str, trial_id: str) -> None:
         from oddish.db.models import WorkerJobModel
 
         async with get_session() as session:
-            await session.execute(
-                update(WorkerJobModel)
-                .where(WorkerJobModel.id == worker_job_id)
-                .values(job_token_revoked_at=utcnow())
-            )
+            statement = update(WorkerJobModel).where(WorkerJobModel.id == worker_job_id)
+            if attempt is not None:
+                statement = statement.where(WorkerJobModel.attempts == attempt)
+            await session.execute(statement.values(job_token_revoked_at=utcnow()))
             await session.commit()
     except Exception as exc:
         console.print(
@@ -2092,6 +2093,7 @@ async def run_trial_job(
     should_upload_to_s3 = bool(resolved_task_s3_key)
 
     execution: TrialExecutionResult | None = None
+    gateway_credentials = False
     trial_terminal = False
     heartbeat_stop = asyncio.Event()
     heartbeat_interrupt: asyncio.Future[None] = (
@@ -2121,6 +2123,29 @@ async def run_trial_job(
                 trial_id=trial_id,
             )
 
+        from oddish.workers.queue.model_gateway import (
+            is_gateway_trial,
+            mint_gateway_env,
+        )
+
+        extra_agent_env = job_tokens.merge_agent_env(
+            job_scoped_bundle, byok.merge_byok_env(byok_env, probe_agent_env)
+        )
+        if settings.qa_model_routing_enabled and is_gateway_trial(
+            kind=prepared_trial.trial_kind,
+            agent=prepared_trial.trial_agent,
+            model=prepared_trial.trial_model,
+            byok_env=byok_env,
+            harbor_config=prepared_trial.trial_harbor_config or {},
+        ):
+            if not worker_job_id or worker_job_attempt is None:
+                raise RuntimeError("QA model routing requires an owned worker attempt")
+            extra_agent_env = {
+                **(extra_agent_env or {}),
+                **await mint_gateway_env(worker_job_id, worker_job_attempt),
+            }
+            gateway_credentials = True
+
         execution_task = asyncio.create_task(
             _execute_trial(
                 trial_id=trial_id,
@@ -2131,10 +2156,7 @@ async def run_trial_job(
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
                 cost_state=cost_state,
-                extra_agent_env=job_tokens.merge_agent_env(
-                    job_scoped_bundle,
-                    byok.merge_byok_env(byok_env, probe_agent_env),
-                ),
+                extra_agent_env=extra_agent_env,
                 sandbox_launch=sandbox_launch,
             )
         )
@@ -2306,6 +2328,10 @@ async def run_trial_job(
         if should_upload_to_s3:
             _cleanup_trial_wrapper_dirs(trial_id)
         # Same for the job-scoped credential token (revoke on terminal status).
-        if job_scoped_bundle is not None and worker_job_id:
+        if gateway_credentials and worker_job_id:
+            await _revoke_job_credentials(
+                worker_job_id, trial_id, attempt=worker_job_attempt
+            )
+        elif job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
     return execution.outcome if execution is not None and not trial_terminal else None

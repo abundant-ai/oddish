@@ -1642,6 +1642,34 @@ class TrialEventModel(Base):
     )
 
 
+class ModelRequestPoolModel(Base):
+    """Provider observations; one row per verified independent quota pool."""
+
+    __tablename__ = "model_request_pools"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_load: Mapped[float] = mapped_column(Float, server_default="0")
+
+
+class ModelRequestLeaseModel(Base):
+    """In-flight estimates, then actual usage retained for one minute."""
+
+    __tablename__ = "model_request_leases"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    pool_id: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_job_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    __table_args__ = (
+        Index("ix_model_request_pool_expiry", "pool_id", "expires_at"),
+        Index("ix_model_request_worker_created", "worker_job_id", "created_at"),
+    )
+
+
 class QueueDispatchStateModel(Base):
     """Durable fair-share cursors, locked only while planning/reserving launches."""
 
