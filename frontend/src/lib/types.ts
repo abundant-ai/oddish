@@ -1141,6 +1141,7 @@ export interface ModelEndpointSummary {
   provider: string;
   route: string;
   credential: string | null;
+  testable: boolean;
 }
 
 export interface ModelEndpointCatalogResponse {

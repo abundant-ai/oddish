@@ -10,6 +10,7 @@ _ODDISH_PROVIDER_ENV_KEYS = {
     "anthropic-hdo": "ANTHROPIC_HDO_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
     "bedrock": "AWS_BEARER_TOKEN_BEDROCK",
+    "cursor": "CURSOR_API_KEY",
     "meta": "META_API_KEY",
     "zai": "ZAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",

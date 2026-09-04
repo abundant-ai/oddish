@@ -59,8 +59,12 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         return SimpleNamespace(
             models=[
                 "global.anthropic.claude-opus-5",
+                "cursor/composer-2.5",
+                "dsh/deepseek-v4-flash",
                 "google/gemini-3.7-flash",
+                "grok-build/xai/v9m-rl-learnability-tp8",
                 "openai/gpt-5.6-sol",
+                "vertex_ai/gemini-3-pro-preview",
                 "nop_oracle",
             ]
         )
@@ -86,24 +90,56 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "model": "global.anthropic.claude-opus-5",
                 "provider": "bedrock",
                 "route": "bedrock",
+                "testable": True,
+            },
+            {
+                "credential": "CURSOR_API_KEY",
+                "model": "cursor/composer-2.5",
+                "provider": "cursor",
+                "route": "cursor",
+                "testable": False,
+            },
+            {
+                "credential": "DEEPSEEK_API_KEY",
+                "model": "deepseek/deepseek-v4-flash",
+                "provider": "deepseek",
+                "route": "deepseek",
+                "testable": True,
             },
             {
                 "credential": "GEMINI_API_KEY",
                 "model": "google/gemini-3.7-flash",
                 "provider": "gemini",
                 "route": "gemini",
+                "testable": True,
             },
             {
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/gpt-5.4-mini",
                 "provider": "openai",
                 "route": "openai",
+                "testable": True,
             },
             {
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/gpt-5.6-sol",
                 "provider": "openai",
                 "route": "openai",
+                "testable": True,
+            },
+            {
+                "credential": "VERTEXAI_PROJECT",
+                "model": "vertex_ai/gemini-3-pro-preview",
+                "provider": "gemini",
+                "route": "vertex_ai",
+                "testable": True,
+            },
+            {
+                "credential": "XAI_API_KEY",
+                "model": "xai/v9m-rl-learnability-tp8",
+                "provider": "xai",
+                "route": "xai",
+                "testable": True,
             },
         ],
     }
@@ -249,6 +285,22 @@ async def test_model_endpoint_rejects_incompatible_provider_route():
     assert response.status_code == 422
     assert response.json()["detail"] == (
         "Route 'azure' is not valid for 'xai'; expected xai"
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_rejects_cursor_cli_model():
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check",
+            json={"model": "cursor/composer-2.5", "route": "cursor"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Cursor models require the Cursor agent CLI and cannot be checked with a direct completion request"
     )
 
 

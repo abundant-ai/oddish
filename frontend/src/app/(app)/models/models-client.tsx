@@ -46,6 +46,7 @@ const ROUTE_LABELS: Record<string, string> = {
   anthropic: "Anthropic",
   azure: "Azure OpenAI",
   bedrock: "AWS Bedrock",
+  cursor: "Cursor",
   deepseek: "DeepSeek",
   fireworks: "Fireworks",
   gemini: "Google Gemini",
@@ -54,6 +55,7 @@ const ROUTE_LABELS: Record<string, string> = {
   moonshot: "Moonshot",
   openai: "OpenAI",
   openrouter: "OpenRouter",
+  vertex_ai: "Google Vertex AI",
   xai: "xAI",
   zai: "Z.ai",
 };
@@ -80,6 +82,7 @@ export function ModelsClient() {
       (check.status === "complete" && !check.result.ok)
   ).length;
   const providerCount = new Set(data?.models.map(({ route }) => route)).size;
+  const testableModels = data?.models.filter(({ testable }) => testable) ?? [];
 
   async function testModel(
     endpoint: ModelEndpointSummary,
@@ -118,14 +121,14 @@ export function ModelsClient() {
   }
 
   async function testAllModels() {
-    if (!data?.models.length) return;
+    if (!testableModels.length) return;
     const outcomes: { key: string; ok: boolean }[] = [];
     for (
       let index = 0;
-      index < data.models.length;
+      index < testableModels.length;
       index += MODEL_CHECK_BATCH_SIZE
     ) {
-      const batch = data.models.slice(index, index + MODEL_CHECK_BATCH_SIZE);
+      const batch = testableModels.slice(index, index + MODEL_CHECK_BATCH_SIZE);
       outcomes.push(
         ...(await Promise.all(
           batch.map(async (endpoint) => ({
@@ -152,7 +155,7 @@ export function ModelsClient() {
         </div>
         <Button
           variant="outline"
-          disabled={!data?.allowed || !data.models.length || hasRunningCheck}
+          disabled={!data?.allowed || !testableModels.length || hasRunningCheck}
           onClick={() => void testAllModels()}
         >
           {hasRunningCheck ? (
@@ -224,7 +227,8 @@ export function ModelsClient() {
                 </TableHeader>
                 <TableBody>
                   {data.models.map((endpoint) => {
-                    const { credential, model, provider, route } = endpoint;
+                    const { credential, model, provider, route, testable } =
+                      endpoint;
                     const key = endpointKey(endpoint);
                     const check = checks[key];
                     const result =
@@ -259,7 +263,8 @@ export function ModelsClient() {
                                     {credential ? ` · ${credential}` : ""}{" "}
                                     ·{" "}
                                   </span>
-                                  {provider} model · litellm completion
+                                  {provider} model ·{" "}
+                                  {testable ? "direct API" : "agent CLI"}
                                 </div>
                               </div>
                             </div>
@@ -296,6 +301,10 @@ export function ModelsClient() {
                                 <XCircle className="mr-1 h-3 w-3" />
                                 Failed
                               </Badge>
+                            ) : !testable ? (
+                              <span className="text-muted-foreground text-xs">
+                                CLI only
+                              </span>
                             ) : (
                               <span className="text-muted-foreground text-xs">
                                 Not tested
@@ -312,7 +321,7 @@ export function ModelsClient() {
                             <Button
                               variant="outline"
                               size="sm"
-                              disabled={hasRunningCheck}
+                              disabled={hasRunningCheck || !testable}
                               aria-expanded={expanded}
                               aria-controls={`model-output-${key}`}
                               onClick={() => void testModel(endpoint, true)}
@@ -322,7 +331,7 @@ export function ModelsClient() {
                               ) : (
                                 <Play className="h-4 w-4" />
                               )}
-                              Test
+                              {testable ? "Test" : "CLI only"}
                             </Button>
                           </TableCell>
                         </TableRow>

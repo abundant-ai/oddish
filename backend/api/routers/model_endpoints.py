@@ -33,6 +33,7 @@ class ModelEndpointSummary(BaseModel):
     provider: str
     route: str
     credential: str | None
+    testable: bool
 
 
 class ModelEndpointCatalogResponse(BaseModel):
@@ -71,17 +72,20 @@ class ModelEndpointCheckResponse(BaseModel):
     request_id: str | None = None
 
 
-def _provider_route(provider: str) -> str:
+def _provider_route(provider: str, model: str) -> str:
+    if model.startswith("vertex_ai/"):
+        return "vertex_ai"
     if provider == "openai":
         return settings.get_openai_provider()
     return provider
 
 
-def _check_route(provider: str, requested_route: str | None) -> str:
-    default_route = _provider_route(provider)
+def _check_route(provider: str, model: str, requested_route: str | None) -> str:
+    default_route = _provider_route(provider, model)
     route = requested_route or default_route
     compatible_routes = {
         "bedrock": {"anthropic", "bedrock"},
+        "gemini": {"gemini", "vertex_ai"},
         "openai": {"azure", "openai"},
     }.get(provider, {default_route})
     if route not in compatible_routes:
@@ -91,6 +95,14 @@ def _check_route(provider: str, requested_route: str | None) -> str:
             detail=f"Route {route!r} is not valid for {provider!r}; expected {allowed}",
         )
     return route
+
+
+def _direct_completion_model(model: str) -> str:
+    """Remove agent transport wrappers from model IDs stored in old facets."""
+    for prefix in ("dsh/", "grok-build/"):
+        if model.startswith(prefix):
+            return settings.normalize_queue_key(model.removeprefix(prefix))
+    return model
 
 
 @router.get("", response_model=ModelEndpointCatalogResponse)
@@ -107,20 +119,21 @@ async def list_model_endpoints(
         facets = await browse_task_facets_core(session, org_id=auth.org_id)
 
     model_ids = {
-        settings.normalize_queue_key(model)
+        _direct_completion_model(settings.normalize_queue_key(model))
         for model in (*settings.get_known_queue_keys(), *facets.models)
     }
     models: list[ModelEndpointSummary] = []
     for model in model_ids:
         provider = infer_model_provider_prefix(model)
         if provider:
-            route = _provider_route(provider)
+            route = _provider_route(provider, model)
             models.append(
                 ModelEndpointSummary(
                     model=model,
                     provider=provider,
                     route=route,
                     credential=provider_key_var(route),
+                    testable=route != "cursor",
                 )
             )
     models.sort(key=lambda endpoint: (endpoint.route, endpoint.model))
@@ -139,7 +152,12 @@ async def check_model_endpoint(
     provider = infer_model_provider_prefix(model)
     if not provider:
         raise HTTPException(status_code=422, detail="Queue key is not an LLM model")
-    route = _check_route(provider, request.route)
+    route = _check_route(provider, model, request.route)
+    if route == "cursor":
+        raise HTTPException(
+            status_code=422,
+            detail="Cursor models require the Cursor agent CLI and cannot be checked with a direct completion request",
+        )
     credential = provider_key_var(route)
 
     started = monotonic()
