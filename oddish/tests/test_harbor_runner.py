@@ -4296,6 +4296,46 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
     assert trial.attempts == 1
 
 
+def test_store_trial_results_fails_notfound_with_zero_tokens(monkeypatch):
+    """Provider NotFound that still scored reward 0 must not settle SUCCESS.
+
+    ABT-1153: fake model ids used to look like real 0-score evals and kick off QA.
+    """
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=0.0,
+        error='NotFoundError: Model not found, inaccessible, and/or not deployed',
+        exit_code=1,
+        duration_sec=30.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="NotFoundError",
+        input_tokens=0,
+        output_tokens=0,
+        has_trajectory=False,
+        total_steps=0,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    assert trial.result is not None
+    assert trial.result.get("harbor_exception", {}).get("exception_type") == (
+        "NotFoundError"
+    )
+
+
 def test_store_trial_results_skips_retry_for_quota_pause_outcome(monkeypatch):
     """The Harbor runner returns quota-pause control failures as outcomes.
 

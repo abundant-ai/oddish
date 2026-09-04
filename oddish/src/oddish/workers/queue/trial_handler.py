@@ -349,10 +349,21 @@ _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES = {
 
 
 def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> bool:
-    if outcome is None or outcome.exception_type is None:
+    if outcome is None:
         return False
     if outcome.exception_type in _NON_HARBOR_RETRYABLE_EXCEPTION_TYPES:
         return True
+    from oddish.workers.queue.provider_failures import (
+        is_permanent_model_setup_exception,
+        is_permanent_provider_failure,
+    )
+
+    if is_permanent_model_setup_exception(outcome.exception_type):
+        return True
+    if is_permanent_provider_failure(outcome.error):
+        return True
+    if outcome.exception_type is None:
+        return False
     harbor_config = getattr(trial, "harbor_config", None)
     retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
     return not RetryConfig.model_validate(retry or {}).should_retry(
@@ -1018,6 +1029,20 @@ async def _store_trial_results(
                     console.print(
                         f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
                     )
+
+            from oddish.workers.queue.provider_failures import (
+                is_setup_failure_without_work,
+            )
+
+            if is_setup_failure_without_work(
+                exception_type=outcome.exception_type,
+                error=outcome.error,
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                has_trajectory=outcome.has_trajectory,
+                total_steps=outcome.total_steps,
+            ):
+                derived_reward = None
 
             trial.reward = derived_reward
             if analysis_artifact_error:

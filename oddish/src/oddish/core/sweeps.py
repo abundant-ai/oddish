@@ -5,13 +5,74 @@ from collections.abc import Collection
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
 
-from oddish.config import settings
+from oddish.config import (
+    PROVIDER_LOCKED_AGENTS,
+    auto_resolve_curated_model,
+    enforce_model_credentials,
+    has_provider_credential,
+    is_nop_oracle_agent,
+    pin_model_provider,
+    provider_satisfies_lock,
+    settings,
+)
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
+
+
+def _resolve_sweep_config_model(config) -> None:
+    """Pin provider, canonicalize model, and 422 on curated mistakes."""
+    if is_nop_oracle_agent(config.agent):
+        return
+
+    explicit_provider = getattr(config, "provider", None)
+    try:
+        pinned = pin_model_provider(config.model, explicit_provider)
+        auto_pinned, _reason = auto_resolve_curated_model(
+            config.agent,
+            pinned,
+            explicit_provider=explicit_provider,
+        )
+        resolved = settings.normalize_trial_model(
+            config.agent,
+            auto_pinned,
+            allow_unknown=bool(getattr(config, "allow_unknown_model", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if resolved:
+        config.model = resolved
+
+    provider = settings.get_provider_for_trial(config.agent, config.model)
+    locked = PROVIDER_LOCKED_AGENTS.get((config.agent or "").strip().lower())
+    if locked and provider and not provider_satisfies_lock(locked, provider):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Agent {config.agent!r} is locked to provider {locked!r}, "
+                f"not {provider!r}."
+            ),
+        )
+
+    if (
+        enforce_model_credentials()
+        and provider
+        and not has_provider_credential(provider)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No credential in this process for provider {provider!r} "
+                f"(model {config.model!r}). Set the provider API key or unset "
+                "ODDISH_ENFORCE_MODEL_CREDENTIALS."
+            ),
+        )
 
 
 def validate_sweep_submission(submission: TaskSweepSubmission) -> None:
     if not submission.configs:
         raise HTTPException(status_code=400, detail="Must specify 'configs'")
+    for config in submission.configs:
+        _resolve_sweep_config_model(config)
 
 
 def _validate_allowed_environment(

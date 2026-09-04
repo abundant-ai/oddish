@@ -89,7 +89,16 @@ async def _plan_append_trials(
         )
         existing_counts = defaultdict(int)
         for existing_trial in existing_trials_result.scalars():
-            key = (existing_trial.agent, existing_trial.model)
+            # Existing rows are already stored — strict=False so a legacy
+            # unmapped Claude id cannot abort the whole append plan.
+            key = (
+                existing_trial.agent,
+                settings.normalize_trial_model(
+                    existing_trial.agent,
+                    existing_trial.model,
+                    strict=False,
+                ),
+            )
             if existing_trial.status == TrialStatus.FAILED:
                 failed_trial_ids[key].append(existing_trial.id)
             else:

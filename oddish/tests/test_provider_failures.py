@@ -72,3 +72,17 @@ def test_403_inside_a_larger_message_still_matches():
         is_permanent_provider_failure(f"QA task-abc FAILED: {AZURE_CONTENT_POLICY_403}")
         is True
     )
+
+
+def test_litellm_not_found_error_is_permanent():
+    assert is_permanent_provider_failure("NotFoundError: Model not found") is True
+    assert is_permanent_provider_failure("ModelNotFoundError: unknown id") is True
+
+
+def test_file_and_module_not_found_are_not_permanent_provider_failures():
+    """Substring ``NotFoundError`` must not match Harbor/Python file misses."""
+    assert is_permanent_provider_failure("FileNotFoundError: /logs/reward.txt") is False
+    assert is_permanent_provider_failure("ModuleNotFoundError: No module named x") is False
+    assert (
+        is_permanent_provider_failure("RewardFileNotFoundError: missing reward") is False
+    )

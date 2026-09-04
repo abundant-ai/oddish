@@ -1500,9 +1500,13 @@ async def qa_eligible_trial_ids(
     """Live agent trials a QA trial should classify, scoped to one version.
 
     Excludes bulk-migrated imports, cancelled/skipped/gate-skipped trials,
-    and deterministic baselines. ``task_version_id`` pins the set to the
-    version being graded (None only for legacy tasks with no version rows).
+    deterministic baselines, and permanent model-setup failures (provider
+    NotFound / auth with no real agent work) so QA does not run on tasks that
+    never actually executed.
     """
+    from oddish.workers.queue.provider_failures import is_setup_failure_without_work
+
+    exception_type = TrialModel.result["harbor_exception"]["exception_type"].astext
     conditions = [
         TrialModel.task_id == task_id,
         TrialModel.kind == AGENT_TRIAL_KIND,
@@ -1515,11 +1519,30 @@ async def qa_eligible_trial_ids(
     ]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                exception_type,
+                TrialModel.error_message,
+                TrialModel.input_tokens,
+                TrialModel.output_tokens,
+                TrialModel.has_trajectory,
+                TrialModel.total_steps,
+            ).where(and_(*conditions))
+        )
+    ).all()
     return [
         str(tid)
-        for tid in (
-            await session.scalars(select(TrialModel.id).where(and_(*conditions)))
-        ).all()
+        for tid, exc_type, error, in_tok, out_tok, has_traj, steps in rows
+        if not is_setup_failure_without_work(
+            exception_type=exc_type,
+            error=error,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            has_trajectory=has_traj,
+            total_steps=steps,
+        )
     ]
 
 
@@ -1581,7 +1604,10 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
             payload = build_verdict_payload(verdict, [])
             complete_verdict(task, payload=payload, now=utcnow())
         else:
-            abandon_verdict(task)
+            # Clear, do not restore: with zero eligible trials there is no
+            # replacement QA to run, so a published verdict must not linger
+            # (manual backfill / setup-failure-only tasks).
+            reset_verdict(task)
         return False
 
     with_verdict = await has_verdict_evidence(session, eligible)

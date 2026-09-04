@@ -265,6 +265,25 @@ def run(
             help="Model to use (optional)",
         ),
     ] = None,
+    provider: Annotated[
+        Optional[str],
+        typer.Option(
+            "--provider",
+            help=(
+                "LLM provider pin for a bare -m id (e.g. fireworks). "
+                "Not the sandbox --env."
+            ),
+        ),
+    ] = None,
+    allow_unknown_model: Annotated[
+        bool,
+        typer.Option(
+            "--allow-unknown-model",
+            help=(
+                "Send an unlisted curated Fireworks/DeepSeek model id anyway."
+            ),
+        ),
+    ] = False,
     harbor: Annotated[
         Optional[str],
         typer.Option(
@@ -823,18 +842,23 @@ def run(
         if "force_build" in sweep_config and force_build is None:
             force_build = sweep_config["force_build"]
 
-        # Warn if CLI agent/model/n_trials are also specified
-        if agent or model or n_trials != 1:
+        # Warn if CLI agent/model/n_trials/provider/allow-unknown are also specified
+        if agent or model or n_trials != 1 or provider or allow_unknown_model:
             console.print(
-                "[yellow]Warning:[/yellow] --agent, --model, --n-trials are ignored "
-                "when using --config"
+                "[yellow]Warning:[/yellow] --agent, --model, --n-trials, --provider, "
+                "and --allow-unknown-model are ignored when using --config"
             )
     else:
         # Simple CLI mode - default agent
         if not agent:
             agent = "claude-code"
 
-        # Build single config
+        # Build single config. The model id is sent exactly as the user typed
+        # it: the API owns curated alias canonicalization and provider choice.
+        # Resolving here would bake this machine's answer into the payload --
+        # the CLI's alias table can lag the deploy's ODDISH_MODEL_CATALOG_OVERLAY,
+        # and an explicit prefix leaves the server nothing to correct. Use
+        # --provider to pin one deliberately.
         configs = [
             {
                 "agent": agent,
@@ -842,6 +866,10 @@ def run(
                 "n_trials": n_trials,
             }
         ]
+        if provider:
+            configs[0]["provider"] = provider
+        if allow_unknown_model:
+            configs[0]["allow_unknown_model"] = True
         harbor_config = None
 
     # Resolve the Harbor source/ref override (CLI --harbor / env ODDISH_HARBOR)
