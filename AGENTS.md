@@ -1217,7 +1217,7 @@ timeout; a sweep that timed out spawned zero workers that cycle, and a SIGKILL
 mid-sweep left orphaned `idle in transaction` locks that deadlocked the next
 sweep):
 
-1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (180s) Modal schedule under
+1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (30s) Modal schedule under
    `DISPATCHER_TIMEOUT_SECONDS` (120s). It only discovers active queue keys
    (`discover_active_worker_job_queue_keys`) and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers via the org-first fair-share
@@ -1238,9 +1238,10 @@ sweep):
    metadata (`clear_terminal_trial_runtime_refs`) runs after the main
    transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
    can neither deadlock against live workers nor roll back the sweep.
-3. `process_single_job(queue_key)` acquires a `queue_slots` lease (stamping
+3. `process_single_job(queue_key)` adopts its reserved `queue_slots` lease
+   (or acquires one for an unreserved invocation), stamping
    `locked_by = <worker_id>`, `locked_at = NOW()`, `locked_until = NOW() +
-   WORKER_TIMEOUT + 30s`) and calls `run_single_worker_job` →
+   WORKER_TIMEOUT + 30s`, and calls `run_single_worker_job` →
    `drain_worker_jobs`, which atomically claims one or more `worker_jobs` rows
    (stamping `current_worker_id`), dispatches to the registered handler for the
    row's kind, writes heartbeats on both `worker_jobs.heartbeat_at` and the
@@ -1381,12 +1382,32 @@ silently breaks throughput or correctness — read before touching
    heartbeating. Running and paused jobs periodically open a short session so
    they react to spend reported by sibling trials and to quota changes.
 
-2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
-   enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE
-   SKIP LOCKED`), not by spawn count. The dispatcher budgets on `worker_jobs`
-   RUNNING (`limit - running`) while the worker gates on a free slot — if those
-   counters drift, the dispatcher over-spawns workers that exit immediately
-   (watch for `metric=queue_lock_contention` floods).
+2. **`queue_slots` is the real concurrency gate.** Hosted dispatch reserves
+   these same rows before calling Modal (`reserve_queue_launches`). Pending
+   reservations hold a unique `locked_by` token, a 300-second `locked_until`,
+   and `launch_demand` containing the organization/model/variant/lane/priority
+   class. Pending demand is subtracted from ready demand so the 30-second poll
+   cannot repeatedly launch workers for the same waiting jobs. At worker start,
+   `acquire_queue_slot(reservation_token=...)` atomically transfers the same row
+   to the worker and marks `launch_demand.adopted`; the first job claim clears
+   that demand in the same transaction as the claim, preventing duplicate
+   demand in the adoption-to-claim gap. Stale or duplicate tokens fail closed.
+   Failure releases only unadopted tokens. No Modal call runs inside
+   the reservation transaction. Expiry restores capacity even if the launcher
+   dies; the orphan reaper excludes pending launches until expiry.
+
+   `queue_dispatch_state` serializes hosted planning and persists organization
+   and class cursors. Organizations rotate; within each org, three launch turns
+   prefer priority > 0 (QA, audit, QA-eval, summarize), then one prefers <= 0.
+   An empty or capacity-blocked class lends its turn to the other. Workers keep
+   their allocated org/class while draining and retain priority/user/FIFO claim
+   ordering inside that scope. Ordinary launches therefore receive one in four
+   turns under sustained eligible analysis demand, even across one-slot polls.
+   This is allocation of newly available capacity, not preemption or capacity
+   reserved exclusively for QA. Generic self-hosted workers keep unscoped claims.
+   Model capacity remains shared across both classes and all variants/lanes.
+   Per-model transaction advisory locks serialize free-slot reservation with
+   legacy acquisitions; held leases above a newly lowered limit still count.
 
 3. **Slot leases can outlive their worker — reclaim per-slot.** The lease
    (`locked_until`) is `WORKER_TIMEOUT_SECONDS + 30` (~12h); a SIGKILLed /
