@@ -255,8 +255,8 @@ async def rerun_task_qa_core(
     """Create a replacement qa-kind trial for a finished task.
 
     Resets every live agent trial's classification, then creates one QA trial
-    that reclassifies the eligible set and synthesizes a verdict when the
-    evidence bar is met. Queuing the replacement withdraws the old verdict.
+    that reclassifies all eligible trials and requests a verdict once at least
+    one exists. Queuing the replacement withdraws the old verdict.
     """
     return await backfill_task_analysis_core(
         session,

@@ -1066,7 +1066,7 @@ async def test_customer_create_race_recovers(session):
 
 
 @pytest.mark.asyncio
-async def test_agent_count_matches_verdict_evidence_bar(session):
+async def test_delivery_agent_count_normalizes_case_and_spacing(session):
     """Agent variants that differ only in case or spacing count once."""
     experiment = ExperimentModel(name="exp-deliv-agents", org_id=ORG)
     task = _task("deliv-agents")
@@ -1093,3 +1093,46 @@ async def test_agent_count_matches_verdict_evidence_bar(session):
     # 5 trials, but only 3 distinct agents after normalization.
     assert "5/5 trials, 3/3 agents" in check.detail
     assert check.status == "pass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_count", [1, 3])
+@pytest.mark.parametrize("custom_minimum", [False, True])
+async def test_acceptance_does_not_bypass_delivery_minimum(
+    session, run_count, custom_minimum
+):
+    from sqlalchemy import delete
+
+    task, version, experiment = await _green_task(session, "deliv-independent")
+    await session.execute(
+        delete(TrialModel).where(
+            TrialModel.task_id == task.id, TrialModel.kind == "agent"
+        )
+    )
+    for _ in range(run_count):
+        session.add(_trial(task, experiment, version.id, agent="codex"))
+    await session.flush()
+    config = (
+        DeliveryCheckConfig(
+            automated={
+                "min_rollouts": {"enabled": True, "min_trials": 1, "min_agents": 1}
+            }
+        )
+        if custom_minimum
+        else DeliveryCheckConfig()
+    )
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme", name="independent", task_ids=[task.id], check_config=config
+        ),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    checks = _checks(board, task.id)
+    assert checks["verdict_ok"].status == "pass"
+    assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    if not custom_minimum:
+        assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
+        assert not board.ready

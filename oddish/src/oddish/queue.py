@@ -36,6 +36,7 @@ from oddish.core.verdict_state import (
     abandon_verdict,
     cancel_verdict,
     complete_verdict,
+    fail_verdict,
     queue_verdict,
     reset_verdict,
 )
@@ -1527,18 +1528,17 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
     """Move a settled task into its QA stage, or complete it.
 
     With QA-eligible current-version trials: queue the verdict bookkeeping,
-    create the QA trial (the verdict is only requested above the evidence
-    bar), and put the task in VERDICT_PENDING. With none -- every live trial
+    create the QA trial with a verdict requested, and put the task in
+    VERDICT_PENDING. With none -- every live trial
     is a bulk-migrated import, was skipped/cancelled, or is a nop/oracle
     baseline -- complete the task with a deterministic rejection if current
-    audit or baseline facts establish one; otherwise clear the verdict.
+    audit or baseline facts establish one; otherwise record insufficient evidence.
 
     The caller must hold the task row lock and wait for task_audit_pending
     to clear. Returns True when a QA trial was created.
     """
     from oddish.workers.analysis_trials import (
         create_qa_trial,
-        has_verdict_evidence,
         pre_trial_item_ids,
         qa_trial_evidence,
     )
@@ -1581,23 +1581,25 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
             payload = build_verdict_payload(verdict, [])
             complete_verdict(task, payload=payload, now=utcnow())
         else:
-            abandon_verdict(task)
+            fail_verdict(
+                task,
+                error="Insufficient evidence: no eligible solver trials for the current task version.",
+                now=utcnow(),
+            )
         return False
 
-    with_verdict = await has_verdict_evidence(session, eligible)
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
     await create_qa_trial(
         session,
         task=task,
         eligible_trial_ids=eligible,
-        with_verdict=with_verdict,
+        with_verdict=True,
     )
     logger.info(
-        "task %s: qa covers %d trials (verdict=%s)",
+        "task %s: qa covers %d eligible trials",
         task.id,
         len(eligible),
-        with_verdict,
     )
     return True
 
@@ -1645,7 +1647,7 @@ async def maybe_start_task_qa_stage(
     """Check if a task's current-version agent trials are done; transition it.
 
     With QA-eligible trials -> create the task-level QA trial (classify every
-    eligible trial; synthesize the verdict only above the evidence bar) and
+    eligible trial and synthesize a verdict) and
     move the task to VERDICT_PENDING. Otherwise -> COMPLETED. A task goes
     straight from RUNNING to VERDICT_PENDING rather than passing through a
     separate ANALYZING stage.

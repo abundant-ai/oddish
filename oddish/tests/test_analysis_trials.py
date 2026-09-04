@@ -20,7 +20,6 @@ from oddish.workers.analysis_trials import (
     audit_policy_hash,
     build_audit_brief,
     build_qa_brief,
-    has_verdict_evidence,
     is_analysis_kind,
 )
 
@@ -1588,43 +1587,6 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
             == analysis_trials.ANALYSIS_ACTIVITY_VERSION
         )
         assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
-
-
-@pytest.mark.asyncio
-async def test_the_verdict_needs_enough_evidence():
-    """Below 5 trials or 3 distinct agents the QA trial is created without a
-    verdict request; at the bar it is asked for one."""
-
-    class _Scalars:
-        def __init__(self, agents):
-            self._agents = agents
-
-        def all(self):
-            return self._agents
-
-    class _Session:
-        def __init__(self, agents):
-            self._agents = agents
-
-        async def scalars(self, _query):
-            return _Scalars(self._agents)
-
-    few = [f"t{i}" for i in range(4)]
-    assert await has_verdict_evidence(_Session(["a", "b", "c", "d"]), few) is False
-
-    five_two_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(_Session(["a", "a", "b", "b", "a"]), five_two_agents)
-        is False
-    )
-
-    five_three_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(
-            _Session(["a", "b", "c", "a", "b"]), five_three_agents
-        )
-        is True
-    )
 
 
 def test_the_verifier_actually_grades_the_artifact(tmp_path):
