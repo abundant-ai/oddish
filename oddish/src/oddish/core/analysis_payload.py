@@ -5,8 +5,22 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from oddish.config import nop_oracle_kind
+
 if TYPE_CHECKING:
-    from oddish.db import TaskVersionModel
+    from oddish.db import TaskVersionModel, TrialModel
+
+
+def qa_trial_evidence(trial: TrialModel) -> dict:
+    """Authoritative, bounded facts the QA prompt and validator share."""
+    return {
+        "trial_id": trial.id,
+        "status": trial.status.value,
+        "reward": float(trial.reward) if trial.reward is not None else None,
+        "has_trajectory": bool(trial.has_trajectory),
+        "agent": trial.agent,
+        "baseline_kind": nop_oracle_kind(trial.agent),
+    }
 
 
 def audit_fingerprint(version: TaskVersionModel) -> str:

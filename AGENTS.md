@@ -435,6 +435,40 @@ audit no longer matches instead of repeatedly importing it. Audit writes also
 check the latest audit trial under the version lock, and duplicate successful
 imports preserve the original timestamps and exploitation annotations.
 
+Delivery boards expose the latest QA run's evidence coverage and completion time.
+`oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
+audit with the current default version, using the same eligibility clauses and
+evidence serialization as QA admission. A recent timestamp alone does not make
+a result current. The board's seven-day/24-hour counter includes current accepted
+and rejected results, excluding execution failures and in-flight runs; it does
+not change the existing delivery sign-off requirements.
+Classification-only QA can still publish a deterministic baseline rejection;
+that verdict counts when its `_graded_by` identifies the selected QA run.
+Legacy synthesized verdicts without `_graded_by` remain readable.
+
+`task_versions.qa_work` stores owner user ID, claim time, issue categories (first
+is primary), and handoff note once per version across deliveries. TASKS-scoped
+authenticated users may POST `/deliveries/{id}/qa-work/claim`; version locks and
+SKIP LOCKED prevent duplicate claims across deliveries. PATCH
+`/deliveries/{id}/qa-work` requires ownership or an admin and supports release.
+Both require an active delivery and current version membership. Claims carry
+candidate version IDs from the displayed filters, so stale browsers cannot
+silently claim a newer version. New versions start unassigned. Finalized boards
+retain their QA state and time cutoff in the existing snapshot. Hosted user-name
+resolution stays in the delivery router; standalone coordination uses `local`.
+The board's task rows are keyed by version so a version change closes any open
+QA-work draft before it can be saved against the replacement version.
+
+`oddish assign` calls `POST /tasks/qa-work/assign` with up to 1,000 task IDs,
+an assignee, and optional `replace`. Hosted assignment requires admin access
+(a full-scope API key) and resolves email, user ID, or GitHub handle inside the
+caller's organization. `oddish.core.qa_work` locks tasks then their current
+versions in stable order, checks the whole batch before writing, and updates
+the same `task_versions.qa_work` metadata used by delivery claims. Other owners
+are skipped unless replacement is explicit; repeat assignments preserve claim
+times, and notes/categories are retained. No delivery membership is required.
+Active boards reflect the assignments; finalized snapshots remain unchanged.
+
 QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
 It runs the same strict validator used by the verifier and importer, allowing
 one initial submission and two repairs. Missing fields remain validation errors.
@@ -1513,6 +1547,11 @@ directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
+
+Preview deployment parses the unique `-api.modal.run` URL from Modal's output
+with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
+`-api-qa-model.modal.run` URL is a separate endpoint and must never become the
+frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
 
 ### GKE Placement Contract
 

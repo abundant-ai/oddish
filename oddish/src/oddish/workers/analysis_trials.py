@@ -45,27 +45,28 @@ from oddish.analyze.trajectory_prompt import (
 )
 from oddish.analyze.trajectory_provenance import component_provenance
 from oddish.analyze.trajectory_taxonomy import (
+    SCHEMA_VERSION,
     ActionAxis,
     PurposeAxis,
-    SCHEMA_VERSION,
     TrajectoryBlockTaxonomy,
     render_summary_instructions,
     taxonomy_version,
 )
-from oddish.config import is_nop_oracle_agent, nop_oracle_kind, settings
+from oddish.config import is_nop_oracle_agent, settings
 from oddish.core.analysis_payload import (
     AnalysisPayloadError,
     audit_fingerprint,
     audit_snapshot_matches,
     parse_analysis_payload,
+    qa_trial_evidence,
 )
 from oddish.core.trial_artifacts import (
     TrialArtifactMode,
     resolve_trial_artifact_layout,
 )
 from oddish.core.verdict_sync import (
-    apply_deterministic_verdict_rules,
     aggregate_exploited_into_pre_trial,
+    apply_deterministic_verdict_rules,
     build_pre_trial_payload,
     build_verdict_payload,
     complete_task_without_verdict,
@@ -114,18 +115,6 @@ SUMMARY_MAX_TOKENS = 16_384
 
 def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
-
-
-def qa_trial_evidence(trial: TrialModel) -> dict:
-    """Authoritative, bounded facts the QA prompt and validator share."""
-    return {
-        "trial_id": trial.id,
-        "status": trial.status.value,
-        "reward": float(trial.reward) if trial.reward is not None else None,
-        "has_trajectory": bool(trial.has_trajectory),
-        "agent": trial.agent,
-        "baseline_kind": nop_oracle_kind(trial.agent),
-    }
 
 
 def pre_trial_item_ids(items: list[dict] | None) -> tuple[list[str], list[str]]:

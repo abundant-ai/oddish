@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, not_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,9 @@ from oddish.config import (
     is_nop_oracle_agent,
     settings,
 )
+from oddish.core.analysis_payload import qa_trial_evidence
 from oddish.core.baseline_gate import (
-    GATE_SKIP_PREFIX,
     GateOutcome,
-    baseline_agent_clause,
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -60,6 +59,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import TaskSubmission, TrialSpec
@@ -1504,16 +1504,7 @@ async def qa_eligible_trial_ids(
     and deterministic baselines. ``task_version_id`` pins the set to the
     version being graded (None only for legacy tasks with no version rows).
     """
-    conditions = [
-        TrialModel.task_id == task_id,
-        TrialModel.kind == AGENT_TRIAL_KIND,
-        TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.imported_at.is_(None),
-        func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
-        TrialModel.status != TrialStatus.SKIPPED,
-        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
-        not_(baseline_agent_clause(TrialModel.agent)),
-    ]
+    conditions = [TrialModel.task_id == task_id, *qa_eligible_trial_clauses()]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
     return [
@@ -1539,14 +1530,13 @@ async def start_qa_for_task(
     The caller must hold the task row lock and wait for task_audit_pending
     to clear. Returns True when a QA trial was created.
     """
-    from oddish.workers.analysis_trials import (
-        create_qa_trial,
-        pre_trial_item_ids,
-        qa_trial_evidence,
-    )
     from oddish.core.verdict_sync import (
         apply_deterministic_verdict_rules,
         build_verdict_payload,
+    )
+    from oddish.workers.analysis_trials import (
+        create_qa_trial,
+        pre_trial_item_ids,
     )
 
     eligible = await qa_eligible_trial_ids(

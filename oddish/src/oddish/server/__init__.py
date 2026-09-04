@@ -73,6 +73,7 @@ from oddish.core.admin import (
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.sharing.public import router as public_router
 from oddish.server.deliveries import router as delivery_router
+from oddish.server.qa_work import router as qa_work_router
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -247,6 +248,7 @@ api.add_middleware(
 
 api.include_router(public_router)
 api.include_router(delivery_router)
+api.include_router(qa_work_router)
 
 
 # =============================================================================

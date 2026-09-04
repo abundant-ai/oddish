@@ -1406,7 +1406,38 @@ interface DeliveryDefect {
   acknowledged_at?: string | null;
 }
 
+export type QAIssueCategory =
+  | "instructions"
+  | "verifier"
+  | "environment"
+  | "evidence"
+  | "qa_execution";
+
+export interface QAWorkMetadata {
+  owner_user_id: string | null;
+  claimed_at: string | null;
+  issue_categories: QAIssueCategory[];
+  note: string;
+}
+
+export interface DeliveryQAStatus {
+  status:
+    | "never"
+    | "queued"
+    | "running"
+    | "error"
+    | "outdated"
+    | "accepted"
+    | "needs_fixes";
+  trial_id: string | null;
+  finished_at: string | null;
+  detail: string;
+}
+
 export interface DeliveryTaskBoardRow {
+  qa: DeliveryQAStatus;
+  qa_work: QAWorkMetadata;
+  qa_owner_name: string | null;
   delivery_task_id: string;
   task_id: string;
   task_name: string;
@@ -1424,6 +1455,8 @@ export interface DeliveryTaskBoardRow {
 }
 
 export interface DeliveryBoardResponse {
+  qa_as_of: string | null;
+  qa_viewer_user_id: string | null;
   delivery: Omit<DeliveryListItem, "task_count">;
   check_config: DeliveryCheckConfig;
   tasks: DeliveryTaskBoardRow[];

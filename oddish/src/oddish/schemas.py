@@ -2670,6 +2670,52 @@ class DeliveryDefect(BaseModel):
     acknowledged_at: datetime | None = None
 
 
+QAIssueCategory = Literal[
+    "instructions", "verifier", "environment", "evidence", "qa_execution"
+]
+
+
+class QAWorkMetadata(BaseModel):
+    owner_user_id: str | None = None
+    claimed_at: datetime | None = None
+    issue_categories: list[QAIssueCategory] = Field(default_factory=list, max_length=5)
+    note: str = Field(default="", max_length=4000)
+
+
+class QAWorkPatch(BaseModel):
+    version_id: str
+    release: bool = False
+    issue_categories: list[QAIssueCategory] | None = Field(default=None, max_length=5)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class QAWorkClaim(BaseModel):
+    version_ids: list[str] = Field(min_length=1, max_length=5000)
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class QAWorkAssign(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=1000)
+    assignee: str = Field(min_length=1, max_length=320)
+    replace: bool = False
+
+
+class QAWorkAssignResponse(BaseModel):
+    owner_user_id: str
+    assigned_task_ids: list[str] = Field(default_factory=list)
+    unchanged_task_ids: list[str] = Field(default_factory=list)
+    skipped_task_ids: list[str] = Field(default_factory=list)
+
+
+class DeliveryQAStatus(BaseModel):
+    status: Literal[
+        "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
+    ] = "never"
+    trial_id: str | None = None
+    finished_at: datetime | None = None
+    detail: str = "No QA result recorded"
+
+
 class DeliveryTaskBoardRow(BaseModel):
     delivery_task_id: str
     task_id: str
@@ -2684,10 +2730,15 @@ class DeliveryTaskBoardRow(BaseModel):
     internal_note: str | None
     checks: list[DeliveryCheckResult]
     defects: list[DeliveryDefect] = Field(default_factory=list)
+    qa: DeliveryQAStatus = Field(default_factory=DeliveryQAStatus)
+    qa_work: QAWorkMetadata = Field(default_factory=QAWorkMetadata)
+    qa_owner_name: str | None = None
     ready: bool
 
 
 class DeliveryBoardResponse(BaseModel):
+    qa_as_of: datetime | None = None
+    qa_viewer_user_id: str | None = None
     delivery: DeliveryResponse
     check_config: DeliveryCheckConfig
     tasks: list[DeliveryTaskBoardRow]
