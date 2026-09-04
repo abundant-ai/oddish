@@ -17,6 +17,7 @@ from oddish.config import (
     to_anthropic_api_model_id,
 )
 from oddish.core.endpoints import browse_task_facets_core
+from oddish.core.llm_key_fingerprint import provider_key_var
 from oddish.db import get_session
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,6 +31,8 @@ router = APIRouter(prefix="/models", tags=["Models"])
 class ModelEndpointSummary(BaseModel):
     model: str
     provider: str
+    route: str
+    credential: str | None
 
 
 class ModelEndpointCatalogResponse(BaseModel):
@@ -39,14 +42,17 @@ class ModelEndpointCatalogResponse(BaseModel):
 
 class ModelEndpointCheckRequest(BaseModel):
     model: str = Field(min_length=1, max_length=512)
+    route: str | None = Field(default=None, min_length=1, max_length=64)
 
-    @field_validator("model")
+    @field_validator("model", "route")
     @classmethod
-    def strip_model(cls, value: str) -> str:
+    def strip_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value:
-            raise ValueError("model must not be blank")
-        return value
+            raise ValueError("value must not be blank")
+        return value.lower()
 
 
 class ModelEndpointCheckResponse(BaseModel):
@@ -54,6 +60,8 @@ class ModelEndpointCheckResponse(BaseModel):
     model: str
     resolved_model: str
     provider: str
+    route: str
+    credential: str | None
     transport: Literal["litellm_completion"] = "litellm_completion"
     failure_kind: Literal["provider", "configuration"] | None = None
     status_code: int | None = None
@@ -61,6 +69,28 @@ class ModelEndpointCheckResponse(BaseModel):
     response: str | None = None
     error: str | None = None
     request_id: str | None = None
+
+
+def _provider_route(provider: str) -> str:
+    if provider == "openai":
+        return settings.get_openai_provider()
+    return provider
+
+
+def _check_route(provider: str, requested_route: str | None) -> str:
+    default_route = _provider_route(provider)
+    route = requested_route or default_route
+    compatible_routes = {
+        "bedrock": {"anthropic", "bedrock"},
+        "openai": {"azure", "openai"},
+    }.get(provider, {default_route})
+    if route not in compatible_routes:
+        allowed = ", ".join(sorted(compatible_routes))
+        raise HTTPException(
+            status_code=422,
+            detail=f"Route {route!r} is not valid for {provider!r}; expected {allowed}",
+        )
+    return route
 
 
 @router.get("", response_model=ModelEndpointCatalogResponse)
@@ -80,11 +110,20 @@ async def list_model_endpoints(
         settings.normalize_queue_key(model)
         for model in (*settings.get_known_queue_keys(), *facets.models)
     }
-    models = []
-    for model in sorted(model_ids):
+    models: list[ModelEndpointSummary] = []
+    for model in model_ids:
         provider = infer_model_provider_prefix(model)
         if provider:
-            models.append(ModelEndpointSummary(model=model, provider=provider))
+            route = _provider_route(provider)
+            models.append(
+                ModelEndpointSummary(
+                    model=model,
+                    provider=provider,
+                    route=route,
+                    credential=provider_key_var(route),
+                )
+            )
+    models.sort(key=lambda endpoint: (endpoint.route, endpoint.model))
     return ModelEndpointCatalogResponse(allowed=True, models=models)
 
 
@@ -100,16 +139,25 @@ async def check_model_endpoint(
     provider = infer_model_provider_prefix(model)
     if not provider:
         raise HTTPException(status_code=422, detail="Queue key is not an LLM model")
+    route = _check_route(provider, request.route)
+    credential = provider_key_var(route)
 
     started = monotonic()
     resolved_model = model
     try:
         kwargs = (
             {"max_completion_tokens": 32}
-            if provider == "openai"
+            if route in {OPENAI_PROVIDER_AZURE, "openai"}
             else {"max_tokens": 32}
         )
-        if provider == "bedrock":
+        if provider == "bedrock" and route == "anthropic":
+            api_model = to_anthropic_api_model_id(model) or model
+            anthropic_api_key = (settings.anthropic_api_key or "").strip()
+            if not anthropic_api_key:
+                raise RuntimeError("ANTHROPIC_API_KEY is missing")
+            resolved_model = f"anthropic/{api_model}"
+            kwargs["api_key"] = anthropic_api_key
+        elif provider == "bedrock":
             resolved_model = f"bedrock/{model}"
         elif provider == "anthropic-hdo":
             bare_model = anthropic_hdo_bare_model_id(model)
@@ -139,12 +187,14 @@ async def check_model_endpoint(
             )
         elif provider == "gemini" and model.startswith("google/"):
             resolved_model = f"gemini/{model.split('/', 1)[1]}"
-        elif (
-            provider == "openai"
-            and settings.get_openai_provider() == OPENAI_PROVIDER_AZURE
-        ):
+        elif route == OPENAI_PROVIDER_AZURE:
             azure = settings.require_azure_openai_config()
-            resolved_model = f"azure/{settings.resolve_azure_openai_deployment(model)}"
+            deployment = (
+                model.split("/", 1)[1]
+                if provider in {"azure", "azure_openai"} and "/" in model
+                else settings.resolve_azure_openai_deployment(model)
+            )
+            resolved_model = f"azure/{deployment}"
             kwargs.update(
                 {
                     "api_key": azure["api_key"],
@@ -186,6 +236,8 @@ async def check_model_endpoint(
                 model=model,
                 resolved_model=resolved_model,
                 provider=provider,
+                route=route,
+                credential=credential,
                 latency_ms=round((monotonic() - started) * 1000),
                 response=content if isinstance(content, str) else str(content or ""),
                 request_id=(
@@ -205,6 +257,8 @@ async def check_model_endpoint(
         model=model,
         resolved_model=resolved_model,
         provider=provider,
+        route=route,
+        credential=credential,
         failure_kind=failure_kind,
         status_code=status_code,
         latency_ms=round((monotonic() - started) * 1000),

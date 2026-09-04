@@ -36,6 +36,7 @@ def operator_org(monkeypatch):
 @pytest.mark.asyncio
 async def test_model_catalog_unions_configured_and_previously_used_models(monkeypatch):
     settings_type = type(model_endpoints_router.settings)
+    monkeypatch.setattr(settings_type, "get_openai_provider", lambda _self: "openai")
     monkeypatch.setattr(
         settings_type,
         "get_known_queue_keys",
@@ -81,12 +82,29 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         "allowed": True,
         "models": [
             {
+                "credential": "AWS_BEARER_TOKEN_BEDROCK",
                 "model": "global.anthropic.claude-opus-5",
                 "provider": "bedrock",
+                "route": "bedrock",
             },
-            {"model": "google/gemini-3.7-flash", "provider": "gemini"},
-            {"model": "openai/gpt-5.4-mini", "provider": "openai"},
-            {"model": "openai/gpt-5.6-sol", "provider": "openai"},
+            {
+                "credential": "GEMINI_API_KEY",
+                "model": "google/gemini-3.7-flash",
+                "provider": "gemini",
+                "route": "gemini",
+            },
+            {
+                "credential": "OPENAI_API_KEY",
+                "model": "openai/gpt-5.4-mini",
+                "provider": "openai",
+                "route": "openai",
+            },
+            {
+                "credential": "OPENAI_API_KEY",
+                "model": "openai/gpt-5.6-sol",
+                "provider": "openai",
+                "route": "openai",
+            },
         ],
     }
 
@@ -181,6 +199,57 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
     assert payload["model"] == "global.anthropic.claude-sonnet-5"
     assert payload["resolved_model"] == ("bedrock/global.anthropic.claude-sonnet-5")
     assert payload["provider"] == "bedrock"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_can_test_bedrock_model_via_anthropic_route(monkeypatch):
+    async def completion(**kwargs):
+        assert kwargs["model"] == "anthropic/claude-sonnet-5"
+        assert kwargs["api_key"] == "anthropic-key"
+        return SimpleNamespace(
+            id="anthropic-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
+        )
+
+    monkeypatch.setattr(
+        model_endpoints_router.settings, "anthropic_api_key", "anthropic-key"
+    )
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check",
+            json={
+                "model": "global.anthropic.claude-sonnet-5",
+                "route": "anthropic",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["resolved_model"] == "anthropic/claude-sonnet-5"
+    assert payload["provider"] == "bedrock"
+    assert payload["route"] == "anthropic"
+    assert payload["credential"] == "ANTHROPIC_API_KEY"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_rejects_incompatible_provider_route():
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check",
+            json={"model": "xai/grok-code-fast-1", "route": "azure"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Route 'azure' is not valid for 'xai'; expected xai"
+    )
 
 
 @pytest.mark.asyncio
@@ -325,6 +394,8 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     assert payload["ok"] is True
     assert payload["resolved_model"] == "azure/oddish-gpt"
     assert payload["provider"] == "openai"
+    assert payload["route"] == "azure"
+    assert payload["credential"] == "AZURE_OPENAI_API_KEY"
 
 
 @pytest.mark.asyncio

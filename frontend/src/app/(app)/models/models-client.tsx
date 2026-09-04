@@ -27,6 +27,7 @@ import { fetcher } from "@/lib/api";
 import type {
   ModelEndpointCatalogResponse,
   ModelEndpointCheckResponse,
+  ModelEndpointSummary,
 } from "@/lib/types";
 
 type ModelCheckState =
@@ -39,6 +40,27 @@ type ModelCheckState =
   | { status: "error"; message: string; testedAt: number };
 
 const MODEL_CHECK_BATCH_SIZE = 3;
+
+const ROUTE_LABELS: Record<string, string> = {
+  "anthropic-hdo": "Anthropic HDO",
+  anthropic: "Anthropic",
+  azure: "Azure OpenAI",
+  bedrock: "AWS Bedrock",
+  deepseek: "DeepSeek",
+  fireworks: "Fireworks",
+  gemini: "Google Gemini",
+  meta: "Meta",
+  minimax: "MiniMax",
+  moonshot: "Moonshot",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  xai: "xAI",
+  zai: "Z.ai",
+};
+
+function endpointKey(endpoint: ModelEndpointSummary): string {
+  return `${endpoint.route}:${endpoint.model}`;
+}
 
 export function ModelsClient() {
   const { data, error, isLoading, mutate } =
@@ -57,29 +79,34 @@ export function ModelsClient() {
       check.status === "error" ||
       (check.status === "complete" && !check.result.ok)
   ).length;
+  const providerCount = new Set(data?.models.map(({ route }) => route)).size;
 
-  async function testModel(model: string, expand: boolean): Promise<boolean> {
-    if (expand) setExpandedModel(model);
+  async function testModel(
+    endpoint: ModelEndpointSummary,
+    expand: boolean
+  ): Promise<boolean> {
+    const key = endpointKey(endpoint);
+    if (expand) setExpandedModel(key);
     setChecks((current) => ({
       ...current,
-      [model]: { status: "running" },
+      [key]: { status: "running" },
     }));
 
     try {
       const result = await fetcher<ModelEndpointCheckResponse>("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model }),
+        body: JSON.stringify({ model: endpoint.model, route: endpoint.route }),
       });
       setChecks((current) => ({
         ...current,
-        [model]: { status: "complete", result, testedAt: Date.now() },
+        [key]: { status: "complete", result, testedAt: Date.now() },
       }));
       return result.ok;
     } catch (checkError) {
       setChecks((current) => ({
         ...current,
-        [model]: {
+        [key]: {
           status: "error",
           message:
             checkError instanceof Error ? checkError.message : "Request failed",
@@ -92,7 +119,7 @@ export function ModelsClient() {
 
   async function testAllModels() {
     if (!data?.models.length) return;
-    const outcomes: { model: string; ok: boolean }[] = [];
+    const outcomes: { key: string; ok: boolean }[] = [];
     for (
       let index = 0;
       index < data.models.length;
@@ -101,17 +128,15 @@ export function ModelsClient() {
       const batch = data.models.slice(index, index + MODEL_CHECK_BATCH_SIZE);
       outcomes.push(
         ...(await Promise.all(
-          batch.map(async ({ model }) => ({
-            model,
-            ok: await testModel(model, false),
+          batch.map(async (endpoint) => ({
+            key: endpointKey(endpoint),
+            ok: await testModel(endpoint, false),
           }))
         ))
       );
     }
     setExpandedModel(
-      outcomes.find((outcome) => !outcome.ok)?.model ??
-        outcomes[0]?.model ??
-        null
+      outcomes.find((outcome) => !outcome.ok)?.key ?? outcomes[0]?.key ?? null
     );
   }
 
@@ -163,11 +188,11 @@ export function ModelsClient() {
           <CardHeader className="border-b">
             <div className="flex items-center justify-between gap-3">
               <CardTitle className="text-base">Available models</CardTitle>
-              {(passing > 0 || failing > 0) && (
-                <span className="text-muted-foreground text-sm">
-                  {passing} passing · {failing} failing
-                </span>
-              )}
+              <span className="text-muted-foreground text-sm">
+                {data?.models.length ?? 0} models · {providerCount} providers
+                {(passing > 0 || failing > 0) &&
+                  ` · ${passing} passing · ${failing} failing`}
+              </span>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -184,6 +209,9 @@ export function ModelsClient() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[48%] sm:w-auto">Model</TableHead>
+                    <TableHead className="hidden lg:table-cell">
+                      Provider
+                    </TableHead>
                     <TableHead className="w-[28%] sm:w-auto">Status</TableHead>
                     <TableHead className="hidden md:table-cell">
                       Latency
@@ -195,11 +223,13 @@ export function ModelsClient() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.models.map(({ model, provider }) => {
-                    const check = checks[model];
+                  {data.models.map((endpoint) => {
+                    const { credential, model, provider, route } = endpoint;
+                    const key = endpointKey(endpoint);
+                    const check = checks[key];
                     const result =
                       check?.status === "complete" ? check.result : null;
-                    const expanded = expandedModel === model;
+                    const expanded = expandedModel === key;
                     const output =
                       check?.status === "complete"
                         ? JSON.stringify(check.result, null, 2)
@@ -212,7 +242,7 @@ export function ModelsClient() {
                         : "—";
 
                     return (
-                      <Fragment key={model}>
+                      <Fragment key={key}>
                         <TableRow>
                           <TableCell className="overflow-hidden py-3">
                             <div className="flex items-center gap-3">
@@ -224,9 +254,22 @@ export function ModelsClient() {
                                   {model}
                                 </div>
                                 <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block">
-                                  {provider} · litellm completion
+                                  <span className="lg:hidden">
+                                    {ROUTE_LABELS[route] ?? route}
+                                    {credential ? ` · ${credential}` : ""}{" "}
+                                    ·{" "}
+                                  </span>
+                                  {provider} model · litellm completion
                                 </div>
                               </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="hidden lg:table-cell">
+                            <div className="text-sm font-medium">
+                              {ROUTE_LABELS[route] ?? route}
+                            </div>
+                            <div className="text-muted-foreground mt-0.5 font-mono text-xs">
+                              {credential ?? "Provider-managed credential"}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -271,8 +314,8 @@ export function ModelsClient() {
                               size="sm"
                               disabled={hasRunningCheck}
                               aria-expanded={expanded}
-                              aria-controls={`model-output-${model}`}
-                              onClick={() => void testModel(model, true)}
+                              aria-controls={`model-output-${key}`}
+                              onClick={() => void testModel(endpoint, true)}
                             >
                               {check?.status === "running" ? (
                                 <RefreshCw className="h-4 w-4 animate-spin" />
@@ -285,11 +328,11 @@ export function ModelsClient() {
                         </TableRow>
                         {expanded && (
                           <TableRow className="bg-muted/20 hover:bg-muted/20">
-                            <TableCell colSpan={5} className="p-0">
+                            <TableCell colSpan={6} className="p-0">
                               <div
-                                id={`model-output-${model}`}
+                                id={`model-output-${key}`}
                                 role="region"
-                                aria-label={`${model} test output`}
+                                aria-label={`${model} via ${route} test output`}
                                 className="border-t px-4 py-3"
                               >
                                 <div className="mb-2 flex items-center justify-between gap-3">

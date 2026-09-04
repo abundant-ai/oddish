@@ -26,7 +26,8 @@ def key_hint(raw_key: str) -> str:
     return raw_key[-4:]
 
 
-def _provider_key_var(provider: str) -> str | None:
+def provider_key_var(provider: str) -> str | None:
+    """Return the environment variable that supplies a provider credential."""
     if provider in _ODDISH_PROVIDER_ENV_KEYS:
         return _ODDISH_PROVIDER_ENV_KEYS[provider]
     from harbor.agents.utils import PROVIDER_KEYS
@@ -65,7 +66,7 @@ def platform_key_hash_for_provider(provider: str | None) -> str | None:
         elif provider == "meta":
             raw = settings.meta_api_key or os.environ.get("META_API_KEY")
         else:
-            variable = _provider_key_var(provider)
+            variable = provider_key_var(provider)
             raw = os.environ.get(variable) if variable else None
     except Exception:
         # Fingerprinting is accounting metadata; an unknown provider must not
@@ -80,7 +81,7 @@ def trial_llm_key_hash(
 ) -> str | None:
     """Hash the BYOK credential when present, otherwise the platform key."""
     if byok_env and provider:
-        variable = _provider_key_var(provider)
+        variable = provider_key_var(provider)
         raw = byok_env.get(variable) if variable else None
         if not raw and provider in {"anthropic", "bedrock"}:
             raw = byok_env.get("ANTHROPIC_API_KEY")
