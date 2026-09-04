@@ -128,13 +128,21 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         # exits before the first model call ("agent not started", 0 tokens).
         # Same value, two names: no second Modal secret, no new key to rotate.
         return (
-            {"GEMINI_API_KEY": key, "GOOGLE_GENERATIVE_AI_API_KEY": key}
-            if key
-            else {}
+            {"GEMINI_API_KEY": key, "GOOGLE_GENERATIVE_AI_API_KEY": key} if key else {}
         )
     if provider == "meta":
         key = getattr(settings, "meta_api_key", None)
         return {"META_API_KEY": key, "MSWEA_API_KEY": key} if key else {}
+    if provider == "geometric":
+        # mini-swe-agent authenticates from OPENAI_API_KEY (the litellm
+        # ``openai/`` provider), so publish the one Geometric key under the
+        # names the harness and the env shape both read.
+        key = getattr(settings, "geometric_api_key", None)
+        return (
+            {"GEOMETRIC_API_KEY": key, "MSWEA_API_KEY": key, "OPENAI_API_KEY": key}
+            if key
+            else {}
+        )
     return {}
 
 

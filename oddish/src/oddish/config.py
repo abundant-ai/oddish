@@ -698,6 +698,86 @@ def to_meta_model_id(model: str | None) -> str | None:
     return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
 
 
+# Geometric-hosted OpenAI-compatible model routing. Geometric serves GLM-5.3
+# over its own /v1 endpoint, so trials run through Harbor's mini-swe-agent
+# harness (via litellm's ``openai/`` provider) rather than Oddish's Azure/OpenAI
+# defaults, and need their own provider/queue bucket.
+#
+# Prefix-only, deliberately: ``is_zai_model`` claims every bare ``glm...`` id
+# for z.ai, so a bare ``glm-5.3`` keeps routing to z.ai. Selecting Geometric
+# takes an explicit ``geometric/glm-5.3`` (or ``gm/glm-5.3``) -- the same
+# opt-in rule Fireworks uses to take over GLM/MiniMax/Kimi ids.
+GEOMETRIC_PROVIDER = "geometric"
+GEOMETRIC_DEFAULT_BASE_URL = "https://api.geometriclabs.ai/v1"
+_GEOMETRIC_PROVIDER_PREFIXES: frozenset[str] = frozenset({"geometric", "gm"})
+# Geometric only serves GLM-5.3 at the moment.
+_GEOMETRIC_SERVED_MODELS: frozenset[str] = frozenset({"glm-5.3"})
+
+
+def is_geometric_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects Geometric's OpenAI-compatible API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(provider_prefix and provider_prefix in _GEOMETRIC_PROVIDER_PREFIXES)
+
+
+def geometric_bare_model_id(model: str) -> str:
+    """Strip a ``geometric/``/``gm/`` prefix, returning the bare model id.
+
+
+    A reference with no Geometric prefix is returned untouched, since this is
+    also called defensively on ids belonging to other providers.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if not (
+        provider_prefix
+        and provider_prefix.strip().lower() in _GEOMETRIC_PROVIDER_PREFIXES
+    ):
+        return raw
+    # Canonical spelling, so the wire id matches --served-model-name exactly
+    # whatever case the caller used.
+    return str(bare).strip().lower()
+
+
+def require_geometric_served_model_id(model: str) -> str:
+    """Bare Geometric id, rejecting anything this endpoint does not serve.
+
+    Raises ``ValueError`` so a bad id dies at submit rather than after a queue
+    slot, worker, and sandbox have been spent -- and, on the execute path, so a
+    foreign id can never reach litellm as a bare ``openai/<id>`` bound for
+    public OpenAI.
+    """
+    bare_id = geometric_bare_model_id(model)
+    if bare_id not in _GEOMETRIC_SERVED_MODELS:
+        served = ", ".join(sorted(_GEOMETRIC_SERVED_MODELS))
+        # No square brackets: the CLI renders errors through rich, which parses
+        # ``[...]`` as console markup and silently strips it -- the served list
+        # is the one part of this message the reader actually needs.
+        raise ValueError(
+            f"Geometric serves only: {served}. Got {bare_id!r}. "
+            "Add the id to _GEOMETRIC_SERVED_MODELS when the endpoint's "
+            "--served-model-name changes."
+        )
+    return bare_id
+
+
+def to_geometric_model_id(model: str | None) -> str | None:
+    """Canonicalize a Geometric model reference to ``geometric/<bare-id>``.
+
+    Collapses the ``gm/`` alias too, so one queue key and one stored id serve
+    both spellings.
+    """
+    if not is_geometric_model(model):
+        return model
+    assert model is not None
+    return f"{GEOMETRIC_PROVIDER}/{geometric_bare_model_id(model)}"
+
+
 # Direct Anthropic API via a separate HDO key. Opt-in with an explicit
 # ``anthropic-hdo/<model>`` prefix so Claude trials can use
 # ``ANTHROPIC_HDO_API_KEY`` (injected as ``ANTHROPIC_API_KEY``) instead of the
@@ -1058,6 +1138,9 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "grok": XAI_PROVIDER,
     # Meta OpenAI-compatible relay for mini-swe-agent evals.
     "meta": META_PROVIDER,
+    # Geometric's own OpenAI-compatible endpoint (GLM-5.3) for mini-swe-agent.
+    "geometric": GEOMETRIC_PROVIDER,
+    "gm": GEOMETRIC_PROVIDER,
     # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
     "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
     # DeepSeek official API for the dsh harness.
@@ -1633,6 +1716,28 @@ class Settings(BaseSettings):
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
     meta_session_id: str | None = Field(default=None, alias="ODDISH_META_SESSION_ID")
+    geometric_api_key: str | None = Field(default=None, alias="GEOMETRIC_API_KEY")
+    # MUST end in ``/v1``. This repo carries two base-URL conventions, split by
+    # API surface, and Geometric is on the OpenAI side of that split:
+    #   * OpenAI-compatible (OPENAI_BASE_URL, mini-swe-agent): INCLUDES ``/v1``
+    #     -- litellm's ``openai/`` provider appends only ``/chat/completions``.
+    #     See META_DEFAULT_BASE_URL.
+    #   * Anthropic-compatible (ANTHROPIC_BASE_URL, claude-code): OMITS it --
+    #     Claude Code appends ``/v1/messages`` itself. See ZAI/MINIMAX/MOONSHOT/
+    #     FIREWORKS_DEFAULT_BASE_URL.
+    # Dropping the suffix here breaks exactly ONE of Geometric's two routes,
+    # which makes it nasty to diagnose: get_geometric_anthropic_base_url strips
+    # a trailing ``/v1``, so with no suffix the claude-code route still resolves
+    # correctly while mini-swe-agent silently 404s against vLLM (which serves
+    # ``/v1/chat/completions``, not ``/chat/completions``).
+    geometric_base_url: str = Field(
+        default=GEOMETRIC_DEFAULT_BASE_URL, alias="GEOMETRIC_BASE_URL"
+    )
+    # Optional explicit override for the Anthropic surface. Left unset, it is
+    # derived from ``geometric_base_url`` -- see get_geometric_anthropic_base_url.
+    geometric_anthropic_base_url: str | None = Field(
+        default=None, alias="GEOMETRIC_ANTHROPIC_BASE_URL"
+    )
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"
@@ -1882,6 +1987,14 @@ class Settings(BaseSettings):
             return to_fireworks_model_id(cleaned)
         if is_meta_model(cleaned):
             return to_meta_model_id(cleaned)
+        # Geometric before z.ai: an explicit ``geometric/``/``gm/`` prefix on a
+        # GLM id must win over the bare-``glm`` z.ai fallback below.
+        if is_geometric_model(cleaned):
+            # Deliberately total, including under strict=True: this method backs
+            # get_provider_for_trial / get_queue_key_for_trial (neither of which
+            # exposes ``strict``) and the cost/browse/handler reads below them,
+            # all of which run over stored rows. Submit validates separately.
+            return to_geometric_model_id(cleaned)
         if is_xai_model(cleaned):
             return to_xai_model_id(cleaned)
         if is_zai_model(cleaned):
@@ -2168,6 +2281,42 @@ class Settings(BaseSettings):
         if self.meta_session_id:
             env["ODDISH_META_SESSION_ID"] = self.meta_session_id
         return env
+
+    def get_geometric_anthropic_base_url(self) -> str:
+        """Base URL for Geometric's Anthropic-compatible surface."""
+        explicit = (self.geometric_anthropic_base_url or "").strip()
+        if explicit:
+            return explicit.rstrip("/")
+        base = (self.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL).rstrip("/")
+        return base.removesuffix("/v1").rstrip("/")
+
+    def get_geometric_agent_env(self) -> dict[str, str]:
+        """Return env vars for Geometric's OpenAI-compatible mini-swe-agent route."""
+        base_url = (self.geometric_base_url or GEOMETRIC_DEFAULT_BASE_URL).rstrip("/")
+        # Same shape as the Meta route: mini-swe-agent drives the model through
+        # LiteLLM's ``openai/`` provider (see
+        # OddishGeometricMiniSweAgent._litellm_model_name), which authenticates
+        # from OPENAI_API_KEY. MSWEA_API_KEY alone does not reach the provider,
+        # so surface the Geometric key under OPENAI_API_KEY too (resolved at
+        # runtime from ${GEOMETRIC_API_KEY}, never persisted).
+        return {
+            "MSWEA_API_KEY": "${GEOMETRIC_API_KEY}",
+            "OPENAI_API_KEY": "${GEOMETRIC_API_KEY}",
+            "OPENAI_BASE_URL": base_url,
+            # mini-swe-agent runs an INTERACTIVE first-run setup wizard unless
+            # MSWEA_CONFIGURED is set (run/utilities/config.py:
+            # ``configure_if_first_time``). In a sandbox there is no TTY, so it
+            # aborts before the first model call and the trial dies with an
+            # empty trajectory and zero tokens -- verified against a bare task
+            # image.
+            "MSWEA_CONFIGURED": "true",
+            # Its cost tracking raises on a model litellm has no price for, and
+            # a self-hosted GLM-5.3 is not in litellm's catalog. Without this
+            # the agent aborts mid-run. Oddish prices trials from its own
+            # model_pricing tables, so mini-swe's accounting is not the source
+            # of truth here anyway.
+            "MSWEA_COST_TRACKING": "ignore_errors",
+        }
 
 
 settings = Settings()

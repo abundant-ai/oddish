@@ -11,6 +11,7 @@ from oddish.config import (
     NOP_ORACLE_QUEUE_KEY,
     Settings,
     normalize_model_id,
+    require_geometric_served_model_id,
 )  # noqa: E402
 
 
@@ -354,6 +355,116 @@ def test_meta_agent_env_includes_configured_session_controls(monkeypatch):
     # LiteLLM's openai/ provider authenticates from OPENAI_API_KEY.
     assert env["OPENAI_API_KEY"] == "${META_API_KEY}"
     assert "OPENAI_API_BASE" not in env
+
+
+def test_geometric_model_routes_to_geometric_for_mini_swe_agent(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+    model = "geometric/glm-5.3"
+
+    assert normalize_model_id(" Geometric / GLM-5.3 ") == model
+    assert settings.normalize_trial_model("mini-swe-agent", model) == model
+    assert settings.get_provider_for_trial("mini-swe-agent", model) == "geometric"
+    assert settings.get_queue_key_for_trial("mini-swe-agent", model) == model
+    assert settings.normalize_queue_key(model) == model
+
+
+def test_geometric_gm_alias_collapses_to_one_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Both spellings must share a single stored id / concurrency bucket.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "gm/glm-5.3")
+        == "geometric/glm-5.3"
+    )
+    assert (
+        settings.get_provider_for_trial("mini-swe-agent", "gm/glm-5.3") == "geometric"
+    )
+
+
+def test_bare_glm_still_routes_to_zai_not_geometric(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Geometric is prefix-only: taking the bare GLM ids would silently reroute
+    # every existing z.ai trial. An explicit prefix is the only opt-in.
+    assert settings.normalize_trial_model("claude-code", "glm-5.3") == "zai/glm-5.3"
+    assert settings.get_provider_for_trial("claude-code", "glm-5.3") == "zai"
+    assert settings.normalize_trial_model("claude-code", "zai/glm-5.3") == "zai/glm-5.3"
+
+
+def test_geometric_rejects_a_model_the_endpoint_does_not_serve():
+    # A typo must die at submit, not after a queue slot, worker, and sandbox
+    # have been spent reaching the endpoint's 404.
+    with pytest.raises(ValueError, match="glm-5.3"):
+        require_geometric_served_model_id("geometric/glm-5.4")
+
+
+def test_geometric_cannot_smuggle_a_foreign_model_to_public_openai():
+    # The real hazard: geometric/gpt-4o would reach litellm as ``openai/gpt-4o``,
+    # whose default route is public OpenAI. Only OPENAI_BASE_URL keeps it on our
+    # own box, so refuse the id rather than depend on that env var.
+    with pytest.raises(ValueError):
+        require_geometric_served_model_id("geometric/gpt-4o")
+
+
+def test_geometric_normalization_is_total_over_stored_rows(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # _GEOMETRIC_SERVED_MODELS is meant to change with --served-model-name, so an
+    # id valid when a trial was written can later leave the set. Every read over
+    # stored rows must still resolve. get_provider_for_trial and
+    # get_queue_key_for_trial do NOT expose ``strict``, so normalization has to
+    # be total rather than relying on callers to opt out.
+    retired = "geometric/glm-5.2"
+    assert settings.normalize_trial_model("mini-swe-agent", retired) == retired
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", retired, strict=False)
+        == retired
+    )
+    assert settings.get_provider_for_trial("mini-swe-agent", retired) == "geometric"
+    assert settings.get_queue_key_for_trial("mini-swe-agent", retired) == retired
+
+
+def test_geometric_canonicalizes_case_to_the_served_model_name(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The wire id must match --served-model-name exactly whatever case is typed.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "geometric/GLM-5.3")
+        == "geometric/glm-5.3"
+    )
+    assert require_geometric_served_model_id("geometric/GLM-5.3") == "glm-5.3"
+
+
+def test_geometric_allowlist_leaves_other_providers_open(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The allowlist is justified by Geometric being a single-model endpoint; it
+    # must not leak into the multi-model vendor APIs, which stay open.
+    assert (
+        settings.normalize_trial_model("mini-swe-agent", "meta/anything-at-all")
+        == "meta/anything-at-all"
+    )
+    assert settings.normalize_trial_model("claude-code", "zai/glm-5.4") == "zai/glm-5.4"
+
+
+def test_geometric_agent_env_points_mini_swe_at_geometric(monkeypatch):
+    monkeypatch.setenv("GEOMETRIC_BASE_URL", "https://api.geometric.example/v1/")
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    env = settings.get_geometric_agent_env()
+
+    assert env["MSWEA_API_KEY"] == "${GEOMETRIC_API_KEY}"
+    # LiteLLM's openai/ provider authenticates from OPENAI_API_KEY.
+    assert env["OPENAI_API_KEY"] == "${GEOMETRIC_API_KEY}"
+    # Trailing slash trimmed, matching the Meta route.
+    assert env["OPENAI_BASE_URL"] == "https://api.geometric.example/v1"
+    assert "OPENAI_API_BASE" not in env
+    # Both verified necessary against a live endpoint: without MSWEA_CONFIGURED
+    # mini-swe-agent drops into an interactive setup wizard and aborts with no
+    # TTY; without MSWEA_COST_TRACKING it raises on a model litellm has no
+    # price for, which a self-hosted GLM-5.3 always is.
+    assert env["MSWEA_CONFIGURED"] == "true"
+    assert env["MSWEA_COST_TRACKING"] == "ignore_errors"
 
 
 def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):

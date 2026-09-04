@@ -5,7 +5,11 @@ from collections.abc import Collection
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
 
-from oddish.config import settings
+from oddish.config import (
+    is_geometric_model,
+    require_geometric_served_model_id,
+    settings,
+)
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
@@ -57,6 +61,25 @@ def build_trial_specs_from_sweep(
                 source=f"configs[{config.agent}/{config.model or 'default'}].environment",
                 allowed_environments=allowed_environments,
             )
+
+        # Geometric is a single-model endpoint. Reject an id it does not serve
+        # at submit, before a trial row, queue slot, worker, and sandbox are
+        # spent failing on it -- and before a foreign id could reach litellm as
+        # ``openai/<id>``, whose default route is public OpenAI. This is the
+        # chokepoint both the single and batch submit paths share.
+        if is_geometric_model(config.model):
+            try:
+                require_geometric_served_model_id(config.model or "")
+            except ValueError as exc:
+                # Surface as a 400 with the message, matching this module's
+                # convention.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unsupported model for agent "
+                        f"{config.agent!r} / model {config.model!r}: {exc}"
+                    ),
+                ) from exc
 
         n = config.n_trials
         if existing_counts is not None:
