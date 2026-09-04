@@ -1758,8 +1758,9 @@ async def _release_orphaned_slots(session) -> int:
                 UPDATE queue_slots qs
                 SET    locked_by = NULL,
                        locked_until = NULL,
-                       locked_at = NULL
+                       locked_at = NULL, launch_demand = NULL
                 WHERE  qs.locked_by IS NOT NULL
+                  AND (qs.launch_demand IS NULL OR (qs.launch_demand->>'adopted')::boolean)
                   AND  (
                       qs.locked_at IS NULL
                       OR qs.locked_at < NOW() - make_interval(
