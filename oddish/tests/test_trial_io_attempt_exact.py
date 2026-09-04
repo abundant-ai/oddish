@@ -85,7 +85,7 @@ class _BinaryStorage(_Storage):
         return key in self.binary_objects
 
 
-def _trial(*, prefix: str | None, attempts: int = 1):
+def _trial(*, prefix: str | None, attempts: int = 1, kind: str = "agent"):
     return SimpleNamespace(
         id="task-1-7",
         name="display-name-not-used-for-current-layout",
@@ -95,6 +95,7 @@ def _trial(*, prefix: str | None, attempts: int = 1):
         error_message=None,
         finished_at=datetime.now(UTC),
         attempts=attempts,
+        kind=kind,
     )
 
 
@@ -659,7 +660,7 @@ def test_manifestless_historical_layout_uses_deterministic_fallback(monkeypatch)
 
 def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
     prefix = "tasks/task-1/trials/task-1-7/"
-    for namespace in ("attempt", "analysis-qa/attempt"):
+    for namespace, kind in (("attempt", "agent"), ("analysis-qa/attempt", "qa")):
         _clear_cache()
         old_key = f"{prefix}{namespace}-1/old-run/agent/trajectory.json"
         partial_current_key = (
@@ -679,12 +680,60 @@ def test_missing_attempt_pointer_never_selects_a_sibling_attempt(monkeypatch):
         )
 
         result = asyncio.run(
-            trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2))
+            trial_io.read_trial_trajectory(_trial(prefix=None, attempts=2, kind=kind))
         )
 
         assert result is None
         assert old_key not in storage.download_calls
         assert storage.list_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "namespaces", "selected_namespace"),
+    (
+        ("agent", ("attempt-1", "analysis-qa/attempt-1"), "attempt-1"),
+        ("qa", ("attempt-1", "analysis-qa/attempt-1"), "analysis-qa/attempt-1"),
+        ("agent", ("analysis-qa/attempt-1",), None),
+        ("qa", ("attempt-1",), None),
+    ),
+)
+def test_missing_pointer_selects_only_the_trial_kinds_attempt_namespace(
+    monkeypatch,
+    kind,
+    namespaces,
+    selected_namespace,
+):
+    _clear_cache()
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = {}
+    run_names = {}
+    for index, namespace in enumerate(namespaces):
+        run_name = f"run-{index}"
+        run_names[namespace] = run_name
+        objects[f"{root_prefix}{namespace}/result.json"] = json.dumps(
+            {"trial_results": [{"trial_name": run_name}]}
+        )
+    storage = _Storage(objects, listed=list(objects))
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=None, kind=kind),
+            storage,
+        )
+    )
+
+    if selected_namespace is None:
+        assert layout.mode is TrialArtifactMode.UNAVAILABLE
+        assert storage.download_calls == []
+    else:
+        selected_prefix = f"{root_prefix}{selected_namespace}/"
+        assert layout.mode is TrialArtifactMode.EXACT
+        assert layout.attempt_prefix == selected_prefix
+        assert layout.artifact_prefix == (
+            f"{selected_prefix}{run_names[selected_namespace]}/"
+        )
+        assert storage.download_calls == [f"{selected_prefix}result.json"]
 
 
 def test_missing_pointer_recovers_one_settled_matching_attempt(monkeypatch):

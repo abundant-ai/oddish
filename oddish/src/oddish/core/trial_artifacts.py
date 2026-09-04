@@ -79,19 +79,22 @@ def trial_name_from_manifest(manifest: object) -> str | None:
     return validate_trial_name(trial_results[0].get("trial_name"))
 
 
-def _attempt_scoped_prefix(key: str, root_prefix: str) -> str | None:
-    """Return the immutable attempt prefix containing an object, if any."""
+def _attempt_scoped_prefix(key: str, root_prefix: str) -> tuple[str, str] | None:
+    """Return an immutable attempt prefix and the trial kind that owns it."""
     parts = PurePosixPath(key.removeprefix(root_prefix)).parts
     if not parts:
         return None
     if re.fullmatch(r"attempt-[1-9]\d*", parts[0]):
-        return f"{root_prefix}{parts[0]}/"
+        return f"{root_prefix}{parts[0]}/", "agent"
     if (
         len(parts) > 1
         and parts[0].startswith("analysis-")
         and re.fullmatch(r"attempt-[1-9]\d*", parts[1]) is not None
     ):
-        return f"{root_prefix}{parts[0]}/{parts[1]}/"
+        return (
+            f"{root_prefix}{parts[0]}/{parts[1]}/",
+            parts[0].removeprefix("analysis-"),
+        )
     return None
 
 
@@ -120,17 +123,23 @@ async def resolve_trial_artifact_layout(
     inferred_attempt = False
     if trial.trial_s3_key is None:
         listed_keys = tuple(sorted(await storage.list_keys(attempt_prefix)))
-        scoped_prefixes = {
-            scoped_prefix
+        scoped_attempts = {
+            scoped_attempt
             for key in listed_keys
-            if (scoped_prefix := _attempt_scoped_prefix(key, attempt_prefix))
+            if (scoped_attempt := _attempt_scoped_prefix(key, attempt_prefix))
             is not None
         }
-        if scoped_prefixes:
+        if scoped_attempts:
+            trial_kind = str(getattr(trial, "kind", "agent") or "agent")
+            owned_prefixes = {
+                prefix
+                for prefix, owner_kind in scoped_attempts
+                if owner_kind == trial_kind
+            }
             attempts = int(getattr(trial, "attempts", 0) or 0)
             expected_suffix = f"attempt-{attempts}/" if attempts > 0 else None
             only_prefix = (
-                next(iter(scoped_prefixes)) if len(scoped_prefixes) == 1 else None
+                next(iter(owned_prefixes)) if len(owned_prefixes) == 1 else None
             )
             settled = getattr(trial, "finished_at", None) is not None
             if (
