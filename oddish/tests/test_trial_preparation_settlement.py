@@ -216,10 +216,24 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_enabled", [False, True])
 async def test_run_trial_job_keeps_successful_upload_when_analysis_validation_fails(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, gateway_enabled
 ):
     """Uploaded diagnostics remain authoritative when the required artifact is bad."""
+    from oddish.workers.queue import model_gateway
+
+    monkeypatch.setattr(
+        trial_handler.settings, "qa_model_routing_enabled", gateway_enabled
+    )
+    gateway_env = {
+        "ANTHROPIC_API_KEY": "worker.gateway-token",
+        "ODDISH_QA_MODEL_ROUTED": "1",
+    }
+    mint_gateway = AsyncMock(return_value=gateway_env)
+    revoke_gateway = AsyncMock()
+    monkeypatch.setattr(model_gateway, "mint_gateway_env", mint_gateway)
+    monkeypatch.setattr(trial_handler, "_revoke_job_credentials", revoke_gateway)
     trial_id = "task-1-4"
     job_dir = tmp_path / "harbor-job"
     job_dir.mkdir()
@@ -227,8 +241,10 @@ async def test_run_trial_job_keeps_successful_upload_when_analysis_validation_fa
         task_path=str(tmp_path / "task"),
         task_s3_key="tasks/task-1/v1.tar.gz",
         task_id="task-1",
-        trial_agent="single-llm",
-        trial_model="anthropic/claude-sonnet-4-6",
+        trial_agent="claude-code" if gateway_enabled else "single-llm",
+        trial_model="anthropic/claude-sonnet-5"
+        if gateway_enabled
+        else "anthropic/claude-sonnet-4-6",
         trial_environment="docker",
         trial_harbor_config={"extra_instructions": "classify the task"},
         trial_kind="qa",
@@ -321,9 +337,21 @@ async def test_run_trial_job_keeps_successful_upload_when_analysis_validation_fa
 
     returned = await trial_handler.run_trial_job(
         trial_id,
-        "anthropic/claude-sonnet-4-6",
+        prepared.trial_model,
+        worker_job_id="job-1",
+        worker_job_attempt=2,
     )
 
+    if gateway_enabled:
+        mint_gateway.assert_awaited_once_with("job-1", 2)
+        revoke_gateway.assert_awaited_once_with("job-1", trial_id, attempt=2)
+        assert (
+            trial_handler._execute_trial.await_args.kwargs["extra_agent_env"]
+            == gateway_env
+        )
+    else:
+        mint_gateway.assert_not_awaited()
+        revoke_gateway.assert_not_awaited()
     assert returned is outcome
     cleanup_uploaded_job_dir.assert_called_once_with(job_dir, trial_id)
     settlement = settle_trial_attempt.await_args.kwargs

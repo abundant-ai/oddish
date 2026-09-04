@@ -603,3 +603,22 @@ async def reset_slack_alert_settings(
             return _settings_response(await clear_alert_settings(session))
     except ProgrammingError as exc:
         raise _unavailable(exc) from exc
+
+
+@router.get("/qa-model-capacity")
+async def get_qa_model_capacity(auth: Annotated[AuthContext, Depends(require_admin)]):
+    """Operator-only provider load; contains credential references, never values."""
+    require_operator_org(auth)
+    from oddish.workers.queue.model_capacity import (
+        ROUTE_THRESHOLD,
+        capacity_snapshot,
+        configured_pools,
+    )
+
+    return {
+        "enabled": settings.qa_model_routing_enabled,
+        "routing_threshold": ROUTE_THRESHOLD,
+        "pools": await capacity_snapshot(configured_pools())
+        if settings.qa_model_routing_enabled
+        else [],
+    }

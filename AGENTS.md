@@ -1710,3 +1710,25 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+### QA model request gateway
+
+Opt-in `ODDISH_QA_MODEL_ROUTING_ENABLED` routes eligible platform-funded Sonnet 5
+QA/audit/QA-eval Claude Code calls through the dedicated `qa_model_gateway` Modal
+function (`backend/api/qa_model_app.py`), not the dashboard API's concurrency
+budget. `ODDISH_QA_MODEL_GATEWAY_URL` must name that function's HTTPS origin.
+`ODDISH_QA_MODEL_POOLS` declares verified independent account/model quotas and
+secret env references. HDO keys sharing an organization are not extra pools.
+
+`oddish.workers.queue.model_capacity` owns per-request admission at a projected
+65% load, using short PostgreSQL transactions and expiring request reservations.
+It never treats worker slots as API RPM and holds no DB connection during a
+provider call. Preserve this separation from `queue_slots` and QA job priority.
+`model_gateway` reuses worker-job token hashes for attempt-bound credentials;
+analysis READ keys must never acquire gateway access. Feature-off stops new
+routing while issued live attempt tokens continue working until revoked.
+The gateway forwards Anthropic messages and translates Bedrock event streams;
+never replay a partially streamed request or log provider keys/prompts.
+
+See `docs/qa-model-routing.md` for configuration, accounting conservatism,
+protocol scope, operator metrics, tests, and staging rollout prerequisites.
