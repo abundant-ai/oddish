@@ -91,6 +91,9 @@ jobs:
       ODDISH_EC2_ROOT_VOLUME_SIZE_GB: "80"
       ODDISH_EC2_USE_PUBLIC_IP: "true"
       ODDISH_EC2_BOOTSTRAP_DOCKER: "true"
+      # Admission ceiling only; AWS vCPU, instance, Elastic IP, and subnet
+      # address quotas must independently support this fleet size.
+      ODDISH_EC2_MAX_CONCURRENT_INSTANCES: "100"
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op
