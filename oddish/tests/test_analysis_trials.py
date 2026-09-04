@@ -5,6 +5,7 @@ Each test checks one rule. The rule is in the test name and the first line.
 
 import os
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1613,7 +1614,7 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
     )
     test_sh = tmp_path / "tests" / "test.sh"
 
-    def run(payload: str | None) -> int:
+    def run(payload: str | None) -> tuple[int, Path]:
         logs = tmp_path / "logs"
         if logs.exists():
             import shutil
@@ -1630,7 +1631,7 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
             text=True,
             cwd=tmp_path,
         )
-        return result.returncode
+        return result.returncode, out
 
     # The script reads the fixed path /logs/<artifact>; symlinking that
     # is not possible in a test, so rewrite the SRC line to the temp dir.
@@ -1641,27 +1642,36 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
     )
 
     good = {"trials": [_good_qa_entry("t-1"), _good_qa_entry("t-2")], "verdict": None}
-    code = run(json.dumps(good))
+    code, out = run(json.dumps(good))
     assert code == 0
-    assert (tmp_path / "logs" / "verifier" / "reward.txt").read_text().strip() == "1.0"
-    assert (tmp_path / "logs" / "verifier" / "qa_result.json").exists()
+    assert (out / "reward.txt").read_text().strip() == "1.0"
+    assert (out / "qa_result.json").exists()
 
     # An empty result must NOT earn reward: the requested trials are absent.
-    code = run(json.dumps({"trials": [], "verdict": None}))
+    code, out = run(json.dumps({"trials": [], "verdict": None}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
+    assert "missing entries" in (out / "error.txt").read_text()
 
     # A subset must not earn reward either.
-    code = run(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
+    code, out = run(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run(json.dumps({}))
+    code, out = run(json.dumps({}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run("not json")
+    code, out = run("not json")
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run(None)
+    code, out = run(None)
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
+    assert (out / "error.txt").read_text().strip() == (
+        "the agent did not write " + str(tmp_path / "logs" / "qa_result.json")
+    )
 
 
 def test_the_validator_requires_the_exact_trial_set():
