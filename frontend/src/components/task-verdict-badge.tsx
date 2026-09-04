@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { isActivePipelineStatus } from "@/lib/job-status";
+import { isActivePipelineStatus, taskHasActiveVerdict } from "@/lib/job-status";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
@@ -27,12 +27,11 @@ type VerdictPresentation = {
 
 function presentVerdict(
   task: Task,
-  iconSizeClass: string,
+  iconSizeClass: string
 ): VerdictPresentation {
   const status = task.verdict_status;
   const verdict = task.verdict ?? null;
-  const verdictPending =
-    status === "running" || status === "pending" || status === "queued";
+  const verdictPending = taskHasActiveVerdict(task);
   const failed = status === "failed";
   const isGood = verdict?.is_good ?? null;
   // The single task-level QA job classifies every trial and then synthesizes
@@ -48,8 +47,8 @@ function presentVerdict(
           (t.kind === "qa" &&
             !t.superseded_by_trial_id &&
             !["success", "failed", "skipped"].includes(
-              (t.status ?? "").toLowerCase(),
-            )),
+              (t.status ?? "").toLowerCase()
+            ))
       ));
   const pending = verdictPending || analysesInFlight;
 
@@ -80,11 +79,11 @@ function presentVerdict(
     toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
   } else if (isGood === false) {
     icon = (
-      <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-500`} />
+      <AlertTriangle className={`${iconSizeClass} shrink-0 text-red-600`} />
     );
     title = "Rejected";
-    toneCard = "border-amber-500/30 bg-amber-500/5";
-    toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
+    toneCard = "border-red-500/50 bg-red-500/10";
+    toneInline = "border-red-500/50 bg-red-500/10";
   } else {
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
@@ -113,6 +112,7 @@ function presentVerdict(
 export function TaskVerdictBadge({
   task,
   variant,
+  onViewFindings,
   onRunJudge,
   onCancelJudge,
   isRunning,
@@ -120,7 +120,8 @@ export function TaskVerdictBadge({
   error,
 }: {
   task: Task;
-  variant: "card" | "inline";
+  variant: "card" | "inline" | "summary";
+  onViewFindings?: () => void;
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
   isRunning?: boolean;
@@ -141,20 +142,33 @@ export function TaskVerdictBadge({
   const runLabel =
     task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
 
-  if (variant === "inline") {
+  if (variant === "inline" || variant === "summary") {
     return (
       <div
-        className={`flex items-start gap-2.5 rounded-[10px] border px-3 py-2 ${p.toneInline}`}
+        className={`flex flex-wrap items-start gap-2.5 rounded-[10px] border px-3 py-2 ${p.toneInline}`}
       >
         {isRunning ? (
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />
         ) : (
           p.icon
         )}
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-48">
           <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              {isRunning ? "Queuing QA..." : p.title}
+            <span
+              className={
+                variant === "summary"
+                  ? "text-base font-semibold"
+                  : "font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]"
+              }
+            >
+              {isRunning
+                ? "Queuing QA..."
+                : variant === "summary" &&
+                    !p.pending &&
+                    !p.failed &&
+                    p.isGood === false
+                  ? "QA rejected this task"
+                  : p.title}
             </span>
             {!p.pending && verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
@@ -163,7 +177,13 @@ export function TaskVerdictBadge({
             ) : null}
           </div>
           {p.detail ? (
-            <p className="mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]">
+            <p
+              className={
+                variant === "summary"
+                  ? "mt-1 line-clamp-2 text-sm"
+                  : "mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]"
+              }
+            >
               {p.detail}
             </p>
           ) : null}
@@ -171,7 +191,8 @@ export function TaskVerdictBadge({
               They rendered only in the card variant, so the panes that moved
               from the pinned card to this badge kept the rejection and lost
               what to do about it. */}
-          {!p.pending &&
+          {variant !== "summary" &&
+          !p.pending &&
           verdict?.recommendations &&
           verdict.recommendations.length > 0 ? (
             <div className="mt-1.5 border-l-2 border-amber-500/50 pl-2">
@@ -195,6 +216,16 @@ export function TaskVerdictBadge({
             </p>
           ) : null}
         </div>
+        {variant === "summary" && onViewFindings && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onViewFindings}
+          >
+            View findings
+          </Button>
+        )}
         {showCancelButton ? (
           <Button
             type="button"
@@ -246,7 +277,10 @@ export function TaskVerdictBadge({
               ) : null}
             </div>
             {p.detail ? (
-              <AnalysisProse text={p.detail} className="text-muted-foreground mt-1" />
+              <AnalysisProse
+                text={p.detail}
+                className="text-muted-foreground mt-1"
+              />
             ) : null}
             {!p.pending &&
             verdict?.recommendations &&

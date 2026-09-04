@@ -1091,8 +1091,13 @@ class PublicExperimentTaskRow(BaseModel):
     updated_at: datetime
 
 
+class ExperimentTaskVerdict(ExperimentPageVerdict):
+    primary_issue: str | None = None
+
+
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    verdict: ExperimentTaskVerdict | None = None
 
 
 class ExperimentPageSummary(BaseModel):

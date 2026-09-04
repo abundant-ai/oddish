@@ -136,6 +136,16 @@ export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   );
 }
 
+/** A published rejection, excluding a withdrawn verdict during replacement QA. */
+export function taskHasRejectedVerdict(task: Task): boolean {
+  return (
+    !taskHasActiveVerdict(task) &&
+    task.verdict_status !== "failed" &&
+    (task.verdict?.verdict === "reject" ||
+      (task.verdict?.verdict == null && task.verdict?.is_good === false))
+  );
+}
+
 export function taskHasCancellableWork(task: Task | null | undefined): boolean {
   if (!task) return false;
   if (task.jobs?.some(isActiveVisibleJob)) return true;
