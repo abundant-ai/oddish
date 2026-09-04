@@ -39,6 +39,12 @@ sets request concurrency (default 8), and `RAW_CACHE=path` reuses a previous
 
 ## Columns of `task_metrics.csv`
 
+* `doc_category`: a re-labelled category. The catalogue's single `DB debug`
+  bucket is split by the system under repair (`DuckDB`, `SQLite`, `RocksDB`,
+  `TimescaleDB`, `Qdrant`, `etcd`, `FAISS`); the other buckets get doc-facing
+  names (`Scientific Data Analysis`, `Numerical Methods Reproduction`,
+  `Spreadsheet Model Reconstruction`, `Model Post-Training`,
+  `Software & Systems Engineering`).
 * `model_used`, `model_tier`, `model_variants`: the model summarised.
 * `n_trials`, `passes`: measured trials of that model and how many scored
   reward 1.0. `n_timeouts`, `n_exit_errors`, `n_excluded` break down the
@@ -58,6 +64,14 @@ sets request concurrency (default 8), and `RAW_CACHE=path` reuses a previous
   `sheet opus a/b vs fetched c/d` note flags a disagreement with `n_trials`;
   check `n_clean` before treating it as a real discrepancy.
 * `task_ids`, `task_version`, `experiments_used`: the exact trial population.
+
+## Companion files
+
+* `task_metrics_avg_steps_ge75.csv` — the 267 tasks whose mean steps are >= 75
+  (the long-horizon tail), same columns as `task_metrics.csv`.
+* `CANDIDATE_SET.md` — a candidate-set overview built on that filtered set, with
+  the 12 `doc_category` categories, per-category complexity and pass rates, and
+  highlighted examples.
 
 Snapshot facts: all 784 tasks resolved; 783 are measured on Opus 4.8 and one
 (`dengue-ade-branch`) on Opus 5 because all six of its Opus 4.8 runs were
