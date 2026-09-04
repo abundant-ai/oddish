@@ -18,8 +18,11 @@ from oddish.db.storage import (
 
 
 class TrialArtifactPointer(Protocol):
-    id: str
-    trial_s3_key: str | None
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def trial_s3_key(self) -> str | None: ...
 
 
 class TrialArtifactMode(str, Enum):
@@ -76,18 +79,20 @@ def trial_name_from_manifest(manifest: object) -> str | None:
     return validate_trial_name(trial_results[0].get("trial_name"))
 
 
-def _is_attempt_scoped_key(key: str, root_prefix: str) -> bool:
-    """Whether an object belongs to the immutable per-attempt layout."""
+def _attempt_scoped_prefix(key: str, root_prefix: str) -> str | None:
+    """Return the immutable attempt prefix containing an object, if any."""
     parts = PurePosixPath(key.removeprefix(root_prefix)).parts
     if not parts:
-        return False
+        return None
     if re.fullmatch(r"attempt-[1-9]\d*", parts[0]):
-        return True
-    return (
+        return f"{root_prefix}{parts[0]}/"
+    if (
         len(parts) > 1
         and parts[0].startswith("analysis-")
         and re.fullmatch(r"attempt-[1-9]\d*", parts[1]) is not None
-    )
+    ):
+        return f"{root_prefix}{parts[0]}/{parts[1]}/"
+    return None
 
 
 def _is_attempt_scoped_prefix(prefix: str) -> bool:
@@ -112,21 +117,51 @@ async def resolve_trial_artifact_layout(
         trial_s3_key=trial.trial_s3_key,
     )
     listed_keys: tuple[str, ...] | None = None
+    inferred_attempt = False
     if trial.trial_s3_key is None:
         listed_keys = tuple(sorted(await storage.list_keys(attempt_prefix)))
-        if any(_is_attempt_scoped_key(key, attempt_prefix) for key in listed_keys):
+        scoped_prefixes = {
+            scoped_prefix
+            for key in listed_keys
+            if (scoped_prefix := _attempt_scoped_prefix(key, attempt_prefix))
+            is not None
+        }
+        if scoped_prefixes:
+            attempts = int(getattr(trial, "attempts", 0) or 0)
+            expected_suffix = f"attempt-{attempts}/" if attempts > 0 else None
+            only_prefix = (
+                next(iter(scoped_prefixes)) if len(scoped_prefixes) == 1 else None
+            )
+            settled = getattr(trial, "finished_at", None) is not None
+            if (
+                settled
+                and only_prefix is not None
+                and expected_suffix is not None
+                and only_prefix.endswith(expected_suffix)
+            ):
+                attempt_prefix = only_prefix
+                inferred_attempt = True
+            else:
+                return TrialArtifactLayout(
+                    TrialArtifactMode.UNAVAILABLE,
+                    attempt_prefix,
+                    None,
+                    listed_keys=listed_keys,
+                    failure_reason=(
+                        "trial_s3_key is missing while attempt-scoped artifacts exist"
+                    ),
+                )
+
+    manifest_key = f"{attempt_prefix}result.json"
+    if not await storage.object_exists(manifest_key):
+        if inferred_attempt:
             return TrialArtifactLayout(
                 TrialArtifactMode.UNAVAILABLE,
                 attempt_prefix,
                 None,
                 listed_keys=listed_keys,
-                failure_reason=(
-                    "trial_s3_key is missing while attempt-scoped artifacts exist"
-                ),
+                failure_reason="inferred attempt is missing result.json",
             )
-
-    manifest_key = f"{attempt_prefix}result.json"
-    if not await storage.object_exists(manifest_key):
         return TrialArtifactLayout(
             TrialArtifactMode.LEGACY,
             attempt_prefix,

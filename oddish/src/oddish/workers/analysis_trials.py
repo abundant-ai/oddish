@@ -570,6 +570,8 @@ Each successful command writes an object whose `trial_id` must equal the request
 
 For a manifest entry with `has_trajectory: true`, `trajectory` must be a JSON object. If it is absent, malformed, or belongs to another ID, stop without writing `qa_result.json`. For `has_trajectory: false`, a null or unavailable trajectory is expected: use only the authoritative facts, result when available, verifier output, and exception. Do not invent agent actions. Its `trajectory_summary` must say that no trajectory was recorded and must use empty `highlights` and `components` arrays.
 
+An empty verifier `stdout` or `stderr` string means that file exists and the verifier emitted no text; it is valid, available evidence. Verifier evidence is absent only when `stdout`, `stderr`, and `exception` are all null or unavailable.
+
 If result or verifier evidence is absent for a trial that started, or any successful command returns a different `trial_id`, stop without writing `qa_result.json`. Missing QA evidence is not a solver HARNESS_ERROR; do not infer agent behavior or substitute evidence from another trial or attempt.
 
 Source-audit status: {audit_status}

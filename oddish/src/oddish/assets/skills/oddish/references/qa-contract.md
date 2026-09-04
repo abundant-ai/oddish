@@ -88,8 +88,13 @@ Before a replacement is queued, Oddish uses the same artifact readers available
 to the QA sandbox to check every eligible source trial. A started trial must
 have a readable Harbor result and verifier stdout, stderr, or exception. A row
 with `has_trajectory = true` must have a readable trajectory JSON object. A
-failed preflight returns the blocking trial IDs without clearing analysis,
-withdrawing the current verdict, or spending QA attempts.
+present but empty verifier stream satisfies the verifier requirement. For
+historical rows, a malformed Claude trajectory can be rebuilt from the captured
+`claude-code.txt` in the same manifest-selected attempt. A missing attempt
+pointer can be inferred only when the row is finished, its attempt count matches,
+and storage contains exactly one immutable attempt prefix. A failed preflight
+returns the blocking trial IDs without clearing analysis, withdrawing the
+current verdict, or spending QA attempts.
 
 Queuing a replacement clears the current verdict. While it is queued or
 running, the page shows QA in progress. Completion publishes only the new

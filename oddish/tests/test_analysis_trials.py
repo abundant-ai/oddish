@@ -210,6 +210,8 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     assert "not mounted in the QA sandbox" in brief
     assert "stop without writing `qa_result.json`" in brief
     assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
+    assert "An empty verifier `stdout` or `stderr` string" in brief
+    assert "`stdout`, `stderr`, and `exception` are all null" in brief
     assert "The fetched task source is QA-only evidence" in brief
     assert "The exact exception `AgentTimeoutError`" in brief
     assert "it is not HARNESS_ERROR" in brief

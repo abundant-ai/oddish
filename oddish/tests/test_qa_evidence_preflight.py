@@ -41,6 +41,20 @@ async def test_qa_source_evidence_accepts_readable_started_trial(evidence_reads)
 
 
 @pytest.mark.asyncio
+async def test_qa_source_evidence_accepts_present_empty_verifier_stream(
+    evidence_reads,
+):
+    evidence_reads.verifier.return_value = {
+        "verifier": {"stdout": "", "stderr": None},
+        "exception": None,
+    }
+
+    errors = await trial_io.qa_source_evidence_errors(source_trial())
+
+    assert errors == ()
+
+
+@pytest.mark.asyncio
 async def test_qa_source_evidence_rejects_stale_trajectory_flag(evidence_reads):
     evidence_reads.verifier.return_value = {
         "verifier": {"stdout": None, "stderr": "failure\n"},
