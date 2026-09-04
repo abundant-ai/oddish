@@ -1557,6 +1557,41 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _numinous_trial_labels(
+    *,
+    existing: Any,
+    trial_id: str | None,
+    agent: str | None,
+    model: str | None,
+    experiment_id: str | None,
+    experiment_name: str | None,
+    org_id: str | None,
+    trial_kind: str | None,
+) -> dict[str, str]:
+    """Labels the Numinous environment puts on the sandbox at create.
+
+    Numinous Cloud groups trials into experiments and shows agent and reward
+    on the customer's console from these labels; without them a trial is an
+    anonymous sandbox there. The reward is stamped later from the END hook
+    (see ``_handle_harbor_event``). Empty values are dropped.
+    """
+    labels: dict[str, str] = {}
+    if isinstance(existing, dict):
+        labels.update({str(k): str(v) for k, v in existing.items() if v is not None})
+    for key, value in (
+        ("oddish.experiment_id", experiment_id),
+        ("oddish.experiment_name", experiment_name),
+        ("oddish.trial_id", trial_id),
+        ("oddish.agent", agent),
+        ("oddish.model", model),
+        ("oddish.org_id", org_id),
+        ("oddish.kind", trial_kind),
+    ):
+        if value:
+            labels[key] = str(value)[:256]
+    return labels
+
+
 def _resolve_provider_environment_config(
     *,
     hc: HarborConfig,
@@ -1625,6 +1660,8 @@ async def run_harbor_trial_async(
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
     trial_kind: str = "agent",
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1670,6 +1707,8 @@ async def run_harbor_trial_async(
             raw=raw,
             hc=hc,
             backend=backend,
+            experiment_id=experiment_id,
+            experiment_name=experiment_name,
         )
 
 
@@ -1691,6 +1730,8 @@ async def _run_harbor_trial_async_impl(
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
     trial_kind: str,
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> HarborOutcome:
     from oddish.workers.analysis_trials import is_analysis_kind
 
@@ -1754,6 +1795,20 @@ async def _run_harbor_trial_async_impl(
         worker_job_id=worker_job_id,
         sandbox_launch=sandbox_launch,
     )
+    if environment == EnvironmentType.NUMINOUS:
+        resolved_environment_config.kwargs = {
+            **resolved_environment_config.kwargs,
+            "labels": _numinous_trial_labels(
+                existing=resolved_environment_config.kwargs.get("labels"),
+                trial_id=trial_id,
+                agent=agent,
+                model=model,
+                experiment_id=experiment_id,
+                experiment_name=experiment_name,
+                org_id=org_id,
+                trial_kind=trial_kind,
+            ),
+        }
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
