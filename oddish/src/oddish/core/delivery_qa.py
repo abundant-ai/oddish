@@ -154,9 +154,12 @@ def evaluate_delivery_qa(
                 "Source audit changed since QA; rerun QA",
             )
         elif (
-            not payload.with_verdict
-            or task.verdict_status != VerdictStatus.SUCCESS
+            task.verdict_status != VerdictStatus.SUCCESS
             or not isinstance(task.verdict, dict)
+            # Legacy synthesized verdicts lack a grader ID. A classification-only
+            # run must explicitly own the verdict its baseline rules published.
+            or task.verdict.get("_graded_by", qa.id if payload.with_verdict else None)
+            != qa.id
         ):
             result.status, result.detail = "error", "QA produced no current verdict"
         elif task.verdict.get("is_good") is True:

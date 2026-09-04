@@ -13,7 +13,11 @@ from oddish.core.deliveries import (
     get_delivery_board_core,
     patch_delivery_qa_work_core,
 )
-from oddish.db import TrialModel, TrialStatus, generate_id, utcnow
+from oddish.core.verdict_sync import (
+    apply_deterministic_verdict_rules,
+    build_verdict_payload,
+)
+from oddish.db import TrialModel, TrialStatus, VerdictStatus, generate_id, utcnow
 from oddish.schemas import DeliveryCreate, QAWorkClaim, QAWorkPatch
 from sqlalchemy import select
 from test_deliveries import ORG, _green_task, _trial, _version
@@ -68,6 +72,61 @@ async def test_completed_qa_covers_current_evidence(session, accepted):
     assert board.tasks[0].qa.trial_id == qa.id
     assert board.tasks[0].qa.finished_at == qa.finished_at
     assert board.qa_as_of is not None
+
+
+@pytest.mark.asyncio
+async def test_completed_qa_with_baseline_rejection_counts_as_checked(session):
+    delivery, task, version, experiment, qa, _ = await _reviewed_delivery(session)
+    # A failed audit disables model verdict synthesis, but the importer still
+    # publishes decisive baseline failures after classifying the solver trials.
+    version.pre_trial_status = VerdictStatus.FAILED
+    version.pre_trial = None
+    baseline = _trial(task, experiment, version.id, agent="oracle")
+    baseline.reward = 0.0
+    baseline.finished_at = qa.created_at - timedelta(hours=1)
+    session.add(baseline)
+    baseline_evidence = [qa_trial_evidence(baseline)]
+    qa.harbor_config = {
+        "analysis_payload": {
+            **qa.harbor_config["analysis_payload"],
+            "with_verdict": False,
+            "baseline_evidence": baseline_evidence,
+            "audit_fingerprint": audit_fingerprint(version),
+        }
+    }
+    rejection = apply_deterministic_verdict_rules(
+        None, must_fix_ids=[], baseline_evidence=baseline_evidence
+    )
+    assert rejection is not None and not rejection.is_good
+    task.verdict = {**build_verdict_payload(rejection, []), "_graded_by": qa.id}
+    await session.flush()
+    session.expunge_all()
+
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    assert board.tasks[0].qa.status == "needs_fixes"
+    assert board.tasks[0].qa.detail == rejection.primary_issue
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_verdict", [True, False])
+@pytest.mark.parametrize("grader", ["current", "other", "missing"])
+async def test_qa_verdict_provenance(session, with_verdict, grader):
+    delivery, task, _, _, qa, _ = await _reviewed_delivery(session)
+    qa.harbor_config = {
+        "analysis_payload": {
+            **qa.harbor_config["analysis_payload"],
+            "with_verdict": with_verdict,
+        }
+    }
+    if grader != "missing":
+        task.verdict = {
+            **task.verdict,
+            "_graded_by": qa.id if grader == "current" else "previous-qa",
+        }
+    await session.flush()
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    owns_verdict = grader == "current" or (grader == "missing" and with_verdict)
+    assert board.tasks[0].qa.status == ("accepted" if owns_verdict else "error")
 
 
 @pytest.mark.asyncio

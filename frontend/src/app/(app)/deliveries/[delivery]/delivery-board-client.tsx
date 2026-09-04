@@ -1715,6 +1715,7 @@ export function DeliveryBoardClient({
                             </TableRow>
                           )}
                         <TaskRow
+                          key={row.version_id}
                           qa={statuses.get(row.delivery_task_id)!}
                           busy={busy}
                           canEditWork={

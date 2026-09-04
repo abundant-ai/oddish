@@ -442,6 +442,9 @@ evidence serialization as QA admission. A recent timestamp alone does not make
 a result current. The board's seven-day/24-hour counter includes current accepted
 and rejected results, excluding execution failures and in-flight runs; it does
 not change the existing delivery sign-off requirements.
+Classification-only QA can still publish a deterministic baseline rejection;
+that verdict counts when its `_graded_by` identifies the selected QA run.
+Legacy synthesized verdicts without `_graded_by` remain readable.
 
 `task_versions.qa_work` stores owner user ID, claim time, issue categories (first
 is primary), and handoff note once per version across deliveries. TASKS-scoped
@@ -453,6 +456,8 @@ candidate version IDs from the displayed filters, so stale browsers cannot
 silently claim a newer version. New versions start unassigned. Finalized boards
 retain their QA state and time cutoff in the existing snapshot. Hosted user-name
 resolution stays in the delivery router; standalone coordination uses `local`.
+The board's task rows are keyed by version so a version change closes any open
+QA-work draft before it can be saved against the replacement version.
 
 QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
 It runs the same strict validator used by the verifier and importer, allowing
