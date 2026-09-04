@@ -835,10 +835,10 @@ async def get_trial_logs(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/logs/structured")
-async def get_trial_logs_structured(trial_id: str):
-    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+async def get_trial_logs_structured(trial_id: str, verifier_only: bool = Query(False)):
+    """Get structured logs, optionally limited to verifier evidence."""
     trial = await _get_detached_trial(trial_id)
-    return await read_trial_logs_structured(trial)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @api.get("/trials/{trial_id}/trajectory")

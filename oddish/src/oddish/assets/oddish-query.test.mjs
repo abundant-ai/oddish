@@ -189,7 +189,7 @@ test('trial verifier returns complete verifier streams with trial identity', () 
   };
   const out = runApi(
     ['trials', 'verifier', 't-1'],
-    { '/trials/t-1/logs/structured': payload },
+    { '/trials/t-1/logs/structured?verifier_only=true': payload },
   );
   assert.deepEqual(JSON.parse(out), {
     trial_id: 't-1',
