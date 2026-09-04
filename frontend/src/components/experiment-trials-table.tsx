@@ -141,7 +141,6 @@ type ExperimentTrialsTableProps = {
   onProbeSelect?: (trial: Trial, task: Task) => void;
   readOnly?: boolean;
   showAnalysis?: boolean;
-  rejectedTaskCount?: number;
   onTrialSelect?: (
     trial: Trial,
     task: Task,
@@ -583,7 +582,6 @@ export function ExperimentTrialsTable({
   onProbeSelect,
   readOnly = false,
   showAnalysis = true,
-  rejectedTaskCount,
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
@@ -594,8 +592,11 @@ export function ExperimentTrialsTable({
   const DEFAULT_AGENT_WIDTH = 180;
   const DEFAULT_TASK_WIDTH = 240;
   const [rejectedOnly, setRejectedOnly] = useState(false);
-  const rejectedCount =
-    rejectedTaskCount ?? tasks.filter(taskHasRejectedVerdict).length;
+  const rejectedTasks = useMemo(
+    () => tasks.filter(taskHasRejectedVerdict),
+    [tasks]
+  );
+  const rejectedCount = rejectedTasks.length;
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -890,7 +891,7 @@ export function ExperimentTrialsTable({
   const filteredTasks = useMemo(() => {
     const reviewTasks =
       showAnalysis && rejectedOnly
-        ? tasks.filter(taskHasRejectedVerdict)
+        ? rejectedTasks
         : tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
     const searchFiltered = query
@@ -955,6 +956,7 @@ export function ExperimentTrialsTable({
   }, [
     tasks,
     deferredTaskSearch,
+    rejectedTasks,
     rejectedOnly,
     showAnalysis,
     taskSort,
@@ -1925,7 +1927,7 @@ export function ExperimentTrialsTable({
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
             <div>
               <p className="text-base font-semibold text-red-700 dark:text-red-300">
-                {rejectedCount} {rejectedCount === 1 ? "task" : "tasks"}{" "}
+                {rejectedCount} loaded {rejectedCount === 1 ? "task" : "tasks"}{" "}
                 rejected by QA
               </p>
               <p className="mt-1 text-sm">
