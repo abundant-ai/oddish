@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
@@ -10,7 +12,55 @@ from oddish.workers.agents.claude_code import (
     OddishClaudeCode,
     OddishProbeClaudeCode,
     _pinned_harbor_requirement,
+    convert_claude_code_stream_text_to_trajectory,
 )
+
+
+def test_convert_claude_code_stream_text_to_trajectory_recovers_atif():
+    stream = "\n".join(
+        json.dumps(event)
+        for event in (
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "session-1",
+                "model": "claude-test",
+                "tools": [],
+            },
+            {
+                "type": "assistant",
+                "session_id": "session-1",
+                "message": {
+                    "id": "message-1",
+                    "role": "assistant",
+                    "model": "claude-test",
+                    "content": [{"type": "text", "text": "Recovered."}],
+                    "usage": {
+                        "input_tokens": 1,
+                        "output_tokens": 2,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            },
+            {
+                "type": "result",
+                "session_id": "session-1",
+                "is_error": False,
+                "result": "Recovered.",
+                "total_cost_usd": 0.01,
+            },
+        )
+    )
+
+    trajectory = convert_claude_code_stream_text_to_trajectory(
+        stream,
+        model_name="anthropic/claude-test",
+    )
+
+    assert trajectory is not None
+    assert trajectory["session_id"] == "session-1"
+    assert [step["message"] for step in trajectory["steps"]] == ["Recovered."]
 
 
 @pytest.mark.asyncio

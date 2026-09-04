@@ -27,6 +27,8 @@ from oddish.db import (
     utcnow,
 )
 
+_QA_EVIDENCE_READ_CONCURRENCY = 2
+
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
     modal_fc_ids: list[str] = []
@@ -354,11 +356,14 @@ async def backfill_task_analysis_core(
         task_version_id=task.current_version_id,
     )
     trials_by_id = {trial.id: trial for trial in live_trials}
+    evidence_read_slots = asyncio.Semaphore(_QA_EVIDENCE_READ_CONCURRENCY)
+
+    async def check_source_evidence(trial: TrialModel) -> tuple[str, ...]:
+        async with evidence_read_slots:
+            return await qa_source_evidence_errors(trial)
+
     evidence_checks = await asyncio.gather(
-        *(
-            qa_source_evidence_errors(trials_by_id[trial_id])
-            for trial_id in eligible_ids
-        )
+        *(check_source_evidence(trials_by_id[trial_id]) for trial_id in eligible_ids)
     )
     blocked = [
         f"{trial_id}: {'; '.join(errors)}"
