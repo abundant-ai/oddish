@@ -13,7 +13,6 @@ from harbor.models.trial.config import TaskConfig, TrialConfig  # noqa: E402
 
 from oddish.cli.api import _tar_trial_dir, trial_result_to_import_spec  # noqa: E402
 from oddish.core.harbor_artifacts import (  # noqa: E402
-    detect_trajectory,
     extract_trajectory_metrics,
 )
 from oddish.core.ingest.zip_imports import _task_name_from_harbor_model  # noqa: E402
@@ -67,7 +66,7 @@ def test_shared_trajectory_helpers_read_atif_metrics(tmp_path):
 
     metrics = extract_trajectory_metrics(tmp_path)
 
-    assert detect_trajectory(tmp_path) is True
+    assert metrics.has_trajectory is True
     assert metrics.input_tokens == 11
     assert metrics.output_tokens == 7
     assert metrics.cache_tokens == 3
@@ -94,6 +93,31 @@ def test_shared_trajectory_helpers_ignore_bad_cost(tmp_path):
 
     assert metrics.input_tokens == 11
     assert metrics.cost_usd is None
+
+
+def test_shared_trajectory_helpers_reject_malformed_json(tmp_path):
+    agent_dir = tmp_path / "trial" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "trajectory.json").write_text(
+        '{"final_metrics":{"total_cached_tokens":[REDACTED]}}',
+        encoding="utf-8",
+    )
+
+    metrics = extract_trajectory_metrics(tmp_path)
+
+    assert metrics.has_trajectory is False
+    assert metrics.total_steps is None
+
+
+def test_shared_trajectory_helpers_accept_a_json_object_without_metrics(tmp_path):
+    agent_dir = tmp_path / "trial" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "trajectory.json").write_text("{}", encoding="utf-8")
+
+    metrics = extract_trajectory_metrics(tmp_path)
+
+    assert metrics.has_trajectory is True
+    assert metrics.total_steps is None
 
 
 def test_shared_trajectory_helpers_extract_duration_and_tool_counts(tmp_path):
@@ -188,7 +212,6 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
 
     spec = trial_result_to_import_spec(
         trial_result,
-        has_trajectory=detect_trajectory(tmp_path),
         artifact_dir=tmp_path,
     )
 

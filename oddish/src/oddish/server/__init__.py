@@ -92,6 +92,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
+    PreTrialAuditRequest,
     ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -761,14 +762,20 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
 
 
 @api.post("/tasks/{task_id}/qa/pre-trial")
-async def rerun_pre_trial_audit(task_id: str) -> dict:
+async def rerun_pre_trial_audit(
+    task_id: str, body: PreTrialAuditRequest | None = None
+) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
     Withdraws the old verdict. After the audit and existing runs finish,
     task QA uses the replacement findings to reconcile classifications and decision.
     """
     async with get_session() as session:
-        return await rerun_pre_trial_audit_core(session, task_id=task_id)
+        return await rerun_pre_trial_audit_core(
+            session,
+            task_id=task_id,
+            environment=body.environment if body is not None else None,
+        )
 
 
 @api.post("/trials/{trial_id}/analysis/rerun")
@@ -828,10 +835,10 @@ async def get_trial_logs(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/logs/structured")
-async def get_trial_logs_structured(trial_id: str):
-    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+async def get_trial_logs_structured(trial_id: str, verifier_only: bool = Query(False)):
+    """Get structured logs, optionally limited to verifier evidence."""
     trial = await _get_detached_trial(trial_id)
-    return await read_trial_logs_structured(trial)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @api.get("/trials/{trial_id}/trajectory")

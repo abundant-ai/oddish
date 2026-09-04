@@ -138,6 +138,7 @@ from oddish.schemas import (
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
+    PreTrialAuditRequest,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1565,6 +1566,7 @@ async def backfill_task_qa(
 async def rerun_pre_trial_audit(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    body: PreTrialAuditRequest | None = None,
 ) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
@@ -1575,7 +1577,10 @@ async def rerun_pre_trial_audit(
 
     async with get_session() as session:
         return await rerun_pre_trial_audit_core(
-            session, task_id=task_id, org_id=auth.org_id
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            environment=body.environment if body is not None else None,
         )
 
 

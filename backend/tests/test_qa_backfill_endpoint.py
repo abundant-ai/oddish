@@ -12,7 +12,7 @@ import pytest
 
 from api.routers import tasks as tasks_router
 from api.routers import trials as trials_router
-from oddish.schemas import BackfillQARequest
+from oddish.schemas import BackfillQARequest, PreTrialAuditRequest
 
 
 def _fake_auth():
@@ -62,20 +62,22 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pre_trial_route_passes_task_to_core(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal"])
+async def test_pre_trial_route_passes_task_to_core(monkeypatch, environment):
     captured = {}
 
-    async def fake_core(session, *, task_id, org_id):
-        captured.update(task_id=task_id, org_id=org_id)
+    async def fake_core(session, *, task_id, org_id, environment):
+        captured.update(task_id=task_id, org_id=org_id, environment=environment)
         return {"status": "queued", "task_id": task_id}
 
     monkeypatch.setattr(tasks_router, "rerun_pre_trial_audit_core", fake_core)
     monkeypatch.setattr(tasks_router, "get_session", _fake_get_session)
 
-    result = await tasks_router.rerun_pre_trial_audit("tsk", _fake_auth())  # type: ignore[arg-type]
+    body = PreTrialAuditRequest(environment=environment) if environment else None
+    result = await tasks_router.rerun_pre_trial_audit("tsk", _fake_auth(), body)  # type: ignore[arg-type]
 
     assert result["status"] == "queued"
-    assert captured == {"task_id": "tsk", "org_id": "org-1"}
+    assert captured == {"task_id": "tsk", "org_id": "org-1", "environment": environment}
 
 
 @pytest.mark.asyncio

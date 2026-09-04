@@ -657,6 +657,15 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class PreTrialAuditRequest(BaseModel):
+    """Optional execution settings for a fresh source audit."""
+
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
+    )
+
+
 class QAEvalCreateRequest(BaseModel):
     """Replay one candidate QA prompt over exact historical solver trials."""
 
@@ -669,6 +678,10 @@ class QAEvalCreateRequest(BaseModel):
         description=(
             "Analysis model override. Null uses the deployed production QA model."
         ),
+    )
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
     )
     audit_context: Literal["current", "none"] = Field(
         "current",
@@ -1362,7 +1375,8 @@ class TrialResponse(BaseModel):
 
     # Trajectory
     has_trajectory: bool = Field(
-        False, description="Whether an ATIF trajectory file exists for this trial"
+        False,
+        description="Whether this trial has a readable ATIF trajectory JSON object",
     )
 
     analysis_status: AnalysisStatus | None = None
@@ -2007,7 +2021,11 @@ class ImportedTrialSpec(BaseModel):
         ),
     )
     has_trajectory: bool = Field(
-        False, description="Whether the uploaded archive contains a trajectory file"
+        False,
+        description=(
+            "Whether the uploaded archive contains a readable ATIF trajectory "
+            "JSON object"
+        ),
     )
     harbor_config: dict | None = Field(
         None,

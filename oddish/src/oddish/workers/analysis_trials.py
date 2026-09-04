@@ -315,6 +315,7 @@ async def create_analysis_trial(
     payload: dict | None = None,
     experiment_id: str | None = None,
     model: str | None = None,
+    environment: str | None = None,
     billed_user_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
@@ -375,6 +376,7 @@ async def create_analysis_trial(
         provider=settings.get_provider_for_trial(analysis_agent, normalized_model),
         queue_key=settings.get_queue_key_for_trial(analysis_agent, normalized_model),
         model=normalized_model,
+        environment=environment,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
         is_probe=False,
@@ -567,6 +569,8 @@ node /probe-harness/oddish-query trials trajectory <trial-id> > /tmp/<trial-id>.
 Each successful command writes an object whose `trial_id` must equal the requested ID. Read the complete files before judging the trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure because that free-form view can be truncated.
 
 For a manifest entry with `has_trajectory: true`, `trajectory` must be a JSON object. If it is absent, malformed, or belongs to another ID, stop without writing `qa_result.json`. For `has_trajectory: false`, a null or unavailable trajectory is expected: use only the authoritative facts, result when available, verifier output, and exception. Do not invent agent actions. Its `trajectory_summary` must say that no trajectory was recorded and must use empty `highlights` and `components` arrays.
+
+An empty verifier `stdout` or `stderr` string means that file exists and the verifier emitted no text; it is valid, available evidence. Verifier evidence is absent only when `stdout`, `stderr`, and `exception` are all null or unavailable.
 
 If result or verifier evidence is absent for a trial that started, or any successful command returns a different `trial_id`, stop without writing `qa_result.json`. Missing QA evidence is not a solver HARNESS_ERROR; do not infer agent behavior or substitute evidence from another trial or attempt.
 

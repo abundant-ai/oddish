@@ -159,6 +159,11 @@ High-level flow:
    and can publish its `must_fix` rejection without creating a QA trial. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
+   Replacement QA requests preflight every eligible source through the same
+   result, verifier, and trajectory readers exposed to the analysis sandbox.
+   Missing started-trial result/verifier evidence or a `has_trajectory = true`
+   row without a readable trajectory returns HTTP 409 before stored analysis is
+   reset or the current verdict is withdrawn.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
    creates one output experiment and one `qa_eval` trial per exact source
    solver trial. Terminal failed sources remain replayable when no trajectory
@@ -226,12 +231,16 @@ High-level flow:
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
-   reported, phase timing, trajectory availability, arbitrary verifier
+   reported, phase timing, readable trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
    Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
    S3; only counts, the tool name, and the report's trial-relative artifact path
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
+   Before upload, restricted-runtime transport values are removed from valid
+   `.json` artifacts by parsing and recursively redacting strings, which keeps
+   numbers and booleans typed and the JSON parseable. Logs, malformed JSON, and
+   binary artifacts use the streaming byte scrubber.
    It also derives trajectory elapsed time and tool usage directly from ATIF
    steps into `trials.trajectory_duration_seconds`, `trials.total_tool_calls`,
    and `trials.tool_counts`. Task and experiment filters combine model and
@@ -383,6 +392,12 @@ source audit, `classify_prompt.txt` drives the per-trial log classifier,
 summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
+
+`POST /tasks/{task_id}/qa/pre-trial` accepts an optional JSON body with
+`environment: "modal" | "daytona"`; `POST /qa-evals` accepts the same field.
+The provider is stored on each created analysis trial as `trials.environment`,
+so workers and retries execute on that provider. An omitted or null value
+retains the deployed worker default. Source solver trials are unchanged.
 
 Each automatic QA brief snapshots authoritative Trial facts (id, status,
 reward, trajectory availability, and agent), current-version nop/oracle

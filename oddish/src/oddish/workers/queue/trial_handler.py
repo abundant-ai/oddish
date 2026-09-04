@@ -2199,6 +2199,7 @@ async def run_trial_job(
                         trial_kind, prepared_trial.trial_attempt
                     ),
                 )
+                oddish_uploaded = True
                 if is_analysis_kind(trial_kind):
                     await validate_uploaded_analysis_artifacts(
                         trial_id=trial_id,
@@ -2210,7 +2211,6 @@ async def run_trial_job(
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
-                oddish_uploaded = True
             except Exception as e:
                 action = (
                     "Uploaded trial artifacts failed validation"
