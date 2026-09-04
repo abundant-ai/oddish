@@ -373,3 +373,36 @@ async def test_fractional_external_reserve_combines_with_database_token_totals(d
         await cap.reserve_request(
             [p], worker_job_id="b", input_tokens=60, output_tokens=1
         )
+
+
+@pytest.mark.asyncio
+async def test_cooldown_overrides_affinity_for_next_retry(db):
+    pools = [pool(), pool("hdo")]
+    failed = await cap.reserve_request(
+        pools, worker_job_id="same-worker", input_tokens=1, output_tokens=1
+    )
+    assert failed.pool.id == "main"
+    await cap.observe_provider(failed.pool.quota_group, {}, cooldown_seconds=30)
+    await cap.settle_request(failed, usage=None)
+    retry = await cap.reserve_request(
+        pools, worker_job_id="same-worker", input_tokens=1, output_tokens=1
+    )
+    assert retry.pool.id == "hdo"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_accepts_request_at_exact_admission_threshold(db):
+    pools = [pool()]
+    for i in range(64):
+        await cap.reserve_request(
+            pools, worker_job_id=str(i), input_tokens=0, output_tokens=0
+        )
+    assert (await cap.capacity_snapshot(pools))[0]["accepting_requests"]
+    await cap.reserve_request(
+        pools, worker_job_id="boundary", input_tokens=0, output_tokens=0
+    )
+    assert not (await cap.capacity_snapshot(pools))[0]["accepting_requests"]
+    with pytest.raises(cap.CapacityUnavailable):
+        await cap.reserve_request(
+            pools, worker_job_id="full", input_tokens=0, output_tokens=0
+        )

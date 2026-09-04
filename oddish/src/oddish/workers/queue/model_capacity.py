@@ -190,7 +190,7 @@ async def capacity_snapshot(pools: list[ProviderPool]) -> list[dict]:
             "reserved_or_recent_requests": states[p.quota_group]["requests"],
             "cooldown_until": states[p.quota_group]["cooldown_until"],
             "accepting_requests": projected_load(p, states[p.quota_group], 0, 0)
-            < ROUTE_THRESHOLD
+            <= ROUTE_THRESHOLD
             and not (
                 states[p.quota_group]["cooldown_until"]
                 and states[p.quota_group]["cooldown_until"]
