@@ -92,7 +92,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
-    PreTrialAuditRequest,
+    QARunRequest,
     ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -732,10 +732,14 @@ async def get_trial(task_id: str, index: int):
 
 
 @api.post("/tasks/{task_id}/qa/retry")
-async def retry_task_qa(task_id: str) -> dict:
+async def retry_task_qa(task_id: str, body: QARunRequest | None = None) -> dict:
     """Create replacement task-level QA over every eligible agent trial."""
     async with get_session() as session:
-        return await rerun_task_qa_core(session, task_id=task_id)
+        return await rerun_task_qa_core(
+            session,
+            task_id=task_id,
+            environment=body.environment if body is not None else None,
+        )
 
 
 @api.post("/tasks/{task_id}/qa/cancel")
@@ -762,9 +766,7 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
 
 
 @api.post("/tasks/{task_id}/qa/pre-trial")
-async def rerun_pre_trial_audit(
-    task_id: str, body: PreTrialAuditRequest | None = None
-) -> dict:
+async def rerun_pre_trial_audit(task_id: str, body: QARunRequest | None = None) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
     Withdraws the old verdict. After the audit and existing runs finish,

@@ -803,6 +803,7 @@ async def create_qa_trial(
     task: TaskModel,
     eligible_trial_ids: list[str],
     with_verdict: bool = True,
+    environment: str | None = None,
 ) -> TrialModel:
     version = (
         await session.get(TaskVersionModel, task.current_version_id)
@@ -856,6 +857,7 @@ async def create_qa_trial(
         session,
         task=task,
         kind="qa",
+        environment=environment,
         brief=build_qa_brief(
             task_name=task.name,
             trial_ids=eligible_trial_ids,

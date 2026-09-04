@@ -1524,7 +1524,9 @@ async def qa_eligible_trial_ids(
     ]
 
 
-async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
+async def start_qa_for_task(
+    session: AsyncSession, task: TaskModel, *, environment: str | None = None
+) -> bool:
     """Move a settled task into its QA stage, or complete it.
 
     With QA-eligible current-version trials: queue the verdict bookkeeping,
@@ -1595,6 +1597,7 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
         task=task,
         eligible_trial_ids=eligible,
         with_verdict=True,
+        environment=environment,
     )
     logger.info(
         "task %s: qa covers %d eligible trials",
