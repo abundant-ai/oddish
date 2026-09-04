@@ -23,6 +23,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish preflight` - run the local task checks that also gate `run` and `upload`
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
+- `oddish qa export` - export existing QA findings and task statuses to CSV
 - `oddish logs` - stream a running trial's live transcript and cost estimate
 - `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
@@ -340,6 +341,58 @@ These are only the most common filters — `oddish ls` mirrors the dashboard's
 full task-browser filter set (status, date, model, trial-metric, tool-usage,
 and more, some 70 options in all). Run `oddish ls --help` for the complete
 list rather than relying on this page.
+
+## Export QA Feedback
+
+Export existing audit and run-review findings for a batch of exact task IDs:
+
+```bash
+oddish qa export <task_id> <another_task_id> --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --tier must_fix --all-versions
+```
+
+The input file is UTF-8 with one task ID per line. Blank lines are ignored;
+repeated IDs are fetched once, in first-seen order. Names are not resolved.
+Use `oddish ls --query <name> --json` to find an ID first.
+
+The command writes two UTF-8 CSV files (existing files are overwritten):
+
+- `qa-findings.csv`: one row per finding occurrence, combining version audits
+  and individual agent-run reviews. Columns include the task ID/name/version,
+  current task verdict, audit status, source trial ID (an individual run),
+  trial classification, finding ID, `tier`, `problem_type`, `dimension`, full
+  title/explanation/recommendation, file and line range, and exploitation
+  linkage. `group`, `assignee`, and `resolution` start blank for manual triage.
+- `qa-findings-tasks.csv`: one row per unique requested ID, including tasks
+  with no matching findings and failed fetches. It contains the full current
+  verdict, version audit statuses/errors, QA run statuses/errors, counts of
+  agent-run analysis statuses, counts of exported findings by tier, and
+  `fetch_error`. Structured detail is stored as JSON inside CSV cells.
+
+Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+`optional` is also supported. Counts reflect exported occurrences, not unique
+defects. A finding reported by two runs keeps two rows with distinct trial IDs;
+version-audit findings appear once per version. CSV quoting preserves commas,
+quotes, newlines, and Unicode in the original feedback.
+
+The default scope is the task's current version. `--all-versions` also exports
+older versions returned by the detail API. The `current_verdict*` columns always
+describe the current task verdict, including on older-version finding rows;
+they are not historical verdicts. Replaced runs and combined copies are already
+excluded by the existing task-detail endpoint. This is an export of currently
+stored findings, not a complete history of overwritten QA assessments.
+
+This command only reads results; it never queues or reruns QA. Zero findings
+does not mean QA passed: inspect audit, analysis, and verdict status in the
+task summary. Failed fetches leave counts blank, preserve successful tasks,
+and cause exit code 1 after the batch finishes. Successful fetches exit 0 even
+when QA reports defects or is unfinished.
+
+`--concurrency` controls simultaneous requests (default 4, range 1–16).
+`--api` overrides the API URL; the usual `ODDISH_API_KEY`, `ODDISH_API_URL`,
+and `ODDISH_PREVIEW_PR` settings apply. The exporter uses one existing task-detail
+request per ID, with a 30-second HTTP timeout and no automatic retry.
 
 ## Check Progress
 
