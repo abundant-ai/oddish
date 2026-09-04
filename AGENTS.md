@@ -152,8 +152,11 @@ High-level flow:
    `tasks.verdict`. The verdict is only requested above an evidence bar
    (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
    `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
-   QA trial still classifies trials and the task completes without a
-   verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
+   QA trial still classifies trials. At completion, a validated current
+   audit with `must_fix` findings or a failed deterministic baseline can
+   reject the task even below that bar; otherwise it completes without a
+   verdict. With zero eligible solver trials, admission waits for the audit
+   and can publish its `must_fix` rejection without creating a QA trial. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
@@ -213,7 +216,8 @@ High-level flow:
    handles; a task is failed only when no other live trial remains. Queuing
    replacement QA withdraws the previous verdict through `queue_verdict`.
    Completion publishes only the new verdict; a classification-only pass
-   completes with SUCCESS status and no verdict. Cancellation, failure, or
+   completes with SUCCESS status and no verdict unless current audit or
+   baseline evidence establishes a deterministic rejection. Cancellation, failure, or
    abandonment of an active replacement never restores its previous result.
    Cancelling unrelated trials preserves an existing verdict when no QA
    replacement was active. Older QA artifacts remain in trial storage.
@@ -380,6 +384,12 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+`POST /tasks/{task_id}/qa/pre-trial` accepts an optional JSON body with
+`environment: "modal" | "daytona"`; `POST /qa-evals` accepts the same field.
+The provider is stored on each created analysis trial as `trials.environment`,
+so workers and retries execute on that provider. An omitted or null value
+retains the deployed worker default. Source solver trials are unchanged.
+
 Each automatic QA brief snapshots authoritative Trial facts (id, status,
 reward, trajectory availability, and agent), current-version nop/oracle
 baseline results, and the source-audit status/findings into its pinned analysis
@@ -387,7 +397,32 @@ payload. The QA agent fetches complete result, verifier, and trajectory
 resources for each solver Trial; it writes judgments only. Import restores
 `trial_name` and `reward` from the graded Trial row, and a source-audit
 `must_fix` finding or failed deterministic baseline rejects an otherwise
-accepted verdict.
+accepted or absent model verdict. Trial classifications, rewards, and summaries
+retain their own meaning: a `GOOD_FAILURE` can coexist with task rejection.
+
+New QA jobs pin a fingerprint of source bytes, audit status, timestamps, and
+findings (excluding later exploitation annotations). Import checks it and the
+latest uncancelled QA identity under the task lock before storing classifications
+and again before publishing the verdict. Legacy jobs without a fingerprint
+must match the current audit finding IDs and must-fix subset. An audit rerun
+withdraws the old verdict and returns the task to RUNNING; admission waits for
+all solver and existing QA jobs, plus audit execution and result publication,
+then creates one replacement QA. `task_audit_pending` checks both live audit jobs
+and the current version's PENDING/QUEUED/RUNNING audit status; automatic admission,
+manual QA, and cleanup share this gate. A terminal audit job alone cannot
+complete the task. Both
+audit and QA settlement re-enter admission. Cleanup requeues QA whose saved
+audit no longer matches instead of repeatedly importing it. Audit writes also
+check the latest audit trial under the version lock, and duplicate successful
+imports preserve the original timestamps and exploitation annotations.
+
+QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
+It runs the same strict validator used by the verifier and importer, allowing
+one initial submission and two repairs. Missing fields remain validation errors.
+Attempt JSON and validation messages are retained under
+`/logs/<artifact>.submissions/` and copied into verifier artifacts. A later
+invalid, missing, or over-limit submission removes any previously published
+result, so a rejected draft cannot leave a stale accepted artifact.
 
 ### Worker job kinds
 

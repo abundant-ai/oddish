@@ -65,6 +65,26 @@ class _ClientErrorStorage(_Storage):
             ) from exc
 
 
+class _BinaryStorage(_Storage):
+    def __init__(self, objects: dict[str, str | bytes], listed: list[str]):
+        super().__init__({}, listed=listed)
+        self.binary_objects = objects
+
+    async def download_text(self, key: str) -> str:
+        self.download_calls.append(key)
+        value = self.binary_objects[key]
+        if isinstance(value, str):
+            return value
+        return value.decode("utf-8")
+
+    async def download_bytes(self, key: str) -> bytes:
+        value = self.binary_objects[key]
+        return value.encode() if isinstance(value, str) else value
+
+    async def object_exists(self, key: str) -> bool:
+        return key in self.binary_objects
+
+
 def _trial(*, prefix: str | None, attempts: int = 1):
     return SimpleNamespace(
         id="task-1-7",
@@ -857,6 +877,50 @@ def test_structured_logs_use_the_manifest_selected_harbor_directory(monkeypatch)
 
     assert result["verifier"]["stdout"] == "CURRENT\n"
     assert stale_key not in storage.download_calls
+
+
+def test_structured_logs_skip_binary_artifacts_and_keep_verifier_evidence(monkeypatch):
+    _clear_cache()
+    prefix = "tasks/task-1/trials/task-1-7/attempt-2/"
+    child = f"{prefix}current-run/"
+    manifest_key = f"{prefix}result.json"
+    stdout_key = f"{child}verifier/test-stdout.txt"
+    auxiliary_log_key = f"{child}agent/custom.log"
+    sqlite_key = f"{child}agent/grok-session/sessions/session_search.sqlite"
+    compressed_key = f"{child}verifier/produced/compress/always_form.out"
+    storage = _BinaryStorage(
+        {
+            manifest_key: json.dumps(
+                {"trial_results": [{"trial_name": "current-run"}]}
+            ),
+            stdout_key: b"grader output: failed byte \xff\n",
+            auxiliary_log_key: b"agent output: failed byte \xfe\n",
+            sqlite_key: b"SQLite format 3\x00\x8a",
+            compressed_key: b"POST / HTTP/1.1\n\x9c\x01",
+        },
+        listed=[
+            manifest_key,
+            stdout_key,
+            auxiliary_log_key,
+            sqlite_key,
+            compressed_key,
+        ],
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+
+    result = asyncio.run(
+        trial_io.read_trial_logs_structured(_trial(prefix=prefix, attempts=2))
+    )
+
+    assert result["verifier"]["stdout"] == "grader output: failed byte �\n"
+    assert result["other"] == [
+        {
+            "name": "agent/custom.log",
+            "content": "agent output: failed byte �\n",
+        }
+    ]
+    assert sqlite_key in storage.download_calls
+    assert compressed_key in storage.download_calls
 
 
 def test_freeform_logs_use_the_manifest_selected_harbor_directory(monkeypatch):

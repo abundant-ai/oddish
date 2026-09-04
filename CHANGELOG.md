@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Hosted queue concurrency defaults are 256 for model queues and 1,024 for the
+  shared nop/oracle baseline queue.
 - QA, audit, and trajectory-summary work now runs as ordinary `TRIAL` worker
   jobs with `qa`, `audit`, or `summarize` trial kinds. The old analyzer and
   task-level QA worker pipelines are no longer active.

@@ -138,6 +138,7 @@ from oddish.schemas import (
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
+    PreTrialAuditRequest,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1564,17 +1565,21 @@ async def backfill_task_qa(
 async def rerun_pre_trial_audit(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    body: PreTrialAuditRequest | None = None,
 ) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
-    Runs only the audit. Does not classify trials and does not synthesize
-    the verdict.
+    Withdraws the old verdict. After the audit and existing runs finish,
+    task QA uses the replacement findings to reconcile classifications and decision.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await rerun_pre_trial_audit_core(
-            session, task_id=task_id, org_id=auth.org_id
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            environment=body.environment if body is not None else None,
         )
 
 

@@ -54,14 +54,16 @@ from oddish.analyze.trajectory_taxonomy import (
 from oddish.config import is_nop_oracle_agent, nop_oracle_kind, settings
 from oddish.core.analysis_payload import (
     AnalysisPayloadError,
+    audit_fingerprint,
+    audit_snapshot_matches,
     parse_analysis_payload,
 )
-from oddish.core.baseline_gate import GateOutcome, evaluate_baseline_gate
 from oddish.core.trial_artifacts import (
     TrialArtifactMode,
     resolve_trial_artifact_layout,
 )
 from oddish.core.verdict_sync import (
+    apply_deterministic_verdict_rules,
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
@@ -73,6 +75,7 @@ from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     AnalysisStatus,
     TaskModel,
+    TaskStatus,
     TaskVersionModel,
     TrialModel,
     TrialStatus,
@@ -177,6 +180,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
             "pre_trial_item_ids": list(payload.pre_trial_item_ids),
             "pre_trial_must_fix_ids": list(payload.pre_trial_must_fix_ids),
             "verdict_expected": payload.with_verdict,
+            "audit_fingerprint": payload.audit_fingerprint,
             "classifications": [c.value for c in Classification],
             "verdicts": list(
                 get_args(TaskVerdictModel.model_fields["verdict"].annotation)
@@ -311,6 +315,7 @@ async def create_analysis_trial(
     payload: dict | None = None,
     experiment_id: str | None = None,
     model: str | None = None,
+    environment: str | None = None,
     billed_user_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
@@ -371,6 +376,7 @@ async def create_analysis_trial(
         provider=settings.get_provider_for_trial(analysis_agent, normalized_model),
         queue_key=settings.get_queue_key_for_trial(analysis_agent, normalized_model),
         model=normalized_model,
+        environment=environment,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
         is_probe=False,
@@ -625,8 +631,10 @@ def build_audit_brief(*, task_name: str) -> str:
 {audit}
 
 == OUTPUT ==
-Write exactly one file: /logs/{AUDIT_RESULT_FILENAME}
-It must hold the JSON object described in the OUTPUT section above: {{"items": [...]}} where every item carries the ten keys with the exact values that section defines. An empty "items" list means the source is clean. The file must be valid JSON. Do not write anything else to /logs."""
+Write your draft to /tmp/audit_result-draft.json, then run:
+/probe-harness/submit-analysis-result /tmp/audit_result-draft.json
+The command validates your draft and publishes /logs/{AUDIT_RESULT_FILENAME} only when it is valid. If it reports errors, repair the draft and submit it again. You have one initial submission and two repairs. Do not write the final file directly.
+The draft must hold the JSON object described above: {{"items": [...]}} where every item carries all ten keys, including "source": "pre_trial". An empty "items" list means the source is clean. Do not write anything else to /logs."""
 
 
 def build_summarize_brief(
@@ -815,7 +823,11 @@ async def create_qa_trial(
         if task.current_version_id
         else None
     )
-    items = (version.pre_trial or {}).get("items") if version is not None else None
+    items = (
+        (version.pre_trial or {}).get("items")
+        if version is not None and version.pre_trial_status == VerdictStatus.SUCCESS
+        else None
+    )
     version_rows = (
         (
             await session.execute(
@@ -876,6 +888,9 @@ async def create_qa_trial(
             "pre_trial_item_ids": item_ids,
             "pre_trial_must_fix_ids": must_fix_ids,
             "with_verdict": effective_with_verdict,
+            "audit_fingerprint": audit_fingerprint(version)
+            if version is not None
+            else None,
         },
     )
 
@@ -936,50 +951,6 @@ def _classification_from_analysis(
         )
     except Exception:  # noqa: BLE001
         return None
-
-
-def _apply_deterministic_verdict_rules(
-    verdict: TaskVerdictModel,
-    *,
-    must_fix_ids: list[str],
-    baseline_evidence: list[dict],
-) -> TaskVerdictModel:
-    """Apply decisive server-owned evidence without asking the model to count."""
-    if not verdict.is_good:
-        return verdict
-    if baseline_evidence:
-        outcome, _ = evaluate_baseline_gate(
-            (item.get("agent"), item.get("reward")) for item in baseline_evidence
-        )
-        if outcome is GateOutcome.FAULTY:
-            return TaskVerdictModel(
-                verdict="reject",
-                confidence="high",
-                primary_issue="CRITICAL: The deterministic baseline validation failed.",
-                recommendations=[
-                    "Fix the nop/oracle baseline result before accepting the task."
-                ],
-                reasoning=(
-                    "An oracle must pass and a nop agent must fail. The recorded "
-                    "baseline results do not satisfy that rule."
-                ),
-            )
-    if not must_fix_ids:
-        return verdict
-    count = len(must_fix_ids)
-    noun = "finding" if count == 1 else "findings"
-    return TaskVerdictModel(
-        verdict="reject",
-        confidence="high",
-        primary_issue=f"The source audit reported {count} must-fix {noun}.",
-        recommendations=[
-            "Resolve every `must_fix` source-audit finding before accepting the task."
-        ],
-        reasoning=(
-            "A `must_fix` source-audit finding can decide a trial, so successful "
-            "solver runs cannot make the task acceptable."
-        ),
-    )
 
 
 def enrich_trajectory_summary(
@@ -1138,17 +1109,49 @@ async def store_analysis_self_summary(
 
 
 async def _qa_import_still_current(
-    session, task_id: str, graded_version_id: str | None
+    session,
+    task_id: str,
+    graded_version_id: str | None,
+    *,
+    expected: dict | None = None,
+    trial_id: str | None = None,
 ) -> bool:
     """A stale QA import must not complete the task out from under the
-    fresh set. Two staleness modes: the task's current version moved past
-    the version this QA trial was pinned to (re-upload mid-QA), or agent
-    trials were appended after this QA trial started and are still running."""
+    fresh set. Recheck the source version, audit snapshot, latest QA identity,
+    cancellation, and pending solver trials under the caller's task lock."""
+    task = await session.get(TaskModel, task_id)
+    if (
+        task is None
+        or task.status == TaskStatus.FAILED
+        or task.current_version_id != graded_version_id
+    ):
+        return False
     if graded_version_id is not None:
-        current_version_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        if expected is not None:
+            version = await session.get(TaskVersionModel, graded_version_id)
+            if not audit_snapshot_matches(version, expected):
+                return False
+    if trial_id is not None:
+        imported = await session.get(TrialModel, trial_id)
+        if (
+            imported is None
+            or imported.superseded_by_trial_id is not None
+            or imported.harbor_stage == "cancelled"
+        ):
+            return False
+        latest = await session.scalar(
+            select(TrialModel.id)
+            .where(
+                TrialModel.task_id == task_id,
+                TrialModel.task_version_id == graded_version_id,
+                TrialModel.kind == "qa",
+                TrialModel.deleted_at.is_(None),
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+            .limit(1)
         )
-        if current_version_id is not None and current_version_id != graded_version_id:
+        if latest != trial_id:
             return False
     # Scope the pending check to the graded version, matching QA admission:
     # a historical version's still-live trial must not defer this import
@@ -1171,6 +1174,7 @@ async def _import_qa_result(
 ) -> None:
     task_id = trial.task_id
     graded_version_id = trial.task_version_id
+    expected = None
     try:
         expected = analysis_check_payload("qa", trial.harbor_config)
     except AnalysisPayloadError as exc:
@@ -1180,7 +1184,7 @@ async def _import_qa_result(
             task_id,
             payload=None,
             should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
+                s, task_id, graded_version_id, expected=expected, trial_id=trial.id
             ),
             error=error,
         )
@@ -1213,7 +1217,7 @@ async def _import_qa_result(
             task_id,
             payload=None,
             should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
+                s, task_id, graded_version_id, expected=expected, trial_id=trial.id
             ),
             error=error,
         )
@@ -1229,6 +1233,13 @@ async def _import_qa_result(
     contract_drift: str | None = None
     classifications: list[TrialClassification] = []
     async with get_session() as session:
+        # Audit reruns take this same task lock. Check the snapshot before
+        # writing classifications as well as before the final verdict write.
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        if task is None or not await _qa_import_still_current(
+            session, task_id, graded_version_id, expected=expected, trial_id=trial.id
+        ):
+            return
         for entry in artifact["trials"]:
             trial_id = entry["trial_id"]
             row = await session.get(TrialModel, trial_id)
@@ -1311,7 +1322,7 @@ async def _import_qa_result(
             task_id,
             payload=None,
             should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
+                s, task_id, graded_version_id, expected=expected, trial_id=trial.id
             ),
             error=error,
         )
@@ -1332,50 +1343,54 @@ async def _import_qa_result(
             task_id,
             payload=None,
             should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
+                s, task_id, graded_version_id, expected=expected, trial_id=trial.id
             ),
             error=f"QA trial {trial.id} artifact contained no valid classifications",
         )
         return
-    if not verdict_expected:
-        # Classifications are stored; the task completes with no verdict.
-        # The caller fires the qa-imported hook after this returns.
-        await complete_task_without_verdict(
-            task_id,
-            should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
-            ),
-        )
-        return
-    try:
-        verdict = TaskVerdictModel.model_validate(artifact["verdict"])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "qa trial %s: verdict for task %s failed validation: %s",
-            trial.id,
-            task_id,
-            exc,
-        )
-        await sync_verdict_to_task(
-            task_id,
-            payload=None,
-            should_store=lambda s: _qa_import_still_current(
-                s, task_id, graded_version_id
-            ),
-            error=f"QA trial {trial.id} verdict failed validation: {exc}",
-        )
-        return
-    verdict = _apply_deterministic_verdict_rules(
+    verdict = None
+    if verdict_expected:
+        try:
+            verdict = TaskVerdictModel.model_validate(artifact["verdict"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "qa trial %s: verdict for task %s failed validation: %s",
+                trial.id,
+                task_id,
+                exc,
+            )
+            await sync_verdict_to_task(
+                task_id,
+                payload=None,
+                should_store=lambda s: _qa_import_still_current(
+                    s, task_id, graded_version_id, expected=expected, trial_id=trial.id
+                ),
+                error=f"QA trial {trial.id} verdict failed validation: {exc}",
+            )
+            return
+    # The evidence threshold controls model synthesis, not a rejection
+    # established by validated source-audit or deterministic baseline facts.
+    verdict = apply_deterministic_verdict_rules(
         verdict,
         must_fix_ids=list(expected.get("pre_trial_must_fix_ids") or []),
         baseline_evidence=list(expected.get("baseline_evidence") or []),
     )
+    if verdict is None:
+        await complete_task_without_verdict(
+            task_id,
+            should_store=lambda s: _qa_import_still_current(
+                s, task_id, graded_version_id, expected=expected, trial_id=trial.id
+            ),
+        )
+        return
     payload = build_verdict_payload(verdict, classifications)
     payload["_graded_by"] = trial.id
     await sync_verdict_to_task(
         task_id,
         payload=payload,
-        should_store=lambda s: _qa_import_still_current(s, task_id, graded_version_id),
+        should_store=lambda s: _qa_import_still_current(
+            s, task_id, graded_version_id, expected=expected, trial_id=trial.id
+        ),
         error=None,
     )
     logger.info(
@@ -1495,6 +1510,7 @@ async def _import_audit_result(trial: TrialModel) -> None:
             payload=None,
             error=RuntimeError(error),
             expected_content_hash=None,
+            expected_audit_trial_id=trial.id,
         )
         return
     pinned_hash = audit_payload.task_version_content_hash
@@ -1543,6 +1559,7 @@ async def _import_audit_result(trial: TrialModel) -> None:
             payload=None,
             error=RuntimeError(error),
             expected_content_hash=pinned_hash,
+            expected_audit_trial_id=trial.id,
         )
         return
     items: list[ActionItem] = []
@@ -1562,6 +1579,7 @@ async def _import_audit_result(trial: TrialModel) -> None:
                 payload=None,
                 error=RuntimeError(error),
                 expected_content_hash=pinned_hash,
+                expected_audit_trial_id=trial.id,
             )
             return
     # The early check above spared the artifact read, but only this locked
@@ -1574,6 +1592,7 @@ async def _import_audit_result(trial: TrialModel) -> None:
         ),
         error=None,
         expected_content_hash=pinned_hash,
+        expected_audit_trial_id=trial.id,
     )
     logger.info(
         "audit trial %s: stored %d findings for version %s",
@@ -1721,10 +1740,9 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         await _import_summarize_result(trial)
     elif kind == "audit":
         await _import_audit_result(trial)
-        # QA admission defers while this audit is live (the QA brief embeds
-        # the audit findings at creation). This settlement is what unblocks
-        # it: without the re-entry, a task whose last agent trial settled
-        # mid-audit would never start QA.
+    if kind in ("audit", "qa"):
+        # Either job can finish last during an audit rerun. The admission
+        # lock waits for both before creating exactly one replacement QA.
         from oddish.queue import maybe_start_task_qa_stage
 
         async with get_session() as session:

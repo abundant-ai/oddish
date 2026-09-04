@@ -1492,7 +1492,7 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
-    nop_oracle_concurrency: int = 256
+    nop_oracle_concurrency: int = 1024
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
     # the LLM trials BLOCKED until the baselines finish, then releases them only
