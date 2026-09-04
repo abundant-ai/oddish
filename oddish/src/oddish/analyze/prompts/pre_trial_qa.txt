@@ -9,8 +9,14 @@ Each finding has three labels. You must use the exact values shown as they are s
 `dimension` — what is defective:
 
 * `"verifier"` — the grader does not fully check the stated requirements, or an agent can reward-hack it. Look for: unchecked outputs, missing edge cases, weak assertions, ignored stderr or exit codes. Also look for ways an agent could cheat: tests that compare against fixed values an agent could hardcode or special-case, graders that trust files that the agent can write, and tests or grader config that the agent can edit.
-* `"oracle"` — the reference solution does not satisfy the task, or does not pass its own verifier. There is one exception: in some rewrite or migration tasks, the reference solution only calls a prebuilt oracle binary. That design is intended. Do not report it.
+* `"oracle"` — the reference solution does not satisfy the task, or does not pass its own verifier. A prebuilt binary can calculate comparison outputs for a rewrite or migration task. The verifier must still build and test the requested replacement. The reference solution cannot use that binary instead of the deliverable that the instruction requires.
 * `"info_leakage"` — the agent can read or reach material that it must not. Look for: the oracle, expected outputs, or verifier internals readable from the workspace, and answers in comments. Also check for extra access that the sandbox permits: the agent can become root when not intended, reach the Docker socket or host mounts, read secrets from environment variables, watch the grader at runtime, or use the network to fetch the original fix.
+
+## REQUIRED INTEGRITY CHECKS
+
+Model-conditioned grading is a verifier defect. Inspect configuration, metadata, comments, and scripts for model names, provider names, pass rates, and pass@k results. Report `verifier`, `incompleteness`, and `must_fix` when those values change tests, thresholds, weights, family floors, or skipped test groups. Treat authoring instructions and generated settings the same. Report the rule even when it makes the task harder. Do not report a fixed task only because every tested model fails it.
+
+A bundled implementation cannot replace the requested deliverable. Report `oracle`, `mismatch`, and `must_fix` when the reference solution decrypts, copies, or runs a bundled implementation instead of creating the required source or artifact. Do not report a hidden binary that only supplies expected outputs to an independent verifier.
 
 `problem_type` — how it is defective:
 
