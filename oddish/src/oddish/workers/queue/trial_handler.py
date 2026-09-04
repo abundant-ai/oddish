@@ -76,6 +76,7 @@ from oddish.worker.probe_staging import (
 from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
+from oddish.runtime.registry import get_backend
 from oddish.workers.harbor.runner import (
     HarborOutcome,
     capture_live_sandbox_resources,
@@ -1268,22 +1269,37 @@ async def _upload_probe_assets(
         shutil.rmtree(harness_mount, ignore_errors=True)
 
 
-def _stamp_sandbox_outcome(
-    environment: Any, *, reward: float | None, status: str
+async def _stamp_sandbox_outcome(
+    hook_event: Any, *, reward: float | None, status: str
 ) -> None:
     """Write the graded outcome onto the sandbox as labels, so the provider's
-    console shows the same reward oddish does. Only environments that expose
-    ``set_labels`` (Numinous) participate; it is metadata and never fails a
+    console shows the same reward oddish does. Two routes: the live
+    environment's ``set_labels`` when the trial ran in-process, else the
+    provider backend addressed by the event's external id (the out-of-process
+    runner forwards only provider + external id). Metadata: never fails a
     trial."""
-    setter = getattr(environment, "set_labels", None)
-    if not callable(setter):
-        return
     labels: dict[str, str | None] = {"oddish.status": status}
     labels["oddish.reward"] = None if reward is None else str(reward)
+    environment = getattr(hook_event, "environment", None)
+    setter = getattr(environment, "set_labels", None)
+    if callable(setter):
+        try:
+            setter(labels)
+            return
+        except Exception:  # noqa: BLE001 - metadata must never fail a trial
+            logger.debug("sandbox outcome stamp via environment failed", exc_info=True)
+    provider = (getattr(hook_event, "environment_provider", None) or "").strip().lower()
+    external_id = getattr(hook_event, "environment_external_id", None)
+    if provider != "numinous" or not external_id:
+        return
+    backend = get_backend("numinous")
+    stamp = getattr(backend, "set_labels", None)
+    if stamp is None:
+        return
     try:
-        setter(labels)
-    except Exception:  # noqa: BLE001 - metadata must never fail a trial
-        logger.debug("sandbox outcome stamp failed", exc_info=True)
+        await stamp(external_id, labels)
+    except Exception:  # noqa: BLE001
+        logger.debug("sandbox outcome stamp via backend failed", exc_info=True)
 
 
 async def _handle_harbor_event(
@@ -1515,8 +1531,8 @@ async def _handle_harbor_event(
                 console.print(
                     f"[dim]Trial {trial_id} ended, reward={extracted_reward}, error={has_error}[/dim]"
                 )
-                _stamp_sandbox_outcome(
-                    hook_event.environment,
+                await _stamp_sandbox_outcome(
+                    hook_event,
                     reward=extracted_reward,
                     status="success"
                     if extracted_reward is not None

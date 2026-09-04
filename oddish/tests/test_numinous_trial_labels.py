@@ -3,6 +3,7 @@ reward + status stamped at END. Metadata never fails a trial."""
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from oddish.workers.harbor import runner as harbor_runner
@@ -49,24 +50,77 @@ def test_numinous_trial_labels_without_experiment():
     }
 
 
-def test_stamp_sandbox_outcome_calls_set_labels():
+def test_stamp_sandbox_outcome_uses_live_environment_when_present():
     calls: list[dict] = []
-    env = SimpleNamespace(set_labels=calls.append)
-    trial_handler._stamp_sandbox_outcome(env, reward=1.0, status="success")
-    assert calls == [{"oddish.status": "success", "oddish.reward": "1.0"}]
-    trial_handler._stamp_sandbox_outcome(env, reward=None, status="failed")
-    assert calls[-1] == {"oddish.status": "failed", "oddish.reward": None}
-
-
-def test_stamp_sandbox_outcome_ignores_other_environments_and_errors():
-    trial_handler._stamp_sandbox_outcome(
-        SimpleNamespace(), reward=1.0, status="success"
+    ev = SimpleNamespace(
+        environment=SimpleNamespace(set_labels=calls.append),
+        environment_provider="numinous",
+        environment_external_id="sbx_1",
     )
-    trial_handler._stamp_sandbox_outcome(None, reward=1.0, status="success")
+    asyncio.run(trial_handler._stamp_sandbox_outcome(ev, reward=1.0, status="success"))
+    assert calls == [{"oddish.status": "success", "oddish.reward": "1.0"}]
+
+
+def test_stamp_sandbox_outcome_falls_back_to_backend_by_external_id(monkeypatch):
+    """Out-of-process harbor forwards only provider + external id (no environment
+    object). Caught live on run 2 smoke: the stamp silently no-op'd."""
+    stamped: list[tuple[str, dict]] = []
+
+    class _Backend:
+        async def set_labels(self, external_id, labels):
+            stamped.append((external_id, labels))
+            return True
+
+    monkeypatch.setattr(
+        trial_handler,
+        "get_backend",
+        lambda name: _Backend() if name == "numinous" else None,
+    )
+    ev = SimpleNamespace(
+        environment=None,
+        environment_provider="numinous",
+        environment_external_id="sbx_7",
+    )
+    asyncio.run(trial_handler._stamp_sandbox_outcome(ev, reward=None, status="failed"))
+    assert stamped == [("sbx_7", {"oddish.status": "failed", "oddish.reward": None})]
+
+
+def test_stamp_sandbox_outcome_ignores_other_providers_and_errors(monkeypatch):
+    monkeypatch.setattr(trial_handler, "get_backend", lambda name: None)
+    asyncio.run(
+        trial_handler._stamp_sandbox_outcome(
+            SimpleNamespace(
+                environment=None,
+                environment_provider="modal",
+                environment_external_id="x",
+            ),
+            reward=1.0,
+            status="success",
+        )
+    )
+    asyncio.run(
+        trial_handler._stamp_sandbox_outcome(
+            SimpleNamespace(
+                environment=None,
+                environment_provider=None,
+                environment_external_id=None,
+            ),
+            reward=1.0,
+            status="success",
+        )
+    )
 
     def boom(_labels):
         raise RuntimeError("control plane down")
 
-    trial_handler._stamp_sandbox_outcome(
-        SimpleNamespace(set_labels=boom), reward=0.0, status="success"
+    asyncio.run(
+        trial_handler._stamp_sandbox_outcome(
+            SimpleNamespace(
+                environment=SimpleNamespace(set_labels=boom),
+                environment_provider="numinous",
+                environment_external_id=None,
+            ),
+            reward=0.0,
+            status="success",
+        )
     )

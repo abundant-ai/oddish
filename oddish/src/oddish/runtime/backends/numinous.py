@@ -60,8 +60,7 @@ class NuminousBackend:
                 # H100 is our headline for SWE-marathon; L40S is the cheap
                 # inference lane; RTX_4090 is the shared-mux fake for CI
                 # smoke tests where CUDA is not actually required.
-                accelerators=("H100", "H200", "A100", "L40S", "A10",
-                              "RTX_4090"),
+                accelerators=("H100", "H200", "A100", "L40S", "A10", "RTX_4090"),
                 max_count=8,
             )
         return Capabilities(
@@ -79,6 +78,37 @@ class NuminousBackend:
         # (harbor.environments.numinous); nothing to override here beyond
         # making trials attributable.
         return {**base_kwargs}
+
+    async def set_labels(self, external_id: str, labels: dict[str, str | None]) -> bool:
+        """Merge labels onto a sandbox (any state). Used to stamp the graded
+        outcome (oddish.reward / oddish.status) after the trial ends, when the
+        environment object is gone or lived in another process. Metadata:
+        never raises."""
+        if not external_id or not labels:
+            return False
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.patch(
+                    f"/v1/sandboxes/{external_id}/labels", json={"labels": labels}
+                )
+                if r.status_code >= 400:
+                    logger.info(
+                        "metric=numinous.label_stamp_refused external_id=%s status=%s",
+                        external_id,
+                        r.status_code,
+                    )
+                    return False
+                return True
+        except Exception:
+            logger.info(
+                "metric=numinous.label_stamp_failed external_id=%s", external_id
+            )
+            return False
 
     async def teardown(self, external_id: str) -> bool:
         """Best-effort terminate by sandbox id. The response carries a
@@ -104,7 +134,7 @@ class NuminousBackend:
                 # only need "is it gone"). verified_absent is extra proof we log
                 # but do not gate on — a running-state teardown can legitimately
                 # return proof=false while still having terminated the sandbox.
-                proof = (r.json().get("teardown_proof") or {})
+                proof = r.json().get("teardown_proof") or {}
                 logger.info(
                     "NuminousBackend.teardown: terminated %s verified_absent=%s",
                     external_id,
