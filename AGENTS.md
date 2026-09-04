@@ -158,7 +158,11 @@ High-level flow:
    verdict. With zero eligible solver trials, admission waits for the audit
    and can publish its `must_fix` rejection without creating a QA trial. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
-   created once per task version at sweep time.
+   created once per task version at sweep time. Its analysis payload pins the
+   task content hash and the SHA-256 hash of the bundled pre-trial policy. A
+   successful import copies the policy hash into `task_versions.pre_trial`, so
+   operators can select versions that need a newer policy rerun. Historical
+   audit trials and stored results can omit the hash.
    Replacement QA requests preflight every eligible source through the same
    result, verifier, and trajectory readers exposed to the analysis sandbox.
    Missing started-trial result/verifier evidence or a `has_trajectory = true`
