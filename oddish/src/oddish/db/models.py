@@ -1642,6 +1642,16 @@ class TrialEventModel(Base):
     )
 
 
+class QueueDispatchStateModel(Base):
+    """Durable fair-share cursors, locked only while planning/reserving launches."""
+
+    __tablename__ = "queue_dispatch_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cursors: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
 class QueueSlotModel(Base):
     """Worker slot lease keyed by queue key."""
 
@@ -1659,6 +1669,9 @@ class QueueSlotModel(Base):
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Retained through adoption until the first job claim commits.
+    launch_demand: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         Index(
