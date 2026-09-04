@@ -35,9 +35,14 @@ Rows with `imported_at` set are excluded. A `failed` agent trial can still be
 eligible because QA can classify a harness or task failure from its evidence.
 
 QA always attempts classifications and trajectory summaries for its eligible
-set. It requests a task verdict only when the set has at least 3 trials from at
-least 3 distinct agent names. Below that evidence bar, the task can complete
-with classifications and no verdict.
+set. Once at least one eligible trial exists, it requests a task verdict using
+all eligible trials, regardless of agent diversity; audit-readiness checks still
+apply. Validated `must_fix` audit findings and failed deterministic baseline
+checks still reject the task, including when there are zero eligible trials.
+With zero eligible trials and no established rejection, the task completes with
+no verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+Delivery minimums remain independently configurable (defaults: five trials and
+three agents); generating a verdict does not itself qualify a task for delivery.
 
 ## Classification and verdict fields
 

@@ -20,7 +20,6 @@ from oddish.workers.analysis_trials import (
     audit_policy_hash,
     build_audit_brief,
     build_qa_brief,
-    has_verdict_evidence,
     is_analysis_kind,
 )
 
@@ -1588,40 +1587,6 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
             == analysis_trials.ANALYSIS_ACTIVITY_VERSION
         )
         assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("agents", "expected"),
-    [
-        ([], False),
-        (["a", "b"], False),
-        (["a", "a", "b"], False),
-        (["a", "b", "c"], True),
-        (["a", "b", "c", "a"], True),
-        (["a", "a", "b", "b", "a"], False),
-        (["a", "b", "c", "a", "b"], True),
-    ],
-)
-async def test_the_verdict_needs_enough_evidence(agents, expected):
-    """A verdict requires at least 3 trials from 3 distinct agents."""
-
-    class _Scalars:
-        def __init__(self, agents):
-            self._agents = agents
-
-        def all(self):
-            return self._agents
-
-    class _Session:
-        def __init__(self, agents):
-            self._agents = agents
-
-        async def scalars(self, _query):
-            return _Scalars(self._agents)
-
-    trial_ids = [f"t{i}" for i in range(len(agents))]
-    assert await has_verdict_evidence(_Session(agents), trial_ids) is expected
 
 
 def test_the_verifier_actually_grades_the_artifact(tmp_path):

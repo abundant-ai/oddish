@@ -51,11 +51,10 @@ from oddish.schemas import (
 # The automated checks a delivery can run, with their default parameters.
 # ``check_config["automated"]`` merges over these per key; unknown keys are
 # rejected at write time so a typo cannot silently disable a check.
-# ``min_rollouts`` defaults mirror the verdict evidence bar
-# (``MIN_VERDICT_TRIALS`` / ``MIN_VERDICT_AGENTS`` in analysis_trials).
+# Delivery minimums are independent of verdict generation.
 DEFAULT_AUTOMATED_CHECKS: dict[str, dict[str, Any]] = {
     "pre_trial_passed": {"enabled": True},
-    "min_rollouts": {"enabled": True, "min_trials": 3, "min_agents": 3},
+    "min_rollouts": {"enabled": True, "min_trials": 5, "min_agents": 3},
     "verdict_ok": {"enabled": True},
     "no_must_fix": {"enabled": True},
 }
@@ -469,9 +468,7 @@ def _defect_id(version_id: str, item: dict, source: str) -> str:
 
 
 def _distinct_agent_count():
-    """Distinct agents under the verdict evidence bar's rules: trimmed,
-    lowercased, blanks ignored (``_has_verdict_evidence`` in
-    ``workers.analysis_trials``)."""
+    """Distinct agents for delivery: trimmed, lowercased, blanks ignored."""
     return func.count(
         func.distinct(func.nullif(func.trim(func.lower(TrialModel.agent)), ""))
     )
@@ -480,9 +477,9 @@ def _distinct_agent_count():
 def _verdict_qa_clauses() -> list:
     """Filters for QA runs that can author ``tasks.verdict``.
 
-    A run staged below the verdict evidence bar carries with_verdict=false:
-    it completes SUCCESS but restores the prior verdict instead of
-    authoring one, so it cannot vouch for the version it graded.
+    Classification-only runs carry with_verdict=false and cannot vouch for
+    the version they graded. This includes historical runs below the former
+    evidence threshold and runs whose source audit was unavailable.
     """
     return [
         TrialModel.kind == "qa",
@@ -980,7 +977,7 @@ async def _compute_board(
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
-            min_trials = int(auto["min_rollouts"].get("min_trials", 3))
+            min_trials = int(auto["min_rollouts"].get("min_trials", 5))
             min_agents = int(auto["min_rollouts"].get("min_agents", 3))
             automated(
                 "min_rollouts",

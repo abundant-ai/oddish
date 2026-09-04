@@ -1066,25 +1066,8 @@ async def test_customer_create_race_recovers(session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("agents", "minimum", "expected_status", "expected_detail"),
-    [
-        (["codex", "gpt"], None, "fail", "2/3 trials, 2/3 agents"),
-        (["codex", "gpt", "gemini"], None, "pass", "3/3 trials, 3/3 agents"),
-        ([" Codex", "codex", "gpt"], None, "fail", "3/3 trials, 2/3 agents"),
-        (
-            [" Codex", "codex", "CODEX", "gpt", "gemini"],
-            None,
-            "pass",
-            "5/3 trials, 3/3 agents",
-        ),
-        (["codex", "gpt", "gemini"], 5, "fail", "3/5 trials, 3/3 agents"),
-    ],
-)
-async def test_agent_count_matches_verdict_evidence_bar(
-    session, agents, minimum, expected_status, expected_detail
-):
-    """Require three runs and agents by default; preserve explicit minimums."""
+async def test_delivery_agent_count_normalizes_case_and_spacing(session):
+    """Agent variants that differ only in case or spacing count once."""
     experiment = ExperimentModel(name="exp-deliv-agents", org_id=ORG)
     task = _task("deliv-agents")
     session.add_all([experiment, task])
@@ -1093,26 +1076,63 @@ async def test_agent_count_matches_verdict_evidence_bar(
     session.add(version)
     await session.flush()
     task.current_version_id = version.id
-    for agent in agents:
+    for agent in [" Codex", "codex", "CODEX", "gpt", "gemini"]:
         session.add(_trial(task, experiment, version.id, agent=agent))
     await session.flush()
 
     delivery = await create_delivery_core(
         session,
+        data=DeliveryCreate(customer="acme", name="batch-agents", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["min_rollouts"]
+    # 5 trials, but only 3 distinct agents after normalization.
+    assert "5/5 trials, 3/3 agents" in check.detail
+    assert check.status == "pass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_count", [1, 3])
+@pytest.mark.parametrize("custom_minimum", [False, True])
+async def test_acceptance_does_not_bypass_delivery_minimum(
+    session, run_count, custom_minimum
+):
+    from sqlalchemy import delete
+
+    task, version, experiment = await _green_task(session, "deliv-independent")
+    await session.execute(
+        delete(TrialModel).where(
+            TrialModel.task_id == task.id, TrialModel.kind == "agent"
+        )
+    )
+    for _ in range(run_count):
+        session.add(_trial(task, experiment, version.id, agent="codex"))
+    await session.flush()
+    config = (
+        DeliveryCheckConfig(
+            automated={
+                "min_rollouts": {"enabled": True, "min_trials": 1, "min_agents": 1}
+            }
+        )
+        if custom_minimum
+        else DeliveryCheckConfig()
+    )
+    delivery = await create_delivery_core(
+        session,
         data=DeliveryCreate(
-            customer="acme",
-            name="batch-agents",
-            task_ids=[task.id],
-            check_config=DeliveryCheckConfig(
-                automated={}
-                if minimum is None
-                else {"min_rollouts": {"min_trials": minimum}}
-            ),
+            customer="acme", name="independent", task_ids=[task.id], check_config=config
         ),
         org_id=ORG,
         user_id="u1",
     )
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
-    check = _checks(board, task.id)["min_rollouts"]
-    assert expected_detail in check.detail
-    assert check.status == expected_status
+    checks = _checks(board, task.id)
+    assert checks["verdict_ok"].status == "pass"
+    assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    if not custom_minimum:
+        assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
+        assert not board.ready

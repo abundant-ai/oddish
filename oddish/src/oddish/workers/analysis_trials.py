@@ -418,30 +418,6 @@ async def create_analysis_trial(
     return trial
 
 
-# A verdict needs enough evidence to be worth trusting: a handful of runs
-# from more than one or two agents. Below this the task completes with its
-# per-trial analysis and no verdict, rather than a confident call on noise.
-MIN_VERDICT_TRIALS = 3
-MIN_VERDICT_AGENTS = 3
-
-
-async def has_verdict_evidence(session: AsyncSession, trial_ids: list[str]) -> bool:
-    """Whether the eligible set can support a task verdict.
-
-    ``trial_ids`` is the QA-eligible set, which already excludes baselines,
-    probes, skipped, cancelled and superseded rows. Queries agents directly
-    rather than touching a possibly-unloaded ``task.trials`` relationship.
-    """
-    if len(trial_ids) < MIN_VERDICT_TRIALS:
-        return False
-    agents = (
-        await session.scalars(
-            select(TrialModel.agent).where(TrialModel.id.in_(trial_ids))
-        )
-    ).all()
-    return len({(a or "").strip().lower() for a in agents if a}) >= MIN_VERDICT_AGENTS
-
-
 def build_qa_brief(
     *,
     task_name: str,
@@ -1202,8 +1178,8 @@ async def _import_qa_result(
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    # A run below the evidence bar was told not to produce a verdict, so a
-    # missing one is the expected outcome, not an import failure.
+    # Classification-only runs (including historical evidence-gated runs)
+    # were told not to produce a verdict; a missing one is expected.
     verdict_expected = expected["verdict_expected"]
     # The same validator the in-sandbox verifier ran. Import is
     # all-or-nothing: a partial or malformed artifact must never publish a
@@ -1378,7 +1354,7 @@ async def _import_qa_result(
                 error=f"QA trial {trial.id} verdict failed validation: {exc}",
             )
             return
-    # The evidence threshold controls model synthesis, not a rejection
+    # Audit readiness controls model synthesis, not a rejection
     # established by validated source-audit or deterministic baseline facts.
     verdict = apply_deterministic_verdict_rules(
         verdict,

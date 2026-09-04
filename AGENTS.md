@@ -149,14 +149,15 @@ High-level flow:
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
-   `tasks.verdict`. The verdict is only requested above an evidence bar
-   (≥3 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
-   `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
-   QA trial still classifies trials. At completion, a validated current
-   audit with `must_fix` findings or a failed deterministic baseline can
-   reject the task even below that bar; otherwise it completes without a
-   verdict. With zero eligible solver trials, admission waits for the audit
-   and can publish its `must_fix` rejection without creating a QA trial. A sweep of `T` tasks × `N` trials therefore creates `T`
+   `tasks.verdict`. Once at least one eligible current-version solver trial
+   exists, QA requests a verdict using every eligible trial, regardless of agent
+   diversity. Existing eligibility exclusions and audit-readiness checks apply.
+   A validated current audit with `must_fix` findings or a failed deterministic
+   baseline rejects the task even with zero eligible solver trials. With zero
+   eligible trials and no established rejection, the task completes with no
+   verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+   Delivery requirements remain independently configurable (defaults: five
+   trials and three agents); a verdict alone does not qualify a task for delivery. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
    created once per task version at sweep time. Its analysis payload pins the
    task content hash and the SHA-256 hash of the bundled pre-trial policy. A
