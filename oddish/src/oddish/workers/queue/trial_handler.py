@@ -1291,6 +1291,32 @@ async def _stamp_trial_outcome_on_provider(
         logger.info("metric=numinous.outcome_stamp trial_id=%s raised", trial_id)
 
 
+async def _settle_trial_outcome_on_provider(
+    environment: str | None,
+    *,
+    trial_id: str,
+    status: TrialStatus,
+    reward: float | None,
+) -> None:
+    """Best effort, provider-agnostic: once oddish settles the trial (after
+    retries), backends exposing ``settle_trial`` (Numinous) get the final
+    verdict so their console shows the trial the way oddish does, not the
+    last attempt's provisional stamp. Never fails a trial."""
+    try:
+        env_type = EnvironmentType((environment or settings.harbor_environment).lower())
+    except ValueError:
+        return
+    backend = get_backend(env_type.value)
+    settle = getattr(backend, "settle_trial", None)
+    if settle is None:
+        return
+    word = "success" if status == TrialStatus.SUCCESS else "failed"
+    try:
+        await settle(trial_id, reward=reward, status=word)
+    except Exception:  # noqa: BLE001 - metadata must never fail a trial
+        logger.info("metric=numinous.trial_settle trial_id=%s raised", trial_id)
+
+
 async def _stamp_sandbox_outcome(
     hook_event: Any, *, reward: float | None, status: str
 ) -> None:
@@ -2037,6 +2063,16 @@ async def _settle_trial_attempt(
             trial_attempt=prepared_trial.trial_attempt,
         )
     )
+    if trial_terminal:
+        # The trial's final word, after retries: what the provider shows for
+        # the trial as a whole, read from the settled row.
+        async with _trial_session(trial_id, allow_missing=True) as (_, trial):
+            verdict = (trial.environment, trial.status, trial.reward) if trial else None
+        if verdict is not None:
+            environment, status, reward = verdict
+            await _settle_trial_outcome_on_provider(
+                environment, trial_id=trial_id, status=status, reward=reward
+            )
     await _finish_trial_settlement(
         trial_id=trial_id,
         org_id=prepared_trial.org_id,

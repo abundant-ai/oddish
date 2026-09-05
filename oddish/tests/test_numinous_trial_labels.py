@@ -235,3 +235,47 @@ def test_backend_stamp_trial_outcome_looks_up_by_label_and_patches(monkeypatch):
         {"labels": {"oddish.status": "success", "oddish.reward": "0.0"}},
     )
     assert seen[2][1].endswith("/v1/sandboxes/sbx_b/labels")
+
+
+def test_settle_trial_outcome_on_provider_routes_final_verdict(monkeypatch):
+    """Once oddish settles a trial (after retries), the backend gets the final
+    verdict: reward + success, or failed. Other providers are untouched;
+    an unknown environment is a no-op."""
+    from oddish.workers.queue.trial_handler import TrialStatus
+
+    calls: list[dict] = []
+
+    class _Backend:
+        async def settle_trial(self, trial_id, *, reward, status):
+            calls.append({"trial_id": trial_id, "reward": reward, "status": status})
+            return True
+
+    monkeypatch.setattr(
+        trial_handler,
+        "get_backend",
+        lambda name: _Backend() if name == "numinous" else object(),
+    )
+    asyncio.run(
+        trial_handler._settle_trial_outcome_on_provider(
+            "numinous", trial_id="t-1", status=TrialStatus.SUCCESS, reward=1.0
+        )
+    )
+    asyncio.run(
+        trial_handler._settle_trial_outcome_on_provider(
+            "numinous", trial_id="t-2", status=TrialStatus.FAILED, reward=None
+        )
+    )
+    asyncio.run(
+        trial_handler._settle_trial_outcome_on_provider(
+            "modal", trial_id="t-3", status=TrialStatus.SUCCESS, reward=1.0
+        )
+    )
+    asyncio.run(
+        trial_handler._settle_trial_outcome_on_provider(
+            "not-an-environment", trial_id="t-4", status=TrialStatus.SUCCESS, reward=1.0
+        )
+    )
+    assert calls == [
+        {"trial_id": "t-1", "reward": 1.0, "status": "success"},
+        {"trial_id": "t-2", "reward": None, "status": "failed"},
+    ]

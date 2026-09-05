@@ -169,6 +169,45 @@ class NuminousBackend:
             logger.info("metric=numinous.outcome_stamp trial_id=%s failed", trial_id)
             return 0
 
+    async def settle_trial(
+        self,
+        trial_id: str,
+        *,
+        reward: float | None,
+        status: str,
+    ) -> bool:
+        """Record the trial's final verdict once oddish has settled it (after
+        any retries). Attempt stamps are provisional; this is the word the
+        provider's console shows for the trial as a whole. Metadata: never
+        raises. Returns whether the provider accepted it."""
+        if not trial_id or (reward is None and not status):
+            return False
+        body: dict[str, object] = {
+            "value": reward,
+            "label": None if reward is not None else status,
+            "kind": "reward",
+            "status": status,
+            "force": True,
+        }
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.put(f"/v1/trials/{trial_id}/outcome", json=body)
+                logger.info(
+                    "metric=numinous.trial_settle trial_id=%s status=%s http=%s",
+                    trial_id,
+                    status,
+                    r.status_code,
+                )
+                return r.status_code < 400
+        except Exception:
+            logger.info("metric=numinous.trial_settle trial_id=%s failed", trial_id)
+            return False
+
     async def teardown(self, external_id: str) -> bool:
         """Best-effort terminate by sandbox id. The response carries a
         teardown proof; expired sandboxes are already gone (the TTL is
