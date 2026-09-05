@@ -1099,8 +1099,15 @@ export function DeliveryBoardClient({
   ]);
   // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
   // can be shared or reloaded. replaceState keeps the back button out of
-  // every click; defaults stay out of the URL.
+  // every click; defaults stay out of the URL. The mount run is skipped:
+  // it sees the default state before the URL-read effect's updates apply,
+  // and writing then would strip a shared link's params for a render.
+  const urlWriteArmed = useRef(false);
   useEffect(() => {
+    if (!urlWriteArmed.current) {
+      urlWriteArmed.current = true;
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     if (filter === "all") {
       params.delete("filter");
