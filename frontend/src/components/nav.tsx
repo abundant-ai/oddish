@@ -27,6 +27,7 @@ import {
   BookOpen,
   ChevronDown,
   FileText,
+  Package,
   LogOut,
   Menu,
   SearchCheck,
@@ -100,6 +101,12 @@ const PRIMARY_NAV_LINKS: NavLink[] = [
     ),
   },
   { href: "/tasks", label: "Tasks", icon: <FileText className="h-4 w-4" /> },
+  {
+    href: "/deliveries",
+    label: "Deliveries",
+    icon: <Package className="h-4 w-4" />,
+    prefix: true,
+  },
   ...(SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV
     ? [
         {

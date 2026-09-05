@@ -33,7 +33,16 @@ auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
 Current top-level commands are `run`, `upload`, `preflight`, `ls`, `status`,
 `skill`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
 `cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`, `pull`,
-`publish`, `unpublish`, and `probe`.
+`publish`, `unpublish`, `probe`, `delivery`, `assign`, and `qa`.
+
+`oddish assign task-1 task-2 --to alice@example.com` assigns QA review ownership
+to an org member identified by email, user ID, or GitHub handle. For a large
+batch use `--tasks-file task-ids.txt` (whitespace-separated IDs, up to 1,000
+unique IDs) and `--json`. It requires a `full` API key. Other owners are skipped
+unless `--replace` is supplied; existing notes and issue categories are kept.
+The JSON response names `assigned_task_ids`, `unchanged_task_ids`, and
+`skipped_task_ids`. Assignment targets current task versions and appears on
+active delivery boards; it neither launches QA jobs nor changes sign-off.
 
 Use `oddish <command> --help` for the exhaustive option list. Important
 submission controls include:

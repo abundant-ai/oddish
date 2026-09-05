@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
@@ -27,13 +28,11 @@ def canonical_excluded_model(model: str | None) -> str:
     return normalize_model_id(model) or ""
 
 
-def _excluded_model_spend():
+def _excluded_model_spend(trial=TrialModel):
     trial_family = func.btrim(
         func.regexp_replace(
             func.regexp_replace(
-                func.lower(
-                    func.btrim(func.regexp_replace(TrialModel.model, "^.*/", ""))
-                ),
+                func.lower(func.btrim(func.regexp_replace(trial.model, "^.*/", ""))),
                 r"\s+",
                 "-",
                 "g",
@@ -50,7 +49,7 @@ def _excluded_model_spend():
             CostExcludedModelModel.model_name == trial_family,
             CostExcludedModelModel.deleted_at.is_(None),
         )
-        .correlate(TrialModel)
+        .correlate(trial)
         .exists()
     )
 
@@ -59,14 +58,14 @@ def not_excluded_model_filter():
     return ~_excluded_model_spend()
 
 
-def _excluded_llm_key_spend():
+def _excluded_llm_key_spend(trial=TrialModel):
     return (
         select(CostExcludedLlmKeyModel.id)
         .where(
-            CostExcludedLlmKeyModel.key_hash == TrialModel.llm_key_hash,
+            CostExcludedLlmKeyModel.key_hash == trial.llm_key_hash,
             CostExcludedLlmKeyModel.deleted_at.is_(None),
         )
-        .correlate(TrialModel)
+        .correlate(trial)
         .exists()
     )
 
@@ -75,14 +74,14 @@ def not_excluded_llm_key_filter():
     return ~_excluded_llm_key_spend()
 
 
-def _excluded_experiment_spend():
+def _excluded_experiment_spend(trial=TrialModel):
     return (
         select(CostExcludedExperimentModel.id)
         .where(
-            CostExcludedExperimentModel.experiment_id == TrialModel.experiment_id,
+            CostExcludedExperimentModel.experiment_id == trial.experiment_id,
             CostExcludedExperimentModel.deleted_at.is_(None),
         )
-        .correlate(TrialModel)
+        .correlate(trial)
         .exists()
     )
 
@@ -91,11 +90,13 @@ def not_excluded_experiment_filter():
     return ~_excluded_experiment_spend()
 
 
-def excluded_spend_filter():
+def excluded_spend_filter(trial=TrialModel):
+    """Spend on an admin-excluded key, model, or experiment. ``trial`` is the
+    ``TrialModel`` entity (or alias) the caller selects from."""
     return (
-        _excluded_llm_key_spend()
-        | _excluded_model_spend()
-        | _excluded_experiment_spend()
+        _excluded_llm_key_spend(trial)
+        | _excluded_model_spend(trial)
+        | _excluded_experiment_spend(trial)
     )
 
 
@@ -145,8 +146,14 @@ class CostExclusions:
 
 
 async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
+    is_autocommit = session.info.get("oddish_read_autocommit") is True
+    # A missing optional table must not abort a caller's transaction, so normal
+    # sessions keep the savepoint. get_read_session marks driver autocommit on
+    # the session it owns; each SELECT already owns its transaction and
+    # PostgreSQL rejects SAVEPOINT there.
+    transaction_guard = nullcontext() if is_autocommit else session.begin_nested()
     try:
-        async with session.begin_nested():
+        async with transaction_guard:
             llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
             models = list(await session.scalars(select(CostExcludedModelModel)))
             experiments = list(

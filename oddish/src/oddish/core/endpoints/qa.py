@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection
 
 from fastapi import HTTPException
@@ -11,7 +12,8 @@ from oddish.core.endpoints._common import (
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
     USER_CANCELLED_MESSAGE,
 )
-from oddish.core.verdict_state import cancel_verdict
+from oddish.core.verdict_state import cancel_verdict, reset_verdict
+from oddish.core.trial_io import qa_source_evidence_errors
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
@@ -25,16 +27,7 @@ from oddish.db import (
     utcnow,
 )
 
-
-async def _live_analysis_trial_id(
-    session: AsyncSession, task_id: str, *, kind: str
-) -> str | None:
-    # One definition of "an analysis stage is in progress": the automatic
-    # QA admission (maybe_start_task_qa_stage) defers on the same predicate
-    # these endpoints guard with, so the two paths cannot disagree.
-    from oddish.queue import live_analysis_trial_id
-
-    return await live_analysis_trial_id(session, task_id, kind=kind)
+_QA_EVIDENCE_READ_CONCURRENCY = 2
 
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
@@ -128,6 +121,8 @@ async def cancel_task_qa_core(
     verdict. Cancelling this endpoint also stops the task's live pre-trial
     audit and finalizes any classification left RUNNING by a killed worker.
     """
+    from oddish.queue import task_audit_pending
+
     # The same task row lock the backfill and the reruns take: without it, a
     # cancel can interleave with their check-and-enqueue and either kill a
     # just-committed job's state or write verdict resets over a fresh enqueue.
@@ -164,10 +159,17 @@ async def cancel_task_qa_core(
         trial.harbor_stage = "cancelled"
         trial.error_message = USER_CANCELLED_MESSAGE
         trial.finished_at = trial.finished_at or now_value
+    waiting_for_admission = task.status in (
+        TaskStatus.PENDING,
+        TaskStatus.RUNNING,
+    ) and not await _count_active_trials(
+        session, task_id=task.id, task_version_id=task.current_version_id
+    )
     if (
         analysis_trials
         or _has_active_verdict(task)
         or task.status == TaskStatus.VERDICT_PENDING
+        or await task_audit_pending(session, task)
     ):
         cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now_value)
         # Finalize trials whose classification the QA job had in flight so
@@ -177,29 +179,10 @@ async def cancel_task_qa_core(
                 trial.analysis_status = AnalysisStatus.FAILED
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
-        if task.status == TaskStatus.VERDICT_PENDING:
-            # A restored verdict means the task is judged; only a task with
-            # no verdict fails on cancel.
-            task.status = (
-                TaskStatus.COMPLETED
-                if task.verdict_status == VerdictStatus.SUCCESS
-                else TaskStatus.FAILED
-            )
-            task.finished_at = now_value
-        elif task.status == TaskStatus.RUNNING and not await _count_active_trials(
-            session, task_id=task.id, task_version_id=task.current_version_id
-        ):
-            # QA admission holds a task in RUNNING with every agent trial
-            # settled while its audit runs. Cancelling that audit must
-            # settle the task too: left RUNNING, the sweep's advance
-            # backstop re-enters admission minutes later and starts a QA
-            # run the user just cancelled -- against a brief whose audit
-            # findings this cancel wiped.
-            task.status = (
-                TaskStatus.COMPLETED
-                if task.verdict_status == VerdictStatus.SUCCESS
-                else TaskStatus.FAILED
-            )
+        if task.status == TaskStatus.VERDICT_PENDING or waiting_for_admission:
+            # Include the gap between audit settlement and import/admission:
+            # leaving the task RUNNING would let cleanup restart cancelled QA.
+            task.status = TaskStatus.FAILED
             task.finished_at = now_value
     # A pre-trial status left QUEUED/RUNNING with nothing behind it would
     # keep the card in a running state forever, so cancel always clears it.
@@ -268,13 +251,13 @@ async def rerun_task_qa_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """Create a replacement qa-kind trial for a finished task.
 
     Resets every live agent trial's classification, then creates one QA trial
-    that reclassifies the eligible set and synthesizes a verdict when the
-    evidence bar is met. The published verdict remains visible until that
-    replacement succeeds.
+    that reclassifies all eligible trials and requests a verdict once at least
+    one exists. Queuing the replacement withdraws the old verdict.
     """
     return await backfill_task_analysis_core(
         session,
@@ -282,6 +265,7 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
+        environment=environment,
     )
 
 
@@ -292,15 +276,23 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA for a task.
 
-    Queues a replacement verdict without withdrawing the published result.
+    Queues a replacement verdict and withdraws the published result.
     The QA trial re-reads and re-classifies every eligible trial either
     way; ``force`` only controls which stored analyses are cleared up
     front so the UI shows them as pending (all live trials, or just
     ``trial_ids``).
     """
+    from oddish.queue import (
+        live_analysis_trial_id,
+        qa_eligible_trial_ids,
+        start_qa_for_task,
+        task_audit_pending,
+    )
+
     # The task row lock serializes this check-and-enqueue against the audit
     # rerun (which takes the same lock): without it, two concurrent requests
     # can each pass the job guards below and enqueue conflicting jobs.
@@ -347,19 +339,47 @@ async def backfill_task_analysis_core(
     # The live qa trial IS the in-progress marker. Old status flags
     # (verdict_status, per-trial analysis_status) can be stale after a
     # crash and must not wedge the rerun button.
-    live_qa = await _live_analysis_trial_id(session, task_id, kind="qa")
+    live_qa = await live_analysis_trial_id(session, task_id, kind="qa")
     if live_qa is not None:
         raise HTTPException(
             status_code=400,
             detail="QA is already in progress for this task",
         )
 
-    # The QA brief embeds the audit findings. Starting QA while an audit
-    # trial is live would read mixed findings.
-    if await _live_analysis_trial_id(session, task_id, kind="audit"):
+    # A finished job may still await import; do not snapshot missing findings.
+    if await task_audit_pending(session, task):
         raise HTTPException(
             status_code=400,
-            detail="A pre-trial audit is queued or running; wait for it to finish",
+            detail="A pre-trial audit is running or awaiting import; wait for it to finish",
+        )
+
+    eligible_ids = await qa_eligible_trial_ids(
+        session,
+        task.id,
+        task_version_id=task.current_version_id,
+    )
+    trials_by_id = {trial.id: trial for trial in live_trials}
+    evidence_read_slots = asyncio.Semaphore(_QA_EVIDENCE_READ_CONCURRENCY)
+
+    async def check_source_evidence(trial: TrialModel) -> tuple[str, ...]:
+        async with evidence_read_slots:
+            return await qa_source_evidence_errors(trial)
+
+    evidence_checks = await asyncio.gather(
+        *(check_source_evidence(trials_by_id[trial_id]) for trial_id in eligible_ids)
+    )
+    blocked = [
+        f"{trial_id}: {'; '.join(errors)}"
+        for trial_id, errors in zip(eligible_ids, evidence_checks, strict=True)
+        if errors
+    ]
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot queue QA because source evidence is unavailable:\n"
+                + "\n".join(blocked)
+            ),
         )
 
     reset_count = 0
@@ -373,10 +393,8 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
-    from oddish.queue import start_qa_for_task
-
     task.finished_at = None
-    await start_qa_for_task(session, task)
+    await start_qa_for_task(session, task, environment=environment)
 
     await session.commit()
     return {
@@ -392,15 +410,17 @@ async def rerun_pre_trial_audit_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str]:
     """Queue the pre-trial audit for the task's current version.
 
-    This is the independent audit trigger. It does not classify trials and
-    it does not synthesize the verdict. It is blocked only while an audit
-    of this version is running inside its lease.
+    Replaces the audit evidence and withdraws the old task decision. Once
+    this audit and any existing runs finish, normal QA admission reconciles
+    the task against the new audit without interrupting running jobs.
     """
     from datetime import timedelta
 
+    from oddish.queue import live_analysis_trial_id
 
     # The task row lock serializes this check-and-enqueue against the QA
     # backfill (which takes the same lock): without it, two concurrent
@@ -436,14 +456,18 @@ async def rerun_pre_trial_audit_core(
     # A queued request with a live audit trial behind it must not be queued
     # again. A stale QUEUED status with no trial (cancelled or crashed) may
     # be: re-queuing is the remedy there.
-    if await _live_analysis_trial_id(session, task_id, kind="audit"):
+    if await live_analysis_trial_id(session, task_id, kind="audit"):
         raise HTTPException(
             status_code=400,
             detail="An audit trial is already queued or running for this task",
         )
 
-    # A live qa trial is not a blocker: it snapshotted the findings into its
-    # brief at creation, so clearing version.pre_trial below cannot affect it.
+    # A live QA trial may finish, but its audit fingerprint prevents it from
+    # publishing the obsolete decision. Admission waits for both jobs before
+    # creating replacement QA, so this does not duplicate a live QA job.
+    reset_verdict(task)
+    task.status = TaskStatus.RUNNING
+    task.finished_at = None
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
     # the card showing progress while the trial waits for a worker.
@@ -461,6 +485,7 @@ async def rerun_pre_trial_audit_core(
         kind="audit",
         brief=build_audit_brief(task_name=task.name),
         task_version_id=str(version.id),
+        environment=environment,
     )
     await session.commit()
     return {"status": "queued", "task_id": task_id}

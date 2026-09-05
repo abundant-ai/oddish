@@ -1,6 +1,12 @@
-# Standing orders — SWE-Marathon gpt-5.6-terra effort sweep
+# Historical campaign record — SWE-Marathon gpt-5.6-terra effort sweep
 
-**Read this first after any container restart.** This happened three times
+This file records the August 2026 campaign state that produced the scripts in
+this directory. It is not a current Oddish operations runbook: the paths,
+experiment IDs, feature branch, container, and completion state are specific to
+that campaign and must be revalidated before reuse. The last committed target
+is phase B with 10 trials per cell and a CUA concurrency cap of 25.
+
+During that campaign, the container restarted three times
 (2026-08-05 ~00:40Z, ~19:50Z, 2026-08-06 ~02:29Z), wiping `/home/user/terra-run`
 entirely — scripts, state, dataset copies — along with the babysit cron.
 
@@ -13,14 +19,15 @@ that heartbeat alive — it is load-bearing, not cosmetic.
 The repos and `/home/user/oddish/.env` survive a wipe. Server-side trials keep
 running throughout; only the babysitting stops.
 
-**Recovery is a single command** — this whole directory is committed to the
+The campaign recovery procedure was a single command sequence. This whole
+directory was committed to the
 `oddish` repo, branch `claude/oddish-api-env-setup-f76jpp`, under `eval-ops/`:
 
 ```bash
 cp -r /home/user/oddish/eval-ops/* /home/user/terra-run/     # or git checkout
 cd /home/user/terra-run
 for a in low medium high; do cp -r /home/user/swe-marathon/tasks ds-$a; done
-bash cycle.sh   # one idempotent pass: canary -> non-CUA dispatch -> throttled CUA fill
+bash run_forever.sh   # canary -> non-CUA dispatch -> direct CUA target assertion
 
 ```
 
@@ -47,10 +54,11 @@ Links: https://www.oddish.app/experiments/{17b6f7d9,c071229f,a706e700}
 3. **2026-08-05T18:12Z — "run 5 trials for all the cua trials rn"**, throttled
    to the §3.6 cap of ≤10 concurrent. Reached ~23/60 before the second wipe.
 4. **2026-08-06T01:44Z — "finish the trials off. make everything 10/10".**
-   **Phase B, current:** every task, CUA and non-CUA, to **10 trials per cell**.
-   Non-CUA 8 → 10 (+96 trials, `dispatch.sh`); CUA → 10 (`cua_loop.sh`, still
-   throttled — the cap is a verifier-safety limit, not a target, and does
-   **not** relax in phase B).
+   **Phase B target:** every task, CUA and non-CUA, to **10 trials per cell**.
+   Non-CUA 8 → 10 (+96 trials, `dispatch.sh`); CUA → 10 through
+   `cua_dispatch.sh`, which queues every remaining cell directly. The later
+   instruction recorded below raised the concurrency cap from 10 to 25 and
+   retired wave-by-wave filling.
 5. **Babysit every 30 minutes** throughout.
 
 `config.json` holds the live targets and phase; both scripts read it, so a
@@ -116,8 +124,12 @@ concurrency of 10, i.e. the cap is holding.
 - `poll_all.py` — fetch + classify all 20 tasks → `state.json`
 - `babysit.py` — report → `babysit-latest.md` + `hb-fleet.txt`; `--delete`
   removes infra, `--topup` re-asserts targets on short non-CUA cells only
-- `cua_fill.py` — one throttled CUA pass (config-driven, locked)
-- `cua_loop.sh` — repeats `cua_fill.py` until all 12 CUA cells hold target
+- `cua_dispatch.sh` — current campaign path; re-asserts all 12 CUA cells at the
+  configured target without wave-by-wave filling
+- `run_forever.sh` — current campaign driver; canaries the write path, runs the
+  non-CUA dispatcher, runs `cua_dispatch.sh`, and stops when all cells are full
+- `cycle.sh`, `cua_fill.py`, `cua_loop.sh` — older throttled-pass machinery
+  retained for campaign history; `cycle.sh` still invokes `cua_fill.py`
 - `dispatch.sh` — 3 arms in parallel, 16 non-CUA tasks serially per arm
 - `config.json` — phase + targets + cap
 - `ds-low/`, `ds-medium/`, `ds-high/` — per-arm dataset copies so concurrent

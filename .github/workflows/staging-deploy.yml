@@ -48,17 +48,15 @@ jobs:
       # Hold LLM trials until a task's nop/oracle baselines validate it (mirrors
       # modal-deploy.yml's prod setting).
       ODDISH_GATE_LLM_ON_BASELINES: "1"
-      # Numinous Cloud execution backend (merged in #1344, opt-in). Staging
-      # runs it enabled so the routing ships to main only after soaking here.
-      # Attaches the oddish-numinous secret (env main): API URL + key.
-      ODDISH_NUMINOUS_ENABLED: "1"
-      # Numinous GPU lane (#1412). Staging-only for now so GPU trial routing
-      # to Numinous soaks here before it ships to main. Separate flag from
-      # ODDISH_NUMINOUS_ENABLED so the CPU backend can run without accepting
-      # GPU work. When on, NuminousBackend advertises H100-first GpuSupport
-      # and cheap-first negotiation routes GPU trials (SWE-marathon) to
+      # Numinous Cloud execution backend (merged in #1344, opt-in). Disabled:
+      # staging is treated as main, so development happens on preview deploys
+      # only (pr-preview.yml keeps it on). Set to "1" to route CPU trials to
+      # Numinous first, then Daytona, then Modal.
+      ODDISH_NUMINOUS_ENABLED: "0"
+      # Numinous GPU lane (#1412). Disabled here too (preview-only). Separate
+      # flag from ODDISH_NUMINOUS_ENABLED; set to "1" to route GPU trials to
       # Numinous ahead of Modal.
-      ODDISH_NUMINOUS_GPU_ENABLED: "1"
+      ODDISH_NUMINOUS_GPU_ENABLED: "0"
       # (staging-only until it reaches main after this soaks)
       # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
       # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
@@ -90,10 +88,10 @@ jobs:
       ODDISH_EC2_USE_PUBLIC_IP: "true"
       ODDISH_EC2_BOOTSTRAP_DOCKER: "true"
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      # Low caps: staging carries no production traffic.
-      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
-      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      # Keep staging responsive while QA replay workers fetch source artifacts.
+      ODDISH_MODAL_API_MIN_CONTAINERS: "1"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "4"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "8"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "8"

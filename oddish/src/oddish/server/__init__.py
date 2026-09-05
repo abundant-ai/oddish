@@ -72,6 +72,8 @@ from oddish.core.admin import (
 )
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.sharing.public import router as public_router
+from oddish.server.deliveries import router as delivery_router
+from oddish.server.qa_work import router as qa_work_router
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -91,6 +93,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
+    QARunRequest,
     ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -244,6 +247,8 @@ api.add_middleware(
 )
 
 api.include_router(public_router)
+api.include_router(delivery_router)
+api.include_router(qa_work_router)
 
 
 # =============================================================================
@@ -392,7 +397,7 @@ async def create_task_sweep(
 
     The ``Idempotency-Key`` header is accepted for parity with the cloud API but
     not persisted here: the idempotency record store is a backend-only table, so
-    this single-tenant open-source server runs every submission as received.
+    this single-tenant standalone server runs every submission as received.
     """
 
     from oddish.core.sweeps import validate_sweep_submission
@@ -729,10 +734,14 @@ async def get_trial(task_id: str, index: int):
 
 
 @api.post("/tasks/{task_id}/qa/retry")
-async def retry_task_qa(task_id: str) -> dict:
+async def retry_task_qa(task_id: str, body: QARunRequest | None = None) -> dict:
     """Create replacement task-level QA over every eligible agent trial."""
     async with get_session() as session:
-        return await rerun_task_qa_core(session, task_id=task_id)
+        return await rerun_task_qa_core(
+            session,
+            task_id=task_id,
+            environment=body.environment if body is not None else None,
+        )
 
 
 @api.post("/tasks/{task_id}/qa/cancel")
@@ -759,14 +768,18 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
 
 
 @api.post("/tasks/{task_id}/qa/pre-trial")
-async def rerun_pre_trial_audit(task_id: str) -> dict:
+async def rerun_pre_trial_audit(task_id: str, body: QARunRequest | None = None) -> dict:
     """Queue the pre-trial audit for the task's current version.
 
-    Runs only the audit. Does not classify trials and does not synthesize
-    the verdict.
+    Withdraws the old verdict. After the audit and existing runs finish,
+    task QA uses the replacement findings to reconcile classifications and decision.
     """
     async with get_session() as session:
-        return await rerun_pre_trial_audit_core(session, task_id=task_id)
+        return await rerun_pre_trial_audit_core(
+            session,
+            task_id=task_id,
+            environment=body.environment if body is not None else None,
+        )
 
 
 @api.post("/trials/{trial_id}/analysis/rerun")
@@ -826,10 +839,10 @@ async def get_trial_logs(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/logs/structured")
-async def get_trial_logs_structured(trial_id: str):
-    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+async def get_trial_logs_structured(trial_id: str, verifier_only: bool = Query(False)):
+    """Get structured logs, optionally limited to verifier evidence."""
     trial = await _get_detached_trial(trial_id)
-    return await read_trial_logs_structured(trial)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @api.get("/trials/{trial_id}/trajectory")

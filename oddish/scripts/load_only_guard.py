@@ -22,7 +22,7 @@ fails on any read column that isn't declared.
 
 * ``load_only(Model.column, ...)`` and ``load_only(*COLUMN_TUPLE)`` are both
   understood; module-level ``COLUMN_TUPLE = (Model.column, ...)`` constants are
-  resolved from helpers.py / tasks_query.py.
+  resolved from each unit's query and builder modules.
 * Models are derived from the ``load_only`` sets: a model with no ``load_only``
   in a unit is fully loaded (can't defer) and is not checked for that unit.
   Introspected via SQLAlchemy for real column/PK/relationship names.
@@ -75,17 +75,25 @@ _PKG_ROOT = _SRC_ROOT / "oddish"
 _HELPERS_PATH = _PKG_ROOT / "core" / "helpers.py"
 _TASKS_QUERY_PATH = _PKG_ROOT / "core" / "endpoints" / "tasks_query.py"
 
-# ``(query_function, builder_entry_points)``. Each query function holds the
-# ``load_only`` projections for one list path; the builders are the response
-# builders that run under them. A read column missing from a unit's load_only
-# set 500s that path with MissingGreenlet. Add a load_only site => add a unit
-# (the tripwire fails until you do).
-_COVERAGE_UNITS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("list_tasks_core", ("build_task_status_response_compact",)),
-    ("list_experiment_task_shells_core", ("build_task_status_responses_from_counts",)),
-    ("list_experiment_slim_tasks", ("build_slim_task_status_response",)),
+# Each unit records the query's module and the builder modules it calls.
+# Imported builders must be listed explicitly: the AST walker follows only
+# module-local calls. Multiple projections of one model are unioned here;
+# database tests must also exercise them without cached ORM instances.
+_COVERAGE_UNITS = (
+    (
+        "list_tasks_core",
+        _TASKS_QUERY_PATH,
+        ((_HELPERS_PATH, ("build_task_status_response_compact",)),),
+    ),
+    (
+        "delivery_qa_statuses",
+        _PKG_ROOT / "core" / "delivery_qa.py",
+        (
+            (_PKG_ROOT / "core" / "delivery_qa.py", ("evaluate_delivery_qa",)),
+            (_PKG_ROOT / "core" / "analysis_payload.py", ("qa_trial_evidence",)),
+        ),
+    ),
 )
-_COVERED_FUNCTIONS = frozenset(fn for fn, _ in _COVERAGE_UNITS)
 
 
 # Schema units: query functions whose "builder" is a Pydantic response model
@@ -144,8 +152,7 @@ def introspect_models(model_names: set[str]) -> dict[str, _ModelMeta]:
             column_attrs = insp.column_attrs
         except Exception as exc:  # noqa: BLE001 - report any non-mapped class
             raise SystemExit(
-                f"load_only_guard: {name!r} is not a SQLAlchemy mapped model "
-                f"({exc})."
+                f"load_only_guard: {name!r} is not a SQLAlchemy mapped model ({exc})."
             ) from exc
         metas[name] = _ModelMeta(
             name=name,
@@ -466,7 +473,7 @@ def _reachable_functions(tree: ast.AST, entries: set[str]) -> dict[str, ast.AST]
     if missing:
         raise SystemExit(
             f"load_only_guard: builder entry point(s) {sorted(missing)!r} are not "
-            f"defined in helpers.py. Renamed or moved to another module? Update "
+            f"defined in the builder module. Renamed or moved to another module? Update "
             f"_COVERAGE_UNITS."
         )
     reachable: dict[str, ast.AST] = {}
@@ -532,19 +539,18 @@ def compute_violations(
     return violations
 
 
-def _iter_units(
-    helpers_path: Path, tasks_query_path: Path
-) -> list[tuple[str, tuple[str, ...], dict[str, set[str]], dict[str, _ModelMeta]]]:
-    """Resolve each coverage unit to ``(function, entries, declared, metas)``."""
-    tuple_columns = _collect_module_tuple_columns(helpers_path, tasks_query_path)
-    tasks_tree = ast.parse(tasks_query_path.read_text(), filename=str(tasks_query_path))
-    units = []
-    for query_function, entries in _COVERAGE_UNITS:
-        query_fn = _find_function(tasks_tree, query_function)
+def _iter_units():
+    """Resolve each unit's query projections and mapped model metadata."""
+    for query_function, query_path, builders in _COVERAGE_UNITS:
+        tuple_columns = _collect_module_tuple_columns(
+            query_path, *(path for path, _ in builders)
+        )
+        tree = ast.parse(query_path.read_text(), filename=str(query_path))
+        query_fn = _find_function(tree, query_function)
         if query_fn is None:
             raise SystemExit(
                 f"load_only_guard: {query_function}() not found in "
-                f"{tasks_query_path.name}. Renamed or moved? Update _COVERAGE_UNITS."
+                f"{query_path.name}. Renamed or moved? Update _COVERAGE_UNITS."
             )
         declared = collect_declared_columns(query_fn, tuple_columns)
         if not declared:
@@ -552,21 +558,19 @@ def _iter_units(
                 f"load_only_guard: no load_only(...) columns found in "
                 f"{query_function}(). Its load_only projections may have moved."
             )
-        metas = introspect_models(set(declared))
-        units.append((query_function, entries, declared, metas))
-    return units
+        yield query_function, builders, declared, introspect_models(set(declared))
 
 
-def find_violations(
-    helpers_path: Path = _HELPERS_PATH,
-    tasks_query_path: Path = _TASKS_QUERY_PATH,
-) -> dict[str, dict[str, list[str]]]:
+def find_violations() -> dict[str, dict[str, list[str]]]:
     """Per-unit column violations: ``{query_function: {model: [missing cols]}}``."""
     all_violations: dict[str, dict[str, list[str]]] = {}
-    for query_function, entries, declared, metas in _iter_units(
-        helpers_path, tasks_query_path
-    ):
-        reads = collect_read_columns(helpers_path, metas, set(entries))
+    for query_function, builders, declared, metas in _iter_units():
+        reads: dict[str, set[str]] = defaultdict(set)
+        for path, entries in builders:
+            for model, columns in collect_read_columns(
+                path, metas, set(entries)
+            ).items():
+                reads[model].update(columns)
         violations = compute_violations(reads, declared, metas)
         if violations:
             all_violations[query_function] = violations
@@ -651,12 +655,9 @@ def find_schema_violations() -> dict[str, dict[str, list[str]]]:
     return all_violations
 
 
-def _covered_models(
-    helpers_path: Path = _HELPERS_PATH,
-    tasks_query_path: Path = _TASKS_QUERY_PATH,
-) -> set[str]:
+def _covered_models() -> set[str]:
     models: set[str] = set()
-    for _, _, declared, _ in _iter_units(helpers_path, tasks_query_path):
+    for _, _, declared, _ in _iter_units():
         models.update(declared)
     models.update(model_name for _, _, model_name, _, _ in _SCHEMA_UNITS)
     return models
@@ -685,7 +686,8 @@ def _load_only_sites_in_tree(tree: ast.AST) -> list[tuple[str | None, int]]:
 def _allowed_sites() -> dict[Path, frozenset[str]]:
     """``{resolved file: covered function names}`` across both unit kinds."""
     allowed: dict[Path, set[str]] = defaultdict(set)
-    allowed[_TASKS_QUERY_PATH.resolve()].update(_COVERED_FUNCTIONS)
+    for query_function, query_path, _ in _COVERAGE_UNITS:
+        allowed[query_path.resolve()].add(query_function)
     for query_function, query_path, _, _, _ in _SCHEMA_UNITS:
         allowed[query_path.resolve()].add(query_function)
     return {path: frozenset(fns) for path, fns in allowed.items()}

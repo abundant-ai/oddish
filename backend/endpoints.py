@@ -89,3 +89,21 @@ api = create_asgi_app()
 def api_app():
     """Single ASGI endpoint for all API routes."""
     return api
+
+
+@app.function(
+    image=image,
+    secrets=runtime_secrets,
+    timeout=660,
+    cpu=1,
+    memory=4096,
+    min_containers=0,
+    max_containers=16,
+)
+@modal.concurrent(target_inputs=32, max_inputs=64)
+@modal.asgi_app(label=f"{API_WEBHOOK_LABEL}-qa-model")
+def qa_model_gateway():
+    """Separate streaming capacity so QA cannot occupy dashboard API inputs."""
+    from api.qa_model_app import create_qa_model_asgi_app
+
+    return create_qa_model_asgi_app()

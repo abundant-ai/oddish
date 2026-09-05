@@ -61,10 +61,17 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
-- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries; `--env archil` selects Archil and `--env ec2` selects an operator-enabled ephemeral CPU VM, while Daytona remains the hosted CPU default.
+- `oddish run` — submit local tasks, registry datasets, sweeps, retries, and
+  task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
+  `gke`, `archil`, and `numinous`; Archil, EC2, and Numinous are controlled by
+  deployment settings. When Numinous is enabled it is the first CPU candidate;
+  otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
+  separate deployment flag.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
 - `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
@@ -80,6 +87,7 @@ reference. The main commands are:
 - `oddish delete` — delete trials against hosted Oddish (admin key); whole-task/experiment deletes are refused for Modal-hosted APIs, and a standalone core server has no delete endpoints at all.
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
+- `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,
@@ -103,3 +111,13 @@ oddish pull <task_id> --watch
 - Package internals and implementation notes: [`AGENTS.md`](../AGENTS.md)
 - Complete CLI reference: [`DOCS.md`](../DOCS.md)
 - Self-hosting and deployment: [`../SELF_HOSTING.md`](../SELF_HOSTING.md)
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) allows personal and other noncommercial
+use, plus use by the organizations listed in the license. Commercial use outside
+those terms requires a separate license from the rights holders. Contact
+[the maintainer](https://github.com/RishiDesai).
+
+Rights already granted for code released under Apache 2.0 remain in place.
+See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own license.

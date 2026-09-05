@@ -13,6 +13,7 @@ place.
 from __future__ import annotations
 
 import logging
+import shutil
 from importlib import resources
 from pathlib import Path
 
@@ -26,6 +27,9 @@ from oddish.worker.probe_overlay import (
 from oddish.worker.skills_overlay import SkillBundle, materialize_skills
 
 logger = logging.getLogger(__name__)
+
+_ANALYSIS_CONTRACT_DIR = ".analysis-contract"
+_ANALYSIS_SUBMIT_COMMAND = "submit-analysis-result"
 
 
 def read_query_cli_text() -> str:
@@ -54,16 +58,87 @@ def stage_query_cli(work_task_dir: Path) -> None:
 _ANALYSIS_TEST_SH = """#!/bin/sh
 OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
 mkdir -p "$OUT"
+echo "0.0" > "$OUT/reward.txt"
 SRC="/logs/{artifact}"
 TESTS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -d "/logs/{artifact}.submissions" ]; then
+  cp -R "/logs/{artifact}.submissions" "$OUT/"
+fi
 if [ ! -s "$SRC" ]; then
-  echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
+  if [ -s "/logs/{label}_submission_error.txt" ]; then
+    if [ -s "/logs/{label}_result-rejected.json" ]; then
+      cp "/logs/{label}_result-rejected.json" "$OUT/{label}_result-rejected.json"
+    fi
+    {{ echo "QA artifact validation failed:"; cat "/logs/{label}_submission_error.txt"; }} \
+      | tee "$OUT/error.txt" >&2
+  else
+    echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
+  fi
   exit 1
 fi
 cp "$SRC" "$OUT/{artifact}"
 python3 "$TESTS_DIR/analysis_result_check.py" "$SRC" "$TESTS_DIR/expected.json" 2>"$OUT/error.txt" || exit 1
 echo "1.0" > "$OUT/reward.txt"
 exit 0
+"""
+
+
+_ANALYSIS_SUBMIT_SH = """#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: /probe-harness/submit-analysis-result <draft.json>" >&2
+  exit 2
+fi
+
+SRC="$1"
+HARNESS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CONTRACT_DIR="$HARNESS_DIR/.analysis-contract"
+LOG_DIR="${{ODDISH_ANALYSIS_LOG_DIR:-/logs}}"
+ATTEMPTS_FILE="${{ODDISH_ANALYSIS_ATTEMPTS_FILE:-/tmp/oddish-analysis-submit-attempts}}"
+mkdir -p "$LOG_DIR"
+ATTEMPTS=0
+if [ -f "$ATTEMPTS_FILE" ]; then
+  ATTEMPTS=$(cat "$ATTEMPTS_FILE" 2>/dev/null || echo 0)
+fi
+case "$ATTEMPTS" in
+  ''|*[!0-9]*) ATTEMPTS=0 ;;
+esac
+ATTEMPTS=$((ATTEMPTS + 1))
+echo "$ATTEMPTS" > "$ATTEMPTS_FILE"
+
+if [ "$ATTEMPTS" -gt 3 ]; then
+  rm -f "$LOG_DIR/{artifact}"
+  echo "submission limit reached: one initial submission and two repairs" \
+    | tee "$LOG_DIR/{label}_submission_error.txt" >&2
+  exit 1
+fi
+if [ ! -s "$SRC" ]; then
+  rm -f "$LOG_DIR/{artifact}"
+  echo "analysis draft is missing or empty: $SRC" \
+    | tee "$LOG_DIR/{label}_submission_error.txt" >&2
+  exit 1
+fi
+
+SUBMISSIONS="$LOG_DIR/{artifact}.submissions"
+mkdir -p "$SUBMISSIONS"
+DRAFT="$SUBMISSIONS/attempt-$ATTEMPTS.json"
+cp "$SRC" "$DRAFT"
+rm -f "$LOG_DIR/{artifact}"
+ERROR_FILE="$SUBMISSIONS/attempt-$ATTEMPTS.errors.txt"
+if ! python3 "$CONTRACT_DIR/analysis_result_check.py" \
+  "$DRAFT" "$CONTRACT_DIR/expected.json" 2>"$ERROR_FILE"; then
+  cp "$ERROR_FILE" "$LOG_DIR/{label}_submission_error.txt"
+  cp "$DRAFT" "$LOG_DIR/{label}_result-rejected.json"
+  echo "QA artifact validation failed (submission $ATTEMPTS of 3):" >&2
+  cat "$ERROR_FILE" >&2
+  exit 1
+fi
+
+rm -f "$LOG_DIR/{label}_submission_error.txt"
+rm -f "$LOG_DIR/{label}_result-rejected.json"
+cp "$DRAFT" "$LOG_DIR/{artifact}"
+echo "QA artifact accepted and published to /logs/{artifact}"
 """
 
 
@@ -115,8 +190,6 @@ def apply_analysis_overlay(
     what the host importer will require."""
     import inspect
     import json
-    import shutil
-
     from oddish.worker import analysis_result_check
 
     for child in list(work_task_dir.iterdir()):
@@ -134,21 +207,39 @@ def apply_analysis_overlay(
     )
     tests_dir = work_task_dir / "tests"
     tests_dir.mkdir(parents=True)
-    (tests_dir / "expected.json").write_text(json.dumps(check_payload, indent=1))
-    (tests_dir / "analysis_result_check.py").write_text(
-        inspect.getsource(analysis_result_check)
-    )
+    expected_text = json.dumps(check_payload, indent=1)
+    validator_text = inspect.getsource(analysis_result_check)
+    (tests_dir / "expected.json").write_text(expected_text)
+    (tests_dir / "analysis_result_check.py").write_text(validator_text)
     test_sh = tests_dir / "test.sh"
-    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact))
+    label = artifact.removesuffix("_result.json")
+    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact, label=label))
     test_sh.chmod(0o755)
 
+    if artifact in ("qa_result.json", "audit_result.json"):
+        contract_dir = work_task_dir / _ANALYSIS_CONTRACT_DIR
+        contract_dir.mkdir()
+        (contract_dir / "expected.json").write_text(expected_text)
+        (contract_dir / "analysis_result_check.py").write_text(validator_text)
+        submit = work_task_dir / _ANALYSIS_SUBMIT_COMMAND
+        submit.write_text(_ANALYSIS_SUBMIT_SH.format(artifact=artifact, label=label))
+        submit.chmod(0o755)
 
-def stage_cli_mount(harness_dir: Path) -> None:
-    """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
-    mount). Everything else probe-only goes to the hidden stage, so this mount is
-    the single advertised entry point the agent sees."""
+
+def stage_cli_mount(
+    harness_dir: Path, *, analysis_task_dir: Path | None = None
+) -> None:
+    """Stage the probe CLI and, for QA tasks, their pinned submission contract."""
     harness_dir.mkdir(parents=True, exist_ok=True)
     stage_query_cli(harness_dir)
+    if analysis_task_dir is None:
+        return
+    submit = analysis_task_dir / _ANALYSIS_SUBMIT_COMMAND
+    contract = analysis_task_dir / _ANALYSIS_CONTRACT_DIR
+    if not submit.is_file() or not contract.is_dir():
+        return
+    shutil.copy2(submit, harness_dir / _ANALYSIS_SUBMIT_COMMAND)
+    shutil.copytree(contract, harness_dir / _ANALYSIS_CONTRACT_DIR)
 
 
 async def stage_org_skills(

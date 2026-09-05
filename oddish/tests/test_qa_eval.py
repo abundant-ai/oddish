@@ -49,7 +49,7 @@ def _qa_artifact(source_trial_id: str = "source-1") -> dict:
                             "step_ids": [1],
                             "trajectory_component": "implementing",
                             "action": "edit",
-                            "purpose": "fix the task",
+                            "purpose": "build",
                             "summary": "One edit.",
                         }
                     ],
@@ -73,6 +73,18 @@ def test_request_strips_and_deduplicates_source_trial_ids():
     assert request.prompt_name == "candidate-1"
     assert request.prompt_text == "classify this"
     assert request.model is None
+    assert request.audit_context == "current"
+
+
+def test_request_rejects_an_unknown_audit_context():
+    with pytest.raises(ValueError, match="audit_context"):
+        QAEvalCreateRequest(
+            name="replay",
+            source_trial_ids=["source-1"],
+            prompt_name="candidate-1",
+            prompt_text="classify this",
+            audit_context="snapshot",
+        )
 
 
 def test_replay_reuses_the_production_qa_brief_and_contract():
@@ -103,7 +115,11 @@ def test_replay_reuses_the_production_qa_brief_and_contract():
     assert check_analysis_result(_qa_artifact(), expected) == []
 
 
-def _source(*, has_trajectory: bool = True) -> TrialModel:
+def _source(
+    *,
+    has_trajectory: bool = True,
+    status: TrialStatus = TrialStatus.SUCCESS,
+) -> TrialModel:
     return TrialModel(
         id="source-1",
         name="source-1",
@@ -116,7 +132,7 @@ def _source(*, has_trajectory: bool = True) -> TrialModel:
         queue_key="codex:model",
         model="model",
         kind="agent",
-        status=TrialStatus.SUCCESS,
+        status=status,
         is_probe=False,
         has_trajectory=has_trajectory,
         analysis={"classification": "BAD_FAILURE"},
@@ -171,9 +187,18 @@ class _CreateSession:
 
 
 @pytest.mark.asyncio
-async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypatch):
-    source = _source()
+@pytest.mark.parametrize("environment", [None, "modal"])
+async def test_create_accepts_a_failed_source_without_a_trajectory(
+    monkeypatch, environment
+):
+    source = _source(has_trajectory=False, status=TrialStatus.FAILED)
     session = _CreateSession(source)
+    session.version.pre_trial = {
+        "items": [
+            {"id": "audit-1", "tier": "must_fix"},
+            {"id": "audit-2", "tier": "should_fix"},
+        ]
+    }
     captured = {}
     admitted = []
 
@@ -199,6 +224,7 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
             source_trial_ids=["source-1"],
             prompt_name="candidate-1",
             prompt_text="Classify the stored solver evidence.",
+            environment=environment,
         ),
         org_id="org-1",
         owner_user_id="user-1",
@@ -210,17 +236,78 @@ async def test_create_adds_one_pointer_trial_without_moving_the_source(monkeypat
     assert captured["experiment_id"] == "replay-experiment"
     assert captured["task_version_id"] == "version-1"
     assert captured["billed_user_id"] == "user-1"
-    assert captured["payload"]["source_trial_id"] == "source-1"
+    assert captured["environment"] == environment
     assert captured["payload"]["trial_ids"] == ["source-1"]
+    assert captured["payload"]["trial_evidence"] == [
+        {
+            "trial_id": "source-1",
+            "status": "failed",
+            "reward": None,
+            "has_trajectory": False,
+            "agent": "codex",
+            "baseline_kind": None,
+        }
+    ]
+    assert captured["payload"]["pre_trial_item_ids"] == ["audit-1", "audit-2"]
+    assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1"]
+    assert captured["payload"]["baseline_evidence"] == []
+    assert "source_trial_id" not in captured["payload"]
     assert admitted == [("org-1", "user-1", 1)]
     assert source.experiment_id == "original-experiment"
     assert source.analysis == {"classification": "BAD_FAILURE"}
 
 
 @pytest.mark.asyncio
+async def test_create_can_omit_current_audit_context_for_historical_goldens(
+    monkeypatch,
+):
+    source = _source(has_trajectory=False, status=TrialStatus.FAILED)
+    session = _CreateSession(source)
+    session.version.pre_trial = {
+        "items": [{"id": "new-staging-finding", "tier": "must_fix"}]
+    }
+    captured = {}
+
+    async def fake_admit_trials(*_args, **_kwargs):
+        return None
+
+    async def fake_create_analysis_trial(_session, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="qa-eval-1")
+
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.create_analysis_trial",
+        fake_create_analysis_trial,
+    )
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa_eval.admit_trials",
+        fake_admit_trials,
+    )
+    await create_qa_eval_core(
+        session,
+        request=QAEvalCreateRequest(
+            name="historical replay",
+            source_trial_ids=["source-1"],
+            prompt_name="candidate-1",
+            prompt_text="Classify the stored solver evidence.",
+            audit_context="none",
+        ),
+        org_id="org-1",
+        owner_user_id="user-1",
+        billed_user_id="user-1",
+    )
+
+    assert captured["payload"]["audit_context"] == "none"
+    assert captured["payload"]["pre_trial_item_ids"] == []
+    assert captured["payload"]["pre_trial_must_fix_ids"] == []
+    assert "Source-audit status: omitted for historical replay" in captured["brief"]
+    assert "new-staging-finding" not in captured["brief"]
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_the_whole_request_when_a_source_is_ineligible():
-    session = _CreateSession(_source(has_trajectory=False))
-    with pytest.raises(HTTPException, match="missing a stored trajectory"):
+    session = _CreateSession(_source(status=TrialStatus.RUNNING))
+    with pytest.raises(HTTPException, match=r"not terminal \(running\)"):
         await create_qa_eval_core(
             session,
             request=QAEvalCreateRequest(
@@ -250,7 +337,6 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
         status=TrialStatus.SUCCESS,
         harbor_config={
             "analysis_payload": {
-                "source_trial_id": "source-1",
                 "trial_ids": ["source-1"],
                 "with_verdict": False,
             }
@@ -259,7 +345,11 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
 
     class FakeSession:
         async def get(self, _model, trial_id):
-            return eval_trial if trial_id == "eval-1" else None
+            if trial_id == "eval-1":
+                return eval_trial
+            if trial_id == "source-1":
+                return _source()
+            return None
 
     @asynccontextmanager
     async def fake_get_session():
@@ -275,5 +365,52 @@ async def test_importer_extracts_one_standard_qa_analysis(monkeypatch):
     )
 
     await _import_qa_eval_result(eval_trial)
-    assert eval_trial.analysis == _analysis()
+    assert eval_trial.analysis == {
+        **_analysis(),
+        "trial_name": "source-1",
+        "reward": None,
+    }
     assert eval_trial.analysis_status == AnalysisStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_importer_requires_exactly_one_source_trial(monkeypatch):
+    eval_trial = TrialModel(
+        id="eval-1",
+        name="eval-1",
+        task_id="task-1",
+        agent="claude-code",
+        provider="anthropic",
+        queue_key="claude-code:model",
+        model="model",
+        kind="qa_eval",
+        status=TrialStatus.SUCCESS,
+        harbor_config={
+            "analysis_payload": {
+                "trial_ids": ["source-1", "source-2"],
+                "with_verdict": False,
+            }
+        },
+    )
+
+    class FakeSession:
+        async def get(self, _model, trial_id):
+            return eval_trial if trial_id == "eval-1" else None
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield FakeSession()
+
+    async def fake_read_artifact(_trial, _filename):
+        return _qa_artifact()
+
+    monkeypatch.setattr("oddish.workers.analysis_trials.get_session", fake_get_session)
+    monkeypatch.setattr(
+        "oddish.workers.analysis_trials.read_analysis_artifact", fake_read_artifact
+    )
+
+    await _import_qa_eval_result(eval_trial)
+
+    assert eval_trial.analysis is None
+    assert eval_trial.analysis_status == AnalysisStatus.FAILED
+    assert "exactly one" in eval_trial.analysis_error

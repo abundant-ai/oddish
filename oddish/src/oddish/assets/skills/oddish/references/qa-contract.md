@@ -35,9 +35,14 @@ Rows with `imported_at` set are excluded. A `failed` agent trial can still be
 eligible because QA can classify a harness or task failure from its evidence.
 
 QA always attempts classifications and trajectory summaries for its eligible
-set. It requests a task verdict only when the set has at least 5 trials from at
-least 3 distinct agent names. Below that evidence bar, the task can complete
-with classifications and no verdict.
+set. Once at least one eligible trial exists, it requests a task verdict using
+all eligible trials, regardless of agent diversity; audit-readiness checks still
+apply. Validated `must_fix` audit findings and failed deterministic baseline
+checks still reject the task, including when there are zero eligible trials.
+With zero eligible trials and no established rejection, the task completes with
+no verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+Delivery minimums remain independently configurable (defaults: five trials and
+three agents); generating a verdict does not itself qualify a task for delivery.
 
 ## Classification and verdict fields
 
@@ -74,6 +79,38 @@ Each action item carries a server-computed `id` (the target of other items'
 `exploit_evidence`, `causal`). Task status can trim embedded trial analysis;
 use `oddish status <trial_id> --json` for the full record.
 
+## Batch feedback export
+
+```bash
+oddish qa export <task_id> <another_task_id> --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --output qa-findings.csv
+```
+
+This read-only command uses the existing task-detail bundle, which includes
+full trial analysis and version audit findings. It does not run QA. The input
+file contains one exact task ID per line; blank lines and duplicate IDs are
+ignored. Names are not resolved.
+
+It writes one finding occurrence per row plus `qa-findings-tasks.csv`, with
+one row per requested ID including empty results and fetch errors. Full QA
+text and file/line anchors are preserved. Separate runs reporting the same
+finding remain separate rows; version-audit findings are emitted once.
+Blank `group`, `assignee`, and `resolution` columns support manual triage.
+
+Defaults: current version, `must_fix` and `should_fix`, four concurrent reads.
+Use repeatable `--tier` to change severity selection (including `optional`),
+`--all-versions` to include older versions, `--concurrency` (1–16) to bound
+requests, and `--api` to select an API. Existing output files are overwritten.
+`current_verdict*` columns always refer to the current task verdict, not a
+historical verdict. The export excludes replaced runs and combine copies
+through the existing detail endpoint; it cannot reconstruct overwritten QA.
+
+The task summary includes full verdict JSON, audit and QA-run statuses/errors,
+agent analysis-status counts, and counts of exported finding occurrences.
+Zero findings is not proof of completed or passing QA. Fetch errors leave
+counts blank and cause exit 1 after successful tasks have been exported.
+Exit 0 means all fetches succeeded, even if tasks have defects or pending QA.
+
 ## Replacement and backfill semantics
 
 `oddish backfill-analysis --task <task_id>` and
@@ -84,11 +121,24 @@ The pass rereads and reclassifies every eligible trial even without `--force`.
 cleared before the replacement starts; they do not narrow the QA trial's input
 set. Therefore `backfill-analysis --trial X` is still a task-wide QA run.
 
-While a replacement is queued or running, the last successful verdict may
-remain visible. A successful replacement publishes the new result; cancelling
-the replacement restores the prior successful verdict state; a terminal
-replacement failure clears the preserved verdict according to the verdict
-state machine.
+Before a replacement is queued, Oddish uses the same artifact readers available
+to the QA sandbox to check every eligible source trial. A started trial must
+have a readable Harbor result and verifier stdout, stderr, or exception. A row
+with `has_trajectory = true` must have a readable trajectory JSON object. A
+present but empty verifier stream satisfies the verifier requirement. For
+historical rows, a malformed Claude trajectory can be rebuilt from the captured
+`claude-code.txt` in the same manifest-selected attempt. A missing attempt
+pointer can be inferred only when the row is finished, its attempt count matches,
+and storage contains exactly one immutable attempt prefix. A failed preflight
+returns the blocking trial IDs without clearing analysis, withdrawing the
+current verdict, or spending QA attempts.
+
+Queuing a replacement clears the current verdict. While it is queued or
+running, the page shows QA in progress. Completion publishes only the new
+verdict; if QA produced classifications without an overall verdict, the page
+shows "No current verdict". Cancelling, failing, or abandoning the active
+replacement does not restore the previous verdict. Older QA artifacts remain
+in trial storage.
 
 `oddish cancel <task_id> --qa` cancels live `qa` and `audit` trials for that
 task. The CLI label says QA, but the endpoint also stops the pre-trial audit.

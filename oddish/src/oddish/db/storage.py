@@ -278,7 +278,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -650,11 +650,9 @@ class StorageClient:
                 would escape it (e.g. a path-traversal in the relative path) is
                 refused. ``None`` (default) uploads with no extra restriction.
             subprefix: Optional path segment nested under the trial prefix.
-                Analysis trials (QA, audit, summarize) upload under a
-                self-labeling ``analysis-<kind>`` segment so their agent
-                sessions can never be mistaken for the subject trial's own
-                execution -- trial ids repeat across environments that share
-                a bucket, and analysis artifacts co-locate by design.
+                Workers use immutable ``attempt-<number>`` segments. Analysis
+                trials add ``analysis-<kind>`` above that segment so their
+                sessions cannot be mistaken for the subject trial's execution.
 
         Returns:
             S3 key prefix for the uploaded trial
@@ -694,11 +692,12 @@ class StorageClient:
            key returned by ``_trial_import_archive_key(trial_id)``.
         2. Client tars the harbor trial subdir and PUTs it to that URL.
         3. ``/trials/import/complete`` calls this method, which downloads
-           the staging object, extracts it into the trial prefix
-           (``tasks/<task_id>/trials/<trial_id>/``), and deletes the
-           staging object. The individual files are what the existing
-           ``/trials/<id>/logs|result|trajectory`` endpoints read, so no
-           other plumbing needs to know an import happened.
+           the staging object and extracts it into the trial prefix
+           (``tasks/<task_id>/trials/<trial_id>/``). The completion path
+           deletes the staging object only after it validates the extracted
+           layout and finalizes the database state. The individual files are
+           what the existing ``/trials/<id>/logs|result|trajectory`` endpoints
+           read, so no other plumbing needs to know an import happened.
 
         Returns the number of files extracted.
         """
@@ -739,17 +738,15 @@ class StorageClient:
                 )
                 extracted += 1
 
-        # Best-effort cleanup of the staging object. Failing to delete it
-        # is not fatal -- the trial row already points at the prefix.
-        try:
-            await self._s3.delete_object(
-                Bucket=settings.s3_bucket,
-                Key=archive_key,
-            )
-        except Exception:
-            pass
-
         return extracted
+
+    async def delete_trial_import_archive(self, trial_id: str) -> None:
+        """Delete a staging archive after trial import finalization succeeds."""
+        await self._ensure_client()
+        await self._s3.delete_object(
+            Bucket=settings.s3_bucket,
+            Key=self._trial_import_archive_key(trial_id),
+        )
 
     async def _upload_directory(
         self,
@@ -865,7 +862,21 @@ class StorageClient:
                     continue
                 if s3_path.suffix in (".json", ".patch"):
                     continue
-                content = await self.download_text(s3_key)
+                try:
+                    content = await self.download_text(s3_key)
+                except UnicodeDecodeError:
+                    # A Harbor trial directory can contain SQLite databases,
+                    # compressed responses, binaries, and other artifacts under
+                    # agent/ or verifier/. Those are downloadable files, not
+                    # text logs. Do not let one of them hide the actual verifier
+                    # output behind a 500 response. Named *.log and *.txt files
+                    # are text evidence, so preserve malformed bytes there with
+                    # replacement characters just like the local reader does.
+                    if not is_log_file:
+                        continue
+                    content = (
+                        await self.download_bytes(s3_key)
+                    ).decode("utf-8", errors="replace")
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""

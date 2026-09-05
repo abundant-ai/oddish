@@ -29,6 +29,7 @@ node_modules/
 *.tsbuildinfo
 frontend/.npm-cache
 frontend/.certs/
+frontend/.clerk/
 backend/jobs/
 
 # OS / editor

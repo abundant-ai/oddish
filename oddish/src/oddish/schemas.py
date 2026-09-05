@@ -643,6 +643,15 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class QARunRequest(BaseModel):
+    """Optional sandbox selection for a QA or pre-trial audit rerun."""
+
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
+    )
+
+
 class QAEvalCreateRequest(BaseModel):
     """Replay one candidate QA prompt over exact historical solver trials."""
 
@@ -654,6 +663,17 @@ class QAEvalCreateRequest(BaseModel):
         None,
         description=(
             "Analysis model override. Null uses the deployed production QA model."
+        ),
+    )
+    environment: Literal["modal", "daytona"] | None = Field(
+        None,
+        description="QA sandbox provider. Null uses the deployed worker default.",
+    )
+    audit_context: Literal["current", "none"] = Field(
+        "current",
+        description=(
+            "current includes the task version's current source-audit findings; "
+            "none measures historical classifier behavior without those findings"
         ),
     )
 
@@ -1039,6 +1059,141 @@ class ExperimentCostTotals(BaseModel):
     qa_has_estimated: bool = False
 
 
+class ExperimentPageVerdict(BaseModel):
+    verdict: str | None = None
+    is_good: bool | None = None
+    confidence: str | None = None
+
+
+class PublicExperimentTaskRow(BaseModel):
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    task_path: str
+    github_meta: dict[str, str] | None = None
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    reward_success: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    run_analysis: bool = False
+    verdict_status: VerdictStatus | None = None
+    verdict: ExperimentPageVerdict | None = None
+    verdict_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentTaskVerdict(ExperimentPageVerdict):
+    primary_issue: str | None = None
+
+
+class ExperimentTaskRow(PublicExperimentTaskRow):
+    user: str
+    verdict: ExperimentTaskVerdict | None = None
+
+
+class ExperimentPageSummary(BaseModel):
+    task_count: int = 0
+    trial_count: int = 0
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    active: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    harness_error_count: int = 0
+    average_score: float | None = None
+    qa_accepted: int = 0
+    qa_rejected: int = 0
+    qa_running: int = 0
+    qa_failed: int = 0
+
+
+class PublicExperimentOpenResponse(BaseModel):
+    experiment_id: str
+    name: str
+    created_at: datetime
+    revision: datetime
+    has_active_trials: bool = False
+    summary: ExperimentPageSummary | None = None
+    tasks: list[PublicExperimentTaskRow] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_task_id: str | None = None
+
+
+class ExperimentOpenResponse(PublicExperimentOpenResponse):
+    owner: str | None = None
+    link: str | None = None
+    tasks: list[ExperimentTaskRow] = Field(default_factory=list)
+
+
+class ExperimentTrialAnalysis(BaseModel):
+    status: AnalysisStatus | None = None
+    classification: str | None = None
+    subtype: str | None = None
+    evidence: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ExperimentTrialCell(BaseModel):
+    id: str
+    task_id: str
+    task_path: str
+    experiment_id: str | None = None
+    task_version_id: str | None = None
+    name: str
+    agent: str
+    model: str | None = None
+    provider: str
+    queue_key: str
+    status: TrialStatus
+    attempts: int
+    max_attempts: int
+    harbor_stage: str | None = None
+    reward: float | None = None
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    is_billed: bool = False
+    cost_exclusion_reason: str | None = None
+    has_trajectory: bool = False
+    analysis: ExperimentTrialAnalysis = Field(default_factory=ExperimentTrialAnalysis)
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class PublicExperimentFocusResponse(BaseModel):
+    revision: datetime
+    task: PublicExperimentTaskRow
+    trial: ExperimentTrialCell | None = None
+
+
+class ExperimentFocusResponse(PublicExperimentFocusResponse):
+    task: ExperimentTaskRow
+
+
+class ExperimentTrialPageResponse(BaseModel):
+    revision: datetime
+    trials: list[ExperimentTrialCell] = Field(default_factory=list)
+    next_created_at: datetime | None = None
+    next_trial_id: str | None = None
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 
@@ -1211,7 +1366,8 @@ class TrialResponse(BaseModel):
 
     # Trajectory
     has_trajectory: bool = Field(
-        False, description="Whether an ATIF trajectory file exists for this trial"
+        False,
+        description="Whether this trial has a readable ATIF trajectory JSON object",
     )
 
     analysis_status: AnalysisStatus | None = None
@@ -1638,6 +1794,45 @@ class TaskStatusResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PublicTaskStatusResponse(BaseModel):
+    """Anonymous task payload with only fields required by public task pages."""
+
+    id: str
+    name: str
+    status: TaskStatus
+    priority: Priority
+    github_meta: dict[str, str] | None = None
+    task_path: str
+    experiment_id: str
+    experiment_name: str
+    experiment_is_public: bool = False
+    experiment_created_at: datetime | None = None
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    current_version: int | None = None
+    current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
+    total: int
+    completed: int
+    failed: int
+    skipped: int = 0
+    progress: str
+    reward_success: int | None = None
+    reward_sum: float | None = None
+    reward_total: int | None = None
+    verdict_status: VerdictStatus | None = None
+    verdict: dict | None = None
+    verdict_error: str | None = None
+    trials: list[TrialResponse] | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 class TaskOpenVersionRef(BaseModel):
     id: str
     version: int
@@ -1737,6 +1932,7 @@ class TaskOpenTrialRef(BaseModel):
     cost_usd: float | None = None
     cost_is_estimated: bool | None = None
     is_billed: bool = False
+    has_trajectory: bool = False
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -1816,7 +2012,11 @@ class ImportedTrialSpec(BaseModel):
         ),
     )
     has_trajectory: bool = Field(
-        False, description="Whether the uploaded archive contains a trajectory file"
+        False,
+        description=(
+            "Whether the uploaded archive contains a readable ATIF trajectory "
+            "JSON object"
+        ),
     )
     harbor_config: dict | None = Field(
         None,
@@ -2343,3 +2543,263 @@ class FeedbackResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# =============================================================================
+# Deliveries (docs/delivery-design.md)
+# =============================================================================
+
+# "waived": the check fails, but a person acknowledged shipping it anyway.
+DeliveryCheckStatus = Literal["pass", "fail", "off", "waived"]
+DeliveryCheckKind = Literal["automated", "manual"]
+ManualCheckScope = Literal["task", "delivery"]
+
+
+class ManualCheckDefinition(BaseModel):
+    """One human-ticked check defined in a delivery's check_config."""
+
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=255)
+    scope: ManualCheckScope = "task"
+
+
+class DeliveryCheckConfig(BaseModel):
+    """Stored shape of ``deliveries.check_config``.
+
+    ``automated`` holds per-check overrides merged over the defaults in
+    ``oddish.core.deliveries.DEFAULT_AUTOMATED_CHECKS``; unknown keys are
+    rejected so a typo cannot silently disable a check.
+    """
+
+    automated: dict[str, dict] = Field(default_factory=dict)
+    manual: list[ManualCheckDefinition] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_manual_keys(self) -> "DeliveryCheckConfig":
+        keys = [m.key for m in self.manual]
+        if len(keys) != len(set(keys)):
+            raise ValueError("manual check keys must be unique")
+        return self
+
+
+class DeliveryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    # Every delivery ships to a customer: an existing customer's id or
+    # name, or a new name (the server creates the customer row).
+    customer: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+    task_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class DeliveryPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    customer: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    check_config: DeliveryCheckConfig | None = None
+
+
+class DeliveryTasksAdd(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class ManualCheckSet(BaseModel):
+    """Tick or untick one manual check."""
+
+    check_key: str = Field(min_length=1, max_length=64)
+    # Required for task-scoped checks; must be omitted for delivery-scoped.
+    delivery_task_id: str | None = None
+    checked: bool
+    note: str = Field(default="", max_length=4000)
+
+
+class CustomerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class CustomerResponse(BaseModel):
+    id: str
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryResponse(BaseModel):
+    id: str
+    name: str
+    customer_id: str | None = None
+    # Resolved from the customer row; None on legacy rows only.
+    customer_name: str | None
+    description: str | None
+    status: str
+    is_public: bool
+    finalized_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DeliveryListItem(DeliveryResponse):
+    task_count: int
+
+
+class DeliveryCheckResult(BaseModel):
+    key: str
+    kind: DeliveryCheckKind
+    label: str
+    status: DeliveryCheckStatus
+    detail: str = ""
+    # Manual checks only: who ticked it and when. The hosted API fills
+    # ``checked_by_name`` from the user record at read time; the core
+    # leaves it None.
+    checked_by_user_id: str | None = None
+    checked_by_name: str | None = None
+    checked_at: datetime | None = None
+
+
+class DeliveryDefect(BaseModel):
+    """One open must-fix defect on a task's current version."""
+
+    id: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+    acknowledged: bool
+    acknowledged_by_user_id: str | None = None
+    acknowledged_by_name: str | None = None
+    acknowledged_at: datetime | None = None
+
+
+QAIssueCategory = Literal[
+    "instructions", "verifier", "environment", "evidence", "qa_execution"
+]
+
+
+class QAWorkMetadata(BaseModel):
+    owner_user_id: str | None = None
+    claimed_at: datetime | None = None
+    issue_categories: list[QAIssueCategory] = Field(default_factory=list, max_length=5)
+    note: str = Field(default="", max_length=4000)
+
+
+class QAWorkPatch(BaseModel):
+    version_id: str
+    release: bool = False
+    issue_categories: list[QAIssueCategory] | None = Field(default=None, max_length=5)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class QAWorkClaim(BaseModel):
+    version_ids: list[str] = Field(min_length=1, max_length=5000)
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class QAWorkAssign(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=1000)
+    assignee: str = Field(min_length=1, max_length=320)
+    replace: bool = False
+
+
+class QAWorkAssignResponse(BaseModel):
+    owner_user_id: str
+    assigned_task_ids: list[str] = Field(default_factory=list)
+    unchanged_task_ids: list[str] = Field(default_factory=list)
+    skipped_task_ids: list[str] = Field(default_factory=list)
+
+
+class DeliveryQAStatus(BaseModel):
+    status: Literal[
+        "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
+    ] = "never"
+    trial_id: str | None = None
+    finished_at: datetime | None = None
+    detail: str = "No QA result recorded"
+
+
+class DeliveryTaskBoardRow(BaseModel):
+    delivery_task_id: str
+    task_id: str
+    task_name: str
+    version_id: str | None
+    version: int | None
+    pinned_version_id: str | None
+    newer_version_exists: bool
+    is_visible: bool
+    sort_order: int
+    customer_note: str | None
+    internal_note: str | None
+    checks: list[DeliveryCheckResult]
+    defects: list[DeliveryDefect] = Field(default_factory=list)
+    qa: DeliveryQAStatus = Field(default_factory=DeliveryQAStatus)
+    qa_work: QAWorkMetadata = Field(default_factory=QAWorkMetadata)
+    qa_owner_name: str | None = None
+    ready: bool
+
+
+class DeliveryBoardResponse(BaseModel):
+    qa_as_of: datetime | None = None
+    qa_viewer_user_id: str | None = None
+    delivery: DeliveryResponse
+    check_config: DeliveryCheckConfig
+    tasks: list[DeliveryTaskBoardRow]
+    delivery_checks: list[DeliveryCheckResult]
+    ready: bool
+    ready_task_count: int
+    task_count: int
+    # Set when status == finalized: the board above is the stored snapshot,
+    # not a live computation.
+    frozen: bool = False
+    finalized_at: datetime | None = None
+
+
+class TaskQAHistoryRun(BaseModel):
+    trial_id: str
+    kind: str
+    status: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    # Why a failed run failed: the trial's execution error, else its
+    # analysis error.
+    error: str | None = None
+
+
+class TaskQAHistoryFinding(BaseModel):
+    tier: str
+    title: str
+    source: str  # "pre_trial" | "trial"
+
+
+class TaskQAHistoryVersion(BaseModel):
+    version_id: str
+    version: int
+    created_at: datetime
+    message: str | None
+    is_current: bool
+    pre_trial_status: str | None
+    pre_trial_finished_at: datetime | None
+    pre_trial_error: str | None = None
+    # Open must-fix defects from every source (pre-trial audit + trial
+    # analyses) — the same count the delivery board blocks on.
+    must_fix: int
+    pre_trial_should_fix: int
+    rollout_count: int
+    rollout_agents: int
+    qa_runs: list[TaskQAHistoryRun]
+    # The QA findings behind the counts, for inline display: every
+    # pre-trial audit item plus the must-fix items from trial analyses.
+    findings: list[TaskQAHistoryFinding] = Field(default_factory=list)
+
+
+class TaskQAHistoryResponse(BaseModel):
+    task_id: str
+    task_name: str
+    current_version_id: str | None
+    verdict: dict | None
+    verdict_status: str | None
+    # The version the stored verdict covers: the one graded by the newest
+    # verdict-producing QA run. None when no such run exists.
+    verdict_version_id: str | None = None
+    versions: list[TaskQAHistoryVersion]
+    # QA/audit trials with no version id (legacy rows): shown apart so the
+    # record stays complete without guessing which version they graded.
+    unversioned_runs: list[TaskQAHistoryRun] = Field(default_factory=list)

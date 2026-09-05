@@ -1,12 +1,11 @@
 """Pull the deployed Modal API URL out of a captured `modal deploy`
-log. Modal prints one URL per registered function; we want the
-public-facing API endpoint, which is the last line that mentions both
-`modal.run` and `api`.
+log. The main API's webhook label ends in `api`; auxiliary endpoints such
+as the QA-model gateway end in `api-qa-model` and must not be selected.
 
     python extract_modal_api_url.py <log_path>
 
-Prints the URL on stdout; exits non-zero if no candidate is found so
-the workflow fails visibly instead of carrying an empty URL forward.
+Prints the unique API URL on stdout; exits non-zero if it is missing or
+ambiguous so the workflow cannot route the frontend to another endpoint.
 """
 
 import pathlib
@@ -18,21 +17,12 @@ def main():
     log_path = pathlib.Path(sys.argv[1])
     text = log_path.read_text()
 
-    candidates = []
-    for line in text.splitlines():
-        if "modal.run" not in line:
-            continue
-        if "api" not in line.lower():
-            continue
-        match = re.search(r"https://[^\s]+\.modal\.run", line)
-        if match:
-            candidates.append(match.group(0))
-
-    if not candidates:
+    candidates = set(re.findall(r"https://[a-zA-Z0-9-]+-api\.modal\.run\b", text))
+    if len(candidates) != 1:
         raise SystemExit(
-            f"Could not determine Modal API URL from {log_path}"
+            f"Expected one Modal API URL in {log_path}; found {sorted(candidates)}"
         )
-    print(candidates[-1])
+    print(candidates.pop())
 
 
 if __name__ == "__main__":

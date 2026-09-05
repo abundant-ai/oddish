@@ -7,6 +7,7 @@ name = "oddish-app"
 version = "0.1.0"
 description = "Cloud deployment layer for Oddish - Modal API with multi-tenant auth"
 requires-python = ">=3.13,<3.14"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 
 # All direct runtime dependencies are pinned to exact versions for
 # supply-chain security.  Upgrades happen via ``uv lock --upgrade-package
@@ -62,7 +63,7 @@ dev = [
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
 # Mirror oddish/src/oddish/harbor-pin.toml (run oddish/scripts/sync_harbor_pin.py).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f6fe08e1dad9b88762cdaada8b374eaad2caadae" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f8f7378d26e44d1eadff3d3d62125839a177df8d" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

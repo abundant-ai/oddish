@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, not_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,9 @@ from oddish.config import (
     is_nop_oracle_agent,
     settings,
 )
+from oddish.core.analysis_payload import qa_trial_evidence
 from oddish.core.baseline_gate import (
-    GATE_SKIP_PREFIX,
     GateOutcome,
-    baseline_agent_clause,
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -35,6 +34,8 @@ from oddish.core.trial_facets import (
 from oddish.core.verdict_state import (
     abandon_verdict,
     cancel_verdict,
+    complete_verdict,
+    fail_verdict,
     queue_verdict,
     reset_verdict,
 )
@@ -58,6 +59,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import TaskSubmission, TrialSpec
@@ -1502,16 +1504,7 @@ async def qa_eligible_trial_ids(
     and deterministic baselines. ``task_version_id`` pins the set to the
     version being graded (None only for legacy tasks with no version rows).
     """
-    conditions = [
-        TrialModel.task_id == task_id,
-        TrialModel.kind == AGENT_TRIAL_KIND,
-        TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.imported_at.is_(None),
-        func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
-        TrialModel.status != TrialStatus.SKIPPED,
-        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
-        not_(baseline_agent_clause(TrialModel.agent)),
-    ]
+    conditions = [TrialModel.task_id == task_id, *qa_eligible_trial_clauses()]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
     return [
@@ -1522,44 +1515,84 @@ async def qa_eligible_trial_ids(
     ]
 
 
-async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
+async def start_qa_for_task(
+    session: AsyncSession, task: TaskModel, *, environment: str | None = None
+) -> bool:
     """Move a settled task into its QA stage, or complete it.
 
     With QA-eligible current-version trials: queue the verdict bookkeeping,
-    create the QA trial (the verdict is only requested above the evidence
-    bar), and put the task in VERDICT_PENDING. With none -- every live trial
+    create the QA trial with a verdict requested, and put the task in
+    VERDICT_PENDING. With none -- every live trial
     is a bulk-migrated import, was skipped/cancelled, or is a nop/oracle
-    baseline -- complete the task; a previously published verdict is
-    restored, anything queued or running is cleared.
+    baseline -- complete the task with a deterministic rejection if current
+    audit or baseline facts establish one; otherwise record insufficient evidence.
 
-    The caller must hold the task row lock. Returns True when a QA trial was
-    created.
+    The caller must hold the task row lock and wait for task_audit_pending
+    to clear. Returns True when a QA trial was created.
     """
-    from oddish.workers.analysis_trials import create_qa_trial, has_verdict_evidence
+    from oddish.core.verdict_sync import (
+        apply_deterministic_verdict_rules,
+        build_verdict_payload,
+    )
+    from oddish.workers.analysis_trials import (
+        create_qa_trial,
+        pre_trial_item_ids,
+    )
 
     eligible = await qa_eligible_trial_ids(
         session, task.id, task_version_id=task.current_version_id
     )
     if not eligible:
+        version = (
+            await session.get(
+                TaskVersionModel, task.current_version_id, with_for_update=True
+            )
+            if task.current_version_id
+            else None
+        )
+        must_fix_ids = []
+        if version is not None and version.pre_trial_status == VerdictStatus.SUCCESS:
+            _, must_fix_ids = pre_trial_item_ids((version.pre_trial or {}).get("items"))
+        rows = await session.scalars(
+            select(TrialModel).where(
+                TrialModel.task_id == task.id,
+                TrialModel.task_version_id == task.current_version_id,
+                TrialModel.kind == AGENT_TRIAL_KIND,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+        )
+        baselines = [
+            qa_trial_evidence(row) for row in rows if is_nop_oracle_agent(row.agent)
+        ]
+        verdict = apply_deterministic_verdict_rules(
+            None, must_fix_ids=must_fix_ids, baseline_evidence=baselines
+        )
         task.status = TaskStatus.COMPLETED
         task.finished_at = task.finished_at or utcnow()
-        abandon_verdict(task)
+        if verdict is not None:
+            payload = build_verdict_payload(verdict, [])
+            complete_verdict(task, payload=payload, now=utcnow())
+        else:
+            fail_verdict(
+                task,
+                error="Insufficient evidence: no eligible solver trials for the current task version.",
+                now=utcnow(),
+            )
         return False
 
-    with_verdict = await has_verdict_evidence(session, eligible)
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
     await create_qa_trial(
         session,
         task=task,
         eligible_trial_ids=eligible,
-        with_verdict=with_verdict,
+        with_verdict=True,
+        environment=environment,
     )
     logger.info(
-        "task %s: qa covers %d trials (verdict=%s)",
+        "task %s: qa covers %d eligible trials",
         task.id,
         len(eligible),
-        with_verdict,
     )
     return True
 
@@ -1568,9 +1601,8 @@ async def live_analysis_trial_id(
     session: AsyncSession, task_id: str, *, kind: str
 ) -> str | None:
     """Id of a live (pending/queued/running/paused/retrying) non-superseded trial
-    of ``kind`` for this task, or None. The live row itself is the
-    in-progress marker for analysis stages: status flags can be stale after
-    a crash, the trial row cannot."""
+    of ``kind`` for this task, or None. This tracks execution only; an audit
+    may still be awaiting result import after its trial becomes terminal."""
     return await session.scalar(
         select(TrialModel.id)
         .where(
@@ -1584,6 +1616,23 @@ async def live_analysis_trial_id(
     )
 
 
+async def task_audit_pending(session: AsyncSession, task: TaskModel) -> bool:
+    """Wait for audit execution AND publication, under the caller's task lock."""
+    if await live_analysis_trial_id(session, task.id, kind="audit") is not None:
+        return True
+    return (
+        await session.scalar(
+            select(TaskVersionModel.id).where(
+                TaskVersionModel.id == task.current_version_id,
+                TaskVersionModel.pre_trial_status.in_(
+                    (VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING)
+                ),
+            )
+        )
+        is not None
+    )
+
+
 async def maybe_start_task_qa_stage(
     session: AsyncSession,
     task_id: str,
@@ -1591,7 +1640,7 @@ async def maybe_start_task_qa_stage(
     """Check if a task's current-version agent trials are done; transition it.
 
     With QA-eligible trials -> create the task-level QA trial (classify every
-    eligible trial; synthesize the verdict only above the evidence bar) and
+    eligible trial and synthesize a verdict) and
     move the task to VERDICT_PENDING. Otherwise -> COMPLETED. A task goes
     straight from RUNNING to VERDICT_PENDING rather than passing through a
     separate ANALYZING stage.
@@ -1632,23 +1681,19 @@ async def maybe_start_task_qa_stage(
 
     # The QA brief snapshots the pre-trial audit findings at creation, and a
     # created QA trial is never rebuilt when the audit lands later: starting
-    # now would permanently bake "(none recorded)" into the brief. Defer
-    # while an audit trial is live -- the same gate the manual QA endpoint
-    # applies -- but only when a QA trial would actually be created: with
-    # nothing eligible the task just completes (no brief exists to poison),
-    # and the audit's later import writes onto the version regardless of
-    # task status. The audit's own settlement re-enters this admission
-    # (handle_analysis_trial_settled), so deferring cannot strand the task.
-    if await live_analysis_trial_id(session, task_id, kind="audit") is not None:
-        eligible = await qa_eligible_trial_ids(
-            session, task_id, task_version_id=task.current_version_id
-        )
-        if eligible:
-            return TaskQAStageAdmission()
+    # now would permanently bake "(none recorded)" into the brief. Even
+    # without eligible solver trials, an audit may establish a rejection.
+    # A terminal audit job can still await import. Import completion (including
+    # cleanup re-import after a crash) re-enters admission after storing findings.
+    if await task_audit_pending(session, task):
+        return TaskQAStageAdmission()
+    if await live_analysis_trial_id(session, task_id, kind="qa") is not None:
+        return TaskQAStageAdmission()
 
     await start_qa_for_task(session, task)
     await session.flush()
     return TaskQAStageAdmission(advanced=True, task_version_id=task.current_version_id)
+
 
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Advance the owning task after one of its trials becomes terminal."""
@@ -2069,7 +2114,7 @@ async def maybe_advance_legacy_analyzing_task(
         )
     )
 
-    if pending_count > 0:
+    if pending_count > 0 or await task_audit_pending(session, task):
         return False
 
     await start_qa_for_task(session, task)

@@ -11,8 +11,8 @@
   <a href="https://www.python.org/downloads/">
     <img alt="Python" src="https://img.shields.io/badge/python-3.13-blue.svg">
   </a>
-  <a href="https://opensource.org/licenses/Apache-2.0">
-    <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg">
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg">
   </a>
 </p>
 
@@ -44,7 +44,9 @@ uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirect
 
 ### 2. Generate an API key [here](https://oddish.app/)
 
-- API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
+Sign in, select an organization, and create a key from the dashboard. Organization
+members can create `read` or `tasks` keys; organization administrators can also
+create `full` keys. An API key cannot be used to create another API key.
 
 ```bash
 export ODDISH_API_KEY="ok_..."
@@ -82,4 +84,15 @@ oddish status
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE).
+
+Personal and other noncommercial use is allowed under this license. It also
+permits use by the organizations listed in its Noncommercial Organizations
+section. Commercial use outside those terms requires a separate license from
+the rights holders. Contact [the maintainer](https://github.com/RishiDesai).
+
+These terms apply to new work released under this license. They do not remove
+rights already granted for code released under Apache 2.0. The prior license is
+kept in [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own
+license. This project is no longer offered as open source under an OSI-approved
+license.

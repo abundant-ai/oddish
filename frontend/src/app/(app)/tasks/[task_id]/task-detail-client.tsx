@@ -24,7 +24,6 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { trialNotRealSpendNote } from "@/components/not-real-spend-badge";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -528,11 +527,6 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
               {formatCostUsd(trial.cost_usd)}
             </div>
           )}
-          {trialNotRealSpendNote(trial.cost_exclusion_reason) && (
-            <div className="text-muted-foreground mt-1 max-w-[220px] text-[10px]">
-              {trialNotRealSpendNote(trial.cost_exclusion_reason)}
-            </div>
-          )}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -814,11 +808,7 @@ export function TaskDetailClient({
       const params = new URLSearchParams(window.location.search);
       const pane = params.get("taskPane");
       setActiveTaskPane(
-        pane === "file"
-          ? pane
-          : params.has("taskFile")
-            ? "file"
-            : "overview"
+        pane === "file" ? pane : params.has("taskFile") ? "file" : "overview"
       );
     };
     window.addEventListener("popstate", restoreTaskPane);
@@ -864,11 +854,7 @@ export function TaskDetailClient({
     const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
     setActiveTaskPane(
-      urlTaskPane === "file"
-        ? urlTaskPane
-        : urlTaskFile
-          ? "file"
-          : "overview"
+      urlTaskPane === "file" ? urlTaskPane : urlTaskFile ? "file" : "overview"
     );
     if (urlTaskFile) {
       taskPaneFileRef.current = urlTaskFile;
@@ -1142,6 +1128,22 @@ export function TaskDetailClient({
           }
         />
 
+        {!isBrowseSnapshot ? (
+          <TaskVerdictBadge
+            task={task}
+            variant="summary"
+            onViewFindings={() => {
+              selectTaskPane("overview");
+              handleOpenTaskFiles();
+            }}
+            onRunJudge={handleRunJudge}
+            onCancelJudge={handleCancelJudge}
+            isRunning={isRunningJudge}
+            isCancelling={isCancellingJudge}
+            error={judgeError}
+          />
+        ) : null}
+
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
           <KpiTile
             label="Total cost (all versions)"
@@ -1215,7 +1217,7 @@ export function TaskDetailClient({
           </KpiTile>
           <KpiTile
             label="Trials"
-            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed${
+            hint={`${versionSummary.completed} completed · ${versionSummary.failed} harness errors${
               versionSummary.skipped > 0
                 ? ` · ${versionSummary.skipped} skipped`
                 : ""
@@ -1324,18 +1326,6 @@ export function TaskDetailClient({
           ) : null}
         </div>
 
-        {!isBrowseSnapshot ? (
-          <TaskVerdictBadge
-            task={task}
-            variant="inline"
-            onRunJudge={handleRunJudge}
-            onCancelJudge={handleCancelJudge}
-            isRunning={isRunningJudge}
-            isCancelling={isCancellingJudge}
-            error={judgeError}
-          />
-        ) : null}
-
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
             <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
@@ -1366,7 +1356,7 @@ export function TaskDetailClient({
           )}
           {analysisTrialsForVersion.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-[11px] uppercase tracking-wide text-[color:var(--paper-ink-3)]">
+              <span className="text-[11px] tracking-wide text-[color:var(--paper-ink-3)] uppercase">
                 QA
               </span>
               {analysisTrialsForVersion.map((t) => (

@@ -143,7 +143,19 @@ OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
     "codeload.github.com",  # GitHub tarball fetch
     "nodejs.org",  # Node runtime downloaded by nvm
     "registry.npmjs.org",  # npm metadata + package tarballs
+    # On images without curl the install script first runs
+    # ``apt-get update && apt-get install -y curl``, which needs the apt
+    # mirrors -- and ``apt-get update`` fails outright when any configured
+    # source (nodesource on Node-based images) is unreachable.
+    "archive.ubuntu.com",  # apt packages (curl bootstrap)
+    "security.ubuntu.com",  # apt security pocket
+    "deb.nodesource.com",  # apt source preconfigured on Node-based images
 )
+# Gemini CLI uses Harbor's same nvm/Node bootstrap as OpenCode, then installs
+# ``@google/gemini-cli`` with npm during agent setup.  Setup runs under the
+# environment baseline, before a restricted agent-phase profile exists, so the
+# runner must add this chain to that baseline.
+GEMINI_CLI_INSTALL_HOSTS: tuple[str, ...] = OPENCODE_INSTALL_HOSTS
 # agy has no pre-baked worker image: Harbor's ``AntigravityCli.install``
 # fetches install.sh from antigravity.google, which resolves a manifest on
 # the auto-updater Cloud Run host and downloads the binary tarball from GCS.
@@ -252,6 +264,16 @@ def _hosts_from_env(
         if host:
             hosts.append(host)
     return hosts
+
+
+def gemini_cli_transport_hosts(agent_env: Mapping[str, str] | None = None) -> list[str]:
+    """Return the Gemini CLI transport hosts, with an explicit route replacing Google.
+
+    Gemini CLI always calls the Gemini API; its submitted model name is not a
+    transport decision.  A configured Gemini base URL is therefore the whole
+    transport allowlist, matching the restricted-network Gemini profile.
+    """
+    return _hosts_from_env(agent_env, keys=GEMINI_BASE_URL_KEYS) or list(_GEMINI_HOSTS)
 
 
 def _default_host(url: str) -> str | None:
