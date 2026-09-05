@@ -15,7 +15,7 @@ import {
 } from "@clerk/nextjs";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { fetcher } from "@/lib/api";
-import type { ModelEndpointCatalogResponse } from "@/lib/types";
+import type { ModelEndpointAccessResponse } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -146,12 +146,12 @@ export function Nav() {
   const { signOut } = useClerk();
   const { organization } = useOrganization();
   const isOrgAdmin = isOrgAdminRole(orgRole);
-  const { data: modelCatalog } = useSWR<ModelEndpointCatalogResponse>(
-    isLoaded && isSignedIn ? "/api/models" : null,
+  const { data: modelAccess } = useSWR<ModelEndpointAccessResponse>(
+    isLoaded && isSignedIn ? "/api/models/access" : null,
     fetcher
   );
   const primaryNavLinks = PRIMARY_NAV_LINKS.filter(
-    (link) => !link.operatorOnly || modelCatalog?.allowed
+    (link) => !link.operatorOnly || modelAccess?.allowed
   );
 
   // Full reload on org switch. Org-scoped SWR keys and Next's client router

@@ -5,11 +5,13 @@ import useSWR from "swr";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Play,
   RefreshCw,
   XCircle,
 } from "lucide-react";
 
+import { CodeBlock } from "@/components/code-block";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -227,8 +229,7 @@ export function ModelsClient() {
                 </TableHeader>
                 <TableBody>
                   {data.models.map((endpoint) => {
-                    const { credential, model, provider, route, testable } =
-                      endpoint;
+                    const { credential, model, route, testable } = endpoint;
                     const key = endpointKey(endpoint);
                     const check = checks[key];
                     const result =
@@ -257,14 +258,8 @@ export function ModelsClient() {
                                 <div className="truncate font-mono text-sm font-medium">
                                   {model}
                                 </div>
-                                <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block">
-                                  <span className="lg:hidden">
-                                    {ROUTE_LABELS[route] ?? route}
-                                    {credential ? ` · ${credential}` : ""}{" "}
-                                    ·{" "}
-                                  </span>
-                                  {provider} model ·{" "}
-                                  {testable ? "direct API" : "agent CLI"}
+                                <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block lg:hidden">
+                                  {ROUTE_LABELS[route] ?? route}
                                 </div>
                               </div>
                             </div>
@@ -272,9 +267,6 @@ export function ModelsClient() {
                           <TableCell className="hidden lg:table-cell">
                             <div className="text-sm font-medium">
                               {ROUTE_LABELS[route] ?? route}
-                            </div>
-                            <div className="text-muted-foreground mt-0.5 font-mono text-xs">
-                              {credential ?? "Provider-managed credential"}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -318,21 +310,37 @@ export function ModelsClient() {
                             {testedAt}
                           </TableCell>
                           <TableCell className="text-right">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={hasRunningCheck || !testable}
-                              aria-expanded={expanded}
-                              aria-controls={`model-output-${key}`}
-                              onClick={() => void testModel(endpoint, true)}
-                            >
-                              {check?.status === "running" ? (
-                                <RefreshCw className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Play className="h-4 w-4" />
+                            <div className="flex flex-wrap justify-end gap-1">
+                              {check && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={`${expanded ? "Hide" : "Show"} ${model} result`}
+                                  aria-expanded={expanded}
+                                  aria-controls={`model-output-${key}`}
+                                  onClick={() =>
+                                    setExpandedModel(expanded ? null : key)
+                                  }
+                                >
+                                  <ChevronDown
+                                    className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`}
+                                  />
+                                </Button>
                               )}
-                              {testable ? "Test" : "CLI only"}
-                            </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={hasRunningCheck || !testable}
+                                onClick={() => void testModel(endpoint, true)}
+                              >
+                                {check?.status === "running" ? (
+                                  <RefreshCw className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                                {testable ? "Test" : "CLI only"}
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                         {expanded && (
@@ -362,9 +370,34 @@ export function ModelsClient() {
                                     Waiting for response...
                                   </div>
                                 ) : (
-                                  <pre className="max-h-80 overflow-auto rounded-md border bg-black/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-                                    <code>{output}</code>
-                                  </pre>
+                                  <div className="space-y-3">
+                                    <p className="text-sm break-words whitespace-pre-wrap">
+                                      {result
+                                        ? result.ok
+                                          ? result.response ||
+                                            "Request completed with no text response."
+                                          : result.error
+                                        : check?.status === "error"
+                                          ? check.message
+                                          : null}
+                                    </p>
+                                    <details>
+                                      <summary className="text-muted-foreground cursor-pointer text-xs">
+                                        Response details
+                                      </summary>
+                                      <p className="text-muted-foreground my-2 text-xs break-words">
+                                        {ROUTE_LABELS[route] ?? route} ·{" "}
+                                        {credential ??
+                                          "Provider-managed credential"}
+                                      </p>
+                                      <CodeBlock
+                                        code={output}
+                                        language="json"
+                                        maxHeight="20rem"
+                                        truncateAt={0}
+                                      />
+                                    </details>
+                                  </div>
                                 )}
                               </div>
                             </TableCell>

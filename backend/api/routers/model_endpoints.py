@@ -43,8 +43,11 @@ class ModelEndpointSummary(BaseModel):
     testable: bool
 
 
-class ModelEndpointCatalogResponse(BaseModel):
+class ModelEndpointAccessResponse(BaseModel):
     allowed: bool
+
+
+class ModelEndpointCatalogResponse(ModelEndpointAccessResponse):
     models: list[ModelEndpointSummary]
 
 
@@ -91,20 +94,6 @@ def _provider_route(provider: str, model: str) -> str:
     if provider == "openai":
         return settings.get_openai_provider()
     return provider
-
-
-def _check_route(provider: str, model: str, requested_route: str | None) -> str:
-    default_route = _provider_route(provider, model)
-    route = requested_route or default_route
-    if route != default_route:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Route {route!r} is not valid for {provider!r}; "
-                f"expected {default_route}"
-            ),
-        )
-    return route
 
 
 def _direct_completion_model(model: str) -> str:
@@ -196,18 +185,6 @@ def _begin_model_check(
     return None
 
 
-def _complete_model_check(
-    *,
-    org_id: str,
-    identity: str,
-    model: str,
-    route: str,
-    result: ModelEndpointCheckResponse,
-) -> None:
-    key = (org_id, identity, model, route)
-    _model_check_cache[key] = (monotonic(), result)
-
-
 def _safe_failure_message(
     failure: Exception, failure_kind: Literal["provider", "configuration"]
 ) -> str:
@@ -242,6 +219,15 @@ def _audit_model_check(
     )
 
 
+@router.get("/access", response_model=ModelEndpointAccessResponse)
+async def get_model_access(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ModelEndpointAccessResponse:
+    """Discover operator access without loading the model catalog."""
+    auth.require_scope(APIKeyScope.READ)
+    return ModelEndpointAccessResponse(allowed=is_operator_org(auth))
+
+
 @router.get("", response_model=ModelEndpointCatalogResponse)
 async def list_model_endpoints(
     auth: Annotated[AuthContext, Depends(require_auth)],
@@ -264,24 +250,26 @@ async def check_model_endpoint(
     """Send one small provider request without creating a trial or worker job."""
     org_id, identity = _require_interactive_operator(auth)
     model = settings.normalize_queue_key(request.model)
-    provider = infer_model_provider_prefix(model)
-    if not provider:
-        raise HTTPException(status_code=422, detail="Queue key is not an LLM model")
-    route = _check_route(provider, model, request.route)
-    if route == "cursor":
-        raise HTTPException(
-            status_code=422,
-            detail="Cursor models require the Cursor agent CLI and cannot be checked with a direct completion request",
-        )
-
     catalog = await _model_endpoint_catalog(org_id)
-    catalog_endpoint = next(
-        (endpoint for endpoint in catalog if endpoint.model == model), None
-    )
-    if catalog_endpoint is None or route != catalog_endpoint.route:
+    endpoint = next((entry for entry in catalog if entry.model == model), None)
+    if endpoint is None:
         raise HTTPException(
             status_code=422,
             detail="Model route is not available in the operator catalog",
+        )
+    provider, route, credential = endpoint.provider, endpoint.route, endpoint.credential
+    if request.route is not None and request.route != route:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Route {request.route!r} is not valid for {provider!r}; "
+                f"expected {route}"
+            ),
+        )
+    if not endpoint.testable:
+        raise HTTPException(
+            status_code=422,
+            detail="Cursor models require the Cursor agent CLI and cannot be checked with a direct completion request",
         )
     cached_result = _begin_model_check(
         org_id=org_id,
@@ -297,10 +285,10 @@ async def check_model_endpoint(
             cached=True,
         )
         return cached_result
-    credential = provider_key_var(route)
 
     started = monotonic()
     resolved_model = model
+    failure: Exception | None = None
     try:
         kwargs = (
             {"max_completion_tokens": 32}
@@ -394,42 +382,27 @@ async def check_model_endpoint(
                     str(completion.id) if getattr(completion, "id", None) else None
                 ),
             )
-            _complete_model_check(
-                org_id=org_id,
-                identity=identity,
-                model=model,
-                route=route,
-                result=result,
-            )
-            _audit_model_check(org_id=org_id, identity=identity, result=result)
-            return result
-
-    raw_status = getattr(failure, "status_code", None)
-    status_code = (
-        int(raw_status)
-        if isinstance(raw_status, int | str) and str(raw_status).isdigit()
-        else None
-    )
-    request_id = str(getattr(failure, "request_id", "") or "").strip()[:200] or None
-    result = ModelEndpointCheckResponse(
-        ok=False,
-        model=model,
-        resolved_model=resolved_model,
-        provider=provider,
-        route=route,
-        credential=credential,
-        failure_kind=failure_kind,
-        status_code=status_code,
-        latency_ms=round((monotonic() - started) * 1000),
-        error=_safe_failure_message(failure, failure_kind),
-        request_id=request_id,
-    )
-    _complete_model_check(
-        org_id=org_id,
-        identity=identity,
-        model=model,
-        route=route,
-        result=result,
-    )
+    if failure is not None:
+        raw_status = getattr(failure, "status_code", None)
+        status_code = (
+            int(raw_status)
+            if isinstance(raw_status, int | str) and str(raw_status).isdigit()
+            else None
+        )
+        request_id = str(getattr(failure, "request_id", "") or "").strip()[:200] or None
+        result = ModelEndpointCheckResponse(
+            ok=False,
+            model=model,
+            resolved_model=resolved_model,
+            provider=provider,
+            route=route,
+            credential=credential,
+            failure_kind=failure_kind,
+            status_code=status_code,
+            latency_ms=round((monotonic() - started) * 1000),
+            error=_safe_failure_message(failure, failure_kind),
+            request_id=request_id,
+        )
+    _model_check_cache[(org_id, identity, model, route)] = (monotonic(), result)
     _audit_model_check(org_id=org_id, identity=identity, result=result)
     return result

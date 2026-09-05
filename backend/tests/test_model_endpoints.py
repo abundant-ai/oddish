@@ -656,10 +656,13 @@ async def test_model_endpoint_rejects_model_outside_catalog(monkeypatch):
 @pytest.mark.asyncio
 async def test_model_endpoint_reuses_recent_model_route_result(monkeypatch):
     calls = 0
+    now = 100.0
+    monkeypatch.setattr(model_endpoints_router, "monotonic", lambda: now)
 
     async def completion(**_kwargs):
-        nonlocal calls
+        nonlocal calls, now
         calls += 1
+        now += 10.0
         return SimpleNamespace(
             id="request-123",
             choices=[SimpleNamespace(message=SimpleNamespace(content="I am Grok."))],
@@ -704,39 +707,6 @@ def test_model_endpoint_rejects_duplicate_while_first_check_is_running():
     assert caught.value.headers == {"Retry-After": "20"}
 
 
-def test_model_endpoint_result_ttl_starts_when_provider_check_completes():
-    check = {
-        "org_id": "org-1",
-        "identity": "user-1",
-        "model": "xai/grok-code-fast-1",
-        "route": "xai",
-    }
-    key = (
-        check["org_id"],
-        check["identity"],
-        check["model"],
-        check["route"],
-    )
-    model_endpoints_router._model_check_cache[key] = (
-        model_endpoints_router.monotonic() - 10,
-        None,
-    )
-    result = model_endpoints_router.ModelEndpointCheckResponse(
-        ok=True,
-        model=check["model"],
-        resolved_model=check["model"],
-        provider="xai",
-        route=check["route"],
-        credential="XAI_API_KEY",
-        latency_ms=10_000,
-        response="I am Grok.",
-    )
-
-    model_endpoints_router._complete_model_check(**check, result=result)
-
-    assert model_endpoints_router._begin_model_check(**check) is result
-
-
 @pytest.mark.asyncio
 async def test_model_endpoint_rejects_non_model_queue_key():
     async with AsyncClient(
@@ -745,7 +715,10 @@ async def test_model_endpoint_rejects_non_model_queue_key():
         response = await client.post("/models/check", json={"model": "task_expand"})
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Queue key is not an LLM model"
+    assert (
+        response.json()["detail"]
+        == "Model route is not available in the operator catalog"
+    )
 
 
 @pytest.mark.asyncio
@@ -759,3 +732,26 @@ async def test_model_endpoint_requires_operator_org(monkeypatch):
         )
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operator_org_id, allowed", [("org-1", True), ("org-2", False), ("", False)]
+)
+async def test_model_access_does_not_load_catalog(
+    monkeypatch, operator_org_id, allowed
+):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", operator_org_id)
+
+    async def unexpected_catalog(_org_id):
+        pytest.fail("Access discovery must not load the catalog")
+
+    monkeypatch.setattr(
+        model_endpoints_router, "_model_endpoint_catalog", unexpected_catalog
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.get("/models/access")
+    assert response.status_code == 200
+    assert response.json() == {"allowed": allowed}

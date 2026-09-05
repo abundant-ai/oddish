@@ -1144,8 +1144,11 @@ export interface ModelEndpointSummary {
   testable: boolean;
 }
 
-export interface ModelEndpointCatalogResponse {
+export interface ModelEndpointAccessResponse {
   allowed: boolean;
+}
+
+export interface ModelEndpointCatalogResponse extends ModelEndpointAccessResponse {
   models: ModelEndpointSummary[];
 }
 
