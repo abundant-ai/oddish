@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import functools
 from functools import partial
 import json
 import logging
+from typing import Any
 import os
 import shutil
 import tempfile
@@ -79,6 +81,7 @@ from oddish.worker.probe_staging import (
 from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
+from oddish.runtime.registry import get_backend
 from oddish.workers.harbor.runner import (
     HarborOutcome,
     capture_live_sandbox_resources,
@@ -1311,6 +1314,103 @@ async def _upload_probe_assets(
         shutil.rmtree(harness_mount, ignore_errors=True)
 
 
+async def _stamp_trial_outcome_on_provider(
+    env_type: EnvironmentType,
+    *,
+    trial_id: str,
+    outcome: HarborOutcome | None,
+    execution_error: str | None,
+) -> None:
+    """Best effort, provider-agnostic entry: only backends exposing
+    ``stamp_trial_outcome`` (Numinous) participate. Never fails a trial."""
+    backend = get_backend(env_type.value)
+    stamp = getattr(backend, "stamp_trial_outcome", None)
+    if stamp is None:
+        return
+    reward = outcome.reward if outcome is not None else None
+    error = (outcome.error if outcome is not None else None) or execution_error
+    status = "success" if reward is not None else "failed" if error else "ended"
+    try:
+        await stamp(trial_id, reward=reward, status=status, error=error)
+    except Exception:  # noqa: BLE001 - metadata must never fail a trial
+        logger.info("metric=numinous.outcome_stamp trial_id=%s raised", trial_id)
+
+
+async def _settle_trial_outcome_on_provider(
+    environment: str | None,
+    *,
+    trial_id: str,
+    status: TrialStatus,
+    reward: float | None,
+) -> None:
+    """Best effort, provider-agnostic: once oddish settles the trial (after
+    retries), backends exposing ``settle_trial`` (Numinous) get the final
+    verdict so their console shows the trial the way oddish does, not the
+    last attempt's provisional stamp. Never fails a trial."""
+    try:
+        env_type = EnvironmentType((environment or settings.harbor_environment).lower())
+    except ValueError:
+        return
+    backend = get_backend(env_type.value)
+    settle = getattr(backend, "settle_trial", None)
+    if settle is None:
+        return
+    word = "success" if status == TrialStatus.SUCCESS else "failed"
+    try:
+        await settle(trial_id, reward=reward, status=word)
+    except Exception:  # noqa: BLE001 - metadata must never fail a trial
+        logger.info("metric=numinous.trial_settle trial_id=%s raised", trial_id)
+
+
+async def _stamp_sandbox_outcome(
+    hook_event: Any, *, reward: float | None, status: str
+) -> None:
+    """Write the graded outcome onto the sandbox as labels, so the provider's
+    console shows the same reward oddish does. Two routes: the live
+    environment's ``set_labels`` when the trial ran in-process, else the
+    provider backend addressed by the event's external id (the out-of-process
+    runner forwards only provider + external id). Metadata: never fails a
+    trial."""
+    labels: dict[str, str | None] = {"oddish.status": status}
+    labels["oddish.reward"] = None if reward is None else str(reward)
+    environment = getattr(hook_event, "environment", None)
+    setter = getattr(environment, "set_labels", None)
+    if callable(setter):
+        try:
+            result = setter(labels)
+            if inspect.isawaitable(result):  # tolerate an async set_labels
+                await result
+            logger.info("metric=numinous.outcome_stamp route=environment")
+            return
+        except Exception:  # noqa: BLE001 - metadata must never fail a trial
+            logger.info(
+                "metric=numinous.outcome_stamp route=environment failed", exc_info=True
+            )
+    provider = (getattr(hook_event, "environment_provider", None) or "").strip().lower()
+    external_id = getattr(hook_event, "environment_external_id", None)
+    if provider != "numinous" or not external_id:
+        logger.info(
+            "metric=numinous.outcome_stamp route=skipped provider=%r external_id=%r",
+            provider,
+            external_id,
+        )
+        return
+    backend = get_backend("numinous")
+    stamp = getattr(backend, "set_labels", None)
+    if stamp is None:
+        logger.info("metric=numinous.outcome_stamp route=skipped reason=no_backend")
+        return
+    try:
+        ok = await stamp(external_id, labels)
+        logger.info(
+            "metric=numinous.outcome_stamp route=backend external_id=%s ok=%s",
+            external_id,
+            ok,
+        )
+    except Exception:  # noqa: BLE001
+        logger.info("metric=numinous.outcome_stamp route=backend failed", exc_info=True)
+
+
 async def _handle_harbor_event(
     hook_event: TrialHookEvent,
     *,
@@ -1540,6 +1640,15 @@ async def _handle_harbor_event(
                 console.print(
                     f"[dim]Trial {trial_id} ended, reward={extracted_reward}, error={has_error}[/dim]"
                 )
+                await _stamp_sandbox_outcome(
+                    hook_event,
+                    reward=extracted_reward,
+                    status="success"
+                    if extracted_reward is not None
+                    else "failed"
+                    if has_error
+                    else "ended",
+                )
             elif event == TrialEvent.CANCEL:
                 trial.harbor_stage = "cancelled"
                 trial.status = TrialStatus.FAILED
@@ -1652,6 +1761,8 @@ async def _execute_trial(
             billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            experiment_id=prepared_trial.experiment_id or None,
+            experiment_name=prepared_trial.experiment_name,
         )
     except asyncio.CancelledError:
         console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")
@@ -1671,6 +1782,17 @@ async def _execute_trial(
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
+
+    # The provider's console shows the same graded outcome oddish records.
+    # Addressed by the oddish.trial_id label the environment wrote at create,
+    # so it does not depend on lifecycle hooks (the ephemeral child forwards
+    # none of them past environment-provisioned).
+    await _stamp_trial_outcome_on_provider(
+        env_type,
+        trial_id=trial_id,
+        outcome=outcome,
+        execution_error=execution_error,
+    )
 
     return TrialExecutionResult(
         outcome=outcome,
@@ -1992,6 +2114,16 @@ async def _settle_trial_attempt(
             trial_attempt=prepared_trial.trial_attempt,
         )
     )
+    if trial_terminal:
+        # The trial's final word, after retries: what the provider shows for
+        # the trial as a whole, read from the settled row.
+        async with _trial_session(trial_id, allow_missing=True) as (_, trial):
+            verdict = (trial.environment, trial.status, trial.reward) if trial else None
+        if verdict is not None:
+            environment, status, reward = verdict
+            await _settle_trial_outcome_on_provider(
+                environment, trial_id=trial_id, status=status, reward=reward
+            )
     await _finish_trial_settlement(
         trial_id=trial_id,
         org_id=prepared_trial.org_id,

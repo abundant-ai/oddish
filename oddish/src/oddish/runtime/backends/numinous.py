@@ -60,8 +60,7 @@ class NuminousBackend:
                 # H100 is our headline for SWE-marathon; L40S is the cheap
                 # inference lane; RTX_4090 is the shared-mux fake for CI
                 # smoke tests where CUDA is not actually required.
-                accelerators=("H100", "H200", "A100", "L40S", "A10",
-                              "RTX_4090"),
+                accelerators=("H100", "H200", "A100", "L40S", "A10", "RTX_4090"),
                 max_count=8,
             )
         return Capabilities(
@@ -79,6 +78,135 @@ class NuminousBackend:
         # (harbor.environments.numinous); nothing to override here beyond
         # making trials attributable.
         return {**base_kwargs}
+
+    async def set_labels(self, external_id: str, labels: dict[str, str | None]) -> bool:
+        """Merge labels onto a sandbox (any state). Used to stamp the graded
+        outcome (oddish.reward / oddish.status) after the trial ends, when the
+        environment object is gone or lived in another process. Metadata:
+        never raises."""
+        if not external_id or not labels:
+            return False
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.patch(
+                    f"/v1/sandboxes/{external_id}/labels", json={"labels": labels}
+                )
+                if r.status_code >= 400:
+                    logger.info(
+                        "metric=numinous.label_stamp_refused external_id=%s status=%s",
+                        external_id,
+                        r.status_code,
+                    )
+                    return False
+                return True
+        except Exception:
+            logger.info(
+                "metric=numinous.label_stamp_failed external_id=%s", external_id
+            )
+            return False
+
+    async def stamp_trial_outcome(
+        self,
+        trial_id: str,
+        *,
+        reward: float | None,
+        status: str,
+        error: str | None = None,
+    ) -> int:
+        """Stamp the graded outcome on every sandbox this trial created.
+
+        Addresses sandboxes by the ``oddish.trial_id`` label the environment
+        wrote at create, so it needs no hook plumbing and works whether the
+        trial ran in-process or in the ephemeral child. Returns how many
+        sandboxes were stamped. Metadata: never raises."""
+        if not trial_id:
+            return 0
+        labels: dict[str, str | None] = {
+            "oddish.status": status,
+            "oddish.reward": None if reward is None else str(reward),
+        }
+        if error:
+            labels["oddish.error"] = str(error)[:256]
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.get(
+                    "/v1/sandboxes",
+                    params={"label": f"oddish.trial_id:{trial_id}", "limit": 50},
+                )
+                if r.status_code >= 400:
+                    logger.info(
+                        "metric=numinous.outcome_stamp trial_id=%s lookup_status=%s",
+                        trial_id,
+                        r.status_code,
+                    )
+                    return 0
+                body = r.json()
+                items = body.get("items", body) if isinstance(body, dict) else body
+                stamped = 0
+                for sb in items or []:
+                    pr = await client.patch(
+                        f"/v1/sandboxes/{sb['id']}/labels", json={"labels": labels}
+                    )
+                    stamped += pr.status_code < 400
+                logger.info(
+                    "metric=numinous.outcome_stamp trial_id=%s sandboxes=%d stamped=%d",
+                    trial_id,
+                    len(items or []),
+                    stamped,
+                )
+                return stamped
+        except Exception:
+            logger.info("metric=numinous.outcome_stamp trial_id=%s failed", trial_id)
+            return 0
+
+    async def settle_trial(
+        self,
+        trial_id: str,
+        *,
+        reward: float | None,
+        status: str,
+    ) -> bool:
+        """Record the trial's final verdict once oddish has settled it (after
+        any retries). Attempt stamps are provisional; this is the word the
+        provider's console shows for the trial as a whole. Metadata: never
+        raises. Returns whether the provider accepted it."""
+        if not trial_id or (reward is None and not status):
+            return False
+        body: dict[str, object] = {
+            "value": reward,
+            "label": None if reward is not None else status,
+            "kind": "reward",
+            "status": status,
+            "force": True,
+        }
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=30
+            ) as client:
+                r = await client.put(f"/v1/trials/{trial_id}/outcome", json=body)
+                logger.info(
+                    "metric=numinous.trial_settle trial_id=%s status=%s http=%s",
+                    trial_id,
+                    status,
+                    r.status_code,
+                )
+                return r.status_code < 400
+        except Exception:
+            logger.info("metric=numinous.trial_settle trial_id=%s failed", trial_id)
+            return False
 
     async def teardown(self, external_id: str) -> bool:
         """Best-effort terminate by sandbox id. The response carries a
@@ -104,7 +232,7 @@ class NuminousBackend:
                 # only need "is it gone"). verified_absent is extra proof we log
                 # but do not gate on — a running-state teardown can legitimately
                 # return proof=false while still having terminated the sandbox.
-                proof = (r.json().get("teardown_proof") or {})
+                proof = r.json().get("teardown_proof") or {}
                 logger.info(
                     "NuminousBackend.teardown: terminated %s verified_absent=%s",
                     external_id,

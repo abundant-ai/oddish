@@ -189,6 +189,9 @@ jobs:
       # path is validated end to end. Attaches the oddish-numinous Modal
       # secret (NUMINOUS_API_URL + NUMINOUS_API_KEY); registers cheap-first.
       ODDISH_NUMINOUS_ENABLED: "1"
+      # Numinous GPU lane on previews so GPU trials route to Numinous here for
+      # end-to-end validation (staging/prod keep it off).
+      ODDISH_NUMINOUS_GPU_ENABLED: "1"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
