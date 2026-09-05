@@ -1632,6 +1632,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    fireworks_api_key: str | None = Field(default=None, alias="FIREWORKS_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")

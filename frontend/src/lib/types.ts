@@ -1125,6 +1125,8 @@ export interface ModelEndpointCheckResponse {
   model: string;
   resolved_model: string;
   provider: string;
+  route: string;
+  credential: string | null;
   transport: "litellm_completion";
   failure_kind: "provider" | "configuration" | null;
   status_code: number | null;
@@ -1132,6 +1134,22 @@ export interface ModelEndpointCheckResponse {
   response: string | null;
   error: string | null;
   request_id: string | null;
+}
+
+export interface ModelEndpointSummary {
+  model: string;
+  provider: string;
+  route: string;
+  credential: string | null;
+  testable: boolean;
+}
+
+export interface ModelEndpointAccessResponse {
+  allowed: boolean;
+}
+
+export interface ModelEndpointCatalogResponse extends ModelEndpointAccessResponse {
+  models: ModelEndpointSummary[];
 }
 
 export interface CostModelBreakdown {
