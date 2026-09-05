@@ -26,6 +26,7 @@ import {
   QA_ISSUE_LABELS,
   QA_STATUS_LABELS,
 } from "@/lib/deliveries";
+import { DeliveryOwnerPicker } from "@/components/delivery-owner-picker";
 import { DeliveryQAWorkEditor } from "@/components/delivery-qa-work-editor";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
@@ -580,6 +581,7 @@ function TaskRow({
   canEditWork,
   busy,
   onClaim,
+  onAssign,
   onRelease,
   onSaveWork,
 }: {
@@ -604,6 +606,7 @@ function TaskRow({
   qa: DeliveryQAStatus;
   canEditWork: boolean;
   busy: boolean;
+  onAssign: (userId: string) => Promise<void>;
   onClaim: () => void;
   onRelease: () => void;
   onSaveWork: (patch: {
@@ -725,9 +728,19 @@ function TaskRow({
         <TableCell onClick={(event) => event.stopPropagation()}>
           {row.qa_work.owner_user_id ? (
             <div className="space-y-1">
-              <p className="text-sm">
-                {row.qa_owner_name ?? row.qa_work.owner_user_id}
-              </p>
+              {isAdmin && !frozen && row.version_id ? (
+                <DeliveryOwnerPicker
+                  taskName={row.task_name}
+                  ownerId={row.qa_work.owner_user_id}
+                  ownerName={row.qa_owner_name}
+                  disabled={busy}
+                  onAssign={onAssign}
+                />
+              ) : (
+                <p className="text-sm">
+                  {row.qa_owner_name ?? row.qa_work.owner_user_id}
+                </p>
+              )}
               {canEditWork && (
                 <Button
                   variant="ghost"
@@ -740,14 +753,26 @@ function TaskRow({
               )}
             </div>
           ) : !frozen && row.version_id ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={onClaim}
-            >
-              Claim
-            </Button>
+            <div className="inline-flex">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={onClaim}
+                className={isAdmin ? "rounded-r-none" : undefined}
+              >
+                Claim
+              </Button>
+              {isAdmin && (
+                <DeliveryOwnerPicker
+                  taskName={row.task_name}
+                  ownerId={null}
+                  ownerName={null}
+                  disabled={busy}
+                  onAssign={onAssign}
+                />
+              )}
+            </div>
           ) : (
             "Unassigned"
           )}
@@ -1726,6 +1751,22 @@ export function DeliveryBoardClient({
                                   data.qa_viewer_user_id))
                           }
                           onClaim={() => claimWork([row], 1)}
+                          onAssign={async (userId) => {
+                            const result = await postJson<{
+                              skipped_task_ids: string[];
+                            }>("/api/tasks/qa-work/assign", "POST", {
+                              task_ids: [row.task_id],
+                              assignee: userId,
+                              replace: !!row.qa_work.owner_user_id,
+                            });
+                            await mutate();
+                            if (result.skipped_task_ids.length) {
+                              throw new Error(
+                                "This task was just assigned to someone else. Review its current owner before reassigning."
+                              );
+                            }
+                            setNotice(`Owner updated for ${row.task_name}.`);
+                          }}
                           onRelease={() =>
                             void run(() => patchWork(row, { release: true }))
                           }

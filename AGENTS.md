@@ -468,6 +468,14 @@ the same `task_versions.qa_work` metadata used by delivery claims. Other owners
 are skipped unless replacement is explicit; repeat assignments preserve claim
 times, and notes/categories are retained. No delivery membership is required.
 Active boards reflect the assignments; finalized snapshots remain unchanged.
+The delivery board exposes an admin-only owner picker beside Claim (or on the
+existing owner's name). It loads organization members from `/api/users` on
+open, searches name/email, and posts the selected user ID through the frontend
+`/api/tasks/qa-work/assign` proxy. Unassigned rows use `replace=false` to avoid
+stealing a concurrent claim; choosing a person on an owned row explicitly
+reassigns with `replace=true`. Errors stay in the picker and successful writes
+refresh the board. Frozen deliveries hide the picker; member self-claim and
+release remain available under their existing permissions.
 
 QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
 It runs the same strict validator used by the verifier and importer, allowing
