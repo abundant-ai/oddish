@@ -25,7 +25,7 @@ FROM ubuntu:24.04
 
 LABEL org.opencontainers.image.source="https://github.com/abundant-ai/oddish"
 LABEL org.opencontainers.image.description="Oddish CI base: Python 3.13 + uv + Node + Postgres 17 + Supabase CLI + warm uv cache"
-LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \

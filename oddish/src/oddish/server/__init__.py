@@ -397,7 +397,7 @@ async def create_task_sweep(
 
     The ``Idempotency-Key`` header is accepted for parity with the cloud API but
     not persisted here: the idempotency record store is a backend-only table, so
-    this single-tenant open-source server runs every submission as received.
+    this single-tenant standalone server runs every submission as received.
     """
 
     from oddish.core.sweeps import validate_sweep_submission
