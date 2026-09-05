@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import functools
@@ -1376,7 +1377,9 @@ async def _stamp_sandbox_outcome(
     setter = getattr(environment, "set_labels", None)
     if callable(setter):
         try:
-            setter(labels)
+            result = setter(labels)
+            if inspect.isawaitable(result):  # tolerate an async set_labels
+                await result
             logger.info("metric=numinous.outcome_stamp route=environment")
             return
         except Exception:  # noqa: BLE001 - metadata must never fail a trial
