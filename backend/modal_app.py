@@ -111,7 +111,7 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
+POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 30)
 # The dispatcher (poll_queue) now only discovers active queue keys and spawns
 # job workers -- it no longer runs the heavy reconciliation sweep inline, so it
 # stays well under this timeout. Kept comfortably above 60s so spawning a large
@@ -209,11 +209,7 @@ RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 # per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
 # real safety bounds; this just stops the dispatcher from starving them.
 #
-# 256 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
-# per-poll spawn burst is also the per-poll claim burst (each spawned worker
-# runs one claim query), but claims are short and the 4XL box (16 dedicated
-# cores, transaction pool ~150) absorbs ~256 concurrent short claims per
-# 180s tick comfortably.
+# Launch reservations include workers still starting in the model limit.
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
@@ -778,20 +774,20 @@ if SLACK_EXPENSE_SECRET_NAME:
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
-NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 256)
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 1024)
 # Per-model queue-key concurrency overrides. Baked into the deploy so the
 # repo is the source of truth; operators can still override the whole JSON
 # via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
 MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
-    '{"google/gemini-3.5-flash": 128, '
-    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
-    '"minimax/minimax-m3": 128, '
+    '{"google/gemini-3.5-flash": 256, '
+    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 256, '
+    '"minimax/minimax-m3": 256, '
     '"global.anthropic.claude-sonnet-4-6": 256, '
     '"global.anthropic.claude-sonnet-5": 256, '
-    '"openai/gpt-5.4-mini": 128, '
-    '"zai/glm-5.2": 64}',
+    '"openai/gpt-5.4-mini": 256, '
+    '"zai/glm-5.2": 256}',
 )
 
 # Operator org fallback: the Abundant org's immutable internal id. Named so the

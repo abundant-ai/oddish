@@ -93,6 +93,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
                 "prompt_name": "candidate-1",
                 "prompt_text": "Classify the source.",
                 "audit_context": "none",
+                "environment": "modal",
             },
         )
 
@@ -102,6 +103,7 @@ async def test_post_qa_evals_passes_org_and_owner_to_shared_core(monkeypatch):
     assert captured["billed_user_id"] == "user-1"
     assert captured["request"].source_trial_ids == ["source-1"]
     assert captured["request"].audit_context == "none"
+    assert captured["request"].environment == "modal"
     assert captured["idempotency_key"] == "stable-key"
     assert captured["request_hash"]
     assert session.committed is True

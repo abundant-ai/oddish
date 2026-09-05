@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Mapping
+import json
 import math
 import os
 import shutil
@@ -569,6 +570,33 @@ def _redact_runtime_transport_file(
     temporary_path: Path | None = None
     changed = False
     try:
+        if path.suffix.lower() == ".json":
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                # The artifact was already malformed or is not actually JSON.
+                # Keep the byte scrub below so transport secrets still cannot
+                # reach persisted output.
+                pass
+            else:
+                redacted = redact_exact_value(payload, replacements)
+                if redacted == payload:
+                    return
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=path.parent,
+                    prefix=".oddish-redact-",
+                    delete=False,
+                ) as target:
+                    temporary_path = Path(target.name)
+                    json.dump(redacted, target, ensure_ascii=False)
+                    target.write("\n")
+                shutil.copystat(path, temporary_path)
+                os.replace(temporary_path, path)
+                temporary_path = None
+                return
+
         with (
             path.open("rb") as source,
             tempfile.NamedTemporaryFile(

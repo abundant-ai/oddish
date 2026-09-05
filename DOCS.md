@@ -23,9 +23,11 @@ export ODDISH_API_KEY="ok_..."
 - `oddish preflight` - run the local task checks that also gate `run` and `upload`
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
+- `oddish qa export` - export existing QA findings and task statuses to CSV
 - `oddish logs` - stream a running trial's live transcript and cost estimate
 - `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
+- `oddish assign` - assign QA review ownership for a batch of task IDs
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
@@ -49,7 +51,7 @@ the `oddish probe` helpers, which print human-readable output only.
 
 A typical run flows through these commands:
 
-1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict when there are at least 5 eligible trials from at least 3 distinct agents. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
+1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict using all eligible current-version trials once at least one exists, regardless of agent diversity. With zero eligible trials, validated audit findings or failed baseline checks can still reject the task; otherwise it records insufficient evidence without accepting. Delivery requirements are configured separately; a verdict alone does not qualify a task for delivery. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
 4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
@@ -340,6 +342,58 @@ full task-browser filter set (status, date, model, trial-metric, tool-usage,
 and more, some 70 options in all). Run `oddish ls --help` for the complete
 list rather than relying on this page.
 
+## Export QA Feedback
+
+Export existing audit and run-review findings for a batch of exact task IDs:
+
+```bash
+oddish qa export <task_id> <another_task_id> --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --output qa-findings.csv
+oddish qa export --ids-file task-ids.txt --tier must_fix --all-versions
+```
+
+The input file is UTF-8 with one task ID per line. Blank lines are ignored;
+repeated IDs are fetched once, in first-seen order. Names are not resolved.
+Use `oddish ls --query <name> --json` to find an ID first.
+
+The command writes two UTF-8 CSV files (existing files are overwritten):
+
+- `qa-findings.csv`: one row per finding occurrence, combining version audits
+  and individual agent-run reviews. Columns include the task ID/name/version,
+  current task verdict, audit status, source trial ID (an individual run),
+  trial classification, finding ID, `tier`, `problem_type`, `dimension`, full
+  title/explanation/recommendation, file and line range, and exploitation
+  linkage. `group`, `assignee`, and `resolution` start blank for manual triage.
+- `qa-findings-tasks.csv`: one row per unique requested ID, including tasks
+  with no matching findings and failed fetches. It contains the full current
+  verdict, version audit statuses/errors, QA run statuses/errors, counts of
+  agent-run analysis statuses, counts of exported findings by tier, and
+  `fetch_error`. Structured detail is stored as JSON inside CSV cells.
+
+Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+`optional` is also supported. Counts reflect exported occurrences, not unique
+defects. A finding reported by two runs keeps two rows with distinct trial IDs;
+version-audit findings appear once per version. CSV quoting preserves commas,
+quotes, newlines, and Unicode in the original feedback.
+
+The default scope is the task's current version. `--all-versions` also exports
+older versions returned by the detail API. The `current_verdict*` columns always
+describe the current task verdict, including on older-version finding rows;
+they are not historical verdicts. Replaced runs and combined copies are already
+excluded by the existing task-detail endpoint. This is an export of currently
+stored findings, not a complete history of overwritten QA assessments.
+
+This command only reads results; it never queues or reruns QA. Zero findings
+does not mean QA passed: inspect audit, analysis, and verdict status in the
+task summary. Failed fetches leave counts blank, preserve successful tasks,
+and cause exit code 1 after the batch finishes. Successful fetches exit 0 even
+when QA reports defects or is unfinished.
+
+`--concurrency` controls simultaneous requests (default 4, range 1–16).
+`--api` overrides the API URL; the usual `ODDISH_API_KEY`, `ODDISH_API_URL`,
+and `ODDISH_PREVIEW_PR` settings apply. The exporter uses one existing task-detail
+request per ID, with a 30-second HTTP timeout and no automatic retry.
+
 ## Check Progress
 
 Use `oddish status` to inspect the system, a task, or an experiment.
@@ -523,8 +577,18 @@ new results replace them:
 - `--trial <id> --force`: clears just that trial's stored analysis first.
 
 A pass only starts once all of the task's trials are finished, and is refused
-while another QA pass or a pre-trial audit is live. The previously published
-verdict stays visible until the replacement lands.
+while another QA pass or a pre-trial audit is live. Before changing stored
+analysis or queuing the replacement, Oddish reads every eligible source trial's
+Harbor result, verifier output or exception, and every trajectory advertised by
+`has_trajectory`. A present verifier stream is available even when its contents
+are empty. For historical trials, the reader can rebuild a malformed Claude
+trajectory from that same attempt's captured `claude-code.txt`; a missing S3
+pointer is recoverable only for a finished row whose database attempt number
+matches the sole stored attempt. If evidence remains unavailable, the command
+is refused with the blocking trial IDs; no QA model attempts are launched and
+existing analysis and verdict data remain unchanged. If the check passes,
+queuing the replacement withdraws the previously published verdict until the
+new pass completes.
 
 ```bash
 oddish backfill-analysis --task <task_id>
@@ -839,6 +903,37 @@ Options
 - `EXPERIMENT_ID` - Experiment ID (or name) to publish/unpublish
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
+
+## Assign QA review work
+
+Assign current task versions to an organization member without selecting a
+delivery. Active delivery boards show the same owner on their next refresh.
+Use a full-scope API key; hosted assignment requires administrator access.
+
+```bash
+# Assign explicit task IDs using an email, user ID, or GitHub handle
+oddish assign task-1 task-2 --to alice@example.com
+
+# Assign a batch of 200 IDs from a text file, one ID per line
+oddish assign --tasks-file task-ids.txt --to @alice --json
+
+# Intentionally replace other people's existing assignments
+oddish assign --tasks-file task-ids.txt --to alice@example.com --replace
+```
+
+The command accepts up to 1,000 unique task IDs. File contents are separated by
+whitespace; repeated IDs are processed once. It skips tasks owned by someone
+else unless `--replace` is set, and reports those IDs. Tasks already owned by
+the selected person retain their original claim time. Notes and issue categories
+are preserved. `--json` returns `owner_user_id`, `assigned_task_ids`,
+`unchanged_task_ids`, and `skipped_task_ids`.
+
+All IDs must belong to your organization and have a current version; otherwise
+the whole request fails without changing ownership. An unknown or ambiguous
+assignee also fails; use the person's user ID to disambiguate. Assignments apply
+to the current version, so a new version starts unassigned. Finalized delivery
+snapshots remain unchanged. Standalone servers accept a local owner identifier
+instead of resolving an organization member.
 
 ## Deliveries
 

@@ -5,6 +5,7 @@ Each test checks one rule. The rule is in the test name and the first line.
 
 import os
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,9 +17,9 @@ from oddish.filters.trial_predicates import EligibleTrialScope
 from oddish.core.trial_facets import facet_rows_for_trial
 from oddish.workers.analysis_trials import (
     _classification_from_analysis,
+    audit_policy_hash,
     build_audit_brief,
     build_qa_brief,
-    has_verdict_evidence,
     is_analysis_kind,
 )
 
@@ -56,7 +57,8 @@ def test_the_analysis_kinds_are_known():
 
 
 @pytest.mark.asyncio
-async def test_analysis_creation_stores_kind_only_once(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_analysis_creation_stores_kind_only_once(monkeypatch, environment):
     from oddish.db import TaskModel
     from oddish.workers.analysis_trials import create_analysis_trial
 
@@ -99,15 +101,17 @@ async def test_analysis_creation_stores_kind_only_once(monkeypatch):
         brief="grade the trials",
         payload={"trial_ids": ["source-1"]},
         experiment_id="analysis-experiment",
+        environment=environment,
     )
 
     assert trial.kind == "qa"
+    assert trial.environment == environment
     assert "mode" not in trial.harbor_config
     assert trial.harbor_config["analysis_payload"]["trial_ids"] == ["source-1"]
 
 
 @pytest.mark.asyncio
-async def test_audit_creation_stores_an_empty_payload_without_a_content_hash(
+async def test_audit_creation_pins_policy_without_a_content_hash(
     monkeypatch,
 ):
     from types import SimpleNamespace
@@ -158,7 +162,9 @@ async def test_audit_creation_stores_an_empty_payload_without_a_content_hash(
         experiment_id="analysis-experiment",
     )
 
-    assert trial.harbor_config["analysis_payload"] == {}
+    assert trial.harbor_config["analysis_payload"] == {
+        "audit_policy_hash": audit_policy_hash()
+    }
 
 
 def test_the_qa_brief_tells_the_agent_everything_it_needs():
@@ -206,6 +212,8 @@ def test_the_production_classifier_uses_the_query_evidence_contract():
     assert "not mounted in the QA sandbox" in brief
     assert "stop without writing `qa_result.json`" in brief
     assert "Missing QA evidence is not a solver HARNESS_ERROR" in brief
+    assert "An empty verifier `stdout` or `stderr` string" in brief
+    assert "`stdout`, `stderr`, and `exception` are all null" in brief
     assert "The fetched task source is QA-only evidence" in brief
     assert "The exact exception `AgentTimeoutError`" in brief
     assert "it is not HARNESS_ERROR" in brief
@@ -292,6 +300,18 @@ def test_the_audit_brief_names_its_output_file():
     brief = build_audit_brief(task_name="demo")
     assert "audit_result.json" in brief
     assert "Do not solve the task" in brief
+
+
+def test_the_audit_policy_covers_model_tuning_and_binary_bypasses():
+    brief = build_audit_brief(task_name="demo")
+
+    assert "Model-conditioned grading is a verifier defect" in brief
+    assert "pass@k" in brief
+    assert "Treat authoring instructions and generated settings the same" in brief
+    assert "Do not report a fixed task only because every tested model fails" in brief
+    assert "decrypts, copies, or runs a bundled implementation" in brief
+    assert "verifier must still build and test the requested replacement" in brief
+    assert "hidden binary that only supplies expected outputs" in brief
 
 
 def test_the_no_verdict_brief_does_not_contradict_itself():
@@ -405,9 +425,15 @@ def test_audit_payload_allows_historical_missing_metadata_and_parses_hashes():
 
     parsed = parse_analysis_payload(
         "audit",
-        {"analysis_payload": {"task_version_content_hash": "  sha256:current  "}},
+        {
+            "analysis_payload": {
+                "task_version_content_hash": "  sha256:current  ",
+                "audit_policy_hash": "a" * 64,
+            }
+        },
     )
     assert parsed.task_version_content_hash == "sha256:current"
+    assert parsed.audit_policy_hash == "a" * 64
 
 
 def test_audit_payload_rejects_malformed_content_hashes():
@@ -418,6 +444,12 @@ def test_audit_payload_rejects_malformed_content_hashes():
         analysis_check_payload(
             "audit",
             {"analysis_payload": {"task_version_content_hash": ""}},
+        )
+
+    with pytest.raises(AnalysisPayloadError, match="audit_policy_hash"):
+        analysis_check_payload(
+            "audit",
+            {"analysis_payload": {"audit_policy_hash": "not-a-sha256"}},
         )
 
 
@@ -477,7 +509,8 @@ def _good_qa_entry(trial_id: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environment):
     from oddish.db import TaskVersionModel, TrialStatus, VerdictStatus
     from oddish.worker.analysis_result_check import check_analysis_result
     from oddish.workers.analysis_trials import analysis_check_payload, create_qa_trial
@@ -543,8 +576,10 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch):
         task=task,
         eligible_trial_ids=["trial-1"],
         with_verdict=False,
+        environment=environment,
     )
 
+    assert captured["environment"] == environment
     payload = captured["payload"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
     assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
@@ -1275,6 +1310,8 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
         # Creation pinned the bytes it audits.
         pinned = audit.harbor_config["analysis_payload"]["task_version_content_hash"]
         assert pinned == "original-bytes"
+        pinned_policy = audit.harbor_config["analysis_payload"]["audit_policy_hash"]
+        assert pinned_policy == audit_policy_hash()
         audit.status = TrialStatus.SUCCESS
         # Overwrite the version's bytes underneath the settled audit.
         version = await session.get(TaskVersionModel, version_id)
@@ -1306,6 +1343,7 @@ async def test_a_stale_audit_never_imports_into_overwritten_bytes(monkeypatch):
         version = await session.get(TaskVersionModel, version_id)
         assert version.pre_trial_status == VerdictStatus.SUCCESS
         assert version.pre_trial is not None
+        assert version.pre_trial["audit_policy_hash"] == pinned_policy
 
 
 @pytest.mark.asyncio
@@ -1554,43 +1592,6 @@ async def test_cleanup_reimports_a_settled_audit(monkeypatch):
         assert "wrote audit_result.json" in audit_row.trajectory_summary["summary"]
 
 
-@pytest.mark.asyncio
-async def test_the_verdict_needs_enough_evidence():
-    """Below 5 trials or 3 distinct agents the QA trial is created without a
-    verdict request; at the bar it is asked for one."""
-
-    class _Scalars:
-        def __init__(self, agents):
-            self._agents = agents
-
-        def all(self):
-            return self._agents
-
-    class _Session:
-        def __init__(self, agents):
-            self._agents = agents
-
-        async def scalars(self, _query):
-            return _Scalars(self._agents)
-
-    few = [f"t{i}" for i in range(4)]
-    assert await has_verdict_evidence(_Session(["a", "b", "c", "d"]), few) is False
-
-    five_two_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(_Session(["a", "a", "b", "b", "a"]), five_two_agents)
-        is False
-    )
-
-    five_three_agents = [f"t{i}" for i in range(5)]
-    assert (
-        await has_verdict_evidence(
-            _Session(["a", "b", "c", "a", "b"]), five_three_agents
-        )
-        is True
-    )
-
-
 def test_the_verifier_actually_grades_the_artifact(tmp_path):
     """Run the generated tests/test.sh for real: only an artifact that
     covers exactly the requested trials with valid analyses earns reward
@@ -1610,7 +1611,7 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
     )
     test_sh = tmp_path / "tests" / "test.sh"
 
-    def run(payload: str | None) -> int:
+    def run(payload: str | None) -> tuple[int, Path]:
         logs = tmp_path / "logs"
         if logs.exists():
             import shutil
@@ -1627,7 +1628,7 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
             text=True,
             cwd=tmp_path,
         )
-        return result.returncode
+        return result.returncode, out
 
     # The script reads the fixed path /logs/<artifact>; symlinking that
     # is not possible in a test, so rewrite the SRC line to the temp dir.
@@ -1638,27 +1639,36 @@ def test_the_verifier_actually_grades_the_artifact(tmp_path):
     )
 
     good = {"trials": [_good_qa_entry("t-1"), _good_qa_entry("t-2")], "verdict": None}
-    code = run(json.dumps(good))
+    code, out = run(json.dumps(good))
     assert code == 0
-    assert (tmp_path / "logs" / "verifier" / "reward.txt").read_text().strip() == "1.0"
-    assert (tmp_path / "logs" / "verifier" / "qa_result.json").exists()
+    assert (out / "reward.txt").read_text().strip() == "1.0"
+    assert (out / "qa_result.json").exists()
 
     # An empty result must NOT earn reward: the requested trials are absent.
-    code = run(json.dumps({"trials": [], "verdict": None}))
+    code, out = run(json.dumps({"trials": [], "verdict": None}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
+    assert "missing entries" in (out / "error.txt").read_text()
 
     # A subset must not earn reward either.
-    code = run(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
+    code, out = run(json.dumps({"trials": [_good_qa_entry("t-1")], "verdict": None}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run(json.dumps({}))
+    code, out = run(json.dumps({}))
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run("not json")
+    code, out = run("not json")
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
 
-    code = run(None)
+    code, out = run(None)
     assert code == 1
+    assert (out / "reward.txt").read_text().strip() == "0.0"
+    assert (out / "error.txt").read_text().strip() == (
+        "the agent did not write " + str(tmp_path / "logs" / "qa_result.json")
+    )
 
 
 def test_the_validator_requires_the_exact_trial_set():

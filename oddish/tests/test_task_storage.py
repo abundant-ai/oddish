@@ -374,6 +374,47 @@ async def test_download_task_directory_extracts_archive_object(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_download_trial_logs_skips_binary_artifacts(monkeypatch):
+    prefix = "tasks/task-1/trials/task-1-7/attempt-1/current-run/"
+    text_key = f"{prefix}verifier/test-stdout.txt"
+    sqlite_key = f"{prefix}agent/grok-session/sessions/session_search.sqlite"
+    compressed_key = f"{prefix}verifier/produced/compress/always_form.out"
+    storage = storage_mod.StorageClient()
+    storage._client = _FakeS3Client(
+        pages=[
+            {
+                "Contents": [
+                    {"Key": text_key},
+                    {"Key": sqlite_key},
+                    {"Key": compressed_key},
+                ]
+            }
+        ]
+    )
+    objects = {
+        text_key: b"grader output: failed byte \xff\n",
+        sqlite_key: b"SQLite format 3\x00\x8a",
+        compressed_key: b"POST / HTTP/1.1\n\x9c\x01",
+    }
+
+    async def download_text(key: str) -> str:
+        return objects[key].decode("utf-8")
+
+    async def download_bytes(key: str) -> bytes:
+        return objects[key]
+
+    monkeypatch.setattr(storage, "download_text", download_text)
+    monkeypatch.setattr(storage, "download_bytes", download_bytes)
+    monkeypatch.setattr(settings, "s3_bucket", "test-bucket")
+
+    result = await storage.download_trial_logs(prefix)
+
+    assert "grader output: failed byte �" in result
+    assert "session_search.sqlite" not in result
+    assert "always_form.out" not in result
+
+
+@pytest.mark.asyncio
 async def test_download_task_directory_finds_versioned_archive(monkeypatch, tmp_path):
     """When the archive lives at a versioned sub-path (init/complete upload),
     download_task_directory should detect and extract it rather than

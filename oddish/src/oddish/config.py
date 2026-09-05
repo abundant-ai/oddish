@@ -1330,6 +1330,9 @@ class Settings(BaseSettings):
     # ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0 to restore Bedrock routing once the
     # credentials are fixed.
     claude_code_force_direct_api: bool = True
+    # Opt-in per-request QA routing. Pool quotas are explicit deployment config;
+    # workers never infer independent capacity from the number of API keys.
+    qa_model_routing_enabled: bool = False
 
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set
@@ -1492,7 +1495,7 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
-    nop_oracle_concurrency: int = 256
+    nop_oracle_concurrency: int = 1024
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
     # the LLM trials BLOCKED until the baselines finish, then releases them only

@@ -187,7 +187,10 @@ class _CreateSession:
 
 
 @pytest.mark.asyncio
-async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
+@pytest.mark.parametrize("environment", [None, "modal"])
+async def test_create_accepts_a_failed_source_without_a_trajectory(
+    monkeypatch, environment
+):
     source = _source(has_trajectory=False, status=TrialStatus.FAILED)
     session = _CreateSession(source)
     session.version.pre_trial = {
@@ -221,6 +224,7 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
             source_trial_ids=["source-1"],
             prompt_name="candidate-1",
             prompt_text="Classify the stored solver evidence.",
+            environment=environment,
         ),
         org_id="org-1",
         owner_user_id="user-1",
@@ -232,6 +236,7 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(monkeypatch):
     assert captured["experiment_id"] == "replay-experiment"
     assert captured["task_version_id"] == "version-1"
     assert captured["billed_user_id"] == "user-1"
+    assert captured["environment"] == environment
     assert captured["payload"]["trial_ids"] == ["source-1"]
     assert captured["payload"]["trial_evidence"] == [
         {

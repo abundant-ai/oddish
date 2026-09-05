@@ -61,6 +61,8 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
@@ -85,6 +87,7 @@ reference. The main commands are:
 - `oddish delete` — delete trials against hosted Oddish (admin key); whole-task/experiment deletes are refused for Modal-hosted APIs, and a standalone core server has no delete endpoints at all.
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
+- `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,

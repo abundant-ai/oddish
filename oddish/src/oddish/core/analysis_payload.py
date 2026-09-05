@@ -5,8 +5,22 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from oddish.config import nop_oracle_kind
+
 if TYPE_CHECKING:
-    from oddish.db import TaskVersionModel
+    from oddish.db import TaskVersionModel, TrialModel
+
+
+def qa_trial_evidence(trial: TrialModel) -> dict:
+    """Authoritative, bounded facts the QA prompt and validator share."""
+    return {
+        "trial_id": trial.id,
+        "status": trial.status.value,
+        "reward": float(trial.reward) if trial.reward is not None else None,
+        "has_trajectory": bool(trial.has_trajectory),
+        "agent": trial.agent,
+        "baseline_kind": nop_oracle_kind(trial.agent),
+    }
 
 
 def audit_fingerprint(version: TaskVersionModel) -> str:
@@ -96,6 +110,7 @@ class ParsedAnalysisPayload:
     with_verdict: bool = True
     target_trial_id: str | None = None
     task_version_content_hash: str | None = None
+    audit_policy_hash: str | None = None
     audit_fingerprint: str | None = None
 
 
@@ -126,11 +141,21 @@ def parse_analysis_payload(
                 "audit analysis_payload.task_version_content_hash must be a "
                 "non-empty string when present"
             )
+        policy_hash = payload.get("audit_policy_hash")
+        if policy_hash is not None and (
+            not isinstance(policy_hash, str)
+            or len(policy_hash) != 64
+            or any(c not in "0123456789abcdef" for c in policy_hash)
+        ):
+            raise AnalysisPayloadError(
+                "audit analysis_payload.audit_policy_hash must be a SHA-256 hex digest"
+            )
         return ParsedAnalysisPayload(
             kind=kind,
             task_version_content_hash=(
                 content_hash.strip() if isinstance(content_hash, str) else None
             ),
+            audit_policy_hash=policy_hash,
         )
 
     if kind in ("qa", "qa_eval"):

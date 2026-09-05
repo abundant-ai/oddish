@@ -18,17 +18,31 @@ import {
 } from "lucide-react";
 
 import { fetcher } from "@/lib/api";
-import { readySummary } from "@/lib/deliveries";
+import { formatRelativeTime } from "@/lib/utils";
+import {
+  readySummary,
+  deliveryQAStatus,
+  deliveryNextAction,
+  QA_ISSUE_LABELS,
+  QA_STATUS_LABELS,
+} from "@/lib/deliveries";
+import { DeliveryQAWorkEditor } from "@/components/delivery-qa-work-editor";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
   DeliveryBoardResponse,
   DeliveryCheckResult,
+  DeliveryQAStatus,
+  QAIssueCategory,
   DeliveryTaskBoardRow,
   TaskBrowseResponse,
   TaskQAHistoryResponse,
 } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckChip, DeliveryStatusBadge } from "@/components/delivery-status";
+import {
+  CheckChip,
+  DeliveryStatusBadge,
+  DeliveryQAStatusBadge,
+} from "@/components/delivery-status";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -69,21 +83,12 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
-async function postJson(url: string, method: string, body?: unknown) {
-  const res = await fetch(url, {
+function postJson<T = void>(url: string, method: string, body?: unknown) {
+  return fetcher<T>(url, {
     method,
     headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const payload = (await res.json().catch(() => null)) as {
-      detail?: string;
-      error?: string;
-    } | null;
-    throw new Error(
-      payload?.detail || payload?.error || `Request failed (${res.status})`
-    );
-  }
 }
 
 /** What still blocks a sign-off: failing automated checks that need a
@@ -357,6 +362,59 @@ function applyTaskFilter(tasks: DeliveryTaskBoardRow[], filter: TaskFilter) {
   });
 }
 
+/** The rows the table actually renders: the board filter, then the QA-work
+ * filters, sorted by group when grouping is on. The page-snap, deep-link,
+ * and prefetch effects use this too, so the URL page always matches the
+ * visible rows. */
+function applyBoardView(
+  data: DeliveryBoardResponse,
+  view: {
+    filter: TaskFilter;
+    qaDays: string;
+    qaFilter: string;
+    issueFilter: string;
+    ownerFilter: string;
+    groupBy: string;
+  }
+) {
+  const cutoff =
+    new Date(data.qa_as_of ?? 0).getTime() - Number(view.qaDays) * 86400000;
+  const statuses = new Map(
+    data.tasks.map((row) => [
+      row.delivery_task_id,
+      deliveryQAStatus(row, cutoff),
+    ])
+  );
+  const groupLabel = (row: DeliveryTaskBoardRow) =>
+    view.groupBy === "owner"
+      ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
+      : row.qa_work.issue_categories[0]
+        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
+        : "Uncategorized";
+  const rows = applyTaskFilter(data.tasks, view.filter).filter((row) => {
+    const status = statuses.get(row.delivery_task_id)!.status;
+    return (
+      (view.qaFilter === "all" ||
+        (view.qaFilter === "checked"
+          ? ["accepted", "needs_fixes"].includes(status)
+          : view.qaFilter === "needs_qa"
+            ? ["never", "outdated"].includes(status)
+            : status === view.qaFilter)) &&
+      (view.issueFilter === "all" ||
+        row.qa_work.issue_categories.includes(
+          view.issueFilter as QAIssueCategory
+        )) &&
+      (view.ownerFilter === "all" ||
+        (view.ownerFilter === "unassigned"
+          ? !row.qa_work.owner_user_id
+          : row.qa_work.owner_user_id === data.qa_viewer_user_id))
+    );
+  });
+  if (view.groupBy !== "none")
+    rows.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
+  return { statuses, rows, groupLabel };
+}
+
 function QAHistoryPanel({ taskId }: { taskId: string }) {
   const { data, error, isLoading } = useSWR<TaskQAHistoryResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/qa-history`,
@@ -575,6 +633,12 @@ function TaskRow({
   onToggleSelect,
   onSetCheck,
   onRemove,
+  qa,
+  canEditWork,
+  busy,
+  onClaim,
+  onRelease,
+  onSaveWork,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -594,8 +658,18 @@ function TaskRow({
     checked: boolean
   ) => void;
   onRemove: () => void;
+  qa: DeliveryQAStatus;
+  canEditWork: boolean;
+  busy: boolean;
+  onClaim: () => void;
+  onRelease: () => void;
+  onSaveWork: (patch: {
+    issue_categories: QAIssueCategory[];
+    note: string;
+  }) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [editingWork, setEditingWork] = useState(false);
   const [copied, setCopied] = useState(false);
   const rowRef = useRef<HTMLTableRowElement>(null);
   useEffect(() => {
@@ -683,11 +757,57 @@ function TaskRow({
           )}
         </TableCell>
         <TableCell>
-          <div className="flex flex-wrap gap-1">
-            {row.checks.map((check) => (
-              <CheckChip key={check.key} check={check} />
-            ))}
-          </div>
+          <DeliveryQAStatusBadge qa={qa} />
+          {qa.finished_at && (
+            <p className="text-muted-foreground text-xs">
+              <time
+                dateTime={qa.finished_at}
+                title={new Date(qa.finished_at).toLocaleString()}
+              >
+                {frozen
+                  ? new Date(qa.finished_at).toLocaleDateString()
+                  : formatRelativeTime(qa.finished_at)}
+              </time>
+            </p>
+          )}
+        </TableCell>
+        <TableCell>
+          <p className="text-sm">{deliveryNextAction(row, qa.status)}</p>
+          <p className="text-muted-foreground text-xs">
+            {row.qa_work.issue_categories
+              .map((key) => QA_ISSUE_LABELS[key])
+              .join(" · ")}
+          </p>
+        </TableCell>
+        <TableCell onClick={(event) => event.stopPropagation()}>
+          {row.qa_work.owner_user_id ? (
+            <div className="space-y-1">
+              <p className="text-sm">
+                {row.qa_owner_name ?? row.qa_work.owner_user_id}
+              </p>
+              {canEditWork && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={onRelease}
+                >
+                  Release
+                </Button>
+              )}
+            </div>
+          ) : !frozen && row.version_id ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={onClaim}
+            >
+              Claim
+            </Button>
+          ) : (
+            "Unassigned"
+          )}
         </TableCell>
         <TableCell className="text-right">
           {row.ready ? (
@@ -701,7 +821,46 @@ function TaskRow({
         <TableRow className="hover:bg-transparent">
           {selectable && <TableCell />}
           <TableCell />
-          <TableCell colSpan={4} className="space-y-3 py-3">
+          <TableCell colSpan={6} className="space-y-3 py-3">
+            <div className="space-y-2">
+              <p className="text-sm">{qa.detail}</p>
+              {qa.trial_id && (
+                <Link
+                  className="text-sm underline"
+                  href={`/tasks/${encodeURIComponent(row.task_id)}?trial=${encodeURIComponent(qa.trial_id)}`}
+                >
+                  Open QA run
+                </Link>
+              )}
+              {row.qa_work.note && (
+                <p className="text-sm whitespace-pre-wrap">
+                  {row.qa_work.note}
+                </p>
+              )}
+              {canEditWork && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => setEditingWork(true)}
+                >
+                  Edit QA work
+                </Button>
+              )}
+              {editingWork && (
+                <DeliveryQAWorkEditor
+                  taskName={row.task_name}
+                  work={row.qa_work}
+                  onClose={() => setEditingWork(false)}
+                  onSave={onSaveWork}
+                />
+              )}
+              <div className="flex flex-wrap gap-1">
+                {row.checks.map((check) => (
+                  <CheckChip key={check.key} check={check} />
+                ))}
+              </div>
+            </div>
             {failing.length > 0 && (
               <ul className="space-y-1 text-sm">
                 {failing.map((check) => (
@@ -884,6 +1043,12 @@ export function DeliveryBoardClient({
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(DEFAULT_TASK_PAGE_SIZE);
   const [filter, setFilter] = useState<TaskFilter>("all");
+  const [qaDays, setQADays] = useState("7");
+  const [qaFilter, setQAFilter] = useState("all");
+  const [issueFilter, setIssueFilter] = useState("all");
+  const [ownerFilter, setOwnerFilter] = useState("all");
+  const [groupBy, setGroupBy] = useState("none");
+  const [notice, setNotice] = useState<string | null>(null);
   // Bulk selection, keyed by delivery_task_id.
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const prefetched = useRef(new Set<string>());
@@ -911,12 +1076,27 @@ export function DeliveryBoardClient({
   // is known, so the URL always matches what the board shows.
   useEffect(() => {
     if (!data) return;
-    const count = Math.max(
-      1,
-      Math.ceil(applyTaskFilter(data.tasks, filter).length / pageSize)
-    );
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
+    const count = Math.max(1, Math.ceil(rows.length / pageSize));
     if (page > count - 1) setPage(count - 1);
-  }, [data, filter, page, pageSize]);
+  }, [
+    data,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    page,
+    pageSize,
+  ]);
   // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
   // can be shared or reloaded. replaceState keeps the back button out of
   // every click; defaults stay out of the URL.
@@ -952,7 +1132,15 @@ export function DeliveryBoardClient({
     focusHandled.current = true;
     const matches = (row: DeliveryTaskBoardRow) =>
       row.task_name === focusTask || row.task_id === focusTask;
-    const index = applyTaskFilter(data.tasks, filter).findIndex(matches);
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
+    const index = rows.findIndex(matches);
     if (index >= 0) {
       setPage(Math.floor(index / pageSize));
       return;
@@ -962,12 +1150,29 @@ export function DeliveryBoardClient({
       setFilter("all");
       setPage(Math.floor(unfiltered / pageSize));
     }
-  }, [data, focusTask, filter, pageSize]);
+  }, [
+    data,
+    focusTask,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    pageSize,
+  ]);
   // Fetch the visible rows' QA history as soon as the board is up, so
   // expanding a row shows it without a loading wait.
   useEffect(() => {
     if (!data) return;
-    const rows = applyTaskFilter(data.tasks, filter);
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
     const start =
       Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1)) *
       pageSize;
@@ -979,18 +1184,31 @@ export function DeliveryBoardClient({
         void preload(key, fetcher);
       }
     }
-  }, [data, page, filter, pageSize]);
+  }, [
+    data,
+    page,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    pageSize,
+  ]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setActionError(null);
     try {
       await action();
-      await mutate();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
-      setBusy(false);
+      try {
+        await mutate();
+      } finally {
+        setBusy(false);
+      }
     }
   };
 
@@ -1095,7 +1313,54 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
-  const filteredTasks = applyTaskFilter(data.tasks, filter);
+  const {
+    statuses,
+    rows: filteredTasks,
+    groupLabel,
+  } = applyBoardView(data, {
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+  });
+  const checkedCount = data.tasks.filter((row) =>
+    ["accepted", "needs_fixes"].includes(
+      statuses.get(row.delivery_task_id)!.status
+    )
+  ).length;
+  const claimWork = (rows: DeliveryTaskBoardRow[], limit: number) =>
+    void run(async () => {
+      const payload = await postJson<{ claimed_version_ids: string[] }>(
+        `/api/deliveries/${encodeURIComponent(deliveryId)}/qa-work/claim`,
+        "POST",
+        {
+          version_ids: rows.flatMap((row) =>
+            row.version_id ? [row.version_id] : []
+          ),
+          limit,
+        }
+      );
+      setNotice(
+        `Claimed ${payload.claimed_version_ids.length} tasks. Already assigned tasks were skipped.`
+      );
+    });
+  const patchWork = async (
+    row: DeliveryTaskBoardRow,
+    patch: {
+      release?: boolean;
+      issue_categories?: QAIssueCategory[];
+      note?: string;
+    }
+  ) => {
+    await postJson(
+      `/api/deliveries/${encodeURIComponent(deliveryId)}/qa-work`,
+      "PATCH",
+      { version_id: row.version_id, ...patch }
+    );
+    await mutate();
+  };
   const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
   const clampedPage = Math.min(page, pageCount - 1);
   const pagedTasks = filteredTasks.slice(
@@ -1111,7 +1376,7 @@ export function DeliveryBoardClient({
     return checks.length + defects.length === 0;
   });
   const bulkable = isAdmin && !frozen;
-  const selectedRows = data.tasks.filter((row) =>
+  const selectedRows = filteredTasks.filter((row) =>
     selected.has(row.delivery_task_id)
   );
   const cleanUnsignedIds = new Set(
@@ -1122,6 +1387,32 @@ export function DeliveryBoardClient({
   const selectedClean = selectedRows.filter((row) =>
     cleanUnsignedIds.has(row.delivery_task_id)
   );
+  const runnableRows = selectedRows.filter(
+    (row) => row.version_id && !["queued", "running"].includes(row.qa.status)
+  );
+  const rerunSelected = () =>
+    void run(async () => {
+      const failures: string[] = [];
+      let queued = 0;
+      for (const row of runnableRows) {
+        try {
+          await postJson(
+            `/api/tasks/${encodeURIComponent(row.task_id)}/qa/retry`,
+            "POST",
+            {}
+          );
+          queued += 1;
+        } catch (error) {
+          failures.push(
+            `${row.task_name}: ${error instanceof Error ? error.message : "QA request failed"}`
+          );
+        }
+      }
+      setNotice(
+        `Requested QA for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
+      );
+      if (failures.length) throw new Error(failures.join("\n"));
+    });
   const allFilteredSelected =
     filteredTasks.length > 0 &&
     filteredTasks.every((row) => selected.has(row.delivery_task_id));
@@ -1176,7 +1467,7 @@ export function DeliveryBoardClient({
             </p>
           </div>
           {isAdmin && !frozen && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <AddTasksDialog
                 open={addOpen}
                 onOpenChange={setAddOpen}
@@ -1293,6 +1584,132 @@ export function DeliveryBoardClient({
             </p>
           ) : (
             <>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm">
+                  {checkedCount} / {data.tasks.length} tasks checked in the last{" "}
+                  {qaDays === "7" ? "7 days" : "24 hours"}
+                </p>
+                <Select
+                  value={qaDays}
+                  onValueChange={(value) => {
+                    setQADays(value);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger
+                    className="w-40"
+                    aria-label="QA freshness window"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="7">Last 7 days</SelectItem>
+                    <SelectItem value="1">Last 24 hours</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-muted-foreground mb-3 text-xs">
+                Checked includes accepted and rejected results covering the
+                current version and trials.{" "}
+                {frozen && "Counts are frozen at finalization."}
+              </p>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Select
+                  value={qaFilter}
+                  onValueChange={(value) => {
+                    setQAFilter(value);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger className="w-44" aria-label="QA status filter">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All QA states</SelectItem>
+                    <SelectItem value="checked">Checked</SelectItem>
+                    <SelectItem value="needs_qa">Needs QA</SelectItem>
+                    {Object.entries(QA_STATUS_LABELS).map(([key, label]) => (
+                      <SelectItem key={key} value={key}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={issueFilter}
+                  onValueChange={(value) => {
+                    setIssueFilter(value);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger
+                    className="w-48"
+                    aria-label="Issue category filter"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All issue categories</SelectItem>
+                    {Object.entries(QA_ISSUE_LABELS).map(([key, label]) => (
+                      <SelectItem key={key} value={key}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={ownerFilter}
+                  onValueChange={(value) => {
+                    setOwnerFilter(value);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger className="w-40" aria-label="Owner filter">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All owners</SelectItem>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    <SelectItem value="mine">Mine</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={groupBy}
+                  onValueChange={(value) => {
+                    setGroupBy(value);
+                    setPage(0);
+                  }}
+                >
+                  <SelectTrigger className="w-44" aria-label="Group tasks">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No grouping</SelectItem>
+                    <SelectItem value="issue">Group by issue</SelectItem>
+                    <SelectItem value="owner">Group by owner</SelectItem>
+                  </SelectContent>
+                </Select>
+                {!frozen && data.qa_viewer_user_id && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      busy ||
+                      !filteredTasks.some(
+                        (row) => row.version_id && !row.qa_work.owner_user_id
+                      )
+                    }
+                    onClick={() => claimWork(filteredTasks, 25)}
+                  >
+                    Claim next 25
+                  </Button>
+                )}
+              </div>
+              {notice && (
+                <p role="status" className="text-muted-foreground mb-3 text-sm">
+                  {notice}
+                </p>
+              )}
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Select
                   value={filter}
@@ -1320,11 +1737,19 @@ export function DeliveryBoardClient({
                     {filteredTasks.length} of {data.tasks.length} tasks
                   </span>
                 )}
-                {bulkable && selected.size > 0 && (
+                {bulkable && selectedRows.length > 0 && (
                   <div className="ml-auto flex flex-wrap items-center gap-2">
                     <span className="text-muted-foreground text-sm">
-                      {selected.size} selected
+                      {selectedRows.length} selected
                     </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy || runnableRows.length === 0}
+                      onClick={rerunSelected}
+                    >
+                      Rerun QA ({runnableRows.length})
+                    </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button
@@ -1342,7 +1767,7 @@ export function DeliveryBoardClient({
                             {selectedClean.length === 1 ? "" : "s"}?
                           </AlertDialogTitle>
                           <AlertDialogDescription>
-                            {selectedClean.length} of the {selected.size}{" "}
+                            {selectedClean.length} of the {selectedRows.length}{" "}
                             selected tasks have no open blockers and are not
                             signed off; each sign-off is recorded in your name.
                             The rest are skipped — sign those off from their
@@ -1412,7 +1837,7 @@ export function DeliveryBoardClient({
                             checked={
                               allFilteredSelected
                                 ? true
-                                : selected.size > 0
+                                : selectedRows.length > 0
                                   ? "indeterminate"
                                   : false
                             }
@@ -1434,32 +1859,63 @@ export function DeliveryBoardClient({
                       <TableHead className="w-6" />
                       <TableHead>Task</TableHead>
                       <TableHead>Version</TableHead>
-                      <TableHead>Checks</TableHead>
+                      <TableHead>Latest QA</TableHead>
+                      <TableHead>Next action / issues</TableHead>
+                      <TableHead>Owner</TableHead>
                       <TableHead className="text-right">Ready</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pagedTasks.map((row) => (
-                      <TaskRow
-                        key={row.delivery_task_id}
-                        row={row}
-                        frozen={frozen}
-                        isAdmin={isAdmin}
-                        focused={
-                          focusTask === row.task_name ||
-                          focusTask === row.task_id
-                        }
-                        link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
-                        selectable={bulkable}
-                        selected={selected.has(row.delivery_task_id)}
-                        onToggleSelect={() =>
-                          toggleSelect(row.delivery_task_id)
-                        }
-                        onSetCheck={(checkKey, deliveryTaskId, checked) =>
-                          setCheck(checkKey, deliveryTaskId, checked)
-                        }
-                        onRemove={() => removeTask(row.task_id)}
-                      />
+                    {pagedTasks.map((row, index) => (
+                      <Fragment key={row.delivery_task_id}>
+                        {groupBy !== "none" &&
+                          (index === 0 ||
+                            groupLabel(pagedTasks[index - 1]) !==
+                              groupLabel(row)) && (
+                            <TableRow>
+                              <TableCell
+                                colSpan={bulkable ? 8 : 7}
+                                className="bg-muted text-xs font-medium"
+                              >
+                                {groupLabel(row)}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        <TaskRow
+                          key={row.version_id}
+                          qa={statuses.get(row.delivery_task_id)!}
+                          busy={busy}
+                          canEditWork={
+                            !frozen &&
+                            (isAdmin ||
+                              (!!data.qa_viewer_user_id &&
+                                row.qa_work.owner_user_id ===
+                                  data.qa_viewer_user_id))
+                          }
+                          onClaim={() => claimWork([row], 1)}
+                          onRelease={() =>
+                            void run(() => patchWork(row, { release: true }))
+                          }
+                          onSaveWork={(patch) => patchWork(row, patch)}
+                          row={row}
+                          frozen={frozen}
+                          isAdmin={isAdmin}
+                          focused={
+                            focusTask === row.task_name ||
+                            focusTask === row.task_id
+                          }
+                          link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
+                          selectable={bulkable}
+                          selected={selected.has(row.delivery_task_id)}
+                          onToggleSelect={() =>
+                            toggleSelect(row.delivery_task_id)
+                          }
+                          onSetCheck={(checkKey, deliveryTaskId, checked) =>
+                            setCheck(checkKey, deliveryTaskId, checked)
+                          }
+                          onRemove={() => removeTask(row.task_id)}
+                        />
+                      </Fragment>
                     ))}
                   </TableBody>
                 </Table>

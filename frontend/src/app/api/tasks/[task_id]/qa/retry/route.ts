@@ -8,7 +8,7 @@ import {
 import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
@@ -24,7 +24,8 @@ export async function POST(
     const url = getBackendUrl("tasks", `/${task_id}/qa/retry`);
     const res = await fetch(url, {
       method: "POST",
-      headers: getAuthHeaders(token),
+      headers: { ...getAuthHeaders(token), "Content-Type": "application/json" },
+      body: (await request.text()) || undefined,
     });
 
     const parsed = await readBackendJson(res, "Failed to queue task QA");
