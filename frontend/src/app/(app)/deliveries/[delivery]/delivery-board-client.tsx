@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
+import useSWR, { preload } from "swr";
 import {
   AlertCircle,
   Check,
@@ -337,7 +337,11 @@ function ManualCheckRow({
 // Versions listed before "Show all" expands the history.
 const QA_HISTORY_PAGE = 5;
 // Task rows per page on the board.
-const TASK_PAGE_SIZE = 25;
+const TASK_PAGE_SIZES = [10, 25, 50, 100];
+const DEFAULT_TASK_PAGE_SIZE = 25;
+// Prefetching QA history for a whole 100-row page would fire 100 requests
+// at once; the first rows cover what a person reaches quickly.
+const QA_PREFETCH_LIMIT = 25;
 
 type TaskFilter = "all" | "blocked" | "awaiting_signoff" | "ready";
 
@@ -356,6 +360,59 @@ function applyTaskFilter(tasks: DeliveryTaskBoardRow[], filter: TaskFilter) {
     if (filter === "blocked") return isBlocked(row);
     return !row.ready && !isBlocked(row);
   });
+}
+
+/** The rows the table actually renders: the board filter, then the QA-work
+ * filters, sorted by group when grouping is on. The page-snap, deep-link,
+ * and prefetch effects use this too, so the URL page always matches the
+ * visible rows. */
+function applyBoardView(
+  data: DeliveryBoardResponse,
+  view: {
+    filter: TaskFilter;
+    qaDays: string;
+    qaFilter: string;
+    issueFilter: string;
+    ownerFilter: string;
+    groupBy: string;
+  }
+) {
+  const cutoff =
+    new Date(data.qa_as_of ?? 0).getTime() - Number(view.qaDays) * 86400000;
+  const statuses = new Map(
+    data.tasks.map((row) => [
+      row.delivery_task_id,
+      deliveryQAStatus(row, cutoff),
+    ])
+  );
+  const groupLabel = (row: DeliveryTaskBoardRow) =>
+    view.groupBy === "owner"
+      ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
+      : row.qa_work.issue_categories[0]
+        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
+        : "Uncategorized";
+  const rows = applyTaskFilter(data.tasks, view.filter).filter((row) => {
+    const status = statuses.get(row.delivery_task_id)!.status;
+    return (
+      (view.qaFilter === "all" ||
+        (view.qaFilter === "checked"
+          ? ["accepted", "needs_fixes"].includes(status)
+          : view.qaFilter === "needs_qa"
+            ? ["never", "outdated"].includes(status)
+            : status === view.qaFilter)) &&
+      (view.issueFilter === "all" ||
+        row.qa_work.issue_categories.includes(
+          view.issueFilter as QAIssueCategory
+        )) &&
+      (view.ownerFilter === "all" ||
+        (view.ownerFilter === "unassigned"
+          ? !row.qa_work.owner_user_id
+          : row.qa_work.owner_user_id === data.qa_viewer_user_id))
+    );
+  });
+  if (view.groupBy !== "none")
+    rows.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
+  return { statuses, rows, groupLabel };
 }
 
 function QAHistoryPanel({ taskId }: { taskId: string }) {
@@ -984,6 +1041,7 @@ export function DeliveryBoardClient({
   // Suspense boundary for useSearchParams.
   const [focusTask, setFocusTask] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_TASK_PAGE_SIZE);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [qaDays, setQADays] = useState("7");
   const [qaFilter, setQAFilter] = useState("all");
@@ -993,16 +1051,158 @@ export function DeliveryBoardClient({
   const [notice, setNotice] = useState<string | null>(null);
   // Bulk selection, keyed by delivery_task_id.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const prefetched = useRef(new Set<string>());
   useEffect(() => {
-    setFocusTask(new URLSearchParams(window.location.search).get("task"));
+    const params = new URLSearchParams(window.location.search);
+    setFocusTask(params.get("task"));
+    const filterParam = params.get("filter");
+    if (
+      filterParam === "blocked" ||
+      filterParam === "awaiting_signoff" ||
+      filterParam === "ready"
+    ) {
+      setFilter(filterParam);
+    }
+    const pageParam = Number(params.get("page"));
+    if (Number.isInteger(pageParam) && pageParam >= 1) {
+      setPage(pageParam - 1);
+    }
+    const perPageParam = Number(params.get("per_page"));
+    if (TASK_PAGE_SIZES.includes(perPageParam)) {
+      setPageSize(perPageParam);
+    }
   }, []);
+  // Snap an out-of-range page into the table's real range once the data
+  // is known, so the URL always matches what the board shows.
   useEffect(() => {
-    if (!data || !focusTask) return;
-    const index = data.tasks.findIndex(
-      (row) => row.task_name === focusTask || row.task_id === focusTask
-    );
-    if (index >= 0) setPage(Math.floor(index / TASK_PAGE_SIZE));
-  }, [data, focusTask]);
+    if (!data) return;
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
+    const count = Math.max(1, Math.ceil(rows.length / pageSize));
+    if (page > count - 1) setPage(count - 1);
+  }, [
+    data,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    page,
+    pageSize,
+  ]);
+  // Filter and page live in the URL (?filter=, ?page=, 1-based), so a view
+  // can be shared or reloaded. replaceState keeps the back button out of
+  // every click; defaults stay out of the URL. The mount run is skipped:
+  // it sees the default state before the URL-read effect's updates apply,
+  // and writing then would strip a shared link's params for a render.
+  const urlWriteArmed = useRef(false);
+  useEffect(() => {
+    if (!urlWriteArmed.current) {
+      urlWriteArmed.current = true;
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (filter === "all") {
+      params.delete("filter");
+    } else {
+      params.set("filter", filter);
+    }
+    if (page === 0) {
+      params.delete("page");
+    } else {
+      params.set("page", String(page + 1));
+    }
+    if (pageSize === DEFAULT_TASK_PAGE_SIZE) {
+      params.delete("per_page");
+    } else {
+      params.set("per_page", String(pageSize));
+    }
+    const query = params.toString();
+    const next = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    if (next !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [filter, page, pageSize]);
+  // Land the ?task= deep link once: pick its page in the filtered view
+  // the table actually renders. When ?filter= hides the task, the link
+  // wins and the filter falls back to all tasks.
+  const focusHandled = useRef(false);
+  useEffect(() => {
+    if (!data || !focusTask || focusHandled.current) return;
+    focusHandled.current = true;
+    const matches = (row: DeliveryTaskBoardRow) =>
+      row.task_name === focusTask || row.task_id === focusTask;
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
+    const index = rows.findIndex(matches);
+    if (index >= 0) {
+      setPage(Math.floor(index / pageSize));
+      return;
+    }
+    const unfiltered = data.tasks.findIndex(matches);
+    if (unfiltered >= 0) {
+      setFilter("all");
+      setPage(Math.floor(unfiltered / pageSize));
+    }
+  }, [
+    data,
+    focusTask,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    pageSize,
+  ]);
+  // Fetch the visible rows' QA history as soon as the board is up, so
+  // expanding a row shows it without a loading wait.
+  useEffect(() => {
+    if (!data) return;
+    const { rows } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+    });
+    const start =
+      Math.min(page, Math.max(0, Math.ceil(rows.length / pageSize) - 1)) *
+      pageSize;
+    const limit = Math.min(pageSize, QA_PREFETCH_LIMIT);
+    for (const row of rows.slice(start, start + limit)) {
+      const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
+      if (!prefetched.current.has(key)) {
+        prefetched.current.add(key);
+        void preload(key, fetcher);
+      }
+    }
+  }, [
+    data,
+    page,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    pageSize,
+  ]);
+
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setActionError(null);
@@ -1120,46 +1320,23 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
-  const cutoff =
-    new Date(data.qa_as_of ?? 0).getTime() - Number(qaDays) * 86400000;
-  const statuses = new Map(
-    data.tasks.map((row) => [
-      row.delivery_task_id,
-      deliveryQAStatus(row, cutoff),
-    ])
-  );
+  const {
+    statuses,
+    rows: filteredTasks,
+    groupLabel,
+  } = applyBoardView(data, {
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+  });
   const checkedCount = data.tasks.filter((row) =>
     ["accepted", "needs_fixes"].includes(
       statuses.get(row.delivery_task_id)!.status
     )
   ).length;
-  const filteredTasks = applyTaskFilter(data.tasks, filter).filter((row) => {
-    const status = statuses.get(row.delivery_task_id)!.status;
-    return (
-      (qaFilter === "all" ||
-        (qaFilter === "checked"
-          ? ["accepted", "needs_fixes"].includes(status)
-          : qaFilter === "needs_qa"
-            ? ["never", "outdated"].includes(status)
-            : status === qaFilter)) &&
-      (issueFilter === "all" ||
-        row.qa_work.issue_categories.includes(
-          issueFilter as QAIssueCategory
-        )) &&
-      (ownerFilter === "all" ||
-        (ownerFilter === "unassigned"
-          ? !row.qa_work.owner_user_id
-          : row.qa_work.owner_user_id === data.qa_viewer_user_id))
-    );
-  });
-  const groupLabel = (row: DeliveryTaskBoardRow) =>
-    groupBy === "owner"
-      ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
-      : row.qa_work.issue_categories[0]
-        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
-        : "Uncategorized";
-  if (groupBy !== "none")
-    filteredTasks.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
   const claimWork = (rows: DeliveryTaskBoardRow[], limit: number) =>
     void run(async () => {
       const payload = await postJson<{ claimed_version_ids: string[] }>(
@@ -1191,14 +1368,11 @@ export function DeliveryBoardClient({
     );
     await mutate();
   };
-  const pageCount = Math.max(
-    1,
-    Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
-  );
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
   const clampedPage = Math.min(page, pageCount - 1);
   const pagedTasks = filteredTasks.slice(
-    clampedPage * TASK_PAGE_SIZE,
-    (clampedPage + 1) * TASK_PAGE_SIZE
+    clampedPage * pageSize,
+    (clampedPage + 1) * pageSize
   );
   // Tasks a mass sign-off may take: not signed off, no open blockers.
   // Blocked tasks keep the per-task acknowledge flow.
@@ -1753,12 +1927,32 @@ export function DeliveryBoardClient({
                   </TableBody>
                 </Table>
               )}
-              {pageCount > 1 && (
-                <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
-                  <span>
-                    Page {clampedPage + 1} of {pageCount} ·{" "}
-                    {filteredTasks.length} tasks
-                  </span>
+              {(pageCount > 1 || filteredTasks.length > TASK_PAGE_SIZES[0]) && (
+                <div className="text-muted-foreground mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span>
+                      Page {clampedPage + 1} of {pageCount} ·{" "}
+                      {filteredTasks.length} tasks
+                    </span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(value) => {
+                        setPageSize(Number(value));
+                        setPage(0);
+                      }}
+                    >
+                      <SelectTrigger className="h-8 w-32">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {TASK_PAGE_SIZES.map((size) => (
+                          <SelectItem key={size} value={String(size)}>
+                            {size} per page
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
