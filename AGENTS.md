@@ -403,6 +403,15 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+Both source-audit and solver-classification prompts allow the author-provided
+reference baseline to install a bundled executable without rebuilding source.
+Solver source/language/build requirements still apply to normal solver grading;
+reference leaks, stored-answer replay, reward tampering, and broken baselines
+remain defects. After changing this policy, use the source-audit rerun endpoint
+for affected current versions: deploying a prompt does not replace stored
+findings or their task verdicts. The stored `audit_policy_hash` identifies which
+audit policy produced each result.
+
 `POST /tasks/{task_id}/qa/pre-trial` accepts an optional JSON body with
 `environment: "modal" | "daytona"`; `POST /qa-evals` accepts the same field.
 The provider is stored on each created analysis trial as `trials.environment`,
