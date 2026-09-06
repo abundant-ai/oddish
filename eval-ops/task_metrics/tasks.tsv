@@ -1,0 +1,785 @@
+task	category	opus_table	learn_table	experiments	alt_names
+duckdb-alter_type_concurrent_committed_update	DB debug	0/2	2/2	9ace17a0	
+duckdb-any_extremum_rewrite	DB debug	1/3	3/3	7a5a74ba	
+duckdb-array_cast	DB debug	2/3		047c8430	
+duckdb-art-empty-close-range	DB debug	3/4		064ff509	
+duckdb-collated-group-dangling-expr	DB debug	0/4		064ff509	
+duckdb-complex_division	DB debug	0/2	0/3	9ace17a0	
+duckdb-comprehension-filter-type	DB debug	0/3		064ff509	
+duckdb-cte_unused_columns	DB debug	0/3	1/1	9ace17a0	
+duckdb-date_trunc_simplification	DB debug	1/3		047c8430	
+duckdb-escape_string	DB debug	0/3		047c8430	
+duckdb-export_quoted_enum	DB debug	2/3	2/2	047c8430	
+duckdb-export_typed_null	DB debug		0/3	9ace17a0	
+duckdb-extension_repositories	DB debug	0/2	0/1	9ace17a0	
+duckdb-geometry_intersection_filter_parquet	DB debug	1/3	2/2	b4039257	
+duckdb-hive_partitioned_write	DB debug	0/1		b4039257	
+duckdb-index_fetch	DB debug	3/3		047c8430	
+duckdb-invoke	DB debug	0/3		b4039257	
+duckdb-lateral_left_join	DB debug	0/1	0/2	7a5a74ba	
+duckdb-leadlag-default-overrun	DB debug	4/4		064ff509	
+duckdb-list-repeat-overflow	DB debug	3/4	6/6	064ff509	
+duckdb-merge_into_explain_analyze	DB debug	0/3	1/1	b4039257	
+duckdb-merge-profile-untracked-operator	DB debug	0/4		064ff509	
+duckdb-null_overflow_string_memory	DB debug		1/1	9ace17a0	
+duckdb-parquet_hive_null	DB debug	0/3	1/1	b4039257	
+duckdb-prepared_stale_statistics	DB debug	0/3	1/1	b4039257	
+duckdb-recursive_cte_key_final_drain	DB debug	0/3	1/2	7a5a74ba	
+duckdb-recursive_cte_parallel_union_all_sink	DB debug	0/1	0/3	7a5a74ba	
+duckdb-regex_search	DB debug	0/2	0/1	b4039257	
+duckdb-rename_col_nested_struct	DB debug	0/3	0/2	7a5a74ba	
+duckdb-rename_col_struct	DB debug	2/3	3/3	7a5a74ba	
+duckdb-rewrite_nan_null	DB debug	0/3		047c8430	
+duckdb-setting_threads	DB debug	0/2	0/2	9ace17a0	
+duckdb-single_sided_predicate_reconstruction	DB debug	1/2	3/3	b4039257	
+duckdb-skip_explicit_compression_analyze	DB debug	2/3	3/3	047c8430	
+duckdb-statistics_count_not_null_join_pruning	DB debug	0/2	0/1	9ace17a0	
+duckdb-string_expression_filter_pruning	DB debug	0/2	0/1	9ace17a0	
+duckdb-test_24828	DB debug	0/1	0/1	b4039257	
+duckdb-test_asof_join_setops	DB debug	1/2	2/2	b4039257	
+duckdb-test_delete_indexed	DB debug	1/2	2/3	7a5a74ba	
+duckdb-test_ilike_escape	DB debug	0/3	0/2	047c8430	
+duckdb-test_interval_comparison	DB debug	0/1	0/1	b4039257	
+duckdb-test_outer_joins_recursive_cte_materialized	DB debug	3/3	2/2	b4039257	
+duckdb-test_progress_bar_null	DB debug		0/2	b4039257	
+duckdb-test_sequence	DB debug	0/3	0/1	b4039257	
+duckdb-test_streaming_window	DB debug	2/3	1/1	047c8430	
+duckdb-test_type_candidates	DB debug	0/2		047c8430	
+duckdb-timestamp_precision	DB debug	0/2		9ace17a0	
+duckdb-topn-window-order-expression	DB debug	0/4		064ff509	
+duckdb-trigger_after_insert_referencing	DB debug	0/2		b4039257	
+duckdb-trigger_dependency	DB debug	0/3	3/3	b4039257	
+duckdb-try-literal-return-type	DB debug	0/4		064ff509	
+duckdb-union_by_name_struct_projection	DB debug	1/3	1/1	047c8430	
+duckdb-variant_case_sensitive_fields_shredded	DB debug	1/3	1/1	b4039257	
+duckdb-wal_null_update_row_group_pruning	DB debug	0/2	0/2	7a5a74ba	
+etcd-cache-preserve-cached-snapshot-afte	DB debug	0/1	0/3	477029dc	
+etcd-client-use-an-atomic-pointer-instea	DB debug		0/3	477029dc	
+etcd-clientv3-fix-errors-init-client-rej	DB debug		0/3	477029dc	
+etcd-clientv3-fix-the-design-implementat	DB debug		1/3	477029dc	
+etcd-etcdserver-fix-nil-pointer-panic-fo	DB debug		1/3	477029dc	
+etcd-fix-race-berween-read-index-and-lea	DB debug		1/3	477029dc	
+etcd-fix-races-in-testlessorrenewextendp	DB debug		0/3	477029dc	
+etcd-fix-server-embed-enforce-non-empty	DB debug		0/3	477029dc	
+etcd-fix-testcachelaggingwatcher-flake	DB debug		0/3	477029dc	
+etcd-fix-the-inconsistent-between-listen	DB debug		0/3	477029dc	
+etcd-fix-unexpose-todo	DB debug		0/3	477029dc	
+etcd-fixed-infinite-loop-in-expectproces	DB debug		0/3	477029dc	
+etcd-schedule-provide-logs-when-the-fifo	DB debug		0/3	477029dc	
+etcd-server-ignore-raft-messages-if-memb	DB debug		0/1	477029dc	
+etcd-server-use-panic-instead-of-os-exit	DB debug		0/3	477029dc	
+etcd-tests-enforce-that-revision-doesn-t	DB debug		0/3	477029dc	
+faiss-add-clone-for-indexrefine-and-othe	DB debug	0/4	0/3	d2b4c1f2	
+faiss-add-remove-and-merge-features-for	DB debug	0/2	0/3	d2b4c1f2	
+faiss-better-nan-handling-2986	DB debug	0/4	0/3	d2b4c1f2	
+faiss-evaluation-script-ivf-block-search	DB debug	0/4	0/3	d2b4c1f2	
+faiss-fix-ivf-quantizer-centroid-shardin	DB debug	0/4	0/3	d2b4c1f2	
+faiss-fix-training-of-complex-quantizer	DB debug	0/3	2/3	3318e463	
+faiss-implement-serialization-of-indexes	DB debug	0/2	0/3	3318e463	
+faiss-implement-st-norm-from-lut-for-the	DB debug	0/1	0/3	3318e463	
+faiss-io-support-for-indexnndescent-2493	DB debug	1/4	3/3	d2b4c1f2	
+faiss-move-invertedlists-splitting-to-in	DB debug	0/4	0/3	d2b4c1f2	
+faiss-re-factor-factory-string-parsing-2	DB debug	0/4	0/3	3318e463	
+faiss-scan-exactly-max-codes-elements-26	DB debug	0/3	2/3	d2b4c1f2	
+faiss-support-nsg-in-the-index-factory-1	DB debug		0/3	3318e463	
+qdrant-fix-api-return-formula-default-va	DB debug	2/4	2/3	e9b2fab2	
+qdrant-fix-api-validate-geo-coordinate-r	DB debug	0/3	3/3	55f19075	
+qdrant-fix-api-validate-geo-polygon-in-g	DB debug	0/4	3/3	e9b2fab2	
+qdrant-fix-bool-index-reload-as-immutabl	DB debug	1/2	3/3	55f19075	
+qdrant-fix-clear-joint-consensus-fields	DB debug	0/2	3/3	55f19075	
+qdrant-fix-empty-min-should-with-non-zer	DB debug	4/4	1/3	55f19075	
+qdrant-fix-flusher-data-race-in-gridstor	DB debug	0/3	2/3	e9b2fab2	
+qdrant-fix-gap-finding-logic-5882	DB debug	0/4	0/3	e9b2fab2	
+qdrant-fix-gridstore-has-pointer-lookup	DB debug	1/4	1/3	e9b2fab2	
+qdrant-fix-missing-validation-on-adding	DB debug	0/4	3/3	e9b2fab2	
+qdrant-fix-mmap-field-index-snapshot-484	DB debug	1/3	1/3	55f19075	
+qdrant-fix-notify-pending-consensus-ops	DB debug	0/4	0/3	55f19075	
+qdrant-fix-oob-heap-read-crash-with-mali	DB debug	0/1	3/3	55f19075	
+qdrant-fix-reject-source-superset-schema	DB debug	0/4	0/3	55f19075	
+qdrant-fix-scalar-l2-quantized-score-shi	DB debug	3/4	3/3	55f19075	
+qdrant-fix-tq-quantized-vector-layout-al	DB debug	2/3	0/1	55f19075	
+qdrant-fix-truncation-of-last-element-of	DB debug	2/4	3/3	21aa4857	
+qdrant-fix-use-after-free-in-u8-quantize	DB debug	4/4	3/3	55f19075	
+qdrant-fix-validate-hnsw-ef-search-param	DB debug	0/2	2/3	21aa4857	
+qdrant-fix-wrong-multivectors-count-in-s	DB debug	1/4	1/3	55f19075	
+qdrant-return-an-error-when-cancelling-a	DB debug	0/4	0/3	e9b2fab2	
+qdrant-revert-return-an-error-when-cance	DB debug	0/4	0/3	e9b2fab2	
+rocksdb-bug-fix-reject-empty-string-as-a	DB debug	4/4	0/3	f03520c2	
+rocksdb-bug-fixes-surface-embedded-blob	DB debug	0/1	0/2	f03520c2	
+rocksdb-fix-blob-file-path-misidentifica	DB debug	3/4	2/3	080dcade	
+rocksdb-fix-compaction-abort-reschedulin	DB debug	1/1	1/3	080dcade	
+rocksdb-fix-false-positive-corruption-er	DB debug	0/1	3/3	f03520c2	
+rocksdb-fix-false-positive-corruption-in	DB debug	0/2	2/2	3419d129	
+rocksdb-fix-getcorruptionstatus-crash-wi	DB debug	0/4	1/3	f03520c2	
+rocksdb-fix-multiscan-not-respecting-sup	DB debug	0/3	3/3	f03520c2	
+rocksdb-fix-null-scratch-buffer-submitte	DB debug	0/1	2/3	3419d129	
+rocksdb-fix-obsolete-file-cache-entries	DB debug	0/1	0/3	3419d129	
+rocksdb-fix-pinnableslice-move-construct	DB debug	1/3	3/3	080dcade	
+rocksdb-fix-range-lock-manager-assertion	DB debug		3/3	3419d129	
+rocksdb-fix-range-lock-manager-crash-wit	DB debug	1/4	3/3	f03520c2	
+rocksdb-fix-range-tombstone-entry-accoun	DB debug	0/3	3/3	080dcade	
+rocksdb-fix-secondary-wal-tailing-with-p	DB debug		0/3	3419d129	
+rocksdb-fix-seekforprev-key-pinning-regr	DB debug	0/3	0/3	080dcade	
+rocksdb-fix-table-cache-leak-when-flush	DB debug	0/3	0/3	f03520c2	
+rocksdb-fix-table-cache-leak-when-instal	DB debug	0/2	0/3	3419d129	
+rocksdb-fix-table-handle-leak-14469	DB debug	0/1	0/3	080dcade	
+rocksdb-fix-the-handling-of-wide-column	DB debug	2/3	3/3	3419d129	
+rocksdb-prevent-normal-flushes-from-star	DB debug	0/3	0/2	080dcade	
+rocksdb-rocksdb-crash-test-failed-assert	DB debug	0/3	0/3	f03520c2	
+rocksdb-rocksdb-secondary-cache-test-fai	DB debug	0/1	0/3	080dcade	
+rocksdb-set-correct-file-type-in-backupi	DB debug	2/4	3/3	080dcade	
+sqlite-agg-nested-attribution	DB debug	1/4	0/3	6d1b761a	
+sqlite-autoindex-column-prefix	DB debug	1/3	0/2	6d1b761a	
+sqlite-cast-dash	DB debug	0/3		6433f52d	
+sqlite-cast-dot	DB debug	0/4	0/3	6433f52d	
+sqlite-cast-negzero	DB debug	3/4		6433f52d	
+sqlite-cast-num-int	DB debug	0/4	0/2	6433f52d	
+sqlite-collate-rhs-in	DB debug	1/4	0/3	6433f52d	
+sqlite-constscan-overrun	DB debug	1/3	1/1	6d1b761a	
+sqlite-distinct-skipscan	DB debug	0/4		6433f52d	
+sqlite-dot-slash-like	DB debug	0/4	0/3	6433f52d	
+sqlite-exists-alias-cursor	DB debug	1/4	1/3	6d1b761a	
+sqlite-having-correlated-hoist	DB debug	0/3		6d1b761a	
+sqlite-in-nested-bool	DB debug	0/4		6433f52d	
+sqlite-indexed-expression-substitution	DB debug	8/8		189f7be6;fd367d06	
+sqlite-integrity-check-view	DB debug	0/4	0/3	6d1b761a	
+sqlite-istrue-collate	DB debug	0/4		6433f52d	
+sqlite-like-int-nocase	DB debug	3/4	0/3	6433f52d	
+sqlite-like-plus-collate	DB debug	4/4		6433f52d	
+sqlite-like-unique-nocase	DB debug	1/4		6433f52d	
+sqlite-min-bare-null	DB debug	0/4		6433f52d	
+sqlite-nested-alias-aggregate	DB debug	0/3	0/1	6d1b761a	
+sqlite-omit-noopjoin-term	DB debug	1/4	1/3	6d1b761a	
+sqlite-outerjoin-coroutine-nullextend	DB debug	1/4	1/3	6d1b761a	
+sqlite-parse-cursor-alloc	DB debug	0/4	0/1	6d1b761a	
+sqlite-partial-index-or	DB debug	0/3		6433f52d	
+sqlite-partial-notnull	DB debug	0/3	1/3	6433f52d	
+sqlite-pushdown-agg-lifetime	DB debug	1/2	0/1	6d1b761a	
+sqlite-real-from-clause	DB debug	4/4		6433f52d	
+sqlite-register-operand-classify	DB debug	0/4	2/3	6d1b761a	
+sqlite-rightjoin-indexed-expr-scope	DB debug	0/3		6d1b761a	
+sqlite-round-infinity	DB debug	0/4		6433f52d	
+sqlite-rowid-cmp	DB debug	0/4	0/3	6433f52d	
+sqlite-schema-rootpage-bypass	DB debug	3/4	5/6	6d1b761a	
+sqlite-stale-parse-state	DB debug	0/1	2/3	6d1b761a	
+sqlite-star-expansion-overflow	DB debug	3/4	6/6	6d1b761a	
+sqlite-unionall-flatten-recursive	DB debug	0/3		6d1b761a	
+sqlite-unlikely-affinity	DB debug	0/4		6433f52d	
+sqlite-view-in-affinity	DB debug	0/4	0/3	6433f52d	
+sqlite-without-rowid-offset	DB debug	4/4		2305e359	sqlite-without-rowid-offset-hinted
+timescaledb-add-support-for-continuous-a	DB debug	0/3	0/6	c47057f8	
+timescaledb-check-for-valid-dimension-on	DB debug	0/2	0/4	c47057f8	
+timescaledb-emit-error-on-transition-tab	DB debug	0/3	0/3	c47057f8	
+timescaledb-fix-a-misnomer-in-a-warning	DB debug	0/2	0/4	c47057f8	
+timescaledb-fix-allocation-overflow-erro	DB debug	0/2	0/3	c47057f8	
+timescaledb-fix-alter-job-failing-for-re	DB debug	0/1	0/3	b570621c	
+timescaledb-fix-bitmap-corruption-for-si	DB debug	2/3	4/5	c47057f8	
+timescaledb-fix-blocker-for-multiple-hie	DB debug	0/4	6/6	c47057f8	
+timescaledb-fix-bugs-on-handling-offset	DB debug	0/4	6/6	601299be	
+timescaledb-fix-cached-utility-statement	DB debug	3/3	6/6	601299be	
+timescaledb-fix-cagg-order-by-pushdown	DB debug	0/3	3/3	c47057f8	
+timescaledb-fix-chunk-creation-failure-a	DB debug	0/2	2/4	c47057f8	
+timescaledb-fix-chunk-skipping-min-max-c	DB debug	0/2	0/3	b570621c	
+timescaledb-fix-cleanup-of-compression-s	DB debug	0/2	2/3	b570621c	
+timescaledb-fix-column-ordering-on-first	DB debug	0/1	0/6	601299be	
+timescaledb-fix-column-rename-for-compre	DB debug		3/4	b570621c	
+timescaledb-fix-compressed-index-not-cho	DB debug	0/1	0/5	c47057f8	
+timescaledb-fix-crash-in-policy-creation	DB debug	0/3	0/6	601299be	
+timescaledb-fix-create-table-with-when-u	DB debug	4/4	2/3	601299be	
+timescaledb-fix-decoding-of-uuid-v7-time	DB debug	2/3	5/6	601299be	
+timescaledb-fix-delete-update-with-where	DB debug	0/1	2/3	b570621c	
+timescaledb-fix-filtering-heap-scan-keys	DB debug	0/3	0/4	75f8508a	
+timescaledb-fix-fk-constraint-failure-wh	DB debug	0/2	1/2	b570621c	
+timescaledb-fix-generated-columns-always	DB debug	0/1	6/6	75f8508a	
+timescaledb-fix-generating-columns-on-co	DB debug	2/4	2/3	75f8508a	
+timescaledb-fix-handling-null-compressio	DB debug	0/3	4/6	601299be	
+timescaledb-fix-handling-of-unique-expre	DB debug	0/3	4/6	601299be	
+timescaledb-fix-if-not-exists-behaviour	DB debug	0/4	0/6	b570621c	
+timescaledb-fix-incorrect-sort-transform	DB debug	0/4	0/3	601299be	
+timescaledb-fix-index-column-check-while	DB debug	0/3	0/6	c47057f8	
+timescaledb-fix-invalidation-and-batchin	DB debug		1/4	601299be	
+timescaledb-fix-lost-orderby-sparse-inde	DB debug	0/1	0/4	75f8508a	
+timescaledb-fix-merge-behaviour-with-upd	DB debug	2/3	2/3	c47057f8	
+timescaledb-fix-merge-not-matched-insert	DB debug	0/1	1/6	c47057f8	
+timescaledb-fix-notice-when-recompressin	DB debug	0/3	0/3	601299be	
+timescaledb-fix-null-compression-handlin	DB debug	0/1	0/6	75f8508a	
+timescaledb-fix-null-window-end-9449	DB debug	0/1	0/3	c47057f8	
+timescaledb-fix-overlap-detection-with-r	DB debug	1/1	5/6	b570621c	
+timescaledb-fix-policy-name-comparison-i	DB debug	4/4	3/6	601299be	
+timescaledb-fix-potential-incorrect-stdd	DB debug	3/3	4/5	c47057f8	
+timescaledb-fix-segfault-in-direct-compr	DB debug	0/1	2/3	b570621c	
+timescaledb-fix-segfault-when-setting-ch	DB debug	0/3	0/5	c47057f8	
+timescaledb-fix-segmentby-crash-in-cagg	DB debug	0/2	2/5	601299be	
+timescaledb-fix-set-returning-functions	DB debug	0/1	2/6	b570621c	
+timescaledb-fix-sort-transform-crash-wit	DB debug	0/3	0/5	b570621c	
+timescaledb-fix-sorting-transformation-w	DB debug	1/4	1/6	c47057f8	
+timescaledb-fix-sparse-index-bug-that-al	DB debug	0/1	0/2	b570621c	
+timescaledb-fix-timestamp-out-of-range-i	DB debug	0/3	1/3	601299be	
+timescaledb-fix-union-queries-on-compres	DB debug	1/4	5/5	601299be	
+timescaledb-fix-unique-check-with-genera	DB debug	0/4	6/6	b570621c	
+timescaledb-fix-use-after-free-in-alter	DB debug	3/3	5/6	601299be	
+timescaledb-fix-using-oids-in-bitmapset	DB debug	0/1	0/3	b570621c	
+timescaledb-fix-variable-resolution-in-v	DB debug	0/3	4/6	601299be	
+timescaledb-fix-vectorised-check-when-in	DB debug	0/2	4/5	c47057f8	
+timescaledb-fix-wrong-results-when-filte	DB debug		0/3	c47057f8	
+timescaledb-fix-wrong-results-with-is-nu	DB debug	0/1	3/4	c47057f8	
+timescaledb-improve-error-handling-of-ca	DB debug	0/2	3/6	75f8508a	
+timescaledb-proper-error-code-in-create	DB debug	0/2	0/4	75f8508a	
+timescaledb-support-cagg-invalidations-f	DB debug	0/3	0/3	601299be	
+callcenter-dualchannel-qc	Multimodal	0/3		21cecb9a	
+cctv-incident-attribution	Multimodal	3/3		21cecb9a	
+lipsync-compliance-audit	Multimodal	3/3		21cecb9a	
+meeting-multitrack-reconcile	Multimodal	1/3		21cecb9a	
+train-crossing-compliance	Multimodal	0/3		99963464	
+3d-container-loading	Optimization	6/6		fedf47aa;3909fc26;51e22de4;221fbd8f;3b903957;832d0002	
+optimize-linear-attention-scan	Optimization	3/3		1bc52fb0	
+sensor-acquisition-planning	Optimization	6/6		fedf47aa;221fbd8f;3b903957;832d0002	
+telemetry-probe-selection	Optimization	6/6		fedf47aa;3909fc26;221fbd8f;3b903957;832d0002;cbe0888e	
+crdt-sync-engine	Others	3/3		004258f0	
+ctf-coffee-fmtstr-ret2libc-01	Others	3/3		67931110	
+ctf-text-sender-einherjar-01	Others	1/3		67931110	
+pubgrub-version-solver	Others	0/3		004258f0	
+tcp-reno-transcripts	Others	3/3		004258f0	
+post-train-apps-qwen2.5-1.5b	Post Train	3/3		2f53ee2c	post-train-apps-qwen2.5-1
+post-train-countdown-qwen2.5-1.5b	Post Train	2/3		2f53ee2c	post-train-countdown-qwen2.5-1
+post-train-humaneval-qwen2.5-1.5b	Post Train	3/3		8d3f3d85	post-train-humaneval-qwen2.5-1
+post-train-knights-knaves-qwen2.5-1.5b	Post Train	1/3		2f53ee2c	post-train-knights-knaves-qwen2.5-1
+post-train-kodcode-qwen2.5-1.5b	Post Train	3/3		2f53ee2c	post-train-kodcode-qwen2.5-1
+post-train-math-qwen3-1.7b	Post Train	3/3		8d3f3d85	post-train-math-qwen3-1
+post-train-mbpp-qwen2.5-0.5b	Post Train	1/3		8d3f3d85	post-train-mbpp-qwen2.5-0
+post-train-mbpp-smollm3-3b	Post Train	3/3		8d3f3d85	
+post-train-synlogic-qwen2.5-1.5b	Post Train	0/3		2f53ee2c	post-train-synlogic-qwen2.5-1
+acoustic-hill-qnm	Research	1/3	2/3	f971bf98	
+adapt-map-recon-hyp	Research	2/3	1/3	14e7318a	
+ads-kg-mag-eigs	Research	3/3	2/3	811833e5	
+allee-additive-predprey	Research	0/3		6f0368ad	
+allee-bd-equilibria	Research	3/3		6f0368ad	
+alt-conj-split	Research	0/3	3/6	8fa3f53d	
+alt-weno-thin-film	Research	3/3	2/3	e1683b31	
+american-pdifmp	Research	3/3	2/3	49086ee1	
+aqoa-sextic-rad	Research	3/3	0/3	80d82e0c	
+ardiyansyah-gb-vol	Research	1/3	2/3	ee3a10d7	
+avg-nystrom-fredholm-err	Research	0/3	2/3	e1683b31	
+avram-div-scale	Research	2/3		49086ee1	
+banded-toep-spsd	Research	0/3	1/3	e1683b31	
+banerjee-iota-proton-capture	Research	1/3	2/3	3663a271	
+bbee-ads-n2	Research	3/3	2/3	811833e5	
+beltrami-n-index	Research	3/3	2/3	811833e5	
+berkheim-gkr-shift	Research	0/3	1/3	3663a271	
+bernstein-gram-recon	Research	0/3	0/3	8fa3f53d	
+beta-toep-outliers	Research	2/3	0/3	e1683b31	
+blockctr-1d-adsorb	Research	0/3	1/3	bbcc0823	
+blues-iterative-acceleration	Research	1/3	2/3	e1683b31	
+bm-dw-rg-eigs	Research	3/3	2/3	811833e5	
+bm-rg-mag-eigs	Research	3/3	2/3	811833e5	
+bml-dirac-eigs	Research	3/3	2/3	811833e5	
+bmm-vb-eigs	Research	3/3	2/3	811833e5	
+breit-heun-cf	Research	3/3	2/12	80d82e0c	
+btz-opt-n-index	Research	3/3	2/3	811833e5	
+btz-scalar-qcp	Research	3/3	2/3	811833e5	
+bura-remez-err	Research	3/3	2/3	e1683b31	
+c2-option-interp	Research	3/3	2/3	49086ee1	
+cal-coul-eigs	Research	3/3	2/3	811833e5	
+casa-pl-weights	Research	1/3	2/3	ee3a10d7	
+cavity-h-spectrum	Research	3/3	1/6	f971bf98	
+cbb-pi-nk	Research	0/3	2/3	b5382430	
+cfd6-vofrac	Research	2/3	1/3	14e7318a	
+cfdm6-mp-bvp	Research	1/3	1/3	14e7318a	
+cheb-laguerre-zero-xfer	Research	3/3		e1683b31	
+circ-inv-resid	Research	3/3	2/3	9fa94d20	
+ciro-shearless-two-res	Research	1/3	2/3	3663a271	
+cm-commensal-eq	Research	3/3		6f0368ad	
+cmorse-ecps-eigs	Research	3/3	2/3	811833e5	
+cn-riesz-idcoef	Research	0/3	1/3	bbcc0823	
+comp-simpson-bound-err	Research	0/3		6f0368ad	
+compact-cdr9-var2d	Research	0/3	2/3	14e7318a	
+compact-cubic-spline-pade	Research	0/3	1/3	e1683b31	
+compact-delay-theta	Research	3/3	2/3	e85055d6	
+compact-grlw	Research	3/3	2/3	e85055d6	
+compact-kdv-scheme	Research	2/3	2/3	095bd0c9	
+compact-nls-quintic	Research	3/3	2/3	14e7318a	
+compact-nrhoc-cde	Research	2/3	0/3	e85055d6	
+compact-rosenau-rrlw	Research	3/3	2/3	14e7318a	
+complex-step-reconstruction	Research	2/3	0/3	8fa3f53d	
+conf-euler-cre-err	Research	3/3		6f0368ad	
+conservative-lowrank-vlasov	Research	0/3	2/3	8478cb1e	
+conservative-rotation-2ch	Research	0/3	1/3	8fa3f53d	
+cornell-bound-spectrum	Research	0/3	2/3	f971bf98	
+corr-trap-frac-weights	Research	2/3	1/3	e1683b31	
+cos-robust-heston	Research	3/3	2/3	49086ee1	
+cos-truncation-n	Research	2/3	2/3	49086ee1	
+cost-eff-ambig	Research	3/3	0/3	49086ee1	
+cpow-well-eigs	Research	3/3	2/3	811833e5	
+csrg-landau-eigs	Research	3/3	2/3	811833e5	
+cubic-dirac-ll-eigs	Research	3/3	2/3	811833e5	
+cutcell-fv-spectra	Research	3/3		6f0368ad	
+cyclic-six-region-cert	Research	0/3	1/3	9fa94d20	
+dc-penalty-obstacle	Research	0/3	1/3	14e7318a	
+dd-mls-franke	Research	0/3	1/3	14e7318a	
+dd-rbf-sine	Research	1/3	1/3	14e7318a	
+dde-family-pointwise-err	Research	0/3	1/3	e1683b31	
+de-trap-fourier	Research	3/3		8478cb1e	
+dengue-ade-branch	Research	0/6		6f0368ad	
+dep-sn-hopf	Research	3/3		49086ee1	
+dey-ar-pin-drift	Research	0/3	1/3	3663a271	
+dgsem-impl-ss	Research	1/3	2/3	bbcc0823	
+dirac-morse-pdm	Research	3/3	2/3	811833e5	
+disc-commensal-allee-eq	Research	3/3		6f0368ad	
+disc-fear-altfood-eq	Research	3/3		6f0368ad	
+disc-gm-fixed-eq	Research	2/3		6f0368ad	
+disc-leslie-h4-eq	Research	3/3		6f0368ad	
+disc-lg-fear-eq	Research	3/3		6f0368ad	
+disc-lg-harvest-eq	Research	3/3		6f0368ad	
+disc-lg-local-eq	Research	3/3		6f0368ad	
+disc-refuge-ns-eq	Research	3/3		6f0368ad	
+disc-siv-vac-eq	Research	0/3		6f0368ad	
+dist-order-toep-eigs	Research	3/3	2/3	e1683b31	
+dkg-d-eigs	Research	3/3	2/3	811833e5	
+dkp-cs-ab-eigs	Research	3/3	2/3	811833e5	
+do-screw-eigs	Research	3/3	2/3	811833e5	
+dsiht-qr-heap	Research	0/3	1/3	e1683b31	
+dsr-3d-do-eigs	Research	3/3	2/3	811833e5	
+dsr-3d-kg-eigs	Research	3/3	2/3	811833e5	
+dsr-do-eigs	Research	3/3	2/3	811833e5	
+dsr-kg-eigs	Research	3/3	2/3	811833e5	
+dsr-msac-do	Research	3/3	2/3	811833e5	
+duff-freq-renorm	Research	1/3	0/3	80d82e0c	
+dunkl-d-eigs	Research	3/3	2/3	811833e5	
+dunkl-d3-landau	Research	3/3	2/3	811833e5	
+dunkl-eckart-eigs	Research	3/3	0/3	811833e5	
+dunkl-h-eigs	Research	3/3	2/3	811833e5	
+dunkl-pauli-ab-eigs	Research	3/3	2/3	811833e5	
+dunkl-pauli-ab-flux	Research	3/3	2/3	811833e5	
+dunkl-qes-eigs	Research	3/3	2/3	811833e5	
+ead-fold-fn	Research	3/3		49086ee1	
+ef-obrechkoff-osc-err	Research	1/3		6f0368ad	
+entropy-landweber-ex1	Research	2/3	0/3	811833e5	
+eps-hamilton-rk	Research	0/3	0/3	bbcc0823	
+erk-hod-stab-opt	Research	3/3		6f0368ad	
+erk-spectral-volume-1d	Research	3/3		6f0368ad	
+ethanol-pk-equilibria	Research	1/3	2/3	6f0368ad	
+exact-gmevp-hankel	Research	3/3	2/3	e1683b31	
+exga-hyperbolic-cfl	Research	1/3	1/3	8fa3f53d	
+exp-em-poly	Research	3/3	0/1	811833e5	
+exp-screen-dirac	Research	3/3	2/3	f971bf98	
+explicit-rbf-rk61	Research	3/3		6f0368ad	
+fan-cons-ratio	Research	2/3	2/3	ee3a10d7	
+fde-trap4	Research	2/3	1/3	bbcc0823	
+fekete-segmental	Research	2/3	1/3	e1683b31	
+ff-bmm-eigs	Research	3/3	2/3	811833e5	
+ff-do-landau	Research	3/3	2/3	811833e5	
+ff-pair-coul-eigs	Research	3/3	2/3	811833e5	
+ff-pair-topo-eigs	Research	3/3	2/3	811833e5	
+fhn-brizard-as	Research	3/3		49086ee1	
+finite-lim-pt	Research	0/3	1/3	80d82e0c	
+fl-appmass-eigs	Research	3/3	2/3	811833e5	
+flip-ml-toep-minres	Research	1/3	0/6	095bd0c9	
+fourier-greeks-var	Research	2/3	2/3	49086ee1	
+frac-child-sirs-eq	Research	0/3		6f0368ad	
+frac-integro-adaptive	Research	0/3		6f0368ad	
+frac-lmm-order2	Research	3/3		6f0368ad	
+frac-riccati-efds	Research	1/3		6f0368ad	
+frac-theta-bdf2	Research	3/3		6f0368ad	
+fredholm-eig-collocation	Research	2/3	1/3	e1683b31	
+fredholm-nystrom-nls	Research	1/3	1/3	ffe52141	
+fv-cs-coul-eigs	Research	3/3	2/3	811833e5	
+fv-imex-rk-parab	Research	3/3	2/4	bbcc0823	
+fv-nu-mesh-adv	Research	0/3	0/3	bbcc0823	
+fx-vg-pricing	Research	2/3	2/3	49086ee1	
+galerkin-bernstein-third-bvp	Research	1/3	1/3	e1683b31	
+gcd-flrm-cpm	Research	1/3	1/3	b5382430	
+gencoul-eigs	Research	3/3	2/3	811833e5	
+gfm-pint-prop	Research	3/3	1/3	2b7434c6	
+gglq-exp-fsbp	Research	3/3		8478cb1e	
+ghhws-spectrum	Research	3/3	1/3	f971bf98	
+gkg-morse-dsr	Research	3/3	2/3	811833e5	
+godel-sr-coul-eigs	Research	3/3	2/3	811833e5	
+greg-dq-ageinf-err	Research	3/3		6f0368ad	
+gregory-endcorr-quad	Research	3/3		6f0368ad	
+grime-biquad-nontwist	Research	3/3	1/3	3663a271	
+grime-drift-snm-embed	Research	3/3	1/3	3663a271	
+grn-logistic-equilibria	Research	1/3		6f0368ad	
+gts-bsm-spx	Research	3/3	2/3	49086ee1	
+guo-hiaf-bring-rdt	Research	0/3	1/3	3663a271	
+gup-poly-ho-eigs	Research	3/3	2/3	811833e5	
+haerter-grav-billiard	Research	1/3	1/3	3663a271	
+hahn-two-bidiag	Research	3/3	0/1	8fa3f53d	
+hale-fde-scale-cn	Research	3/3	6/16	8fa3f53d	
+harm-avg-iface	Research	1/3	0/3	bbcc0823	
+haro-qp-kam-lagrangian	Research	0/3	2/3	3663a271	
+hbv-htlv-coinfection-eq	Research	3/3		6f0368ad	
+hbv-split-equilibria	Research	3/3		6f0368ad	
+helix-lambda-eigs	Research	3/3	2/3	811833e5	
+helix-phot-decay	Research	3/3	2/3	811833e5	
+hermite-twopt-quad	Research	3/3		6f0368ad	
+heston-tenor-k	Research	1/3	2/3	49086ee1	
+hh-canard-4d	Research	1/3		49086ee1	
+hh-gating-coupling	Research	2/3		49086ee1	
+hirzebruch-support-count	Research	2/3	1/3	9fa94d20	
+hiv-adapt-immunity-eq	Research	2/3		6f0368ad	
+hiv-bctl-impair-eq	Research	0/3		6f0368ad	
+hiv-ctl-impair-eq	Research	2/3		6f0368ad	
+hiv-cytokine-eq	Research	1/3		6f0368ad	
+ho-coulomb-pert-eigs	Research	2/3	1/3	811833e5	
+hoc6-helmholtz	Research	3/3	1/3	14e7318a	
+hos-nlo-smoothing	Research	1/3	2/3	ffe52141	
+housefly-dde-exact	Research	3/3		6f0368ad	
+hs-cubic-iter	Research	2/3	1/3	80d82e0c	
+huang-phase-ruin	Research	3/3		49086ee1	
+huml-voigt-rat	Research	0/3	1/3	bbcc0823	
+hybrid-dc-rk24	Research	3/3	1/3	095bd0c9	
+hyd-wedge-eigs	Research	3/3	2/3	811833e5	
+ichikawa-origami-kam	Research	1/3	2/3	3663a271	
+idc-fod-heat	Research	0/3	1/3	e85055d6	
+ide4-navier-iter	Research	0/3	2/3	bbcc0823	
+imex-rk-unif-hyp	Research	0/3	0/4	bbcc0823	
+imex-splitting-ninth-order	Research	0/3	2/3	e1683b31	
+inap-ik-hopf	Research	3/3		49086ee1	
+inh-landau-eigs	Research	3/3	2/3	811833e5	
+isolated-triple-singular	Research	0/3	2/3	9fa94d20	
+itm-sakiadis	Research	0/3	1/3	bbcc0823	
+kaehler-ens-dist	Research	0/3	1/3	ee3a10d7	
+kam-biquad-invariants	Research	1/3	1/3	3663a271	
+kappa-landau-eigs	Research	2/3	2/3	811833e5	
+kemmer-rindler-osc	Research	3/3	2/3	811833e5	
+kg-gm-wymm-eigs	Research	3/3	2/3	811833e5	
+kg-spin-string-eigs	Research	3/3	2/3	811833e5	
+killbeck-scp-eigs	Research	1/3	2/3	811833e5	
+kirch-str-3l	Research	2/3	2/3	bbcc0823	
+kk-ab-osc-eigs	Research	3/3	2/3	811833e5	
+kl-expansion-num	Research	1/3	0/3	811833e5	
+kp-mincall-condref	Research	2/3	0/3	8fa3f53d	
+kratzer-ab-eigs	Research	3/3	2/3	811833e5	
+krawczyk-path-cert	Research	3/3	2/3	9fa94d20	
+kura-wm-sync	Research	3/3		49086ee1	
+l1-nl-subdiff	Research	1/3	1/3	bbcc0823	
+lacto-fold-tr	Research	3/3		49086ee1	
+lag-res-bal	Research	3/3		8478cb1e	
+laguerre-minimum-action	Research	3/3	2/3	095bd0c9	
+lamperti-ito-taylor	Research	0/3	0/3	811833e5	
+landau-vp-rate	Research	3/3	2/3	8478cb1e	
+laurent-toep-inner-ae	Research	0/3	1/3	e1683b31	
+lebesgue-cheb-meshes	Research	1/3	1/3	e1683b31	
+left-tail-sum-quad	Research	3/3		6f0368ad	
+legendre-frac-colloc	Research	0/3		6f0368ad	
+leon-vdp-isochron-expansion	Research	1/3	1/3	3663a271	
+lerch-trunc-lag	Research	3/3		8478cb1e	
+lf-do-geom-eigs	Research	3/3	2/3	811833e5	
+li-nsls2-qi-lattice	Research	3/3	2/3	3663a271	
+like-scatter-crit	Research	0/3	2/3	9fa94d20	
+linsoft-1d-eigs	Research	2/3	0/4	bbcc0823	
+llg-bdf1-1d	Research	0/3	1/3	bbcc0823	
+lnbp-thr-nk	Research	3/3	2/3	b5382430	
+log-heston-se	Research	2/3	0/1	811833e5	
+logse-coul-fem	Research	2/3	0/6	80d82e0c	
+lomeli-poncelet-rotnum	Research	0/3	1/3	3663a271	
+lqr-rk-stages	Research	3/3	1/3	bbcc0823	
+lsb-gkgo-coul-eigs	Research	3/3	2/3	811833e5	
+lvwh-const-n2	Research	3/3	2/3	811833e5	
+lvwh-spin1-n2	Research	3/3	2/3	811833e5	
+maf-dwp-airy	Research	3/3	0/3	80d82e0c	
+magnus-sdde-mem	Research	2/3	0/1	811833e5	
+mapped-jacobi-psi-frac	Research	1/3	1/3	095bd0c9	
+mathieu-blanch-double	Research	3/3	2/3	811833e5	
+mathieu-characteristic	Research	3/3	2/3	f971bf98	
+mft-lamc	Research	3/3	2/3	bbcc0823	
+minarg-unif-seq	Research	0/3	2/3	4ef6c80b	
+mink-screw-eigs	Research	3/3	2/3	811833e5	
+mirror-descent-log-barrier	Research	1/3		6f0368ad	
+mk-t23-g	Research	3/3	2/3	b5382430	
+ml-frac-hopf	Research	3/3		49086ee1	
+ml-parareal-avg	Research	4/6	1/4	bbcc0823;2b7434c6	
+ml-pdm-ddo-xt	Research	3/3	2/3	811833e5	
+ml-subhopf	Research	1/3		49086ee1	
+mono-rkc-chebyshev	Research	3/3		6f0368ad	
+monodromy-coord-solve	Research	2/3	2/3	9fa94d20	
+monotone-iv-solver	Research	2/3	2/3	49086ee1	
+morozov-island-myriads	Research	1/3	2/3	3663a271	
+mugnaine-emt-twin-res	Research	0/3	1/3	3663a271	
+multi-shift-lattice-approx	Research	1/3	2/3	4ef6c80b	
+multipole-bind-spectrum	Research	0/3	2/3	f971bf98	
+mz-l2-point-count	Research	0/3	2/3	e1683b31	
+nadir-osc-eigs	Research	3/3	2/3	811833e5	
+nash-rps-resid	Research	2/3	2/3	9fa94d20	
+nccd-var-ade	Research	0/3	1/3	14e7318a	
+ncotes-jump-corr	Research	0/3		6f0368ad	
+nct-large-delta	Research	3/3	2/4	bbcc0823	
+ncwh-rot-eigs	Research	3/3	2/3	811833e5	
+neo-2delay-hopf	Research	3/3		49086ee1	
+neq-lag-bsde	Research	0/3	0/4	bbcc0823	
+neuron-excitability	Research	3/3		49086ee1	
+nig-trans-cdf	Research	3/3	2/4	bbcc0823	
+nishimaki-k2p-gap	Research	3/3	2/3	ee3a10d7	
+nled-ief-axial-qnm	Research	2/3	0/1	811833e5	
+nprs-simplex-wd	Research	2/3	1/3	b5382430	
+nsfd-mhd-blasius	Research	3/3		6f0368ad	
+nsym-q-ord	Research	3/3	2/3	b5382430	
+nystrom-degker-ide-err	Research	3/3	2/3	6f0368ad	
+os-minlem-split	Research	2/3	0/7	8fa3f53d	
+oscwell-pdm-eigs	Research	3/3	2/3	811833e5	
+p1-ymin-exp	Research	1/3	2/3	bbcc0823	
+pac-alg-sub	Research	2/3	2/3	b5382430	
+paraexp-oc	Research	3/3	2/3	2b7434c6	
+param-fiber-walk	Research	0/3	1/3	9fa94d20	
+param-rk6-stab-poly	Research	0/3		6f0368ad	
+pdm-asym-osc-eigs	Research	3/3	2/3	811833e5	
+pdm-csrg-eigs	Research	3/3	2/3	811833e5	
+pdm-godel-osc	Research	3/3	2/3	811833e5	
+pdm-lin-kkt-eigs	Research	3/3	2/3	811833e5	
+pdm-nl2d-eigs	Research	3/3	2/3	811833e5	
+pdm-screw-coul-eigs	Research	3/3	2/3	811833e5	
+pdm-shift-ho-eigs	Research	3/3	2/3	811833e5	
+period-map-cube-wce	Research	3/3	1/3	4ef6c80b	
+periodic-char-double	Research	2/3	1/3	80d82e0c	
+perk4-shared-csm	Research	3/13	0/24	8fa3f53d	
+pert-prem-ruin	Research	3/3		49086ee1	
+pfdm-ads-qnm	Research	3/3	0/1	811833e5	
+pho-disc-cyc-eigs	Research	3/3	2/3	811833e5	
+pho-kratzer-eup-eigs	Research	3/3	2/3	811833e5	
+pho-mono-ab-eigs	Research	3/3	2/3	811833e5	
+phom-cni-path	Research	3/3	1/3	07149d5f	
+phom-curved-flag-filtr	Research	2/3	1/3	07149d5f	
+phom-ess-harm-coeff	Research	0/3	1/3	07149d5f	
+phom-match-kn-hom	Research	0/3	1/3	07149d5f	
+phom-merge-hom-order	Research	0/3	2/3	07149d5f	
+phom-ph-fiber-trees	Research	1/3	1/3	07149d5f	
+phom-reach-hex-rh	Research	0/3	1/3	07149d5f	
+phom-tsi-circle-rips	Research	2/3	1/3	07149d5f	
+pint-all-at-once-rk	Research	3/3	0/3	e1683b31	
+pnp-cn-projection	Research	1/3	2/3	6f0368ad	
+positive-idc	Research	3/3	2/3	095bd0c9	
+prebibaj-psb-halfint	Research	1/3	2/3	3663a271	
+prog-weno-2r-point	Research	1/3	1/3	095bd0c9	
+projective-integration	Research	3/3		6f0368ad	
+projector-split-rk	Research	3/3	2/3	6f0368ad	
+prolate-toep-cond	Research	1/3	1/3	e1683b31	
+propofol-pk-infusion	Research	1/3		6f0368ad	
+psk-schlogl	Research	3/3	0/1	811833e5	
+pt-kg-coulomb	Research	3/3	2/3	811833e5	
+pt-mathieu-ep	Research	0/3	1/3	80d82e0c	
+pw-dg-helmholtz	Research	2/3		6f0368ad	
+pytrain-lhc-pacman	Research	0/3	1/3	3663a271	
+pz-toxin-fixedpoints	Research	3/3		6f0368ad	
+qc-vs-layer-ub	Research	0/3	1/3	b5382430	
+qd-erk-butcher	Research	3/3	0/3	8fa3f53d	
+qdfp-eigs	Research	3/3	2/3	811833e5	
+qes-pair-heun	Research	1/3	1/3	80d82e0c	
+qes-susy-sextic	Research	3/3	2/3	80d82e0c	
+qpgm-wymm-eigs	Research	3/3	2/3	811833e5	
+quad-double-exp-arbprec	Research	1/3	0/3	8fa3f53d	
+qwire-pdm-eigs	Research	3/3	2/3	811833e5	
+rad-eig-cluster	Research	0/3	1/3	ede994db	
+rand-trap-ctq-order	Research	3/3		6f0368ad	
+ratapprox-quad-formulas	Research	3/3		6f0368ad	
+razavy-ce-spectrum	Research	0/3	2/3	f971bf98	
+rbf-imq-ab2	Research	0/3	0/3	bbcc0823	
+rbf-iq-adams-ivp	Research	3/3		6f0368ad	
+real-polyhedral-fewnomial	Research	3/3	2/3	9fa94d20	
+red-cbc-dbd-lattice	Research	0/3	1/3	4ef6c80b	
+rg-topo-osc	Research	3/3	2/3	811833e5	
+rho-pdm-eigs	Research	3/3	2/3	811833e5	
+riesz-minnorm-ex1	Research	3/3	3/5	811833e5	
+rk65-orbit-stab	Research	1/3		6f0368ad	
+rkn64-imag-stab	Research	3/3		6f0368ad	
+rkrls-last-stage	Research	2/3		6f0368ad	
+rmg-imin-k	Research	0/3	2/3	b5382430	
+rodas6p-tsit5da	Research	2/3		6f0368ad	
+rom-routh-zeros	Research	3/3	0/3	bbcc0823	
+rqosc-fd-eigs	Research	3/3	2/3	811833e5	
+rsbt-centerline-err	Research	1/3	2/3	37e075aa	
+rscp-kn-coulomb	Research	3/3	0/3	811833e5	
+ruin-recur-seq	Research	3/3		49086ee1	
+ruth-adaptive-filter-map	Research	0/3	2/3	3663a271	
+saddle-point-eval-bounds	Research	3/3	1/3	e1683b31	
+sbp-nonconforming-wave	Research	0/3	0/6	095bd0c9	
+sbp-sat-diffusion	Research	0/3	0/6	095bd0c9	
+sc-rkn-split	Research	0/3	1/3	8fa3f53d	
+scarf-pdm-eigs	Research	3/3	2/3	811833e5	
+schrempf-boundary-mix	Research	2/3	2/3	ee3a10d7	
+schw-em-n2-index	Research	3/3	2/3	811833e5	
+schwarz-bc-scale	Research	2/3	2/3	2b7434c6	
+scr-coul-conf	Research	3/3	0/6	80d82e0c	
+sdc-runge-kutta-framework	Research	3/3		e1683b31	
+seasonal-crowley-eq	Research	3/3		6f0368ad	
+seire-reinfect-equilibria	Research	3/3		6f0368ad	
+semiinf-pdm-eigs	Research	3/3	2/3	811833e5	
+semimarkov-conv-inverse	Research	1/3		6f0368ad	
+septic-hermite-heat-nodes	Research	1/3	1/3	e1683b31	
+shape-sl-spectrum	Research	3/3	1/3	f971bf98	
+si-rk-boarding	Research	3/3		6f0368ad	
+simgq-macdonald	Research	3/3		8478cb1e	
+simplex4-fekete	Research	1/3	2/3	e1683b31	
+sinc-abel-alt	Research	3/3		8478cb1e	
+sinc-volterra-colloc	Research	0/3	0/6	095bd0c9	
+sine-em-mkv	Research	3/3	0/1	811833e5	
+singular-sl-collocation	Research	2/3	2/3	f971bf98	
+sirs-waning-immunity	Research	1/3		6f0368ad	
+siwr-control-r0	Research	3/3		6f0368ad	
+skp-fn-e	Research	0/3	2/3	b5382430	
+sl-impedance-series	Research	3/3	0/3	f971bf98	
+spectral-tuned-compact-dd	Research	2/3	0/4	bbcc0823	
+sph-micz-eigs	Research	3/3	2/3	811833e5	
+sphere-kepler-qes	Research	1/3	2/3	80d82e0c	
+spherical-t-design-curves	Research	3/3		6f0368ad	
+spin1-flux-eigs	Research	3/3	2/3	811833e5	
+spiral-kg-eigs	Research	3/3	2/3	811833e5	
+spiral-n2-index	Research	3/3	2/3	811833e5	
+spline-colloc-volterra-err	Research	0/3	2/3	e1683b31	
+sr-disloc-eigs	Research	3/3	2/3	811833e5	
+sr-mixb-eigs	Research	3/3	2/3	811833e5	
+staged-predator-eq	Research	2/3		6f0368ad	
+stirling-inv-theta	Research	0/3	2/4	bbcc0823	
+supercompact-multiwavelet	Research	1/3	0/3	8fa3f53d	
+svir-delay-r0	Research	2/3		6f0368ad	
+svirs-network-equilibria	Research	3/3		6f0368ad	
+tamed-randomized-euler	Research	1/3	1/3	811833e5	
+tgnr-weyl-eigs	Research	3/3	2/3	811833e5	
+thdtsrk-stab-int	Research	0/3		6f0368ad	
+tian-site-root	Research	1/3	2/3	ee3a10d7	
+tlag-mod-cheb	Research	3/3		8478cb1e	
+toric-sparse-eigen	Research	3/3	2/3	9fa94d20	
+tridiag-nth-det	Research	3/3	2/3	e1683b31	
+tritangent-conic-resid	Research	3/3	1/3	9fa94d20	
+trunc-laguerre-gauss	Research	2/3		6f0368ad	
+tt-normalform	Research	1/3	2/3	42c5acf1	
+twh-ff-coulomb	Research	3/3	2/3	811833e5	
+vdp-laguerre-half	Research	1/3	0/3	e1683b31	
+vera-recode-lumps	Research	3/3	2/3	ee3a10d7	
+vert-steady-rank	Research	2/3	1/3	9fa94d20	
+vix-ctmc-annuity	Research	3/3	2/3	49086ee1	
+vs-bdf-graded	Research	1/3	2/3	bbcc0823	
+vv-pv-osc	Research	2/3	0/4	bbcc0823	
+wallbank-iota-low-alpha	Research	2/3	2/3	3663a271	
+wc-lin-hopf	Research	3/3		49086ee1	
+weno-rm-mapped	Research	0/3	2/3	e85055d6	
+weno-ud5-advect	Research	0/3	1/3	e85055d6	
+wirfd-tempered-laplacian	Research	2/3	1/3	8478cb1e	
+wn-dirichlet-kn	Research	3/3	2/3	811833e5	
+zampetakis-clic-dr-sc	Research	0/3	2/3	3663a271	
+zeta-a-saddle	Research	3/3	2/3	bbcc0823	
+ae-friction-delamination	Science		0/3	8a2831f5	
+airfilter-progeny-screen	Science		2/3	b5a5f1e8	
+ambient-noise-dvv-clock	Science		0/3	c0c47df5	
+ancient-dna-deamination	Science		0/8	da4507d9	
+ao-psf-crowding	Science	0/3	0/3	fa9b54d9	
+apt-trajectory-aberration	Science	2/3		f013d90b	
+argo-salinity-drift	Science		0/8	918d3c24	
+astero-mode-splitting	Science		0/3	b5a5f1e8	
+astrometric-orbit-annual-degeneracy	Science	3/3	0/3	fa9b54d9	
+atac-tn5-insertion-bias	Science		0/6	da4507d9	
+battery-ica-hysteresis	Science		0/6	8a2831f5	
+battery-reversible-fade	Science		6/8	7d07287b	
+bet-microporosity-area	Science		0/8	b7786238	
+carryover-sequence-attribution	Science		3/3	db3dd8e0	
+chiral-ee-detector-nonlinearity	Science		0/8	db3dd8e0	
+clock-ensemble-closure	Science		4/8	918d3c24	
+cluster-pm-contamination	Science	1/3	0/3	fa9b54d9	
+cnv-replication-waviness	Science		0/3	da4507d9	
+column-breakthrough-grm-inversion	Science		0/3	db3dd8e0	
+cpue-hyperstability-stock	Science		2/3	918d3c24	
+creep-rate-attribution	Science		5/6	c0c47df5	
+daem-thermogravimetric-inversion	Science		0/8	b7786238	
+developmental-bmd-litter	Science		0/3	918d3c24	
+dietary-measurement-error	Science		0/3	0eb5806f	
+dilatometry-gradient-kinetics	Science		0/8	8a2831f5	
+drt-regularised-impedance-inversion	Science		5/8	b7786238	
+ebsd-pseudosymmetry-index	Science		2/6	f013d90b	
+eis-coating-nonuniqueness	Science	1/3	8/8	8a2831f5	
+eis-coupon-warburg-degeneracy	Science		3/3	b7786238	
+exchanger-fouling-load	Science		0/8	c0c47df5	
+flowshop-total-flowtime-frontier	Science		8/8	0bdcc779	
+fluctuation-assay-mutation-rate	Science		0/3	0eb5806f	
+gcms-deconvolution-spectra	Science		2/8	db3dd8e0	
+gnss-velocity-budget	Science		0/3	0eb5806f	
+grid-inertia-audit	Science		3/8	7d07287b	
+hic-contact-distance-decay	Science		3/8	da4507d9	
+hplc-coelution-potency	Science		1/3	b5a5f1e8	
+index-hopping-crosstalk	Science		0/8	da4507d9	
+insitu-transformation-onset	Science		0/3	f013d90b	
+ir-hbond-anharmonicity	Science		0/3	b7786238	
+isotope-dilution-equilibration	Science		0/8	db3dd8e0	
+knee-crosstalk-inverse-dynamics	Science		0/3	c0c47df5	
+lake-metabolism-mixing	Science		0/3	0eb5806f	
+laserflash-heatloss-diffusivity	Science	2/3	8/8	8a2831f5	
+lc-gradient-dwell-lss	Science		0/8	db3dd8e0	
+lsw-coarsening-truncation	Science		0/3	f013d90b	
+metagenome-strain-mixture	Science		7/8	da4507d9	
+microbiome-compositional-bias	Science		0/3	c0c47df5	
+mitochondrial-heteroplasmy-numt	Science		0/8	da4507d9	
+mossbauer-thickness-saturation	Science	2/3	0/3	9ee943bf	
+mrm-isobaric-interference	Science		0/3	db3dd8e0	
+nanoindent-pileup-hardness	Science		2/8	8a2831f5	
+nir-calibration-transfer	Science		1/3	918d3c24	
+nucleation-secondary-kinetics	Science		5/8	b7786238	
+nurse-roster-yearlong	Science		2/8	4489f66f	
+occultation-chord-limb	Science	2/3	0/6	fa9b54d9	
+oxidation-spallation-kinetics	Science		2/8	8a2831f5	
+parallax-dcr-astrometry	Science		1/3	b5a5f1e8	
+period-window-alias	Science	1/3	0/3	fa9b54d9	
+permeation-trapping-diffusivity	Science	3/3	7/8	8a2831f5	
+photoz-filter-gap	Science	0/3	0/3	fa9b54d9	
+pole-figure-odf-coverage	Science		0/3	f013d90b	
+porous-electrode-rate-inversion	Science		2/3	b7786238	
+powder-impurity-supercell	Science	1/3	0/3	f013d90b	
+prep-fraction-purity-tailing	Science		2/3	db3dd8e0	
+pulsar-dm-scattering	Science		0/3	fa9b54d9	
+purity-ploidy-degeneracy	Science		2/8	da4507d9	
+radar-brightband-rain	Science		0/3	918d3c24	
+raman-laser-heating-stress	Science		0/3	f013d90b	
+rde-koutecky-levich-film	Science		0/8	b7786238	
+real-1kg-population-structure	Science		1/8	da4507d9	
+real-pdb-bfactor-flexibility	Science		3/3	da4507d9	
+reflectometry-contrast-depth-profile	Science		3/3	b7786238	
+registry-competing-risks	Science		0/3	918d3c24	
+rietveld-stacking-faults	Science		0/3	f013d90b	
+ringdown-etalon-lines	Science		1/8	7d07287b	
+rnaseq-degradation-3prime-bias	Science		0/8	da4507d9	
+rotcurve-beam-smearing	Science		0/3	fa9b54d9	
+rv-activity-rotation	Science		0/3	b5a5f1e8	
+sans-incoherent-background	Science	0/3	0/3	f013d90b	
+screening-lead-time-bias	Science		0/3	0eb5806f	
+sec-band-broadening-mmd	Science		0/8	db3dd8e0	
+segdup-paralogue-calls	Science		1/8	da4507d9	
+seismicity-rate-completeness	Science		0/3	918d3c24	
+selfcal-closure-phase	Science	1/3	0/3	fa9b54d9	
+sfc-density-gradient-retention	Science		2/3	db3dd8e0	
+shear-probe-dissipation-vibration	Science		0/3	c0c47df5	
+sin2psi-stress-gradient	Science	1/3	0/3	f013d90b	
+smb-cyclic-steady-state-isotherm	Science		1/3	db3dd8e0	
+solder-mixed-weibull	Science	1/3	1/8	8a2831f5	
+stepped-wedge-secular-trend	Science		0/3	918d3c24	
+stewardship-staggered-adoption	Science		1/3	0eb5806f	
+storm-drag-maneuvers	Science		0/3	918d3c24	
+storm-hardened-backbone	Science	3/3	8/8	4489f66f	
+tdoa-nlos-geolocation	Science		0/8	7d07287b	
+telemetry-fix-bias-selection	Science	0/3	8/8	7d07287b	
+telomere-repeat-length	Science		0/8	da4507d9	
+temperature-homogenization	Science		0/3	b5a5f1e8	
+tga-buoyancy-drift	Science		0/8	8a2831f5	
+thousand-stop-parcel-runs	Science	1/3	6/8	4489f66f	
+tribology-runin-wear	Science	2/3	1/8	8a2831f5	
+umi-duplicate-collapse	Science		3/8	da4507d9	
+vaccine-waning-frailty	Science		3/6	0eb5806f	
+variometer-baseline-jerk	Science		0/3	0eb5806f	
+vlbi-ionosphere-pm	Science		0/3	b5a5f1e8	
+wt100-tardiness-sweep	Science		7/8	4489f66f	
+xrd-size-strain	Science		0/2	918d3c24	
+xrr-roughness-density	Science	3/3		f013d90b	
+zaf-light-matrix-quant	Science		0/3	f013d90b	
+cookie-scope-repair	Security multi-bug	0/3		2b30b368	
+data-uri-repair	Security multi-bug	0/3		2b30b368	
+email-validate-repair	Security multi-bug	0/3		2b30b368	
+glob-acl-repair	Security multi-bug	0/3		2b30b368	
+jwt-verify-repair	Security multi-bug	0/3		2b30b368	
+open-redirect-repair	Security multi-bug	0/3		2b30b368	
+url-normalize-repair	Security multi-bug	0/3		2b30b368	
+sheet-abx9-demurrage-calc	Spreadsheet reconstruction	0/3		8a5a8712	
+sheet-abx9-royalty-recoup	Spreadsheet reconstruction	0/3		8a5a8712	
+sheet-abx9-westgard-qc	Spreadsheet reconstruction	0/3		8a5a8712	
+sheet-baggage-recon	Spreadsheet reconstruction		1/1	02f899f1	
+sheet-composite-endpoint	Spreadsheet reconstruction	3/3		a407fcf3	
+sheet-dose-escalation	Spreadsheet reconstruction	0/3		a407fcf3	
+sheet-driver-hours	Spreadsheet reconstruction	1/3		73c6440e	
+sheet-eligibility-cascade	Spreadsheet reconstruction		0/8	a407fcf3	
+sheet-multimodal-cost	Spreadsheet reconstruction	2/3		73c6440e	
+sheet-toll-distance-matrix	Spreadsheet reconstruction		0/3	2c9dc6dd	
