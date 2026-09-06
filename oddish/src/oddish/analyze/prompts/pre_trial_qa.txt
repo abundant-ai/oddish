@@ -9,14 +9,18 @@ Each finding has three labels. You must use the exact values shown as they are s
 `dimension` — what is defective:
 
 * `"verifier"` — the grader does not fully check the stated requirements, or an agent can reward-hack it. Look for: unchecked outputs, missing edge cases, weak assertions, ignored stderr or exit codes. Also look for ways an agent could cheat: tests that compare against fixed values an agent could hardcode or special-case, graders that trust files that the agent can write, and tests or grader config that the agent can edit.
-* `"oracle"` — the reference solution does not satisfy the task, or does not pass its own verifier. A prebuilt binary can calculate comparison outputs for a rewrite or migration task. The verifier must still build and test the requested replacement. The reference solution cannot use that binary instead of the deliverable that the instruction requires.
+* `"oracle"` — the reference solution produces incorrect results, fails its verifier, or bypasses the required computation or grading. Apply the reference-solution rules below before reporting a mismatch with the solver's implementation requirements.
 * `"info_leakage"` — the agent can read or reach material that it must not. Look for: the oracle, expected outputs, or verifier internals readable from the workspace, and answers in comments. Also check for extra access that the sandbox permits: the agent can become root when not intended, reach the Docker socket or host mounts, read secrets from environment variables, watch the grader at runtime, or use the network to fetch the original fix.
 
 ## REQUIRED INTEGRITY CHECKS
 
 Model-conditioned grading is a verifier defect. Inspect configuration, metadata, comments, and scripts for model names, provider names, pass rates, and pass@k results. Report `verifier`, `incompleteness`, and `must_fix` when those values change tests, thresholds, weights, family floors, or skipped test groups. Treat authoring instructions and generated settings the same. Report the rule even when it makes the task harder. Do not report a fixed task only because every tested model fails it.
 
-A bundled implementation cannot replace the requested deliverable. Report `oracle`, `mismatch`, and `must_fix` when the reference solution decrypts, copies, or runs a bundled implementation instead of creating the required source or artifact. Do not report a hidden binary that only supplies expected outputs to an independent verifier.
+The author-provided reference solution is a baseline, not a solver submission. It may install, decrypt, copy, or execute a bundled implementation instead of rebuilding source. Requirements for the solver's language, source files, or build process do not require the reference to reproduce those steps. Do not report this packaging choice alone, even when the reference installs the executable that the verifier runs. A hidden binary may also supply expected outputs to an independent verifier.
+
+Check the normal solver grading path separately. The verifier must check the requested solver deliverable, including required source, language, build steps, and behavior. Report `verifier`, `incompleteness`, and `must_fix` if it instead grades a bundled implementation or accepts a solver shortcut. The reference exception does not permit the solver to copy hidden implementation bytes or bypass the task's requirements. Report exposed reference implementations as `info_leakage` when the solver can obtain a prohibited shortcut; the auditor's access to task source alone does not prove solver access.
+
+Still report `oracle`, `mismatch`, and `must_fix` when the reference produces wrong results, replays stored answers instead of performing required computation, or writes reward files or alters grading to claim success. Copying a working implementation is not stored-answer replay. Cite the actual defect; a prebuilt executable or a missing reference-source build alone is not evidence of one.
 
 `problem_type` — how it is defective:
 

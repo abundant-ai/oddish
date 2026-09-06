@@ -407,12 +407,36 @@ async def test_zero_eligible_trials_wait_for_audit_then_finish(audit_task, has_f
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("audit_finishes_first", [True, False])
+@pytest.mark.parametrize("remaining_defect", [True, False])
 async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacement(
-    audit_task, audit_finishes_first
+    audit_task, audit_finishes_first, remaining_defect
 ):
     task_id, version_id, source_id, artifacts = audit_task
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        old_items = [
+            {
+                **FINDING,
+                "id": "finding",
+                "dimension": "oracle",
+                "problem_type": "mismatch",
+                "file": "solution/solve.sh",
+                "line_start": 3,
+                "line_end": 3,
+                "title": "The reference copies a binary instead of building source",
+                "detail": "The reference installs a bundled executable without compiling source.",
+                "recommendation": "Build the required source in the reference script.",
+            }
+        ]
+        if remaining_defect:
+            old_items.append({"id": "remaining", **FINDING})
+        version.pre_trial = {"items": old_items}
     old_qa = await create_qa(task_id)
     artifacts[old_qa] = qa_artifact(source_id)
+    if remaining_defect:
+        artifacts[old_qa]["trials"][0]["analysis"]["exploitation"].append(
+            {"links_to": "remaining", "exploited": False, "causal": False}
+        )
     async with get_session() as session:
         await rerun_pre_trial_audit_core(session, task_id=task_id)
     async with get_session() as session:
@@ -423,7 +447,7 @@ async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacem
         )
         task = await session.get(TaskModel, task_id)
         assert task.verdict is None
-    artifacts[audit.id] = {"items": []}
+    artifacts[audit.id] = {"items": [FINDING] if remaining_defect else []}
     first, last = (audit.id, old_qa) if audit_finishes_first else (old_qa, audit.id)
     await settle(first)
     async with get_session() as session:
@@ -448,13 +472,22 @@ async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacem
         )
         assert len(qas) == 2
         fresh = next(qa for qa in qas if qa.id != old_qa)
-        assert fresh.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"] == []
-    artifacts[fresh.id] = qa_artifact(source_id, findings=False)
+        finding_ids = fresh.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"]
+        assert len(finding_ids) == int(remaining_defect)
+        assert "finding" not in finding_ids
+        assert "remaining" not in finding_ids
+    artifacts[fresh.id] = qa_artifact(source_id, findings=remaining_defect)
+    if remaining_defect:
+        artifacts[fresh.id]["trials"][0]["analysis"]["exploitation"][0]["links_to"] = (
+            finding_ids[0]
+        )
+        # A model accept cannot waive the real defect left after re-auditing.
+        artifacts[fresh.id]["verdict"]["verdict"] = "accept"
     await settle(fresh.id)
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         assert task.status == TaskStatus.COMPLETED
-        assert task.verdict["verdict"] == "accept"
+        assert task.verdict["verdict"] == ("reject" if remaining_defect else "accept")
         assert (await session.get(TrialModel, source_id)).analysis[
             "_graded_by"
         ] == fresh.id
