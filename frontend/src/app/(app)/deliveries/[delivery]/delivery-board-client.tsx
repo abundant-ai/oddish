@@ -622,10 +622,12 @@ function TaskRow({
   const [editingWork, setEditingWork] = useState(false);
   const [copied, setCopied] = useState(false);
   const rowRef = useRef<HTMLTableRowElement>(null);
+  const manuallyToggled = useRef(false);
   useEffect(() => {
-    if (focused) {
+    if (focused && !manuallyToggled.current) {
       rowRef.current?.scrollIntoView({ block: "center" });
     }
+    manuallyToggled.current = false;
   }, [focused]);
   // Manual checks live in the sign-off section below; listing them here
   // too would say the same thing twice.
@@ -640,7 +642,10 @@ function TaskRow({
       <TableRow
         ref={rowRef}
         className={`cursor-pointer ${focused ? "bg-secondary/40" : ""}`}
-        onClick={onToggleExpanded}
+        onClick={() => {
+          manuallyToggled.current = true;
+          onToggleExpanded();
+        }}
       >
         {selectable && (
           <TableCell
