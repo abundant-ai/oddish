@@ -1708,6 +1708,16 @@ experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
 
+Delivery board view state lives in URL parameters: `page` (one-based),
+`filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
+`task` (expanded task ID; legacy task names remain supported). The browser
+reads these directly with `useSearchParams`; native history updates preserve
+Back/Forward behavior without refetching the already-loaded full board.
+Filter/group changes reset the page and task focus. Bulk selections and draft
+edits remain local. Frozen delivery boards disable periodic refreshes.
+Backend filtering/pagination is not implemented yet; the full task collection
+still supplies bulk actions and delivery-wide readiness checks.
+
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production
 deployment.

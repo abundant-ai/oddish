@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import {
@@ -20,6 +21,9 @@ import {
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
+  parseDeliveryView,
+  deliveryViewQuery,
+  type DeliveryTaskFilter,
   readySummary,
   deliveryQAStatus,
   deliveryNextAction,
@@ -339,13 +343,14 @@ const QA_HISTORY_PAGE = 5;
 // Task rows per page on the board.
 const TASK_PAGE_SIZE = 25;
 
-type TaskFilter = "all" | "blocked" | "awaiting_signoff" | "ready";
-
 /** The board filter. The three non-"all" states are disjoint: every task
  * is blocked (a failing automated check or an open defect), awaiting
  * sign-off (nothing blocks it, a person has not signed it off), or
  * ready. */
-function applyTaskFilter(tasks: DeliveryTaskBoardRow[], filter: TaskFilter) {
+function applyTaskFilter(
+  tasks: DeliveryTaskBoardRow[],
+  filter: DeliveryTaskFilter
+) {
   if (filter === "all") return tasks;
   const isBlocked = (row: DeliveryTaskBoardRow) =>
     row.checks.some(
@@ -570,6 +575,7 @@ function TaskRow({
   frozen,
   isAdmin,
   focused,
+  onToggleExpanded,
   link,
   selectable,
   selected,
@@ -589,6 +595,7 @@ function TaskRow({
   // True when the page URL's ?task= names this row: it opens expanded
   // and scrolls into view, so a shared link lands on the right task.
   focused: boolean;
+  onToggleExpanded: () => void;
   link: string;
   // Bulk selection: admins get a checkbox per row while the delivery is
   // not frozen; the selection drives the bulk action bar above the table.
@@ -611,13 +618,12 @@ function TaskRow({
     note: string;
   }) => Promise<void>;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const expanded = focused;
   const [editingWork, setEditingWork] = useState(false);
   const [copied, setCopied] = useState(false);
   const rowRef = useRef<HTMLTableRowElement>(null);
   useEffect(() => {
     if (focused) {
-      setExpanded(true);
       rowRef.current?.scrollIntoView({ block: "center" });
     }
   }, [focused]);
@@ -634,7 +640,7 @@ function TaskRow({
       <TableRow
         ref={rowRef}
         className={`cursor-pointer ${focused ? "bg-secondary/40" : ""}`}
-        onClick={() => setExpanded((value) => !value)}
+        onClick={onToggleExpanded}
       >
         {selectable && (
           <TableCell
@@ -971,7 +977,13 @@ export function DeliveryBoardClient({
   const { data, error, mutate } = useSWR<DeliveryBoardResponse>(
     `/api/deliveries/${encodeURIComponent(deliveryId)}`,
     fetcher,
-    { refreshInterval: 15000, fallbackData: initialBoard ?? undefined }
+    {
+      refreshInterval: (board) => (board?.frozen ? 0 : 15000),
+      revalidateOnFocus: !initialBoard?.frozen,
+      revalidateOnReconnect: !initialBoard?.frozen,
+      revalidateIfStale: !initialBoard?.frozen,
+      fallbackData: initialBoard ?? undefined,
+    }
   );
 
   const [actionError, setActionError] = useState<string | null>(null);
@@ -979,30 +991,30 @@ export function DeliveryBoardClient({
   const [busy, setBusy] = useState(false);
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
-  // ?task=<name or id> deep-links one row: it expands, scrolls into view,
-  // and its page is selected. Read from location so the page needs no
-  // Suspense boundary for useSearchParams.
-  const [focusTask, setFocusTask] = useState<string | null>(null);
-  const [page, setPage] = useState(0);
-  const [filter, setFilter] = useState<TaskFilter>("all");
-  const [qaDays, setQADays] = useState("7");
-  const [qaFilter, setQAFilter] = useState("all");
-  const [issueFilter, setIssueFilter] = useState("all");
-  const [ownerFilter, setOwnerFilter] = useState("all");
-  const [groupBy, setGroupBy] = useState("none");
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const {
+    page,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    focusTask,
+  } = parseDeliveryView(searchParams);
+  function updateView(patch: Parameters<typeof deliveryViewQuery>[1]) {
+    // Next integrates native history with useSearchParams. All rows are already
+    // loaded, so a view change must not fetch the full board again.
+    window.history.pushState(
+      null,
+      "",
+      `${pathname}${deliveryViewQuery(window.location.search, patch)}${window.location.hash}`
+    );
+  }
   const [notice, setNotice] = useState<string | null>(null);
   // Bulk selection, keyed by delivery_task_id.
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    setFocusTask(new URLSearchParams(window.location.search).get("task"));
-  }, []);
-  useEffect(() => {
-    if (!data || !focusTask) return;
-    const index = data.tasks.findIndex(
-      (row) => row.task_name === focusTask || row.task_id === focusTask
-    );
-    if (index >= 0) setPage(Math.floor(index / TASK_PAGE_SIZE));
-  }, [data, focusTask]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setActionError(null);
@@ -1195,7 +1207,16 @@ export function DeliveryBoardClient({
     1,
     Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
   );
-  const clampedPage = Math.min(page, pageCount - 1);
+  // Resolve legacy ?task= links after filtering and grouping, before rendering.
+  const focusedIndex = focusTask
+    ? filteredTasks.findIndex(
+        (row) => row.task_name === focusTask || row.task_id === focusTask
+      )
+    : -1;
+  const clampedPage = Math.min(
+    focusedIndex >= 0 ? Math.floor(focusedIndex / TASK_PAGE_SIZE) : page,
+    pageCount - 1
+  );
   const pagedTasks = filteredTasks.slice(
     clampedPage * TASK_PAGE_SIZE,
     (clampedPage + 1) * TASK_PAGE_SIZE
@@ -1425,8 +1446,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={qaDays}
                   onValueChange={(value) => {
-                    setQADays(value);
-                    setPage(0);
+                    updateView({ days: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger
@@ -1450,8 +1470,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={qaFilter}
                   onValueChange={(value) => {
-                    setQAFilter(value);
-                    setPage(0);
+                    updateView({ qa: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger className="w-44" aria-label="QA status filter">
@@ -1471,8 +1490,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={issueFilter}
                   onValueChange={(value) => {
-                    setIssueFilter(value);
-                    setPage(0);
+                    updateView({ issue: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger
@@ -1493,8 +1511,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={ownerFilter}
                   onValueChange={(value) => {
-                    setOwnerFilter(value);
-                    setPage(0);
+                    updateView({ owner: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger className="w-40" aria-label="Owner filter">
@@ -1509,8 +1526,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={groupBy}
                   onValueChange={(value) => {
-                    setGroupBy(value);
-                    setPage(0);
+                    updateView({ group: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger className="w-44" aria-label="Group tasks">
@@ -1547,8 +1563,7 @@ export function DeliveryBoardClient({
                 <Select
                   value={filter}
                   onValueChange={(value) => {
-                    setFilter(value as TaskFilter);
-                    setPage(0);
+                    updateView({ filter: value, page: null, task: null });
                   }}
                 >
                   <SelectTrigger className="w-64">
@@ -1737,7 +1752,17 @@ export function DeliveryBoardClient({
                             focusTask === row.task_name ||
                             focusTask === row.task_id
                           }
-                          link={`/deliveries/${encodeURIComponent(deliveryId)}?task=${encodeURIComponent(row.task_name)}`}
+                          onToggleExpanded={() =>
+                            updateView({
+                              task:
+                                focusTask === row.task_name ||
+                                focusTask === row.task_id
+                                  ? null
+                                  : row.task_id,
+                              page: String(clampedPage + 1),
+                            })
+                          }
+                          link={`${pathname}${deliveryViewQuery(searchParams.toString(), { task: row.task_id, page: String(clampedPage + 1) })}`}
                           selectable={bulkable}
                           selected={selected.has(row.delivery_task_id)}
                           onToggleSelect={() =>
@@ -1764,7 +1789,9 @@ export function DeliveryBoardClient({
                       variant="outline"
                       size="sm"
                       disabled={clampedPage === 0}
-                      onClick={() => setPage(clampedPage - 1)}
+                      onClick={() =>
+                        updateView({ page: String(clampedPage), task: null })
+                      }
                     >
                       Previous
                     </Button>
@@ -1772,7 +1799,12 @@ export function DeliveryBoardClient({
                       variant="outline"
                       size="sm"
                       disabled={clampedPage >= pageCount - 1}
-                      onClick={() => setPage(clampedPage + 1)}
+                      onClick={() =>
+                        updateView({
+                          page: String(clampedPage + 2),
+                          task: null,
+                        })
+                      }
                     >
                       Next
                     </Button>
