@@ -29,7 +29,9 @@ async def test_expansion_hint_preserves_selected_archive(
     existing = {archive, f"{tree}instruction.md"}
     if manifest_archive is not None:
         existing.add(manifest)
-    storage.object_exists = AsyncMock(side_effect=lambda key: key in existing)
+    storage.head_object = AsyncMock(
+        side_effect=lambda key: {"ETag": "old-etag"} if key in existing else None
+    )
     storage.download_json = AsyncMock(
         return_value={
             "archive_key": f"tasks/t1/{manifest_archive}/.oddish-task.tar.gz",
@@ -78,7 +80,9 @@ async def test_expansion_hint_preserves_selected_archive(
         assert result["content"] == "old archive"
         if operation != "listing":
             assert result["key"] == f"{archive}#instruction.md"
-        storage._load_task_archive.assert_awaited_once_with(archive)
+        storage._load_task_archive.assert_awaited_once_with(
+            archive, head={"ETag": "old-etag"}
+        )
         storage.download_text.assert_not_awaited()
     if expanded is False:
         storage.download_json.assert_not_awaited()
