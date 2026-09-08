@@ -12,7 +12,8 @@ The API base URL resolves in this order:
 3. the packaged hosted production URL.
 
 API-backed commands require `ODDISH_API_KEY`, including reads. `oddish skill`,
-`oddish link task|trial`, and `oddish version` are local and do not require it.
+`oddish link task|trial`, `oddish version`, and `oddish update` are local and
+do not require it.
 
 Hosted API-key scopes form `full > tasks > read`. Reads require `read`.
 Normal task submission requires `tasks`. QA mutations (`qa/retry`,
@@ -31,9 +32,9 @@ auto-publish (`run --publish` or GitHub-attributed CI runs); a member-created
 ## Command surface
 
 Current top-level commands are `run`, `upload`, `preflight`, `ls`, `status`,
-`skill`, `version`, `logs`, `cancel`, `backfill-analysis`, `combine`, `costs`,
-`cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`, `pull`,
-`publish`, `unpublish`, `probe`, `delivery`, `assign`, and `qa`.
+`skill`, `version`, `update`, `logs`, `cancel`, `backfill-analysis`, `combine`,
+`costs`, `cost-exclusions`, `collect`, `delete`, `admin`, `experiment`, `link`,
+`pull`, `publish`, `unpublish`, `probe`, `delivery`, `assign`, and `qa`.
 
 `oddish assign task-1 task-2 --to alice@example.com` assigns QA review ownership
 to an org member identified by email, user ID, or GitHub handle. For a large

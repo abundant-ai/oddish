@@ -26,6 +26,7 @@ from oddish.cli.qa import qa_app
 from oddish.cli.run import run
 from oddish.cli.skill import skill
 from oddish.cli.status import status
+from oddish.cli.update import update_cmd
 from oddish.cli.upload import upload
 from oddish.cli.version import show_version_flag, version_cmd
 
@@ -62,6 +63,7 @@ app.command(name="ls")(ls)
 app.command()(status)
 app.command()(skill)
 app.command(name="version")(version_cmd)
+app.command(name="update")(update_cmd)
 app.command(help="Stream a running trial's live transcript and running cost.")(logs)
 app.command()(cancel)
 app.command()(combine)

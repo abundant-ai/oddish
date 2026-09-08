@@ -5,11 +5,18 @@
 ## Installation
 
 ```bash
-uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
+uv pip install oddish
 ```
 
-`oddish version` prints the installed package; add `--check` to compare
-against the latest PyPI release.
+Refresh that install with `oddish update` (`uv pip install --upgrade oddish`
+into the same interpreter). `oddish version` prints the installed package;
+add `--check` to compare against the latest PyPI release.
+
+To install the development tree instead of the published wheel:
+
+```bash
+uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
+```
 
 Ensure your API key is set:
 
@@ -44,13 +51,14 @@ export ODDISH_API_KEY="ok_..."
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish link` - print the dashboard URL for a task or trial (built locally; needs no API key)
 - `oddish version` - print the installed CLI version (`--check` compares with the latest PyPI release)
+- `oddish update` - upgrade a `uv pip install oddish` install from PyPI
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 - `oddish skill` - print or install the packaged SKILL.md agent guide
 
 Most commands accept `--json` for machine-readable output (CI / scripts /
 agents). The exceptions are `oddish logs`, `oddish link`, `oddish skill`, and
 the `oddish probe` helpers, which print human-readable output only.
-`oddish version` is local and does not require an API key.
+`oddish version` and `oddish update` are local and do not require an API key.
 
 ### Lifecycle
 
