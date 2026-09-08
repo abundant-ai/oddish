@@ -165,17 +165,19 @@ async def complete_task_without_verdict(
 
 
 def build_pre_trial_payload(
-    items: list, *, cost_usd: float | None = None, block_id: str | None = None
+    items: list,
+    *,
+    cost_usd: float | None = None,
+    block_id: str | None = None,
+    audit_policy_hash: str | None = None,
 ) -> dict:
     """Render the dict stored on ``task_versions.pre_trial``. Computes each
     item's stable id server-side (the LLM output omits it).
 
-    ``cost_usd``/``block_id`` are recorded here because they are only knowable
-    at write time: ``analysis_costs`` rows carry no block or version reference,
-    so an audit's spend cannot be re-derived per version afterwards (a task with
-    several audits has several cost rows and no way to tell them apart). Omitted
-    keys mean "not captured", which is how the rows backfilled before this
-    existed read.
+    ``cost_usd`` and ``block_id`` are recorded here because they are only
+    knowable at write time. ``audit_policy_hash`` identifies the exact bundled
+    audit policy that produced the findings. Omitted keys mean "not captured",
+    which is how older rows read.
     """
     from oddish.analyze.models import compute_action_item_id
 
@@ -188,6 +190,8 @@ def build_pre_trial_payload(
         payload["cost_usd"] = cost_usd
     if block_id is not None:
         payload["block_id"] = block_id
+    if audit_policy_hash is not None:
+        payload["audit_policy_hash"] = audit_policy_hash
     return payload
 
 

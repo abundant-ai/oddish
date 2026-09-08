@@ -71,11 +71,10 @@ def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):
     settings = _settings(
         monkeypatch,
         default_model_concurrency=8,
-        nop_oracle_concurrency=256,
     )
 
     assert settings.get_model_concurrency("default") == 8
-    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 256
+    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 1024
     assert NOP_ORACLE_QUEUE_KEY in settings.get_known_queue_keys()
 
 

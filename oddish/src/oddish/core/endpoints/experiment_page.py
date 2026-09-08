@@ -247,6 +247,13 @@ def _experiment_task_rows(
         TaskModel.verdict["verdict"].astext.label("verdict_label"),
         TaskModel.verdict["is_good"].astext.label("verdict_is_good"),
         TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
+        func.left(
+            func.coalesce(
+                func.nullif(TaskModel.verdict["primary_issue"].astext, ""),
+                TaskModel.verdict["reasoning"].astext,
+            ),
+            240,
+        ).label("verdict_primary_issue"),
         func.left(TaskModel.verdict_error, 200).label("verdict_error"),
         TaskModel.created_at,
         TaskModel.updated_at,
@@ -325,6 +332,11 @@ def _task_row_values(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
     values = _task_row_values(row)
+    if values["verdict"] is not None:
+        values["verdict"] = {
+            **values["verdict"].model_dump(),
+            "primary_issue": row["verdict_primary_issue"],
+        }
     values["github_meta"] = _parse_github_meta(row["tags"])
     return ExperimentTaskRow.model_validate(values)
 

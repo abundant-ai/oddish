@@ -104,7 +104,7 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
         return (("gpt-4o", "default", "default"),)
 
     async def _counts(_keys):
-        return {(None, "gpt-4o", "default", "default"): 2}, {
+        return {(None, "gpt-4o", "default", "default", False): 2}, {
             ("gpt-4o", "default", "default"): 0
         }
 
@@ -146,7 +146,7 @@ def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> No
         return (("gpt-4o", "default", "default"),)
 
     async def _counts(_keys):
-        return {(None, "gpt-4o", "default", "default"): 3}, {
+        return {(None, "gpt-4o", "default", "default", False): 3}, {
             ("gpt-4o", "default", "default"): 0
         }
 
