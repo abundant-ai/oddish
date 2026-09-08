@@ -16,7 +16,10 @@ from harbor.agents.installed.gemini_cli import GeminiCli
 from oddish.workers.harbor import agent_config as agent_config_builder
 from oddish.workers.harbor import runner
 from oddish.workers.agents.antigravity_cli import OddishAntigravityCli
-from oddish.workers.harbor.model_hosts import ANTIGRAVITY_STARTUP_HOSTS
+from oddish.workers.harbor.model_hosts import (
+    ANTIGRAVITY_STARTUP_HOSTS,
+    CODEX_INSTALL_HOSTS,
+)
 from oddish.workers.agents.codex import OddishCodex
 from oddish.workers.agents.gemini_cli import OddishGeminiCli
 from oddish.workers.harbor.restricted_network import (
@@ -312,6 +315,23 @@ def test_restricted_security_overrides_cannot_be_reenabled() -> None:
     )
 
     assert config.kwargs["web_search"] == "disabled"
+
+
+def test_restricted_codex_gets_installer_hosts_without_widening_other_agents() -> None:
+    codex = restricted_network_profile_for_config(
+        AgentConfig(
+            import_path="oddish.workers.agents.codex:OddishCodex",
+            model_name="openai/model",
+        ),
+        resolved_env={},
+    )
+    claude = restricted_network_profile_for_config(
+        AgentConfig(name="claude-code", model_name="anthropic/model"),
+        resolved_env={},
+    )
+
+    assert set(CODEX_INSTALL_HOSTS).issubset(codex.outbound_hosts)
+    assert set(CODEX_INSTALL_HOSTS).isdisjoint(claude.outbound_hosts)
 
 
 def test_restricted_codex_rejects_irrelevant_base_url_without_leaking_value() -> None:

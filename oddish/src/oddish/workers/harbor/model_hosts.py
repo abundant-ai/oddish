@@ -104,6 +104,16 @@ _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
 _GEMINI_HOSTS = ("generativelanguage.googleapis.com",)
 _XAI_HOSTS = ("api.x.ai",)
+# Harbor installs Codex during agent setup. On glibc images it downloads NVM,
+# installs Node 22, then installs @openai/codex from npm. Kubernetes tasks with
+# a stable task-owned proxy use the restricted profile during both setup and
+# run, so this agent-specific set must include that complete install chain.
+CODEX_INSTALL_HOSTS: tuple[str, ...] = (
+    "raw.githubusercontent.com",  # nvm install.sh
+    "github.com",  # nvm repository cloned by install.sh
+    "nodejs.org",  # Node runtime downloaded by nvm
+    "registry.npmjs.org",  # @openai/codex metadata and package tarballs
+)
 # Cursor CLI fronts every selectable model through Cursor's own API. Its
 # bootstrap endpoint returns the agent-stream URL at runtime (currently under
 # api5), and the installer is intentionally unpinned. Use Cursor's official
