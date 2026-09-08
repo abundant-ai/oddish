@@ -98,11 +98,17 @@ export function ModelsClient() {
     }));
 
     try {
-      const result = await fetcher<ModelEndpointCheckResponse>("/api/models", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: endpoint.model, route: endpoint.route }),
-      });
+      const result = await fetcher<ModelEndpointCheckResponse>(
+        "/api/models/check",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: endpoint.model,
+            route: endpoint.route,
+          }),
+        }
+      );
       setChecks((current) => ({
         ...current,
         [key]: { status: "complete", result, testedAt: Date.now() },

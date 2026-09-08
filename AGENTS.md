@@ -1100,7 +1100,18 @@ Storage defaults:
   in-place replacements use immutable
   `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
   by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
+- expanded per-file trees: the expand worker mirrors a bundle to
+  `tasks/<task_id>/v<N>-files/` plus a `.oddish-manifest.json` sentinel and
+  then stamps `task_versions.expanded_manifest_key` under the version row's
+  lock; an in-place overwrite clears the stamp in the transaction that switches
+  `task_s3_key`. `resolve_task_file_source` returns it as `expanded`.
+  `False` skips the extracted tree; `True` and `None` still validate the
+  manifest against the selected archive because an overwrite can replace
+  the tree after the database read. Missing members fall back to the bundle.
+- Recursive trial-file listings remain complete for CLI downloads; only
+  non-recursive listings use `limit` and continuation cursors.
 - Harbor job outputs: `/tmp/harbor-jobs`
+
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 
 EC2 canary procedure:
@@ -1187,7 +1198,42 @@ set** in each caller. The full builder has no `load_only`, so it will not catch
 an omission. Builder unit tests cannot catch it either because in-memory models
 have every attribute set; the bug lives in the query options, not the builder.
 
+### Read sessions, the write guard, and statement budgets
+
+Every statement is a network round trip to a pooler that sits a network hop
+away from the API containers (measured 2026-09: 4 ms to 220 ms per trip
+depending on where Modal placed the container), so the number of statements a
+request issues is its latency budget. Three rules keep that number down:
+
+- **GET handlers use `get_read_session()`** (`oddish/db/connection.py`). It
+  checks the connection out in driver autocommit, so a read pays no `BEGIN`,
+  `COMMIT`, or reset `ROLLBACK`. `get_session()` remains the write path. A
+  read session **refuses to flush**: any pending ORM change raises
+  `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
+  write fails in tests instead of autocommitting statement by statement. The
+  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
+  a default policy) stays on `get_session()`.
+- **Reads that tolerate a not-yet-migrated table go through
+  `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
+  `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
+  `SAVEPOINT` under autocommit), returns `None` only for a missing table, and
+  re-raises everything else. Do not hand-roll `begin_nested()` + `ProgrammingError`
+  for this case again; the three former copies (cost exclusions, quota bumps,
+  quota limits) all use the helper.
+- **`oddish/tests/test_statement_budgets.py` pins statements per core** for
+  the task, trial, detail, browse and experiment-page reads. Raise a budget only
+  with a reason in the diff.
+
+Two per-process caches take the remaining fixed costs off the request path:
+`load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
+per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
+`invalidate_cost_exclusions()` after every edit), and the backend auth cache
+keeps Clerk identities for `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900)
+while taking role and email from the freshly verified token on every hit. Both
+use `oddish.cache.TTLCache`; new per-process caches should too.
+
 ### Dashboard pipeline stats use reserved queue keys
+
 
 `get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
 bucket trial counts by each trial's own `queue_key`, and the
@@ -1535,7 +1581,10 @@ cp backend/.env.example backend/.env
 
 Minimum required: `ODDISH_DATABASE_URL` and `CLERK_DOMAIN`. Add
 `CLERK_SECRET_KEY` for Clerk-backed org management and `CLERK_WEBHOOK_SECRET`
-for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
+for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`
+(plus `CORS_ALLOWED_ORIGIN_REGEX` for Vercel preview origins when the dashboard
+calls the API directly),
+
 `CLERK_ISSUER`, `CLERK_JWT_AUDIENCE`, the `ODDISH_S3_*` set, provider keys
 (`AZURE_OPENAI_*`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, …),
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
@@ -1551,7 +1600,14 @@ is separate from the scheduled expense-notification webhook.
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
-poolers such as Supavisor / PgBouncer.
+poolers such as Supavisor / PgBouncer. Two request-path caches are tunable:
+`ODDISH_AUTH_IDENTITY_TTL_SECONDS` (Clerk identity entries in the auth cache,
+default 900; API-key entries stay at 60 s) and
+`ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables). Every span
+also carries `oddish.modal_region` / `oddish.modal_cloud` from the container's
+`MODAL_REGION` / `MODAL_CLOUD_PROVIDER`, so per-region database round trips
+are a Logfire query rather than a probe.
+
 
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
@@ -1713,6 +1769,37 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+**Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
+browser call the backend itself instead of going through those `/api/*`
+handlers: one fewer hop (Vercel edge, Vercel function, then Modal) and one
+trace instead of two. `frontend/src/lib/api.ts` owns the mapping: every
+dashboard request keeps its `/api/...` string as its SWR key and as the URL
+it would send to the proxy; `resolveApiUrl` turns that into
+`${NEXT_PUBLIC_API_URL}/...` (identity for every proxy except the five
+`settings/*` and `admin/users/{id}/costs` rewrites listed there), `apiFetch`
+attaches the token minted by the Clerk client with
+`NEXT_PUBLIC_CLERK_JWT_TEMPLATE` (the same template the proxies use
+server-side), and `/api/public/*` reads go without a token. Experiment IDs lose
+the extra URL-encoding layer normally consumed by Next's route parser. Three proxy groups stay
+in the path because they do real work -- the Logfire relay
+(`/api/client-traces`), the zip import, and task browse (which translates the
+address-bar search/tag/date filters) -- and a request that cannot get a
+token yet (Clerk still loading) or runs during server rendering also keeps
+the proxy for that call. The backend side is `CORS_ALLOWED_ORIGIN_REGEX`
+(preview origins are unpredictable) and `backend/api/cache_headers.py`, which
+sets the `Cache-Control` values the proxies used to add, keyed on the matched
+route template; private responses also vary by `Authorization` so switching
+organizations cannot reuse another token's cached response. Each PR backend
+permits its own `https://pr-{number}.oddish.app` frontend origin. The combined
+`perf/request-path-combined` branch opts its Vercel preview into direct mode
+in `frontend/next.config.ts`; an explicit flag overrides this, and other
+deployments remain off by default. The public token-template name defaults to
+the existing server-side `CLERK_JWT_TEMPLATE` at build time.
+New mutation call sites must use `apiFetch`, never a bare
+`fetch("/api/...")`. The proxy files stay until direct mode has run in
+production for a while; delete them only in a dedicated change.
+
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test

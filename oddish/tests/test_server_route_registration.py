@@ -27,9 +27,9 @@ async def test_task_tree_forwards_inline_flag() -> None:
         yield session
 
     list_files = AsyncMock(return_value={"files": []})
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/"))
+    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
     with (
-        patch("oddish.server.get_session", new=fake_get_session),
+        patch("oddish.server.get_read_session", new=fake_get_session),
         patch("oddish.server.resolve_task_file_source", new=resolve_source),
         patch("oddish.server.list_task_files_s3", new=list_files),
     ):
@@ -55,4 +55,5 @@ async def test_task_tree_forwards_inline_flag() -> None:
         task_s3_prefix="tasks/task-1/v3/",
         version=3,
         inline=False,
+        expanded=True,
     )

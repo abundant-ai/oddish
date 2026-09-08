@@ -874,9 +874,9 @@ class StorageClient:
                     # replacement characters just like the local reader does.
                     if not is_log_file:
                         continue
-                    content = (
-                        await self.download_bytes(s3_key)
-                    ).decode("utf-8", errors="replace")
+                    content = (await self.download_bytes(s3_key)).decode(
+                        "utf-8", errors="replace"
+                    )
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""
@@ -894,6 +894,7 @@ class StorageClient:
         version: int | None = None,
         task_s3_prefix: str | None = None,
         inline: bool = True,
+        expanded: bool | None = None,
     ) -> dict:
         """List files in a task's S3 directory.
 
@@ -905,6 +906,10 @@ class StorageClient:
         With ``inline=True`` (default), recursive listings attach small text
         file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
         to return the bare tree fast and stream the bodies separately.
+
+        ``expanded=False`` skips the extracted tree. A positive database hint
+        still requires manifest validation: an overwrite can replace the tree
+        after the caller selects its archive.
         """
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
@@ -914,7 +919,7 @@ class StorageClient:
         # Prefer the per-file expanded layout when it was built from the
         # database-selected archive. An overwrite switches that archive key
         # atomically; a stale manifest is ignored even if cleanup later fails.
-        if version is not None:
+        if version is not None and expanded is not False:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key) and (
@@ -1241,6 +1246,7 @@ class StorageClient:
         full_prefix = f"{root_prefix}{relative_prefix}"
 
         if recursive:
+            # CLI downloads consume this complete inventory without pagination.
             objects = await self.list_objects_all(full_prefix)
             files = []
             for obj in objects:
@@ -1335,6 +1341,7 @@ class StorageClient:
         presign_expiration: int = 900,
         version: int | None = None,
         task_s3_prefix: str | None = None,
+        expanded: bool | None = None,
     ) -> AsyncIterator[dict]:
         """Stream a task file listing: the tree first, then file contents.
 
@@ -1354,6 +1361,7 @@ class StorageClient:
             version=version,
             task_s3_prefix=task_s3_prefix,
             inline=False,
+            expanded=expanded,
         )
         yield {"type": "listing", **listing}
 
@@ -1380,6 +1388,7 @@ class StorageClient:
         version: int | None = None,
         task_s3_prefix: str | None = None,
         max_bytes: int | None = None,
+        expanded: bool | None = None,
     ) -> dict:
         """Get content of a specific task file from S3.
 
@@ -1391,6 +1400,10 @@ class StorageClient:
         the expanded layout. When an archive is the source we additionally
         return ``archive_etag`` so HTTP layers can emit revalidating
         ``ETag`` / ``Cache-Control`` headers.
+
+        ``expanded=False`` skips the extracted tree. A positive database hint
+        still requires manifest validation: an overwrite can replace the tree
+        after the caller selects its archive.
         """
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
@@ -1402,7 +1415,7 @@ class StorageClient:
         archive_exists = await self.object_exists(archive_key)
 
         s3_key: str | None = None
-        if version is not None:
+        if version is not None and expanded is not False:
             expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key) and (

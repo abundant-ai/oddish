@@ -557,7 +557,7 @@ async def list_tasks(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         tasks = await list_tasks_core(
             session,
             status=status,
@@ -662,7 +662,7 @@ async def get_experiment_cost_totals_route(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_experiment_cost_totals(
             session, experiment_id=experiment_id, org_id=auth.org_id
         )
@@ -819,7 +819,7 @@ async def browse_tasks(
     """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         author_tokens = [
             token.strip() for token in (author or "").split(",") if token.strip()
         ]
@@ -950,7 +950,7 @@ async def browse_task_facets(
     """Distinct filter-option values for the task browser sidebar."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         await session.connection()
         return await browse_task_facets_core(session, org_id=auth.org_id)
 
@@ -972,7 +972,7 @@ async def browse_experiment_options(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         await session.connection()
         return await browse_experiment_options_core(
             session,
@@ -1369,7 +1369,7 @@ async def get_experiment_model_renames(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ModelRenameResponse:
     """The experiment's current public model-rename map."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         result = await session.execute(
             select(ExperimentModel).where(
                 ExperimentModel.id == experiment_id,
@@ -1443,7 +1443,7 @@ async def list_experiment_probes(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         result = await session.execute(
             select(ExperimentModel).where(
                 ExperimentModel.id == experiment_id,
@@ -1471,7 +1471,7 @@ async def list_org_probes(
     trial. Ordered most-recent-first.
     """
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_org_probes_core(session, org_id=auth.org_id)
 
 
@@ -1617,7 +1617,7 @@ async def get_task_status(
     """Get task status with all trials for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_status_core(
             session,
             task_id=task_id,
@@ -1637,7 +1637,7 @@ async def get_task_open(
     """Bounded task-page header, aggregates, and trial preview."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_open_core(
             session,
             task_id=task_id,
@@ -1655,7 +1655,7 @@ async def get_task_detail(
     """Task detail bundle: task + trials + per-version + cost rollups."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
@@ -1672,7 +1672,7 @@ async def list_task_versions(
     """List all versions of a task, newest first."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_task_versions_core(
             session, task_id=task_id, org_id=auth.org_id
         )
@@ -1687,7 +1687,7 @@ async def get_task_version(
     """Get a specific version of a task."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_version_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
         )
@@ -1766,7 +1766,7 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1784,6 +1784,7 @@ async def list_task_files(
                 presign=presign,
                 version=version,
                 task_s3_prefix=task_s3_prefix,
+                expanded=expanded,
             )
         )
 
@@ -1797,6 +1798,7 @@ async def list_task_files(
         version=version,
         inline=inline,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
     )
 
 
@@ -1821,7 +1823,7 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1836,6 +1838,7 @@ async def get_task_file_content(
             version=version,
             max_bytes=max_bytes,
             task_s3_prefix=task_s3_prefix,
+            expanded=expanded,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:

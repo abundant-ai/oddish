@@ -51,6 +51,14 @@ Useful optional variables:
 # Recommended for org-aware backend auth
 CLERK_JWT_TEMPLATE=oddish
 
+# Direct API mode: the browser calls NEXT_PUBLIC_API_URL itself instead of the
+# /api/* proxy routes (one fewer hop per request). Needs the same template
+# name published to the browser and the app's origin allowed by the backend's
+# CORS_ALLOWED_ORIGINS / CORS_ALLOWED_ORIGIN_REGEX. Off unless set to 1.
+NEXT_PUBLIC_API_DIRECT=1
+NEXT_PUBLIC_CLERK_JWT_TEMPLATE=oddish
+
+
 # Optional Clerk route overrides
 NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
 NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
@@ -96,6 +104,8 @@ Browser UI
 
 The backend URL is configured via a single `NEXT_PUBLIC_API_URL` env variable in `src/lib/backend-config.ts`. Set it to `http://localhost:8000` for local development or to a deployed API URL for staging/production.
 
+Browser requests are written as `/api/...` URLs and normally reach the backend through the Next.js route handlers under `src/app/api`, which mint the backend token server-side. With `NEXT_PUBLIC_API_DIRECT=1` the same requests go from the browser straight to `NEXT_PUBLIC_API_URL` (`src/lib/api.ts` maps the path and attaches a token from the Clerk client); the SWR keys do not change. Use `apiFetch` from `src/lib/api.ts` for any new `/api/...` mutation so it takes part in that mapping.
+
 Global client-side fetching defaults live in `src/app/providers.tsx`, which installs an `SWRConfig` with deduping and conservative revalidation settings for the entire app.
 
 ## Auth And Routing
@@ -135,7 +145,8 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
 - `/api/models/access` for navigation access discovery without loading the catalog
-- `/api/models` for the operator-org model catalog and direct provider completion checks
+- `/api/models` for the operator-org model catalog
+- `/api/models/check` for direct provider completion checks; the path matches the backend in direct API mode
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
 - `/api/public/*` for public experiment, dataset, task-file, and trial artifact access

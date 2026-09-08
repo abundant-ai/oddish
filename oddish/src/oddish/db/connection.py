@@ -206,6 +206,27 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
+def is_read_session(session: AsyncSession) -> bool:
+    """True for sessions minted by ``get_read_session`` (driver autocommit).
+
+    Consumers that need transaction-specific behavior (a SAVEPOINT, for one)
+    must read the mode from here instead of inferring it from a pooled
+    driver's execution options, which are not a stable public contract once
+    an AsyncSession has procured and wrapped the connection.
+    """
+    return session.info.get("oddish_read_autocommit") is True
+
+
+def _refuse_read_session_flush(session, flush_context, instances) -> None:
+    # ``before_flush`` only fires when there is something to flush, so any
+    # arrival here is a real pending write on a session that has no COMMIT
+    # and no enclosing transaction to roll it back.
+    raise RuntimeError(
+        "get_read_session() is read-only: a handler on the read session tried "
+        "to flush ORM changes; use get_session() for writes"
+    )
+
+
 @asynccontextmanager
 async def get_read_session() -> AsyncIterator[AsyncSession]:
     """Get a database session for read-only work, without transaction
@@ -218,17 +239,20 @@ async def get_read_session() -> AsyncIterator[AsyncSession]:
     driver-level autocommit: each statement runs as its own implicit
     transaction and the only round-trips are the queries themselves.
 
-    Reads only. There is no COMMIT here, and any ORM mutation that flushes
-    through this session would be applied statement-by-statement with no
-    enclosing transaction to roll back. The soft-delete auto-filter still
-    applies -- it is keyed on the Session class, not the transaction.
+    Reads only. There is no COMMIT here, and any ORM mutation flushed
+    through this session would otherwise be applied statement-by-statement
+    with no enclosing transaction to roll back -- so a flush raises instead
+    (``_refuse_read_session_flush``), which turns a read handler that grows
+    a write into a test failure rather than a silent autocommit. The
+    soft-delete auto-filter still applies -- it is keyed on the Session
+    class, not the transaction. SAVEPOINT is rejected under autocommit;
+    reads that tolerate a not-yet-migrated table go through
+    ``oddish.db.optional_read.read_optional_table``, which knows both modes.
     """
     async with async_session_maker() as session:
-        # Consumers that need transaction-specific behavior must read the mode
-        # from the session owner instead of inferring it from a pooled driver's
-        # execution options. Those options are not a stable public contract once
-        # an AsyncSession has procured and wrapped the connection.
         session.info["oddish_read_autocommit"] = True
+        event.listen(session.sync_session, "before_flush", _refuse_read_session_flush)
+
         # The isolation level must be set when the connection is first
         # procured for this session, before any query runs on it. The
         # option applies for this checkout only; the pool resets the

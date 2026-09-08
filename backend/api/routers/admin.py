@@ -28,7 +28,7 @@ from oddish.core.admin import (
     update_model_concurrency_core,
 )
 from oddish.core.trial_facets import rebuild_trial_facets_core
-from oddish.db import TaskModel, TaskVersionModel, get_session
+from oddish.db import TaskModel, TaskVersionModel, get_read_session, get_session
 from oddish.queue import enqueue_task_expand_worker_job
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, func, select
@@ -57,7 +57,7 @@ async def get_queue_slots(
 ) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
     require_operator_org(auth)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_slots_core(session)
 
 
@@ -66,7 +66,7 @@ async def get_queue_status(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> QueueStatusResponse:
     """Get queue status from the trials/tasks tables (the source of truth)."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_status_core(
             session,
             org_id=None if is_operator_org(auth) else auth.org_id,
@@ -79,7 +79,7 @@ async def get_orphaned_state(
     stale_after_minutes: int = Query(15, ge=1, le=240),
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_orphaned_state_core(
             session,
             stale_after_minutes=stale_after_minutes,
@@ -98,7 +98,7 @@ async def get_queue_health(
     operator self-diagnose "queued but not running" without psql + Modal logs.
     """
     is_operator = is_operator_org(auth)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_queue_health_core(
             session,
             org_id=None if is_operator else auth.org_id,
@@ -125,7 +125,7 @@ async def get_model_concurrency(
     require_operator_org(auth)
     if not queue_key.strip():
         raise HTTPException(status_code=422, detail="queue_key must not be blank")
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_model_concurrency_setting_core(session, queue_key)
 
 
@@ -140,7 +140,7 @@ async def get_worker_jobs(
     Powers the "Worker Jobs" admin panel which treats each kind (TRIAL,
     ANALYSIS, VERDICT, ...) as an independently queued agent job.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_worker_jobs_admin_core(
             session,
             stale_after_minutes=stale_after_minutes,
@@ -217,7 +217,7 @@ async def get_costs(
 ) -> CostBreakdownResponse:
     """Return the active organization's billable-spend breakdown."""
     effective_window = None if window_days == 0 else window_days
-    async with get_session() as session:
+    async with get_read_session() as session:
         result = await get_cost_breakdown_core(
             session,
             org_id=auth.org_id,
@@ -241,7 +241,7 @@ async def get_user_costs(
 ) -> UserCostBreakdownResponse:
     """Per-user billed spend over settled trials (finished_at axis, estimate-priced)."""
     effective_window = None if window_days == 0 else window_days
-    async with get_session() as session:
+    async with get_read_session() as session:
         user = await session.get(
             UserModel, user_id, execution_options={"include_deleted": True}
         )
@@ -426,7 +426,7 @@ async def get_slack_alert_settings(
     """Effective Slack cost-alert thresholds and escalation list."""
     require_operator_org(auth)
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             return _settings_response(await get_alert_settings(session))
     except ProgrammingError as exc:
         raise _unavailable(exc) from exc
