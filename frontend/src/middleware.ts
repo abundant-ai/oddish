@@ -11,8 +11,8 @@ const isPublicRoute = createRouteMatcher([
   "/datasets(.*)",
   // Public so link-unfurl bots (Slack, Twitter) can read OG/Twitter meta;
   // real unauthed users are redirected by the (app) layout and no data is
-  // fetched until authed. Signed-in users are sent to /{orgSlug}/experiments/…
-  // Do not gate this without preserving unfurls.
+  // fetched until authed. Signed-in users are sent to
+  // /orgs/{orgSlug}/experiments/… Do not gate this without preserving unfurls.
   "/experiments(.*)",
   "/api/public(.*)",
   "/api/client-traces(.*)",

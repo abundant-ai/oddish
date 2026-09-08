@@ -1687,7 +1687,10 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, `/api/public/*`, `/sign-in`, `/sign-up`, `/api/client-traces`,
 and — deliberately, for link-unfurl bots — `/experiments/*`; everything else
-is Clerk-protected.
+is Clerk-protected. Authenticated app pages live under `/orgs/{orgSlug}/…`
+(for example `/orgs/acme/tasks`). Unprefixed `/tasks` and the short-lived
+`/{orgSlug}/tasks` shape redirect when signed in. `/share/*` and `/datasets/*`
+stay unprefixed.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value

@@ -6,7 +6,7 @@ This is the Next.js App Router frontend for Oddish. It provides the authenticate
 
 Current app surface:
 
-- `/` public landing page for signed-out users; signed-in users are redirected to `/dashboard`
+- `/` public landing page for signed-out users; signed-in users are redirected to `/orgs/{orgSlug}/dashboard`
 - `/dashboard` main dashboard and experiment entrypoint
 - `/tasks` authenticated task browser with search, pagination, per-task version summaries, and links back to experiments
 - `/experiments` base page directing users to select an experiment

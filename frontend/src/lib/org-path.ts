@@ -1,12 +1,15 @@
 /**
- * Authenticated dashboard URLs are `/{orgSlug}/tasks`, `/{orgSlug}/dashboard`,
- * and so on. Page files stay at `/tasks`, `/dashboard`, …; middleware rewrites
- * the slugged URL onto those routes and redirects the old unprefixed ones.
+ * Authenticated dashboard URLs are `/orgs/{orgSlug}/tasks`,
+ * `/orgs/{orgSlug}/dashboard`, and so on. Page files stay at `/tasks`,
+ * `/dashboard`, …; middleware rewrites the slugged URL onto those routes and
+ * redirects the old unprefixed ones (and the short-lived `/{slug}/…` shape).
  *
  * Public surfaces (`/share`, `/datasets`, `/sign-in`, `/sign-up`, `/api`) stay
  * unprefixed. `/experiments` is also left unprefixed for link-unfurl bots;
- * signed-in users are redirected to the slugged form.
+ * signed-in users are redirected to `/orgs/{slug}/experiments/…`.
  */
+
+export const ORG_PREFIX = "orgs";
 
 export const PUBLIC_ROOT_SEGMENTS = [
   "sign-in",
@@ -33,12 +36,13 @@ export const APP_ROOT_SEGMENTS = [
 const PUBLIC_ROOT = new Set<string>(PUBLIC_ROOT_SEGMENTS);
 const APP_ROOT = new Set<string>(APP_ROOT_SEGMENTS);
 
-/** Clerk org slugs are URL-safe; reject reserved first segments as slugs. */
+/** Clerk org slugs are URL-safe. `/orgs` and public roots cannot be slugs. */
 const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 
-export const ORG_SYNC_PATTERNS: string[] = APP_ROOT_SEGMENTS.flatMap(
-  (segment) => [`/:slug/${segment}`, `/:slug/${segment}/(.*)`],
-);
+export const ORG_SYNC_PATTERNS = [
+  `/${ORG_PREFIX}/:slug`,
+  `/${ORG_PREFIX}/:slug/(.*)`,
+] as const;
 
 export type OrgRequestDecision =
   | { action: "next" }
@@ -56,8 +60,8 @@ export function isAppRootSegment(segment: string): boolean {
 export function isOrgSlug(segment: string): boolean {
   return (
     SLUG_RE.test(segment) &&
-    !PUBLIC_ROOT.has(segment) &&
-    !APP_ROOT.has(segment)
+    segment !== ORG_PREFIX &&
+    !PUBLIC_ROOT.has(segment)
   );
 }
 
@@ -75,17 +79,27 @@ export function firstSegment(pathname: string): string | null {
   return segment ?? null;
 }
 
+function pathSegments(pathname: string): string[] {
+  return pathname.split("/").filter(Boolean);
+}
+
+export function orgScopedPath(slug: string, appPath = "/dashboard"): string {
+  const normalized = appPath === "/" ? "" : appPath;
+  return `/${ORG_PREFIX}/${slug}${normalized}`;
+}
+
 export function parseOrgSlug(pathname: string): string | null {
-  const parts = pathname.split("/").filter(Boolean);
-  const first = parts[0];
-  if (!first || !isOrgSlug(first)) return null;
-  return first;
+  const parts = pathSegments(pathname);
+  if (parts[0] !== ORG_PREFIX) return null;
+  const slug = parts[1];
+  if (!slug || !isOrgSlug(slug)) return null;
+  return slug;
 }
 
 export function stripOrgSlug(pathname: string): string {
   const slug = parseOrgSlug(pathname);
   if (!slug) return pathname || "/";
-  const rest = pathname.slice(`/${slug}`.length);
+  const rest = pathname.slice(`/${ORG_PREFIX}/${slug}`.length);
   return rest === "" ? "/" : rest;
 }
 
@@ -102,11 +116,10 @@ export function withOrgSlug(
 
   const existing = parseOrgSlug(pathname);
   if (existing) {
-    const appPath = stripOrgSlug(pathname);
-    return `/${slug}${appPath === "/" ? "" : appPath}${suffix}`;
+    return `${orgScopedPath(slug, stripOrgSlug(pathname))}${suffix}`;
   }
   if (isAppRootSegment(first)) {
-    return `/${slug}${pathname}${suffix}`;
+    return `${orgScopedPath(slug, pathname)}${suffix}`;
   }
   return href;
 }
@@ -117,13 +130,14 @@ export function resolveOrgRequest(input: {
   orgSlug: string | null | undefined;
 }): OrgRequestDecision {
   const { pathname, userId, orgSlug } = input;
-  const first = firstSegment(pathname);
+  const parts = pathSegments(pathname);
+  const first = parts[0];
 
   if (!first) {
     if (userId && orgSlug) {
       return {
         action: "redirect",
-        pathname: `/${orgSlug}/dashboard`,
+        pathname: orgScopedPath(orgSlug),
         status: 307,
       };
     }
@@ -139,22 +153,48 @@ export function resolveOrgRequest(input: {
     if (userId && orgSlug) {
       return {
         action: "redirect",
-        pathname: `/${orgSlug}${pathname}`,
+        pathname: orgScopedPath(orgSlug, pathname),
         status: 308,
       };
     }
     return { action: "next" };
   }
 
-  if (!isOrgSlug(first)) return { action: "next" };
+  if (first === ORG_PREFIX) {
+    const slug = parts[1];
+    if (!slug) {
+      if (userId && orgSlug) {
+        return {
+          action: "redirect",
+          pathname: orgScopedPath(orgSlug),
+          status: 307,
+        };
+      }
+      return { action: "next" };
+    }
+    if (!isOrgSlug(slug)) return { action: "next" };
+    const rest = stripOrgSlug(pathname);
+    if (rest === "/") {
+      return {
+        action: "redirect",
+        pathname: orgScopedPath(slug),
+        status: 307,
+      };
+    }
+    return { action: "rewrite", pathname: rest };
+  }
 
-  const rest = stripOrgSlug(pathname);
-  if (rest === "/") {
+  // Previous `/{slug}/…` bookmarks move under `/orgs/{slug}/…`.
+  if (isOrgSlug(first)) {
+    const restParts = parts.slice(1);
+    const appPath =
+      restParts.length === 0 ? "/dashboard" : `/${restParts.join("/")}`;
     return {
       action: "redirect",
-      pathname: `/${first}/dashboard`,
-      status: 307,
+      pathname: orgScopedPath(first, appPath),
+      status: 308,
     };
   }
-  return { action: "rewrite", pathname: rest };
+
+  return { action: "next" };
 }

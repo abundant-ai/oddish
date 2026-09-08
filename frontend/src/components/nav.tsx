@@ -250,7 +250,7 @@ export function Nav() {
                     return dest;
                   }}
                   afterCreateOrganizationUrl={(org) => {
-                    const dest = `/${org.slug}/dashboard`;
+                    const dest = withOrgSlug("/dashboard", org.slug);
                     window.location.assign(dest);
                     return dest;
                   }}
