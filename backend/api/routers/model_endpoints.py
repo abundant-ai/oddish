@@ -293,10 +293,11 @@ async def check_model_endpoint(
         resolved_model = model
         failure: Exception | None = None
         try:
+            # Reasoning models share this budget with the visible answer.
             kwargs = (
-                {"max_completion_tokens": 32}
+                {"max_completion_tokens": 1024}
                 if route in {OPENAI_PROVIDER_AZURE, "openai"}
-                else {"max_tokens": 32}
+                else {"max_tokens": 1024}
             )
             if provider == "bedrock":
                 resolved_model = f"bedrock/{model}"
@@ -360,7 +361,7 @@ async def check_model_endpoint(
                     messages=[
                         {
                             "role": "user",
-                            "content": "Reply with one short sentence naming the model you are.",
+                            "content": "Reply with exactly this text: Hello from Oddish.",
                         }
                     ],
                     timeout=15,
@@ -372,17 +373,18 @@ async def check_model_endpoint(
             else:
                 # Unexpected response shapes are integration defects and remain 500s.
                 content = completion.choices[0].message.content
+                text = content.strip() if isinstance(content, str) else ""
                 result = ModelEndpointCheckResponse(
-                    ok=True,
+                    ok=bool(text),
                     model=model,
                     resolved_model=resolved_model,
                     provider=provider,
                     route=route,
                     credential=credential,
                     latency_ms=round((monotonic() - started) * 1000),
-                    response=content
-                    if isinstance(content, str)
-                    else str(content or ""),
+                    response=text,
+                    failure_kind=None if text else "provider",
+                    error=None if text else "Provider returned no text response.",
                     request_id=(
                         str(completion.id) if getattr(completion, "id", None) else None
                     ),

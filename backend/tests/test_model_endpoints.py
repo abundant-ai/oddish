@@ -228,7 +228,7 @@ async def test_model_check_rejects_api_key_auth(scope):
 async def test_model_endpoint_returns_provider_response(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "gemini/test-model-07"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="request-123",
             choices=[
@@ -343,7 +343,7 @@ async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch)
     async def completion(**kwargs):
         assert kwargs["model"] == "anthropic/test-model-01"
         assert kwargs["api_key"] == "hdo-key"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="hdo-request",
             choices=[
@@ -378,7 +378,7 @@ async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
             "fireworks_ai/accounts/fireworks/models/test-model-04"
         )
         assert kwargs["api_key"] == "fireworks-key"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="fireworks-request",
             choices=[
@@ -413,7 +413,7 @@ async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
         assert kwargs["model"] == "openai/test-model-09"
         assert kwargs["api_key"] == "meta-key"
         assert kwargs["api_base"] == "https://meta.example/v1"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="meta-request",
             choices=[
@@ -447,7 +447,7 @@ async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "azure/test-deployment"
-        assert kwargs["max_completion_tokens"] == 32
+        assert kwargs["max_completion_tokens"] == 1024
         assert "max_tokens" not in kwargs
         assert kwargs["api_key"] == "azure-key"
         assert kwargs["api_base"] == "https://example.openai.azure.com"
@@ -868,3 +868,75 @@ async def test_model_access_does_not_load_catalog(
         response = await client.get("/models/access")
     assert response.status_code == 200
     assert response.json() == {"allowed": allowed}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [None, "", " \n\t"])
+async def test_model_endpoint_requires_visible_text(monkeypatch, content):
+    calls = 0
+
+    async def completion(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert kwargs["max_tokens"] == 1024
+        assert kwargs["messages"] == [
+            {
+                "role": "user",
+                "content": "Reply with exactly this text: Hello from Oddish.",
+            }
+        ]
+        return SimpleNamespace(
+            id="empty-text-request",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=content, reasoning_content="Internal reasoning"
+                    ),
+                    finish_reason="length",
+                )
+            ],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "xai/test-model-13"}
+        )
+        cached = await client.post("/models/check", json={"model": "xai/test-model-13"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["response"] == ""
+    assert payload["failure_kind"] == "provider"
+    assert payload["error"] == "Provider returned no text response."
+    assert payload["request_id"] == "empty-text-request"
+    assert cached.json() == payload
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_accepts_nonblank_text_without_exact_prompt_match(
+    monkeypatch,
+):
+    async def completion(**_kwargs):
+        return SimpleNamespace(
+            id="text-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="  Hello! \n"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "xai/test-model-13"}
+        )
+
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["response"] == "Hello!"
+    assert payload["error"] is None
+    assert payload["failure_kind"] is None

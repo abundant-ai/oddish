@@ -578,8 +578,12 @@ platform provider credentials. It does not claim to exercise an agent's
 Responses, Messages, CLI, or sandbox path. Expected provider and configuration
 failures return a structured 200 response; unexpected integration/programming
 errors remain 500s. The request creates no task, trial, worker job, or persisted
-history. The operator-only frontend `/models` page runs "Test all" in batches of
-at most three and keeps results only in browser state. Rows reopen stored results
+history. Checks ask for "Hello from Oddish." with a 1,024-token output budget
+(shared with reasoning on reasoning models), and pass only with nonblank text
+in the completion message; empty text returns a provider failure. The operator-only
+frontend `/models` page searches and filters the catalog, sorts columns, and tests
+only the matching testable models captured at click time in batches of at most
+three. It keeps results only in browser state. Rows reopen stored results
 without another provider request; response text appears above expandable JSON
 details rendered by the shared CodeBlock component.
 

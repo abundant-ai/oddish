@@ -4,6 +4,10 @@ import { Fragment, useState } from "react";
 import useSWR from "swr";
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Search,
   CheckCircle2,
   ChevronDown,
   Play,
@@ -25,6 +29,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
+import {
+  endpointKey,
+  modelCatalogRows,
+  ROUTE_LABELS,
+  type ModelCheckState,
+  type ModelSort,
+  type ModelSortField,
+  type ModelStatus,
+} from "@/lib/model-catalog";
 import { fetcher } from "@/lib/api";
 import type {
   ModelEndpointCatalogResponse,
@@ -32,39 +46,7 @@ import type {
   ModelEndpointSummary,
 } from "@/lib/types";
 
-type ModelCheckState =
-  | { status: "running" }
-  | {
-      status: "complete";
-      result: ModelEndpointCheckResponse;
-      testedAt: number;
-    }
-  | { status: "error"; message: string; testedAt: number };
-
 const MODEL_CHECK_BATCH_SIZE = 3;
-
-const ROUTE_LABELS: Record<string, string> = {
-  "anthropic-hdo": "Anthropic HDO",
-  anthropic: "Anthropic",
-  azure: "Azure OpenAI",
-  bedrock: "AWS Bedrock",
-  cursor: "Cursor",
-  deepseek: "DeepSeek",
-  fireworks: "Fireworks",
-  gemini: "Google Gemini",
-  meta: "Meta",
-  minimax: "MiniMax",
-  moonshot: "Moonshot",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  vertex_ai: "Google Vertex AI",
-  xai: "xAI",
-  zai: "Z.ai",
-};
-
-function endpointKey(endpoint: ModelEndpointSummary): string {
-  return `${endpoint.route}:${endpoint.model}`;
-}
 
 export function ModelsClient() {
   const { data, error, isLoading, mutate } =
@@ -72,19 +54,55 @@ export function ModelsClient() {
   const [checks, setChecks] = useState<Record<string, ModelCheckState>>({});
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
 
-  const hasRunningCheck = Object.values(checks).some(
-    (check) => check.status === "running"
+  const [query, setQuery] = useState("");
+  const [provider, setProvider] = useState("all");
+  const [status, setStatus] = useState<ModelStatus | "all">("all");
+  const [sort, setSort] = useState<ModelSort>({
+    field: "name",
+    direction: "asc",
+  });
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
+  const rows = modelCatalogRows(
+    data?.models ?? [],
+    checks,
+    query,
+    provider,
+    status,
+    sort
   );
-  const passing = Object.values(checks).filter(
-    (check) => check.status === "complete" && check.result.ok
-  ).length;
-  const failing = Object.values(checks).filter(
-    (check) =>
-      check.status === "error" ||
-      (check.status === "complete" && !check.result.ok)
-  ).length;
-  const providerCount = new Set(data?.models.map(({ route }) => route)).size;
-  const testableModels = data?.models.filter(({ testable }) => testable) ?? [];
+  const providers = [...new Set(data?.models.map(({ route }) => route))].sort(
+    (a, b) => (ROUTE_LABELS[a] ?? a).localeCompare(ROUTE_LABELS[b] ?? b)
+  );
+  const providerCount = new Set(rows.map(({ endpoint }) => endpoint.route))
+    .size;
+  const hasFilters = query.length > 0 || provider !== "all" || status !== "all";
+
+  function clearFilters() {
+    setQuery("");
+    setProvider("all");
+    setStatus("all");
+  }
+
+  function sortBy(field: ModelSortField) {
+    setSort({
+      field,
+      direction:
+        sort.field === field && sort.direction === "asc"
+          ? "desc"
+          : field === "testedAt" && sort.field !== field
+            ? "desc"
+            : "asc",
+    });
+  }
+
+  const hasRunningCheck =
+    isBatchRunning ||
+    Object.values(checks).some((check) => check.status === "running");
+  const passing = rows.filter(({ status }) => status === "Passed").length;
+  const failing = rows.filter(({ status }) => status === "Failed").length;
+  const testableModels = rows
+    .map(({ endpoint }) => endpoint)
+    .filter(({ testable }) => testable);
 
   async function testModel(
     endpoint: ModelEndpointSummary,
@@ -128,27 +146,35 @@ export function ModelsClient() {
     }
   }
 
-  async function testAllModels() {
-    if (!testableModels.length) return;
-    const outcomes: { key: string; ok: boolean }[] = [];
-    for (
-      let index = 0;
-      index < testableModels.length;
-      index += MODEL_CHECK_BATCH_SIZE
-    ) {
-      const batch = testableModels.slice(index, index + MODEL_CHECK_BATCH_SIZE);
-      outcomes.push(
-        ...(await Promise.all(
-          batch.map(async (endpoint) => ({
-            key: endpointKey(endpoint),
-            ok: await testModel(endpoint, false),
-          }))
-        ))
+  async function testMatchingModels() {
+    if (!testableModels.length || hasRunningCheck) return;
+    setIsBatchRunning(true);
+    try {
+      const outcomes: { key: string; ok: boolean }[] = [];
+      for (
+        let index = 0;
+        index < testableModels.length;
+        index += MODEL_CHECK_BATCH_SIZE
+      ) {
+        const batch = testableModels.slice(
+          index,
+          index + MODEL_CHECK_BATCH_SIZE
+        );
+        outcomes.push(
+          ...(await Promise.all(
+            batch.map(async (endpoint) => ({
+              key: endpointKey(endpoint),
+              ok: await testModel(endpoint, false),
+            }))
+          ))
+        );
+      }
+      setExpandedModel(
+        outcomes.find((outcome) => !outcome.ok)?.key ?? outcomes[0]?.key ?? null
       );
+    } finally {
+      setIsBatchRunning(false);
     }
-    setExpandedModel(
-      outcomes.find((outcome) => !outcome.ok)?.key ?? outcomes[0]?.key ?? null
-    );
   }
 
   return (
@@ -157,22 +183,10 @@ export function ModelsClient() {
         <div>
           <h1 className="text-2xl font-bold">Models</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Send a direct provider completion with Oddish platform credentials.
-            No task, worker, agent CLI, or sandbox is created.
+            Find a model and test whether it returns a text response using
+            Oddish credentials.
           </p>
         </div>
-        <Button
-          variant="outline"
-          disabled={!data?.allowed || !testableModels.length || hasRunningCheck}
-          onClick={() => void testAllModels()}
-        >
-          {hasRunningCheck ? (
-            <RefreshCw className="h-4 w-4 animate-spin" />
-          ) : (
-            <Play className="h-4 w-4" />
-          )}
-          Test all
-        </Button>
       </div>
 
       {error ? (
@@ -197,13 +211,116 @@ export function ModelsClient() {
       ) : (
         <Card>
           <CardHeader className="border-b">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <CardTitle className="text-base">Available models</CardTitle>
-              <span className="text-muted-foreground text-sm">
-                {data?.models.length ?? 0} models · {providerCount} providers
+              <span role="status" className="text-muted-foreground text-sm">
+                {rows.length} of {data?.models.length ?? 0} models ·{" "}
+                {providerCount} {providerCount === 1 ? "provider" : "providers"}
                 {(passing > 0 || failing > 0) &&
                   ` · ${passing} passing · ${failing} failing`}
               </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative min-w-48 flex-1">
+                <Search
+                  aria-hidden="true"
+                  className="text-muted-foreground pointer-events-none absolute top-2.5 left-3 h-4 w-4"
+                />
+                <Input
+                  type="search"
+                  aria-label="Search models"
+                  placeholder="Search models or providers…"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <select
+                aria-label="Filter by provider"
+                value={provider}
+                onChange={(event) => setProvider(event.target.value)}
+                className="bg-background h-9 max-w-full rounded-md border px-3 text-sm"
+              >
+                <option value="all">All providers</option>
+                {providers.map((route) => (
+                  <option key={route} value={route}>
+                    {ROUTE_LABELS[route] ?? route}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter by status"
+                value={status}
+                onChange={(event) =>
+                  setStatus(event.target.value as ModelStatus | "all")
+                }
+                className="bg-background h-9 rounded-md border px-3 text-sm"
+              >
+                <option value="all">All statuses</option>
+                {["Not tested", "Testing", "Passed", "Failed", "CLI only"].map(
+                  (value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  )
+                )}
+              </select>
+              <select
+                aria-label="Sort models by"
+                value={sort.field}
+                onChange={(event) => {
+                  const field = event.target.value as ModelSortField;
+                  setSort({
+                    field,
+                    direction: field === "testedAt" ? "desc" : "asc",
+                  });
+                }}
+                className="bg-background h-9 rounded-md border px-3 text-sm"
+              >
+                <option value="name">Sort: Model name</option>
+                <option value="provider">Sort: Provider</option>
+                <option value="status">Sort: Status</option>
+                <option value="latency">Sort: Latency</option>
+                <option value="testedAt">Sort: Last tested</option>
+              </select>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={`Sort ${sort.direction === "asc" ? "descending" : "ascending"}`}
+                onClick={() =>
+                  setSort({
+                    ...sort,
+                    direction: sort.direction === "asc" ? "desc" : "asc",
+                  })
+                }
+              >
+                {sort.direction === "asc" ? (
+                  <ArrowUp className="h-4 w-4" />
+                ) : (
+                  <ArrowDown className="h-4 w-4" />
+                )}
+              </Button>
+              {hasFilters && (
+                <Button variant="ghost" size="sm" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                disabled={
+                  !data?.allowed || !testableModels.length || hasRunningCheck
+                }
+                onClick={() => void testMatchingModels()}
+              >
+                {hasRunningCheck ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+                {isBatchRunning
+                  ? "Testing models…"
+                  : `Test ${testableModels.length} matching ${testableModels.length === 1 ? "model" : "models"}`}
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -215,26 +332,81 @@ export function ModelsClient() {
               <div className="text-muted-foreground px-4 py-10 text-center text-sm">
                 No model queue keys are configured.
               </div>
+            ) : !rows.length ? (
+              <div className="text-muted-foreground space-y-2 px-4 py-10 text-center text-sm">
+                <p>No models match your search and filters.</p>
+                <Button variant="outline" size="sm" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              </div>
             ) : (
               <Table className="table-fixed sm:table-auto">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[48%] sm:w-auto">Model</TableHead>
-                    <TableHead className="hidden lg:table-cell">
-                      Provider
-                    </TableHead>
-                    <TableHead className="w-[28%] sm:w-auto">Status</TableHead>
-                    <TableHead className="hidden md:table-cell">
-                      Latency
-                    </TableHead>
-                    <TableHead className="hidden md:table-cell">
-                      Tested
-                    </TableHead>
-                    <TableHead className="w-[24%] text-right sm:w-auto" />
+                    {(
+                      [
+                        {
+                          field: "name",
+                          label: "Model",
+                          className: "w-[44%] sm:w-auto",
+                        },
+                        {
+                          field: "provider",
+                          label: "Provider",
+                          className: "hidden lg:table-cell",
+                        },
+                        {
+                          field: "status",
+                          label: "Status",
+                          className: "w-[28%] sm:w-auto",
+                        },
+                        {
+                          field: "latency",
+                          label: "Latency",
+                          className: "hidden md:table-cell",
+                        },
+                        {
+                          field: "testedAt",
+                          label: "Last tested",
+                          className: "hidden md:table-cell",
+                        },
+                      ] as const
+                    ).map(({ field, label, className }) => (
+                      <TableHead
+                        key={field}
+                        className={className}
+                        aria-sort={
+                          sort.field === field
+                            ? sort.direction === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : "none"
+                        }
+                      >
+                        <button
+                          type="button"
+                          className="hover:text-foreground focus-visible:ring-ring inline-flex items-center gap-1 rounded py-2 focus-visible:ring-2 focus-visible:outline-none"
+                          onClick={() => sortBy(field)}
+                        >
+                          {label}
+                          {sort.field !== field ? (
+                            <ArrowUpDown
+                              aria-hidden="true"
+                              className="h-3 w-3"
+                            />
+                          ) : sort.direction === "asc" ? (
+                            <ArrowUp aria-hidden="true" className="h-3 w-3" />
+                          ) : (
+                            <ArrowDown aria-hidden="true" className="h-3 w-3" />
+                          )}
+                        </button>
+                      </TableHead>
+                    ))}
+                    <TableHead className="w-[28%] text-right sm:w-auto" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.models.map((endpoint) => {
+                  {rows.map(({ endpoint, name }) => {
                     const { credential, model, route, testable } = endpoint;
                     const key = endpointKey(endpoint);
                     const check = checks[key];
@@ -255,13 +427,22 @@ export function ModelsClient() {
                     return (
                       <Fragment key={key}>
                         <TableRow>
-                          <TableCell className="overflow-hidden py-3">
+                          <TableCell className="overflow-hidden py-2">
                             <div className="flex items-center gap-3">
-                              <div className="bg-background flex h-9 w-9 shrink-0 items-center justify-center rounded-md border">
+                              <div className="bg-background flex h-7 w-7 shrink-0 items-center justify-center rounded-md border">
                                 <QueueKeyIcon queueKey={model} size={18} />
                               </div>
                               <div className="min-w-0">
-                                <div className="truncate font-mono text-sm font-medium">
+                                <div
+                                  className="truncate text-sm font-medium"
+                                  title={name}
+                                >
+                                  {name}
+                                </div>
+                                <div
+                                  className="text-muted-foreground truncate font-mono text-xs"
+                                  title={model}
+                                >
                                   {model}
                                 </div>
                                 <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block lg:hidden">
@@ -278,15 +459,15 @@ export function ModelsClient() {
                           <TableCell>
                             {check?.status === "running" ? (
                               <Badge variant="running">
-                                <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
+                                <RefreshCw className="mr-1 hidden h-3 w-3 animate-spin sm:inline" />
                                 Testing
                               </Badge>
                             ) : result ? (
                               <Badge variant={result.ok ? "success" : "failed"}>
                                 {result.ok ? (
-                                  <CheckCircle2 className="mr-1 h-3 w-3" />
+                                  <CheckCircle2 className="mr-1 hidden h-3 w-3 sm:inline" />
                                 ) : (
-                                  <XCircle className="mr-1 h-3 w-3" />
+                                  <XCircle className="mr-1 hidden h-3 w-3 sm:inline" />
                                 )}
                                 {result.ok
                                   ? "Passed"
@@ -296,7 +477,7 @@ export function ModelsClient() {
                               </Badge>
                             ) : check?.status === "error" ? (
                               <Badge variant="failed">
-                                <XCircle className="mr-1 h-3 w-3" />
+                                <XCircle className="mr-1 hidden h-3 w-3 sm:inline" />
                                 Failed
                               </Badge>
                             ) : !testable ? (
@@ -316,11 +497,12 @@ export function ModelsClient() {
                             {testedAt}
                           </TableCell>
                           <TableCell className="text-right">
-                            <div className="flex flex-wrap justify-end gap-1">
+                            <div className="flex justify-end gap-1">
                               {check && (
                                 <Button
                                   variant="ghost"
                                   size="icon"
+                                  className="h-7 w-7 sm:h-9 sm:w-9"
                                   aria-label={`${expanded ? "Hide" : "Show"} ${model} result`}
                                   aria-expanded={expanded}
                                   aria-controls={`model-output-${key}`}
@@ -336,6 +518,12 @@ export function ModelsClient() {
                               <Button
                                 variant="outline"
                                 size="sm"
+                                className="h-7 w-7 px-0 sm:h-8 sm:w-auto sm:px-3"
+                                title={
+                                  testable
+                                    ? `Test ${model}`
+                                    : "Requires the Cursor agent CLI"
+                                }
                                 disabled={hasRunningCheck || !testable}
                                 onClick={() => void testModel(endpoint, true)}
                               >
@@ -344,7 +532,9 @@ export function ModelsClient() {
                                 ) : (
                                   <Play className="h-4 w-4" />
                                 )}
-                                {testable ? "Test" : "CLI only"}
+                                <span className="sr-only sm:not-sr-only">
+                                  {testable ? "Test" : "CLI only"}
+                                </span>
                               </Button>
                             </div>
                           </TableCell>
