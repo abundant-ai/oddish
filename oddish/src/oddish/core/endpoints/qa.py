@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Collection
 
 from fastapi import HTTPException
@@ -12,6 +13,7 @@ from oddish.core.endpoints._common import (
     USER_CANCELLED_MESSAGE,
 )
 from oddish.core.verdict_state import cancel_verdict, reset_verdict
+from oddish.core.trial_io import qa_source_evidence_errors
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     AGENT_TRIAL_KIND,
@@ -24,6 +26,8 @@ from oddish.db import (
     VerdictStatus,
     utcnow,
 )
+
+_QA_EVIDENCE_READ_CONCURRENCY = 2
 
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
@@ -247,12 +251,13 @@ async def rerun_task_qa_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """Create a replacement qa-kind trial for a finished task.
 
     Resets every live agent trial's classification, then creates one QA trial
-    that reclassifies the eligible set and synthesizes a verdict when the
-    evidence bar is met. Queuing the replacement withdraws the old verdict.
+    that reclassifies all eligible trials and requests a verdict once at least
+    one exists. Queuing the replacement withdraws the old verdict.
     """
     return await backfill_task_analysis_core(
         session,
@@ -260,6 +265,7 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
+        environment=environment,
     )
 
 
@@ -270,6 +276,7 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA for a task.
 
@@ -281,6 +288,7 @@ async def backfill_task_analysis_core(
     """
     from oddish.queue import (
         live_analysis_trial_id,
+        qa_eligible_trial_ids,
         start_qa_for_task,
         task_audit_pending,
     )
@@ -345,6 +353,35 @@ async def backfill_task_analysis_core(
             detail="A pre-trial audit is running or awaiting import; wait for it to finish",
         )
 
+    eligible_ids = await qa_eligible_trial_ids(
+        session,
+        task.id,
+        task_version_id=task.current_version_id,
+    )
+    trials_by_id = {trial.id: trial for trial in live_trials}
+    evidence_read_slots = asyncio.Semaphore(_QA_EVIDENCE_READ_CONCURRENCY)
+
+    async def check_source_evidence(trial: TrialModel) -> tuple[str, ...]:
+        async with evidence_read_slots:
+            return await qa_source_evidence_errors(trial)
+
+    evidence_checks = await asyncio.gather(
+        *(check_source_evidence(trials_by_id[trial_id]) for trial_id in eligible_ids)
+    )
+    blocked = [
+        f"{trial_id}: {'; '.join(errors)}"
+        for trial_id, errors in zip(eligible_ids, evidence_checks, strict=True)
+        if errors
+    ]
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot queue QA because source evidence is unavailable:\n"
+                + "\n".join(blocked)
+            ),
+        )
+
     reset_count = 0
     if force:
         if trial_ids is not None:
@@ -357,7 +394,7 @@ async def backfill_task_analysis_core(
             reset_count += 1
 
     task.finished_at = None
-    await start_qa_for_task(session, task)
+    await start_qa_for_task(session, task, environment=environment)
 
     await session.commit()
     return {
@@ -373,6 +410,7 @@ async def rerun_pre_trial_audit_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str]:
     """Queue the pre-trial audit for the task's current version.
 
@@ -447,6 +485,7 @@ async def rerun_pre_trial_audit_core(
         kind="audit",
         brief=build_audit_brief(task_name=task.name),
         task_version_id=str(version.id),
+        environment=environment,
     )
     await session.commit()
     return {"status": "queued", "task_id": task_id}

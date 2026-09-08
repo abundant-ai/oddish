@@ -10,6 +10,7 @@ owned columns.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -44,27 +45,28 @@ from oddish.analyze.trajectory_prompt import (
 )
 from oddish.analyze.trajectory_provenance import component_provenance
 from oddish.analyze.trajectory_taxonomy import (
+    SCHEMA_VERSION,
     ActionAxis,
     PurposeAxis,
-    SCHEMA_VERSION,
     TrajectoryBlockTaxonomy,
     render_summary_instructions,
     taxonomy_version,
 )
-from oddish.config import is_nop_oracle_agent, nop_oracle_kind, settings
+from oddish.config import is_nop_oracle_agent, settings
 from oddish.core.analysis_payload import (
     AnalysisPayloadError,
     audit_fingerprint,
     audit_snapshot_matches,
     parse_analysis_payload,
+    qa_trial_evidence,
 )
 from oddish.core.trial_artifacts import (
     TrialArtifactMode,
     resolve_trial_artifact_layout,
 )
 from oddish.core.verdict_sync import (
-    apply_deterministic_verdict_rules,
     aggregate_exploited_into_pre_trial,
+    apply_deterministic_verdict_rules,
     build_pre_trial_payload,
     build_verdict_payload,
     complete_task_without_verdict,
@@ -113,18 +115,6 @@ SUMMARY_MAX_TOKENS = 16_384
 
 def is_analysis_kind(kind: str | None) -> bool:
     return kind in ANALYSIS_TRIAL_KINDS
-
-
-def qa_trial_evidence(trial: TrialModel) -> dict:
-    """Authoritative, bounded facts the QA prompt and validator share."""
-    return {
-        "trial_id": trial.id,
-        "status": trial.status.value,
-        "reward": float(trial.reward) if trial.reward is not None else None,
-        "has_trajectory": bool(trial.has_trajectory),
-        "agent": trial.agent,
-        "baseline_kind": nop_oracle_kind(trial.agent),
-    }
 
 
 def pre_trial_item_ids(items: list[dict] | None) -> tuple[list[str], list[str]]:
@@ -231,6 +221,12 @@ def _prompt(name: str) -> str:
     return resources.files("oddish.analyze").joinpath(name).read_text()
 
 
+def audit_policy_hash() -> str:
+    """SHA-256 of the policy text pinned into every new source audit."""
+    policy = _prompt("prompts/pre_trial_qa.txt")
+    return hashlib.sha256(policy.encode()).hexdigest()
+
+
 async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) -> str:
     """Analysis trials live in a shadow experiment, not in the experiment
     they grade. Find the task's live (non-shadow) experiment, get-or-create
@@ -315,6 +311,7 @@ async def create_analysis_trial(
     payload: dict | None = None,
     experiment_id: str | None = None,
     model: str | None = None,
+    environment: str | None = None,
     billed_user_id: str | None = None,
 ) -> TrialModel:
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
@@ -346,6 +343,7 @@ async def create_analysis_trial(
     harbor_config: dict = {"extra_instructions": brief}
     if kind == "audit":
         payload = dict(payload or {})
+        payload["audit_policy_hash"] = audit_policy_hash()
         if version is not None and version.content_hash:
             # Pin the audited bytes. An in-place overwrite keeps the version id
             # while replacing its content, so the importer needs more than the
@@ -375,6 +373,7 @@ async def create_analysis_trial(
         provider=settings.get_provider_for_trial(analysis_agent, normalized_model),
         queue_key=settings.get_queue_key_for_trial(analysis_agent, normalized_model),
         model=normalized_model,
+        environment=environment,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
         is_probe=False,
@@ -406,30 +405,6 @@ async def create_analysis_trial(
         experiment_id,
     )
     return trial
-
-
-# A verdict needs enough evidence to be worth trusting: a handful of runs
-# from more than one or two agents. Below this the task completes with its
-# per-trial analysis and no verdict, rather than a confident call on noise.
-MIN_VERDICT_TRIALS = 5
-MIN_VERDICT_AGENTS = 3
-
-
-async def has_verdict_evidence(session: AsyncSession, trial_ids: list[str]) -> bool:
-    """Whether the eligible set can support a task verdict.
-
-    ``trial_ids`` is the QA-eligible set, which already excludes baselines,
-    probes, skipped, cancelled and superseded rows. Queries agents directly
-    rather than touching a possibly-unloaded ``task.trials`` relationship.
-    """
-    if len(trial_ids) < MIN_VERDICT_TRIALS:
-        return False
-    agents = (
-        await session.scalars(
-            select(TrialModel.agent).where(TrialModel.id.in_(trial_ids))
-        )
-    ).all()
-    return len({(a or "").strip().lower() for a in agents if a}) >= MIN_VERDICT_AGENTS
 
 
 def build_qa_brief(
@@ -567,6 +542,8 @@ node /probe-harness/oddish-query trials trajectory <trial-id> > /tmp/<trial-id>.
 Each successful command writes an object whose `trial_id` must equal the requested ID. Read the complete files before judging the trial. Use `trials logs <trial-id>` only when diagnosing a setup or runtime failure because that free-form view can be truncated.
 
 For a manifest entry with `has_trajectory: true`, `trajectory` must be a JSON object. If it is absent, malformed, or belongs to another ID, stop without writing `qa_result.json`. For `has_trajectory: false`, a null or unavailable trajectory is expected: use only the authoritative facts, result when available, verifier output, and exception. Do not invent agent actions. Its `trajectory_summary` must say that no trajectory was recorded and must use empty `highlights` and `components` arrays.
+
+An empty verifier `stdout` or `stderr` string means that file exists and the verifier emitted no text; it is valid, available evidence. Verifier evidence is absent only when `stdout`, `stderr`, and `exception` are all null or unavailable.
 
 If result or verifier evidence is absent for a trial that started, or any successful command returns a different `trial_id`, stop without writing `qa_result.json`. Missing QA evidence is not a solver HARNESS_ERROR; do not infer agent behavior or substitute evidence from another trial or attempt.
 
@@ -815,6 +792,7 @@ async def create_qa_trial(
     task: TaskModel,
     eligible_trial_ids: list[str],
     with_verdict: bool = True,
+    environment: str | None = None,
 ) -> TrialModel:
     version = (
         await session.get(TaskVersionModel, task.current_version_id)
@@ -868,6 +846,7 @@ async def create_qa_trial(
         session,
         task=task,
         kind="qa",
+        environment=environment,
         brief=build_qa_brief(
             task_name=task.name,
             trial_ids=eligible_trial_ids,
@@ -1190,8 +1169,8 @@ async def _import_qa_result(
     artifact = None
     if trial.status == TrialStatus.SUCCESS:
         artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
-    # A run below the evidence bar was told not to produce a verdict, so a
-    # missing one is the expected outcome, not an import failure.
+    # Classification-only runs (including historical evidence-gated runs)
+    # were told not to produce a verdict; a missing one is expected.
     verdict_expected = expected["verdict_expected"]
     # The same validator the in-sandbox verifier ran. Import is
     # all-or-nothing: a partial or malformed artifact must never publish a
@@ -1366,7 +1345,7 @@ async def _import_qa_result(
                 error=f"QA trial {trial.id} verdict failed validation: {exc}",
             )
             return
-    # The evidence threshold controls model synthesis, not a rejection
+    # Audit readiness controls model synthesis, not a rejection
     # established by validated source-audit or deterministic baseline facts.
     verdict = apply_deterministic_verdict_rules(
         verdict,
@@ -1586,7 +1565,10 @@ async def _import_audit_result(trial: TrialModel) -> None:
     await sync_pre_trial_to_task_version(
         version_id,
         payload=build_pre_trial_payload(
-            items, cost_usd=trial.cost_usd, block_id=trial.id
+            items,
+            cost_usd=trial.cost_usd,
+            block_id=trial.id,
+            audit_policy_hash=audit_payload.audit_policy_hash,
         ),
         error=None,
         expected_content_hash=pinned_hash,

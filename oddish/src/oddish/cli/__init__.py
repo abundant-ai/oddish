@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typer
 from oddish.cli.admin import admin_app
+from oddish.cli.assign import assign
 from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.collect import collect
@@ -16,6 +17,7 @@ from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
+from oddish.cli.qa import qa_app
 from oddish.cli.pull import pull
 from oddish.cli.preflight import preflight
 from oddish.cli.run import run
@@ -29,7 +31,9 @@ app = typer.Typer(
 )
 
 app.command()(run)
+app.command()(assign)
 app.add_typer(probe_app, name="probe")
+app.add_typer(qa_app, name="qa")
 app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command()(preflight)

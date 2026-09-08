@@ -862,7 +862,21 @@ class StorageClient:
                     continue
                 if s3_path.suffix in (".json", ".patch"):
                     continue
-                content = await self.download_text(s3_key)
+                try:
+                    content = await self.download_text(s3_key)
+                except UnicodeDecodeError:
+                    # A Harbor trial directory can contain SQLite databases,
+                    # compressed responses, binaries, and other artifacts under
+                    # agent/ or verifier/. Those are downloadable files, not
+                    # text logs. Do not let one of them hide the actual verifier
+                    # output behind a 500 response. Named *.log and *.txt files
+                    # are text evidence, so preserve malformed bytes there with
+                    # replacement characters just like the local reader does.
+                    if not is_log_file:
+                        continue
+                    content = (
+                        await self.download_bytes(s3_key)
+                    ).decode("utf-8", errors="replace")
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""

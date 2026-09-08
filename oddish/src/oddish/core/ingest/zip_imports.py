@@ -55,7 +55,6 @@ from oddish.cli.api import (
     load_harbor_trial_result,
     trial_result_to_import_spec,
 )
-from oddish.core.harbor_artifacts import detect_trajectory
 from oddish.core.tasks import complete_task_upload, initialize_task_upload
 from .trial_imports import (
     complete_trial_import,
@@ -571,7 +570,6 @@ async def _import_one_trial(
 
     spec_payload = trial_result_to_import_spec(
         trial_result,
-        has_trajectory=detect_trajectory(trial_dir),
         artifact_dir=trial_dir,
     )
     trial_spec = ImportedTrialSpec.model_validate(spec_payload)

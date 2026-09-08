@@ -604,6 +604,11 @@ def _build_agent_config(
     probe_oddish_env: dict[str, str] | None = None,
 ) -> AgentConfig:
     """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
+    gateway_env = (
+        probe_oddish_env
+        if (probe_oddish_env or {}).get("ODDISH_QA_MODEL_ROUTED") == "1"
+        else None
+    )
     raw_agent_config = raw_harbor_config.get("agent_config")
     agent_config = (
         AgentConfig.model_validate(raw_agent_config)
@@ -674,7 +679,8 @@ def _build_agent_config(
         # Inject the HDO key before rewriting the model id so non-claude-code
         # agents (which become anthropic/<id>) still authenticate with it.
         hdo_model = agent_config.model_name
-        _inject_anthropic_hdo_api_key(agent_config, model_name=hdo_model)
+        if not gateway_env:
+            _inject_anthropic_hdo_api_key(agent_config, model_name=hdo_model)
         canonical = to_anthropic_hdo_model_id(hdo_model)
         if _is_claude_code_agent(agent_config):
             # Keep the anthropic-hdo/ prefix for provider/queue/allowlist; the
@@ -749,8 +755,11 @@ def _build_agent_config(
     # HDO key must win over probe/BYOK/platform ANTHROPIC_API_KEY merges above.
     # Use the original *model* arg: non-claude-code agents rewrite model_name to
     # anthropic/<id> and would otherwise lose the HDO signal.
-    if is_anthropic_hdo_model(model):
+    if is_anthropic_hdo_model(model) and not gateway_env:
         _inject_anthropic_hdo_api_key(agent_config, model_name=model)
+    if gateway_env:
+        agent_config.env = {**agent_config.env, **gateway_env}
+        agent_config.model_name = gateway_env["ANTHROPIC_MODEL"]
 
     return agent_config
 

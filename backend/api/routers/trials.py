@@ -285,11 +285,12 @@ async def get_trial_logs(
 async def get_trial_logs_structured(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    verifier_only: bool = Query(False),
 ) -> dict:
-    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+    """Get structured logs, optionally limited to verifier evidence."""
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
-    return await read_trial_logs_structured(trial)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @router.get("/trials/{trial_id}/files")
