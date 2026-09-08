@@ -96,10 +96,11 @@ def update_cmd(
         return
 
     if not json_output:
+        via = info.manager_label
         if latest:
-            console.print(f"Updating oddish {info.version} → {latest} via uv pip")
+            console.print(f"Updating oddish {info.version} → {latest} via {via}")
         else:
-            console.print(f"Updating oddish {info.version} via uv pip")
+            console.print(f"Updating oddish {info.version} via {via}")
 
     completed = subprocess.run(
         command,

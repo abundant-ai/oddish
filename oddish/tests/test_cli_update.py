@@ -118,6 +118,30 @@ def test_update_refuses_editable(monkeypatch):
     assert "editable" in result.output.lower()
 
 
+def test_update_progress_uses_pip_manager_label(monkeypatch):
+    _patch_update(monkeypatch, _info(manager="pip"))
+    monkeypatch.setattr(
+        "oddish.cli.update.upgrade_command",
+        lambda _info: ["echo", "upgrade"],
+    )
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        "oddish.cli.update.subprocess.run",
+        lambda command, check=False, **_kwargs: _Result(),
+    )
+    monkeypatch.setattr(
+        "oddish.cli.update.query_installed_version",
+        lambda _exe: "0.1.14",
+    )
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.output
+    assert "via pip" in result.output
+    assert "via uv pip" not in result.output
+
+
 def test_update_runs_upgrade(monkeypatch):
     monkeypatch.setattr("oddish.cli.update.inspect_install", lambda: _info())
     monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", lambda: "0.1.14")
