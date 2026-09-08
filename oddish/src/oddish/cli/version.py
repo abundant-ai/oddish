@@ -46,9 +46,10 @@ def version_cmd(
         except PackageError as exc:
             error_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
-        outdated = info.source == "pypi" and is_outdated(info.version, latest)
+        pypi_install = info.source == "pypi"
+        outdated = pypi_install and is_outdated(info.version, latest)
         payload["latest"] = latest
-        payload["update_available"] = outdated
+        payload["update_available"] = outdated if pypi_install else None
 
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -56,7 +57,9 @@ def version_cmd(
         typer.echo(f"oddish {info.version}")
         typer.echo(f"Source: {info.source_label} ({info.manager_label})")
         if check and latest is not None:
-            if outdated:
+            if info.source != "pypi":
+                typer.echo(f"Latest PyPI: {latest} (this install is not from PyPI)")
+            elif outdated:
                 typer.echo(f"Latest: {latest} (update available)")
             else:
                 typer.echo(f"Latest: {latest} (up to date)")
