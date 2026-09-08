@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { orgRedirect } from "@/lib/org-redirect";
 
-export default function SkillsRedirect() {
-  redirect("/qa/skills");
+export default async function SkillsRedirect() {
+  await orgRedirect("/qa/skills");
 }

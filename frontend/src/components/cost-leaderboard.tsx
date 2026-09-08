@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import useSWR from "swr";
 import { Trophy } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";

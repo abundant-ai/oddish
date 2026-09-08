@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useOrgHref } from "@/lib/use-org-href";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -913,6 +914,7 @@ function AdminPageContent() {
   // (e.g. from the dashboard usage card) and browser back/forward moves
   // between them.
   const router = useRouter();
+  const orgHref = useOrgHref();
   const searchParams = useSearchParams();
   const {
     data: operatorAccess,
@@ -929,18 +931,19 @@ function AdminPageContent() {
     ? requestedTab
     : "overview";
   const handleTabChange = (value: string) => {
-    router.push(value === "overview" ? "/admin" : `/admin?tab=${value}`, {
-      scroll: false,
-    });
+    router.push(
+      orgHref(value === "overview" ? "/admin" : `/admin?tab=${value}`),
+      { scroll: false },
+    );
   };
 
   // An unknown ?tab= (typo, removed tab) falls back to overview on screen;
   // rewrite the URL to match so bookmarks and back/forward stay consistent.
   useEffect(() => {
     if (operatorAccessResolved && requestedTab && requestedTab !== activeTab) {
-      router.replace("/admin", { scroll: false });
+      router.replace(orgHref("/admin"), { scroll: false });
     }
-  }, [operatorAccessResolved, requestedTab, activeTab, router]);
+  }, [operatorAccessResolved, requestedTab, activeTab, orgHref, router]);
 
   return (
     <div className="space-y-6">

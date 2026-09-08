@@ -1,7 +1,7 @@
 "use client";
 
 import { use } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 export default function ProbeResultPage({

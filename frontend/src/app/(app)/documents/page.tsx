@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { orgRedirect } from "@/lib/org-redirect";
 
-export default function DocumentsRedirect() {
-  redirect("/qa/documents");
+export default async function DocumentsRedirect() {
+  await orgRedirect("/qa/documents");
 }

@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { AppLink as Link } from "@/components/app-link";
 import { Button } from "@/components/ui/button";
+import { useAppPathname } from "@/lib/use-org-href";
 
 const CONFIG_TABS = [
   { href: "/qa/skills", label: "Skills" },
@@ -10,7 +10,7 @@ const CONFIG_TABS = [
 ];
 
 export default function QaLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const runProbeActive = pathname === "/qa/run";
   const runsActive = pathname.startsWith("/qa/runs");
 

@@ -9,7 +9,7 @@ import {
   useTransition,
 } from "react";
 import useSWR from "swr";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { isOrgAdminRole } from "@/lib/org-roles";

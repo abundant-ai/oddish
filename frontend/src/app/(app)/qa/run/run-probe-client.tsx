@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useOrgHref } from "@/lib/use-org-href";
 import useSWR from "swr";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,6 +12,7 @@ type TaskOption = { id: string; name: string };
 
 export function RunProbeClient() {
   const router = useRouter();
+  const orgHref = useOrgHref();
   const [query, setQuery] = useState("");
   const { data, error } = useSWR<TaskOption[]>("/api/tasks", fetcher);
 
@@ -56,7 +58,7 @@ export function RunProbeClient() {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => router.push(`/tasks/${t.id}/probe`)}
+                onClick={() => router.push(orgHref(`/tasks/${t.id}/probe`))}
                 className="hover:bg-muted focus-visible:bg-muted block w-full px-3 py-2 text-left text-xs focus-visible:outline-none"
               >
                 {t.name}

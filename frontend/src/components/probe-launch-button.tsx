@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { SearchCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {

@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { ExternalLink, GitPullRequest } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { Badge, badgeVariants } from "@/components/ui/badge";

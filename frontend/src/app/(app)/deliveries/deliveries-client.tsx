@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { useRouter } from "next/navigation";
+import { useOrgHref } from "@/lib/use-org-href";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import { Package, Plus } from "lucide-react";
@@ -47,6 +48,7 @@ export function DeliveriesClient({
   initialDeliveries: DeliveryListItem[] | null;
 }) {
   const router = useRouter();
+  const orgHref = useOrgHref();
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, isLoading, mutate } = useSWR<DeliveryListItem[]>(
@@ -92,7 +94,7 @@ export function DeliveriesClient({
       setName("");
       setCustomerId("");
       void mutate();
-      router.push(`/deliveries/${payload.id}`);
+      router.push(orgHref(`/deliveries/${payload.id}`));
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : "Create failed");
     } finally {

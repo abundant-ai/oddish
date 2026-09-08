@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import useSWR from "swr";
 import { ExternalLink, Microscope } from "lucide-react";
 import {

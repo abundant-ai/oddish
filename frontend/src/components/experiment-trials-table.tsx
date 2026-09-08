@@ -53,7 +53,7 @@ import {
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";

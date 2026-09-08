@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useOrgHref } from "@/lib/use-org-href";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -100,6 +101,7 @@ export function ProbeSubmitForm({
   onSubmitted?: () => void;
 }) {
   const router = useRouter();
+  const orgHref = useOrgHref();
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -181,7 +183,7 @@ export function ProbeSubmitForm({
       if (scope === "experiment") {
         onSubmitted?.();
       } else if (trialId) {
-        router.push(`/tasks/${taskId}/probe/${trialId}`);
+        router.push(orgHref(`/tasks/${taskId}/probe/${trialId}`));
       } else {
         router.refresh();
       }
@@ -220,7 +222,7 @@ export function ProbeSubmitForm({
           </Select>
         </label>
         <Button type="button" variant="outline" asChild>
-          <a href="/qa/skills" target="_blank" rel="noreferrer">
+          <a href={orgHref("/qa/skills")} target="_blank" rel="noreferrer">
             Manage skills
           </a>
         </Button>

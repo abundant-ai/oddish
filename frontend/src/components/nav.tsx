@@ -1,17 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/app-link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
 import {
   OrganizationSwitcher,
   SignInButton,
   useAuth,
   useClerk,
-  useOrganization,
   useUser,
 } from "@clerk/nextjs";
+import { useAppPathname } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Button } from "@/components/ui/button";
 import {
@@ -129,29 +127,11 @@ function isNavLinkActive(pathname: string, link: NavLink): boolean {
 }
 
 export function Nav() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
   const { user, isLoaded, isSignedIn } = useUser();
   const { orgRole } = useAuth();
   const { signOut } = useClerk();
-  const { organization } = useOrganization();
   const isOrgAdmin = isOrgAdminRole(orgRole);
-
-  // Full reload on org switch. Org-scoped SWR keys and Next's client router
-  // cache (RSC payloads, kept ~30s by staleTimes.dynamic) are both keyed on
-  // plain URLs with no org id, so previous-workspace data would otherwise
-  // survive a switch. router.refresh() clears only the current route, so a
-  // hard navigation is the reliable way to drop every cached route at once.
-  const prevOrgId = useRef(organization?.id);
-  useEffect(() => {
-    if (
-      prevOrgId.current !== undefined &&
-      organization?.id !== prevOrgId.current
-    ) {
-      window.location.assign("/dashboard");
-      return;
-    }
-    prevOrgId.current = organization?.id;
-  }, [organization?.id]);
 
   return (
     <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
