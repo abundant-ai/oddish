@@ -842,9 +842,11 @@ def run(
         if "force_build" in sweep_config and force_build is None:
             force_build = sweep_config["force_build"]
 
-        # Warn if CLI agent/model/n_trials/provider/allow-unknown are also specified
+        # Warn on stderr. `run --json` owns stdout as a single document, and
+        # --provider / --allow-unknown-model trip this even when --agent /
+        # --model / --n-trials stay at their defaults.
         if agent or model or n_trials != 1 or provider or allow_unknown_model:
-            console.print(
+            error_console.print(
                 "[yellow]Warning:[/yellow] --agent, --model, --n-trials, --provider, "
                 "and --allow-unknown-model are ignored when using --config"
             )

@@ -254,3 +254,78 @@ def test_json_stdout_is_a_single_document(monkeypatch, combo, model):
     assert payload["total_trials"] == 1
     assert payload["tasks"][0]["id"] == "task-1"
     assert captured[0]["configs"][0]["model"] == model
+
+
+def _write_sweep_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "sweep.yaml"
+    config_path.write_text(
+        "agents:\n"
+        "  - name: mini-swe-agent\n"
+        "    model_name: deepseek-v4-flash\n"
+        "    n_trials: 1\n"
+    )
+    return config_path
+
+
+@pytest.mark.parametrize(
+    "extra_flags",
+    [
+        ["--provider", "fireworks"],
+        ["--allow-unknown-model"],
+        ["--provider", "deepseek", "--allow-unknown-model"],
+    ],
+)
+def test_json_stdout_is_a_single_document_with_config_ignored_flags(
+    tmp_path, monkeypatch, extra_flags
+):
+    """`--config` plus the new flags must not write a warning onto stdout.
+
+    `--provider` and `--allow-unknown-model` trip the ignored-when-using-config
+    warning even when `--agent` / `--model` / `--n-trials` stay at defaults.
+    That warning used to go through `console` (stdout), so
+    `oddish run --json --config … --provider fireworks` was no longer a single
+    JSON document.
+    """
+    config_path = _write_sweep_config(tmp_path)
+    monkeypatch.setattr(run_mod, "post_sweep_payload", lambda *a, **k: dict(_SWEEP_RESULT))
+    monkeypatch.setattr(run_mod, "get_task_summary", lambda *a, **k: None)
+
+    result = CliRunner(mix_stderr=False).invoke(
+        app,
+        [
+            "run",
+            "--task",
+            "task-1",
+            "--config",
+            str(config_path),
+            "--background",
+            "--no-watch",
+            "--json",
+            *extra_flags,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)  # must not raise
+    assert payload["total_trials"] == 1
+    assert payload["tasks"][0]["id"] == "task-1"
+    assert "ignored when using --config" not in result.stdout
+
+
+def test_config_ignored_flags_warn_on_stderr_not_stdout(tmp_path, monkeypatch, capsys):
+    """The --config warning is human-facing and belongs on stderr."""
+    config_path = _write_sweep_config(tmp_path)
+    _capture_payloads(monkeypatch)
+    _run(
+        agent=None,
+        config=config_path,
+        json_output=True,
+        provider="fireworks",
+        allow_unknown_model=True,
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["total_trials"] == 1
+    assert "ignored when using --config" not in captured.out
+    assert "ignored when using --config" in captured.err
