@@ -1574,7 +1574,10 @@ and be launched in one dispatcher pass. Previews also set
 `ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
 `ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
 limits do not prevent one model from filling that pool. Saved admin overrides
-still take precedence. These workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+still take precedence. Worker/container limits and model queue limits are
+baked into the image and appended as the final runtime secret so older provider
+secrets cannot replace the deployment values during container import. These
+workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
 apply independently.
 
 ### GKE Placement Contract
