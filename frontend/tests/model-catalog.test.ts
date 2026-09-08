@@ -15,6 +15,7 @@ const models: ModelEndpointSummary[] = [
     route: "anthropic",
     credential: null,
     testable: true,
+    is_configured: true,
   },
   {
     model: "anthropic/claude-3.7-sonnet",
@@ -22,6 +23,7 @@ const models: ModelEndpointSummary[] = [
     route: "anthropic",
     credential: null,
     testable: true,
+    is_configured: true,
   },
   {
     model: "openai/gpt-10",
@@ -29,6 +31,7 @@ const models: ModelEndpointSummary[] = [
     route: "azure",
     credential: null,
     testable: true,
+    is_configured: true,
   },
   {
     model: "openai/gpt-2",
@@ -36,6 +39,7 @@ const models: ModelEndpointSummary[] = [
     route: "openai",
     credential: null,
     testable: true,
+    is_configured: true,
   },
   {
     model: "cursor/auto",
@@ -43,6 +47,7 @@ const models: ModelEndpointSummary[] = [
     route: "cursor",
     credential: null,
     testable: false,
+    is_configured: true,
   },
 ];
 const byName: ModelSort = { field: "name", direction: "asc" };
@@ -202,4 +207,28 @@ test("sorts model numbers naturally without mutating the catalog or losing route
   );
   assert.equal(new Set(rows.map(({ key }) => key)).size, 3);
   assert.deepEqual(models, original);
+});
+
+test("previously used names are opt-in and do not enter the default batch", () => {
+  const historical = { ...models[0], is_configured: false };
+  const catalog = [historical, models[2]];
+  assert.deepEqual(
+    modelCatalogRows(catalog, {}, "", "all", "all", byName).map(
+      ({ endpoint }) => endpoint
+    ),
+    [models[2]]
+  );
+  assert.equal(
+    modelCatalogRows(catalog, {}, "", "all", "all", byName, true).length,
+    2
+  );
+  assert.equal(
+    modelCatalogRows(catalog, {}, "sonnet", "all", "all", byName).length,
+    0
+  );
+  assert.equal(
+    modelCatalogRows(catalog, {}, "sonnet", "all", "all", byName, true)[0]
+      .endpoint,
+    historical
+  );
 });

@@ -54,6 +54,7 @@ export function ModelsClient() {
   const [checks, setChecks] = useState<Record<string, ModelCheckState>>({});
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
 
+  const [includePreviouslyUsed, setIncludePreviouslyUsed] = useState(false);
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("all");
   const [status, setStatus] = useState<ModelStatus | "all">("all");
@@ -68,7 +69,8 @@ export function ModelsClient() {
     query,
     provider,
     status,
-    sort
+    sort,
+    includePreviouslyUsed
   );
   const providers = [...new Set(data?.models.map(({ route }) => route))].sort(
     (a, b) => (ROUTE_LABELS[a] ?? a).localeCompare(ROUTE_LABELS[b] ?? b)
@@ -212,7 +214,7 @@ export function ModelsClient() {
         <Card>
           <CardHeader className="border-b">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <CardTitle className="text-base">Available models</CardTitle>
+              <CardTitle className="text-base">Model catalog</CardTitle>
               <span role="status" className="text-muted-foreground text-sm">
                 {rows.length} of {data?.models.length ?? 0} models ·{" "}
                 {providerCount} {providerCount === 1 ? "provider" : "providers"}
@@ -322,6 +324,22 @@ export function ModelsClient() {
                   : `Test ${testableModels.length} matching ${testableModels.length === 1 ? "model" : "models"}`}
               </Button>
             </div>
+            <label className="text-muted-foreground flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={includePreviouslyUsed}
+                onChange={(event) =>
+                  setIncludePreviouslyUsed(event.target.checked)
+                }
+              />
+              Include previously used models
+            </label>
+            {includePreviouslyUsed && (
+              <p className="text-muted-foreground text-xs">
+                Previously used names may be retired or invalid. A failed check
+                applies to that model and provider route.
+              </p>
+            )}
           </CardHeader>
           <CardContent className="p-0">
             {isLoading ? (
@@ -334,7 +352,11 @@ export function ModelsClient() {
               </div>
             ) : !rows.length ? (
               <div className="text-muted-foreground space-y-2 px-4 py-10 text-center text-sm">
-                <p>No models match your search and filters.</p>
+                <p>
+                  {includePreviouslyUsed
+                    ? "No models match your search and filters."
+                    : "No configured models match your search and filters. Enable previously used models to search historical names."}
+                </p>
                 <Button variant="outline" size="sm" onClick={clearFilters}>
                   Clear filters
                 </Button>
@@ -445,6 +467,11 @@ export function ModelsClient() {
                                 >
                                   {model}
                                 </div>
+                                {!endpoint.is_configured && (
+                                  <span className="text-muted-foreground text-xs">
+                                    Previously used
+                                  </span>
+                                )}
                                 <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block lg:hidden">
                                   {ROUTE_LABELS[route] ?? route}
                                 </div>

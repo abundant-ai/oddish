@@ -41,6 +41,7 @@ class ModelEndpointSummary(BaseModel):
     route: str
     credential: str | None
     testable: bool
+    is_configured: bool
 
 
 class ModelEndpointAccessResponse(BaseModel):
@@ -114,9 +115,13 @@ async def _model_endpoint_catalog(org_id: str) -> tuple[ModelEndpointSummary, ..
     async with get_session() as session:
         facets = await browse_task_facets_core(session, org_id=org_id)
 
-    model_ids = {
+    configured_models = {
         _direct_completion_model(settings.normalize_queue_key(model))
-        for model in (*settings.get_known_queue_keys(), *facets.models)
+        for model in settings.get_known_queue_keys()
+    }
+    model_ids = configured_models | {
+        _direct_completion_model(settings.normalize_queue_key(model))
+        for model in facets.models
     }
     models: list[ModelEndpointSummary] = []
     for model in model_ids:
@@ -130,6 +135,7 @@ async def _model_endpoint_catalog(org_id: str) -> tuple[ModelEndpointSummary, ..
                     route=route,
                     credential=provider_key_var(route),
                     testable=route != "cursor",
+                    is_configured=model in configured_models,
                 )
             )
     models.sort(key=lambda endpoint: (endpoint.route, endpoint.model))
@@ -186,9 +192,23 @@ def _begin_model_check(
 
 
 def _safe_failure_message(
-    failure: Exception, failure_kind: Literal["provider", "configuration"]
+    failure: Exception,
+    failure_kind: Literal["provider", "configuration"],
+    status_code: int | None = None,
 ) -> str:
     """Describe a failure without copying provider-controlled exception text."""
+    if failure_kind == "provider":
+        explanations = {
+            400: "The provider rejected the request. Check the model name and supported request parameters.",
+            401: "The provider rejected this route's credential. Check its API key.",
+            403: "This credential is not permitted to use the requested model or endpoint.",
+            404: "The provider could not find this model or endpoint, or it is not available to this credential. Check the resolved model and provider route; this does not establish a provider outage.",
+            429: "The provider rate limit or quota was exceeded. Try again later or check this credential's quota.",
+        }
+        if status_code in explanations:
+            return f"{explanations[status_code]} (HTTP {status_code})"
+        if status_code is not None and status_code >= 500:
+            return f"The provider returned a server error (HTTP {status_code}). Try again later."
     label = (
         "Provider request failed"
         if failure_kind == "provider"
@@ -409,7 +429,7 @@ async def check_model_endpoint(
                 failure_kind=failure_kind,
                 status_code=status_code,
                 latency_ms=round((monotonic() - started) * 1000),
-                error=_safe_failure_message(failure, failure_kind),
+                error=_safe_failure_message(failure, failure_kind, status_code),
                 request_id=request_id,
             )
         if _model_check_cache.get(key) is reservation:

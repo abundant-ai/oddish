@@ -57,7 +57,8 @@ export function modelCatalogRows(
   query: string,
   provider: string,
   status: ModelStatus | "all",
-  sort: ModelSort
+  sort: ModelSort,
+  includePreviouslyUsed = false
 ) {
   const terms = searchWords(query);
   return models
@@ -90,6 +91,7 @@ export function modelCatalogRows(
         `${row.endpoint.model} ${row.endpoint.provider} ${row.endpoint.route} ${row.provider}`
       ).join(" ");
       return (
+        (includePreviouslyUsed || row.endpoint.is_configured) &&
         (provider === "all" || row.endpoint.route === provider) &&
         (status === "all" || row.status === status) &&
         terms.every((term) => searchable.includes(term))

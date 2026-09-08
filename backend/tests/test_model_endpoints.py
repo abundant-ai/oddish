@@ -129,6 +129,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         "allowed": True,
         "models": [
             {
+                "is_configured": True,
                 "credential": "AWS_BEARER_TOKEN_BEDROCK",
                 "model": "global.anthropic.test-model-05",
                 "provider": "bedrock",
@@ -136,6 +137,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "CURSOR_API_KEY",
                 "model": "cursor/test-model-02",
                 "provider": "cursor",
@@ -143,6 +145,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": False,
             },
             {
+                "is_configured": False,
                 "credential": "DEEPSEEK_API_KEY",
                 "model": "deepseek/deepseek-test-model-03",
                 "provider": "deepseek",
@@ -150,6 +153,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "GEMINI_API_KEY",
                 "model": "google/test-model-08",
                 "provider": "gemini",
@@ -157,6 +161,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": True,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-10",
                 "provider": "openai",
@@ -164,6 +169,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-11",
                 "provider": "openai",
@@ -171,6 +177,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "VERTEXAI_PROJECT",
                 "model": "vertex_ai/test-model-12",
                 "provider": "gemini",
@@ -178,6 +185,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "XAI_API_KEY",
                 "model": "xai/test-model-14",
                 "provider": "xai",
@@ -529,7 +537,10 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     assert payload["failure_kind"] == "provider"
     assert payload["transport"] == "litellm_completion"
     assert payload["status_code"] == status_code
-    assert payload["error"] == "Provider request failed (BadRequestError)"
+    assert f"HTTP {status_code}" in payload["error"]
+    assert "credential" in payload["error"]
+    if status_code == 404:
+        assert "does not establish a provider outage" in payload["error"]
     assert payload["request_id"] == f"provider-request-{status_code}"
 
 
@@ -940,3 +951,59 @@ async def test_model_endpoint_accepts_nonblank_text_without_exact_prompt_match(
     assert payload["response"] == "Hello!"
     assert payload["error"] is None
     assert payload["failure_kind"] is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_distinguishes_legacy_names_from_configured_runtime_models(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        type(model_endpoints_router.settings),
+        "get_known_queue_keys",
+        lambda _self: {"claude-sonnet-4-6"},
+    )
+
+    async def historical_facets(_session, *, org_id):
+        return SimpleNamespace(
+            models=[
+                "anthropic/claude-sonnet-4-6-20250514",
+                "anthropic/opus-5",
+                "global.anthropic.claude-sonnet-4-6",
+            ]
+        )
+
+    monkeypatch.setattr(
+        model_endpoints_router, "browse_task_facets_core", historical_facets
+    )
+    catalog = await model_endpoints_router._model_endpoint_catalog("org-1")
+    configured = [entry for entry in catalog if entry.is_configured]
+    assert len(configured) == 1
+    assert configured[0].model == "global.anthropic.claude-sonnet-4-6"
+    assert configured[0].route == "bedrock"
+    assert {entry.model for entry in catalog if not entry.is_configured} == {
+        "anthropic/claude-sonnet-4-6-20250514",
+        "anthropic/opus-5",
+    }
+
+
+@pytest.mark.parametrize(
+    "status_code, expected",
+    [
+        (400, "supported request parameters"),
+        (401, "API key"),
+        (403, "not permitted"),
+        (404, "does not establish a provider outage"),
+        (429, "rate limit or quota"),
+        (503, "server error"),
+    ],
+)
+def test_provider_failure_explanations_do_not_copy_exception_text(
+    status_code, expected
+):
+    failure = OpenAIError("Authorization: Bearer secret-that-must-not-be-shown")
+    message = model_endpoints_router._safe_failure_message(
+        failure, "provider", status_code
+    )
+    assert expected in message
+    assert str(status_code) in message
+    assert "secret-that-must-not-be-shown" not in message

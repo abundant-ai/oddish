@@ -581,7 +581,12 @@ errors remain 500s. The request creates no task, trial, worker job, or persisted
 history. Checks ask for "Hello from Oddish." with a 1,024-token output budget
 (shared with reasoning on reasoning models), and pass only with nonblank text
 in the completion message; empty text returns a provider failure. The operator-only
-frontend `/models` page searches and filters the catalog, sorts columns, and tests
+catalog marks each entry with `is_configured` (present in the environment's
+configured queue keys, rather than only historical task facets). The frontend
+`/models` page defaults to configured entries; previously used names are opt-in
+and may be retired or invalid. Fixed HTTP failure explanations distinguish missing
+models/access from credentials, limits, and server errors without returning
+provider exception text. The page searches and filters the catalog, sorts columns, and tests
 only the matching testable models captured at click time in batches of at most
 three. It keeps results only in browser state. Rows reopen stored results
 without another provider request; response text appears above expandable JSON
