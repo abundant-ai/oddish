@@ -6,6 +6,7 @@ import {
   ORG_PREFIX,
   ORG_SYNC_PATTERNS,
   PUBLIC_ROOT_SEGMENTS,
+  isSluggedExperimentPath,
   parseOrgSlug,
   resolveOrgRequest,
   stripOrgSlug,
@@ -88,7 +89,7 @@ test("signed-in users with an org are redirected onto /orgs/{slug} app URLs", ()
       userId: "user_1",
       orgSlug: "acme",
     }),
-    { action: "redirect", pathname: "/orgs/acme/tasks/task-1", status: 308 },
+    { action: "redirect", pathname: "/orgs/acme/tasks/task-1", status: 307 },
   );
   assert.deepEqual(
     resolveOrgRequest({
@@ -99,7 +100,7 @@ test("signed-in users with an org are redirected onto /orgs/{slug} app URLs", ()
     {
       action: "redirect",
       pathname: "/orgs/acme/experiments/exp-1",
-      status: 308,
+      status: 307,
     },
   );
   assert.deepEqual(
@@ -121,6 +122,14 @@ test("signed-out visitors keep unprefixed experiment URLs for unfurls", () => {
     }),
     { action: "next" },
   );
+});
+
+test("slugged experiment paths stay identifiable for unfurl public access", () => {
+  assert.equal(isSluggedExperimentPath("/orgs/acme/experiments/exp-1"), true);
+  assert.equal(isSluggedExperimentPath("/orgs/acme/experiments"), true);
+  assert.equal(isSluggedExperimentPath("/orgs/acme/tasks"), false);
+  assert.equal(isSluggedExperimentPath("/experiments/exp-1"), false);
+  assert.equal(isSluggedExperimentPath("/share/token"), false);
 });
 
 test("slugged app URLs rewrite onto the existing page tree", () => {

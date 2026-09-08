@@ -6,7 +6,8 @@
  *
  * Public surfaces (`/share`, `/datasets`, `/sign-in`, `/sign-up`, `/api`) stay
  * unprefixed. `/experiments` is also left unprefixed for link-unfurl bots;
- * signed-in users are redirected to `/orgs/{slug}/experiments/…`.
+ * signed-in users are redirected to `/orgs/{slug}/experiments/…`, and that
+ * slugged path stays public so pasting the address-bar URL still unfurls.
  */
 
 export const ORG_PREFIX = "orgs";
@@ -55,6 +56,12 @@ export function isPublicRootSegment(segment: string): boolean {
 
 export function isAppRootSegment(segment: string): boolean {
   return APP_ROOT.has(segment);
+}
+
+/** `/orgs/{slug}/experiments/…` stays public so Slack/Twitter unfurls work. */
+export function isSluggedExperimentPath(pathname: string): boolean {
+  if (!parseOrgSlug(pathname)) return false;
+  return firstSegment(stripOrgSlug(pathname)) === "experiments";
 }
 
 export function isOrgSlug(segment: string): boolean {
@@ -154,7 +161,9 @@ export function resolveOrgRequest(input: {
       return {
         action: "redirect",
         pathname: orgScopedPath(orgSlug, pathname),
-        status: 308,
+        // Temporary: the target org is session-dependent. A 308 would pin
+        // the previous workspace in the browser cache.
+        status: 307,
       };
     }
     return { action: "next" };

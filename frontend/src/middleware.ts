@@ -1,7 +1,11 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { trace } from "@opentelemetry/api";
 import { NextResponse } from "next/server";
-import { ORG_SYNC_PATTERNS, resolveOrgRequest } from "@/lib/org-path";
+import {
+  isSluggedExperimentPath,
+  ORG_SYNC_PATTERNS,
+  resolveOrgRequest,
+} from "@/lib/org-path";
 
 const isPublicRoute = createRouteMatcher([
   "/",
@@ -11,9 +15,12 @@ const isPublicRoute = createRouteMatcher([
   "/datasets(.*)",
   // Public so link-unfurl bots (Slack, Twitter) can read OG/Twitter meta;
   // real unauthed users are redirected by the (app) layout and no data is
-  // fetched until authed. Signed-in users are sent to
-  // /orgs/{orgSlug}/experiments/… Do not gate this without preserving unfurls.
+  // fetched until authed. Signed-in users live at
+  // /orgs/{orgSlug}/experiments/…; that slugged path is also public below
+  // so pasting the address-bar URL still unfurls. Do not gate either
+  // without preserving unfurls.
   "/experiments(.*)",
+  "/orgs/:slug/experiments(.*)",
   "/api/public(.*)",
   "/api/client-traces(.*)",
 ]);
@@ -37,7 +44,10 @@ function attachTraceparent(response: NextResponse): NextResponse {
 
 export default clerkMiddleware(
   async (auth, request) => {
-    if (!isPublicRoute(request)) {
+    if (
+      !isPublicRoute(request) &&
+      !isSluggedExperimentPath(request.nextUrl.pathname)
+    ) {
       await auth.protect();
     }
 
