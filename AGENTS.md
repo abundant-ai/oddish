@@ -753,6 +753,39 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Task-file publication and read latency
+
+Task-file publication writes complete, immutable directories under
+`tasks/<id>/v<N>-expanded/<token>/`, then atomically sets the existing
+`task_versions.expanded_manifest_key` after checking the source hash and archive
+key under the version-row lock. Publication does not delete or copy the previous
+directory. Retain published directories for in-flight readers and presigned URLs;
+also retain a candidate when commit acknowledgement is uncertain. Failed uploads
+and positively identified stale candidates can be cleaned up separately. There is
+no new schema migration or automatic backfill in this change.
+
+`resolve_task_file_source` returns a `TaskFileSource` snapshot containing version,
+archive prefix, published manifest key, and content hash from one authorized query.
+All hosted, standalone, and public file routes pass that snapshot through. Only
+database-selected immutable directories bypass legacy manifest validation. Existing
+`v<N>-files/` layouts retain their checks; missing individual members still fall
+back to the archive. Listing responses (including the first NDJSON chunk) and file
+responses carry `source_hash` for the contents selected by the database.
+
+File-list request state records the requested and received content fingerprints.
+Late task details do not abort a pending listing just to add a previously unknown
+fingerprint; a differing fingerprint still invalidates the listing. The response
+fingerprint resolves the race whether details or the listing finish first. URL
+selection and line anchors retain their existing ownership.
+
+Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
+`backend.request.phases` includes storage operation counts, downloaded/archive bytes,
+archive-cache hit/miss, file source, and known file bytes. SDK failures log only
+selected provider diagnostics, never request headers or file contents. Existing
+identity provisioning suppresses automatic relationship loads in its own queries;
+organization isolation, role refresh, and new-user provisioning remain unchanged.
+See `docs/task-file-latency.md` for the staged verification checklist.
+
 ### Task Browser Summary
 
 The default `GET /tasks/browse` path selects and paginates tasks before card
