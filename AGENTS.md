@@ -1567,6 +1567,13 @@ with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 `-api-qa-model.modal.run` URL is a separate endpoint and must never become the
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
 
+PR preview deploys and manual preview resets set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=300` and
+`ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` so up to 300 trial workers can run
+and be launched in one dispatcher pass. These workers also launch and monitor
+Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+apply independently.
+
 ### GKE Placement Contract
 
 The pinned Harbor (harbor-gke `6ec8e946`+) requires explicit placement for

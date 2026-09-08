@@ -286,123 +286,135 @@ async def check_model_endpoint(
         )
         return cached_result
 
-    started = monotonic()
-    resolved_model = model
-    failure: Exception | None = None
+    key = (org_id, identity, model, route)
+    reservation = _model_check_cache[key]
     try:
-        kwargs = (
-            {"max_completion_tokens": 32}
-            if route in {OPENAI_PROVIDER_AZURE, "openai"}
-            else {"max_tokens": 32}
-        )
-        if provider == "bedrock":
-            resolved_model = f"bedrock/{model}"
-        elif provider == "anthropic-hdo":
-            bare_model = anthropic_hdo_bare_model_id(model)
-            api_model = to_anthropic_api_model_id(bare_model) or bare_model
-            hdo_api_key = (settings.anthropic_hdo_api_key or "").strip()
-            if not hdo_api_key:
-                raise RuntimeError("ANTHROPIC_HDO_API_KEY is missing")
-            resolved_model = f"anthropic/{api_model}"
-            kwargs["api_key"] = hdo_api_key
-        elif provider == "fireworks":
-            fireworks_api_key = (settings.fireworks_api_key or "").strip()
-            if not fireworks_api_key:
-                raise RuntimeError("FIREWORKS_API_KEY is missing")
-            api_model = fireworks_api_model_id(fireworks_bare_model_id(model))
-            resolved_model = f"fireworks_ai/{api_model}"
-            kwargs["api_key"] = fireworks_api_key
-        elif provider == "meta":
-            meta_api_key = (settings.meta_api_key or "").strip()
-            if not meta_api_key:
-                raise RuntimeError("META_API_KEY is missing")
-            resolved_model = f"openai/{meta_bare_model_id(model)}"
-            kwargs.update(
-                {
-                    "api_key": meta_api_key,
-                    "api_base": settings.meta_base_url.rstrip("/"),
-                }
-            )
-        elif provider == "gemini" and model.startswith("google/"):
-            resolved_model = f"gemini/{model.split('/', 1)[1]}"
-        elif route == OPENAI_PROVIDER_AZURE:
-            azure = settings.require_azure_openai_config()
-            deployment = (
-                model.split("/", 1)[1]
-                if provider in {"azure", "azure_openai"} and "/" in model
-                else settings.resolve_azure_openai_deployment(model)
-            )
-            resolved_model = f"azure/{deployment}"
-            kwargs.update(
-                {
-                    "api_key": azure["api_key"],
-                    "api_base": azure["endpoint"]
-                    .rstrip("/")
-                    .removesuffix("/openai/v1"),
-                    "api_version": azure["api_version"],
-                }
-            )
-    except (ValueError, RuntimeError) as caught:
-        failure = caught
-        failure_kind: Literal["provider", "configuration"] = "configuration"
-    else:
-        # This is deliberately narrower than a trial: it exercises LiteLLM's
-        # completion transport, not an agent CLI or sandbox startup.
-        import litellm
-        from openai import OpenAIError
-
+        started = monotonic()
+        resolved_model = model
+        failure: Exception | None = None
         try:
-            completion = await litellm.acompletion(
-                model=resolved_model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": "Reply with one short sentence naming the model you are.",
-                    }
-                ],
-                timeout=15,
-                **kwargs,
+            kwargs = (
+                {"max_completion_tokens": 32}
+                if route in {OPENAI_PROVIDER_AZURE, "openai"}
+                else {"max_tokens": 32}
             )
-        except OpenAIError as caught:
+            if provider == "bedrock":
+                resolved_model = f"bedrock/{model}"
+            elif provider == "anthropic-hdo":
+                bare_model = anthropic_hdo_bare_model_id(model)
+                api_model = to_anthropic_api_model_id(bare_model) or bare_model
+                hdo_api_key = (settings.anthropic_hdo_api_key or "").strip()
+                if not hdo_api_key:
+                    raise RuntimeError("ANTHROPIC_HDO_API_KEY is missing")
+                resolved_model = f"anthropic/{api_model}"
+                kwargs["api_key"] = hdo_api_key
+            elif provider == "fireworks":
+                fireworks_api_key = (settings.fireworks_api_key or "").strip()
+                if not fireworks_api_key:
+                    raise RuntimeError("FIREWORKS_API_KEY is missing")
+                api_model = fireworks_api_model_id(fireworks_bare_model_id(model))
+                resolved_model = f"fireworks_ai/{api_model}"
+                kwargs["api_key"] = fireworks_api_key
+            elif provider == "meta":
+                meta_api_key = (settings.meta_api_key or "").strip()
+                if not meta_api_key:
+                    raise RuntimeError("META_API_KEY is missing")
+                resolved_model = f"openai/{meta_bare_model_id(model)}"
+                kwargs.update(
+                    {
+                        "api_key": meta_api_key,
+                        "api_base": settings.meta_base_url.rstrip("/"),
+                    }
+                )
+            elif provider == "gemini" and model.startswith("google/"):
+                resolved_model = f"gemini/{model.split('/', 1)[1]}"
+            elif route == OPENAI_PROVIDER_AZURE:
+                azure = settings.require_azure_openai_config()
+                deployment = (
+                    model.split("/", 1)[1]
+                    if provider in {"azure", "azure_openai"} and "/" in model
+                    else settings.resolve_azure_openai_deployment(model)
+                )
+                resolved_model = f"azure/{deployment}"
+                kwargs.update(
+                    {
+                        "api_key": azure["api_key"],
+                        "api_base": azure["endpoint"]
+                        .rstrip("/")
+                        .removesuffix("/openai/v1"),
+                        "api_version": azure["api_version"],
+                    }
+                )
+        except (ValueError, RuntimeError) as caught:
             failure = caught
-            failure_kind = "provider"
+            failure_kind: Literal["provider", "configuration"] = "configuration"
         else:
-            # Unexpected response shapes are integration defects and remain 500s.
-            content = completion.choices[0].message.content
+            # This is deliberately narrower than a trial: it exercises LiteLLM's
+            # completion transport, not an agent CLI or sandbox startup.
+            import litellm
+            from openai import OpenAIError
+
+            try:
+                completion = await litellm.acompletion(
+                    model=resolved_model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Reply with one short sentence naming the model you are.",
+                        }
+                    ],
+                    timeout=15,
+                    **kwargs,
+                )
+            except OpenAIError as caught:
+                failure = caught
+                failure_kind = "provider"
+            else:
+                # Unexpected response shapes are integration defects and remain 500s.
+                content = completion.choices[0].message.content
+                result = ModelEndpointCheckResponse(
+                    ok=True,
+                    model=model,
+                    resolved_model=resolved_model,
+                    provider=provider,
+                    route=route,
+                    credential=credential,
+                    latency_ms=round((monotonic() - started) * 1000),
+                    response=content
+                    if isinstance(content, str)
+                    else str(content or ""),
+                    request_id=(
+                        str(completion.id) if getattr(completion, "id", None) else None
+                    ),
+                )
+        if failure is not None:
+            raw_status = getattr(failure, "status_code", None)
+            status_code = (
+                int(raw_status)
+                if isinstance(raw_status, int | str) and str(raw_status).isdigit()
+                else None
+            )
+            request_id = (
+                str(getattr(failure, "request_id", "") or "").strip()[:200] or None
+            )
             result = ModelEndpointCheckResponse(
-                ok=True,
+                ok=False,
                 model=model,
                 resolved_model=resolved_model,
                 provider=provider,
                 route=route,
                 credential=credential,
+                failure_kind=failure_kind,
+                status_code=status_code,
                 latency_ms=round((monotonic() - started) * 1000),
-                response=content if isinstance(content, str) else str(content or ""),
-                request_id=(
-                    str(completion.id) if getattr(completion, "id", None) else None
-                ),
+                error=_safe_failure_message(failure, failure_kind),
+                request_id=request_id,
             )
-    if failure is not None:
-        raw_status = getattr(failure, "status_code", None)
-        status_code = (
-            int(raw_status)
-            if isinstance(raw_status, int | str) and str(raw_status).isdigit()
-            else None
-        )
-        request_id = str(getattr(failure, "request_id", "") or "").strip()[:200] or None
-        result = ModelEndpointCheckResponse(
-            ok=False,
-            model=model,
-            resolved_model=resolved_model,
-            provider=provider,
-            route=route,
-            credential=credential,
-            failure_kind=failure_kind,
-            status_code=status_code,
-            latency_ms=round((monotonic() - started) * 1000),
-            error=_safe_failure_message(failure, failure_kind),
-            request_id=request_id,
-        )
-    _model_check_cache[(org_id, identity, model, route)] = (monotonic(), result)
+        if _model_check_cache.get(key) is reservation:
+            _model_check_cache[key] = (monotonic(), result)
+    finally:
+        # A timed-out reservation may already belong to a newer request.
+        if _model_check_cache.get(key) is reservation:
+            del _model_check_cache[key]
     _audit_model_check(org_id=org_id, identity=identity, result=result)
     return result

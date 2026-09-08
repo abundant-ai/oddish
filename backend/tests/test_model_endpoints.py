@@ -1,5 +1,6 @@
 """Tests for the model catalog and direct provider completion checks."""
 
+import asyncio
 from contextlib import asynccontextmanager
 import sys
 from types import SimpleNamespace
@@ -587,25 +588,118 @@ async def test_model_endpoint_never_returns_or_logs_provider_exception_secrets(
 
 
 @pytest.mark.asyncio
-async def test_model_endpoint_does_not_hide_internal_errors(monkeypatch):
-    async def completion(**_kwargs):
-        raise RuntimeError("unexpected integration defect")
+@pytest.mark.parametrize("failure", ["exception", "response", "cancellation"])
+async def test_model_endpoint_releases_failed_check_for_immediate_retry(
+    monkeypatch, failure
+):
+    calls = 0
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=completion),
-    )
+    async def completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            if failure == "exception":
+                raise RuntimeError("unexpected integration defect")
+            if failure == "cancellation":
+                raise asyncio.CancelledError()
+            return SimpleNamespace(choices=[])
+        return SimpleNamespace(
+            id="retry-request",
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Retry succeeded"))
+            ],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
 
     async with AsyncClient(
         transport=ASGITransport(app=_app(), raise_app_exceptions=False),
         base_url="http://test",
     ) as client:
-        response = await client.post(
+        if failure == "cancellation":
+            with pytest.raises(asyncio.CancelledError):
+                await model_endpoints_router.check_model_endpoint(
+                    model_endpoints_router.ModelEndpointCheckRequest(
+                        model="minimax/minimax-m3"
+                    ),
+                    AuthContext(
+                        method=AuthMethod.CLERK_JWT,
+                        org_id="org-1",
+                        user_id="user-1",
+                        user_role=UserRole.MEMBER,
+                    ),
+                )
+        else:
+            response = await client.post(
+                "/models/check", json={"model": "minimax/minimax-m3"}
+            )
+            assert response.status_code == 500
+        retry = await client.post("/models/check", json={"model": "minimax/minimax-m3"})
+        cached = await client.post(
             "/models/check", json={"model": "minimax/minimax-m3"}
         )
 
-    assert response.status_code == 500
+    assert retry.status_code == 200
+    assert retry.json()["response"] == "Retry succeeded"
+    assert cached.json() == retry.json()
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_request_fails", [True, False])
+async def test_expired_model_check_preserves_newer_result(
+    monkeypatch, old_request_fails
+):
+    now = 100.0
+    monkeypatch.setattr(model_endpoints_router, "monotonic", lambda: now)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = 0
+
+    async def completion(**_kwargs):
+        nonlocal calls
+        calls += 1
+        request_id = f"request-{calls}"
+        if calls == 1:
+            first_started.set()
+            await release_first.wait()
+            if old_request_fails:
+                raise RuntimeError("old request failed")
+        return SimpleNamespace(
+            id=request_id,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=request_id))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    request = model_endpoints_router.ModelEndpointCheckRequest(
+        model="minimax/minimax-m3"
+    )
+    auth = AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id="org-1",
+        user_id="user-1",
+        user_role=UserRole.MEMBER,
+    )
+    first = asyncio.create_task(
+        model_endpoints_router.check_model_endpoint(request, auth)
+    )
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        now += model_endpoints_router._MODEL_CHECK_IN_FLIGHT_TTL_SECONDS
+        newer = await model_endpoints_router.check_model_endpoint(request, auth)
+        release_first.set()
+        if old_request_fails:
+            with pytest.raises(RuntimeError, match="old request failed"):
+                await first
+        else:
+            assert (await first).request_id == "request-1"
+        cached = await model_endpoints_router.check_model_endpoint(request, auth)
+        assert cached == newer
+        assert cached.request_id == "request-2"
+        assert calls == 2
+    finally:
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
 
 
 @pytest.mark.asyncio
