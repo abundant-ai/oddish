@@ -27,15 +27,37 @@ test("direct mode needs both the flag and an API URL", () => {
 });
 
 test("proxy paths map onto the backend, query string intact", () => {
-  const resolved = resolveApiUrl("/api/tasks/browse?limit=25&offset=0", {
-    env: direct,
-    inBrowser: true,
-  });
+  const resolved = resolveApiUrl(
+    "/api/tasks/task-1/open?version_id=version-2",
+    {
+      env: direct,
+      inBrowser: true,
+    }
+  );
   assert.deepEqual(resolved, {
-    url: "https://api.example.test/tasks/browse?limit=25&offset=0",
+    url: "https://api.example.test/tasks/task-1/open?version_id=version-2",
     direct: true,
     public: false,
   });
+});
+
+test("task browse retains the proxy's display-filter translation", () => {
+  const input =
+    "/api/tasks/browse?q=author%3Akyle%20tag%3Areview&created_within=7d";
+  assert.deepEqual(resolveApiUrl(input, { env: direct, inBrowser: true }), {
+    url: input,
+    direct: false,
+    public: false,
+  });
+});
+
+test("experiment links lose only Next's extra encoding layer", () => {
+  const id = "experiment with spaces%";
+  const input = `/api/experiments/${encodeURIComponent(encodeURIComponent(id))}/open?limit=10`;
+  assert.equal(
+    resolveApiUrl(input, { env: direct, inBrowser: true }).url,
+    `https://api.example.test/experiments/${encodeURIComponent(id)}/open?limit=10`
+  );
 });
 
 test("the five renamed proxies are rewritten, not mirrored", () => {

@@ -1,5 +1,21 @@
 # Request-path performance plan
 
+Combined preview: `perf/request-path-combined` contains phases 1–3, rebased
+onto staging `1fa9230b9`. It excludes the region pin. Its Vercel preview opts
+into direct API calls by branch name, unless `NEXT_PUBLIC_API_DIRECT` is
+explicitly set. Other deployments remain off by default. Use the stable
+`https://pr-{number}.oddish.app` alias: that PR's backend allows its exact
+origin. The token-template name is copied from the server build configuration.
+Task browse retains its proxy because it translates address-bar filters;
+experiment IDs retain their existing double-encoded link contract. Private
+backend responses vary by Authorization to isolate browser cache entries by
+token. No database migrations are added by these phases.
+
+The 15-minute Clerk identity cache also bounds recognition of Oddish-only
+user/organization deactivation in other API processes. Clerk token expiry
+only shortens that window when the corresponding Clerk identity/session is
+also revoked. Verify that policy before production rollout.
+
 Status: 2026-09-03. Builds on PR #1467 (merged: experiment page queries).
 Phase 0 (PR #1471, region pin) is **dropped**: Modal bills pinned functions at
 1.75x, which the team decided not to pay. Phase 1 is implemented on branch

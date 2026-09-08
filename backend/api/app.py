@@ -57,14 +57,19 @@ def _get_cors_origins() -> list[str]:
     Defaults to localhost origins for development.
     """
     env_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    if env_origins:
-        return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
-
-    # Default: localhost for development
-    return [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    origins = (
+        [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+        if env_origins
+        else ["http://localhost:3000", "http://127.0.0.1:3000"]
+    )
+    # Each PR API permits its own stable frontend alias. MODAL_APP_NAME is
+    # already baked into the runtime image by modal_app.py.
+    app_name = os.getenv("MODAL_APP_NAME", "")
+    if app_name.startswith("oddish-pr-"):
+        pr_number = app_name.removeprefix("oddish-pr-")
+        if pr_number.isascii() and pr_number.isdecimal():
+            origins.append(f"https://pr-{pr_number}.oddish.app")
+    return origins
 
 
 def _get_cors_origin_regex() -> str | None:

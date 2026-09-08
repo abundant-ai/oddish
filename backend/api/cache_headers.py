@@ -57,4 +57,8 @@ async def cache_header_middleware(request: Request, call_next):
         policy = cache_control_for(request, response.status_code)
         if policy is not None:
             response.headers["Cache-Control"] = policy
+    if "private" in response.headers.get("cache-control", ""):
+        # Direct callers can switch organizations at the same URL. A cached
+        # response must only be reused with the token that authorized it.
+        response.headers.add_vary_header("Authorization")
     return response

@@ -48,6 +48,13 @@ def test_matched_routes_get_their_policy():
     assert client.get("/tasks/t1/open").headers["cache-control"] == "no-store"
 
 
+def test_private_responses_vary_by_authorization():
+    client = TestClient(_app())
+    response = client.get("/tasks/t1/files", headers={"Authorization": "Bearer org-a"})
+    assert "Authorization" in response.headers["vary"]
+    assert "vary" not in client.get("/tasks/t1/open").headers
+
+
 def test_unlisted_routes_handler_headers_and_errors_are_left_alone():
     client = TestClient(_app())
     assert "cache-control" not in client.get("/tasks/t1/detail").headers

@@ -12,8 +12,14 @@
 
 // Proxies that do more than forward the request keep serving in direct mode:
 // the Logfire trace relay holds a write token the browser must not see, and
-// the zip import repackages the upload before forwarding it.
-const KEEP_PROXY = ["/api/client-traces", "/api/imports/zip"];
+// the zip import repackages the upload before forwarding it. Task browsing
+// translates display filters (q, author/tag tokens, rolling date presets)
+// into backend parameters, so it must keep that translation too.
+const KEEP_PROXY = [
+  "/api/client-traces",
+  "/api/imports/zip",
+  "/api/tasks/browse",
+];
 
 // Proxies whose backend path differs from their /api path.
 const REWRITES: Array<[RegExp, string]> = [
@@ -32,7 +38,7 @@ export type ApiEnv = {
   NEXT_PUBLIC_API_URL?: string;
 };
 
-export function directApiEnabled(env: ApiEnv = process.env as ApiEnv): boolean {
+export function directApiEnabled(env: ApiEnv): boolean {
   const flag = (env.NEXT_PUBLIC_API_DIRECT ?? "").trim().toLowerCase();
   return (flag === "1" || flag === "true") && Boolean(env.NEXT_PUBLIC_API_URL);
 }
@@ -56,7 +62,10 @@ export type ResolvedApiUrl = {
 export function resolveApiUrl(
   input: string,
   {
-    env = process.env as ApiEnv,
+    env = {
+      NEXT_PUBLIC_API_DIRECT: process.env.NEXT_PUBLIC_API_DIRECT,
+      NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    },
     inBrowser = typeof window !== "undefined",
   }: { env?: ApiEnv; inBrowser?: boolean } = {}
 ): ResolvedApiUrl {
@@ -75,6 +84,16 @@ export function resolveApiUrl(
   }
   const base = (env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
   let path = input.slice("/api".length);
+  // Experiment links encode the ID twice for Next's dynamic route. A direct
+  // request skips Next's first decode, so perform that decode here.
+  try {
+    path = path.replace(
+      /^\/experiments\/([^/?#]+)/,
+      (_, id: string) => `/experiments/${decodeURIComponent(id)}`
+    );
+  } catch {
+    return fallback;
+  }
   for (const [pattern, replacement] of REWRITES) {
     if (pattern.test(input)) {
       path = input.replace(pattern, replacement);

@@ -1762,14 +1762,23 @@ it would send to the proxy; `resolveApiUrl` turns that into
 `settings/*` and `admin/users/{id}/costs` rewrites listed there), `apiFetch`
 attaches the token minted by the Clerk client with
 `NEXT_PUBLIC_CLERK_JWT_TEMPLATE` (the same template the proxies use
-server-side), and `/api/public/*` reads go without a token. Two proxies stay
+server-side), and `/api/public/*` reads go without a token. Experiment IDs lose
+the extra URL-encoding layer normally consumed by Next's route parser. Three proxy groups stay
 in the path because they do real work -- the Logfire relay
-(`/api/client-traces`) and the zip import -- and a request that cannot get a
+(`/api/client-traces`), the zip import, and task browse (which translates the
+address-bar search/tag/date filters) -- and a request that cannot get a
 token yet (Clerk still loading) or runs during server rendering also keeps
 the proxy for that call. The backend side is `CORS_ALLOWED_ORIGIN_REGEX`
 (preview origins are unpredictable) and `backend/api/cache_headers.py`, which
 sets the `Cache-Control` values the proxies used to add, keyed on the matched
-route template. New mutation call sites must use `apiFetch`, never a bare
+route template; private responses also vary by `Authorization` so switching
+organizations cannot reuse another token's cached response. Each PR backend
+permits its own `https://pr-{number}.oddish.app` frontend origin. The combined
+`perf/request-path-combined` branch opts its Vercel preview into direct mode
+in `frontend/next.config.ts`; an explicit flag overrides this, and other
+deployments remain off by default. The public token-template name defaults to
+the existing server-side `CLERK_JWT_TEMPLATE` at build time.
+New mutation call sites must use `apiFetch`, never a bare
 `fetch("/api/...")`. The proxy files stay until direct mode has run in
 production for a while; delete them only in a dedicated change.
 
