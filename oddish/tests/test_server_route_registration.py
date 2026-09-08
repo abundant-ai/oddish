@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from oddish.server import api, list_task_files
+from oddish.core.task_files import TaskFileSource
 
 
 def test_experiment_options_route_mounted() -> None:
@@ -27,7 +28,10 @@ async def test_task_tree_forwards_inline_flag() -> None:
         yield session
 
     list_files = AsyncMock(return_value={"files": []})
-    resolve_source = AsyncMock(return_value=(3, "tasks/task-1/v3/", True))
+    manifest_key = "tasks/task-1/v3-expanded/published/.oddish-manifest.json"
+    resolve_source = AsyncMock(
+        return_value=TaskFileSource(3, "tasks/task-1/v3/", manifest_key, "hash-3")
+    )
     with (
         patch("oddish.server.get_read_session", new=fake_get_session),
         patch("oddish.server.resolve_task_file_source", new=resolve_source),
@@ -56,4 +60,6 @@ async def test_task_tree_forwards_inline_flag() -> None:
         version=3,
         inline=False,
         expanded=True,
+        expanded_manifest_key=manifest_key,
+        source_hash="hash-3",
     )

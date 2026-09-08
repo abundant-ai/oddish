@@ -1766,7 +1766,7 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1782,9 +1782,11 @@ async def list_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
-                version=version,
-                task_s3_prefix=task_s3_prefix,
-                expanded=expanded,
+                version=source.version,
+                task_s3_prefix=source.task_s3_prefix,
+                expanded=source.expanded,
+                expanded_manifest_key=source.expanded_manifest_key,
+                source_hash=source.content_hash,
             )
         )
 
@@ -1795,10 +1797,12 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
-        version=version,
+        version=source.version,
         inline=inline,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
     )
 
 
@@ -1823,7 +1827,7 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session,
             task_id=task_id,
             org_id=auth.org_id,
@@ -1835,10 +1839,12 @@ async def get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
-            version=version,
+            version=source.version,
             max_bytes=max_bytes,
-            task_s3_prefix=task_s3_prefix,
-            expanded=expanded,
+            task_s3_prefix=source.task_s3_prefix,
+            expanded=source.expanded,
+            expanded_manifest_key=source.expanded_manifest_key,
+            source_hash=source.content_hash,
         )
     except HTTPException as exc:
         if exc.status_code != status.HTTP_404_NOT_FOUND:
