@@ -196,6 +196,9 @@ jobs:
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "300"
       ODDISH_MODAL_MAX_WORKERS_PER_POLL: "300"
+      # Let one model fill the preview worker pool during load tests.
+      ODDISH_DEFAULT_MODEL_CONCURRENCY: "300"
+      ODDISH_MODEL_CONCURRENCY_OVERRIDES: "{}"
       ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
       run:

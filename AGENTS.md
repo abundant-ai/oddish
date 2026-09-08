@@ -1570,8 +1570,11 @@ frontend's backend URL. Missing or ambiguous API URLs fail deployment validation
 PR preview deploys and manual preview resets set
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=300` and
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` so up to 300 trial workers can run
-and be launched in one dispatcher pass. These workers also launch and monitor
-Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+and be launched in one dispatcher pass. Previews also set
+`ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
+`ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
+limits do not prevent one model from filling that pool. Saved admin overrides
+still take precedence. These workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
 apply independently.
 
 ### GKE Placement Contract
