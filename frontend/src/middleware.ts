@@ -74,7 +74,7 @@ export default clerkMiddleware(
   },
   {
     organizationSyncOptions: {
-      organizationPatterns: ORG_SYNC_PATTERNS,
+      organizationPatterns: [...ORG_SYNC_PATTERNS],
     },
   },
 );
