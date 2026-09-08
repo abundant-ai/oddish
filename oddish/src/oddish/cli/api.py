@@ -57,7 +57,6 @@ from oddish.cli._concurrency import (
 from oddish.cli.config import error_console, get_auth_headers
 from oddish.core.harbor_artifacts import (
     build_trial_result,
-    detect_trajectory,
     extract_ctrf_summary,
     extract_trajectory_metrics,
     extract_trial_result_fields,
@@ -1727,8 +1726,6 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 def trial_result_to_import_spec(
     trial_result: TrialResult,
     *,
-    has_trajectory: bool | None = None,
-    total_steps: int | None = None,
     artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
@@ -1739,7 +1736,10 @@ def trial_result_to_import_spec(
     """
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
-    fields = extract_trial_result_fields(trial_result, artifact_dir=artifact_dir)
+    trajectory = (
+        extract_trajectory_metrics(artifact_dir) if artifact_dir is not None else None
+    )
+    fields = extract_trial_result_fields(trial_result, trajectory=trajectory)
 
     # Prefer the fully-qualified ``provider/model`` string from the
     # trial's harbor config so imported rows land in the same model
@@ -1761,14 +1761,6 @@ def trial_result_to_import_spec(
             model_id = model_info.name
     else:
         model_id = None
-
-    if total_steps is None:
-        total_steps = fields.total_steps
-    if has_trajectory is None:
-        has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
-    trajectory_metrics = (
-        extract_trajectory_metrics(artifact_dir) if artifact_dir else None
-    )
 
     result_payload = None
     if artifact_dir is not None:
@@ -1800,19 +1792,15 @@ def trial_result_to_import_spec(
         "input_tokens": fields.input_tokens,
         "cache_tokens": fields.cache_tokens,
         "output_tokens": fields.output_tokens,
-        "total_steps": total_steps,
+        "total_steps": fields.total_steps,
         "trajectory_duration_seconds": (
-            trajectory_metrics.trajectory_duration_seconds
-            if trajectory_metrics
-            else None
+            trajectory.trajectory_duration_seconds if trajectory else None
         ),
-        "total_tool_calls": (
-            trajectory_metrics.total_tool_calls if trajectory_metrics else None
-        ),
-        "tool_counts": trajectory_metrics.tool_counts if trajectory_metrics else None,
+        "total_tool_calls": trajectory.total_tool_calls if trajectory else None,
+        "tool_counts": trajectory.tool_counts if trajectory else None,
         "cost_usd": fields.cost_usd,
         "phase_timing": fields.phase_timing,
-        "has_trajectory": has_trajectory,
+        "has_trajectory": trajectory.has_trajectory if trajectory else False,
         "started_at": _iso(trial_result.started_at),
         "finished_at": _iso(trial_result.finished_at),
         "external_trial_id": str(trial_result.id),
@@ -1929,7 +1917,6 @@ def import_trial(
 
     spec_payload = trial_result_to_import_spec(
         trial_result,
-        has_trajectory=detect_trajectory(trial_dir),
         artifact_dir=trial_dir,
     )
 

@@ -122,6 +122,7 @@ def _task(index: int, **overrides):
         "verdict_label": "accept",
         "verdict_is_good": "true",
         "verdict_confidence": "high",
+        "verdict_primary_issue": None,
         "verdict_error": None,
         "created_at": NOW - timedelta(seconds=index),
         "updated_at": NOW,
@@ -263,6 +264,31 @@ def test_experiment_open_is_exact_compact_bounded_and_four_queries():
     assert len(response.model_dump_json().encode()) < OPEN_MAX_BYTES
 
 
+def test_experiment_open_includes_rejection_preview_without_full_report():
+    reason = "The verifier accepts an empty solution."
+    session, response = _open(
+        _task(
+            1,
+            verdict_label="reject",
+            verdict_is_good="false",
+            verdict_primary_issue=reason,
+        )
+    )
+    verdict = response.model_dump()["tasks"][0]["verdict"]
+    assert verdict == {
+        "verdict": "reject",
+        "is_good": False,
+        "confidence": "high",
+        "primary_issue": reason,
+    }
+    sql = _sql(session.calls[2])
+    assert (
+        "left(coalesce(nullif(tasks.verdict ->> 'primary_issue', ''), tasks.verdict ->> 'reasoning'), 240) AS verdict_primary_issue"
+        in sql
+    )
+    assert len(session.calls) == 4
+
+
 def test_experiment_open_caps_rows_and_returns_a_stable_boundary():
     rows = [_task(index) for index in range(OPEN_MAX_TASKS + 1)]
     _, response = _open(
@@ -371,6 +397,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     task = _task(
         1,
         user="private-owner",
+        verdict_primary_issue="Private QA finding",
         tags={
             "github_meta": (
                 '{"category":"JS","world":"World_7",'
@@ -416,6 +443,8 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
         "category": "JS",
         "world": "World_7",
     }
+    assert "Private QA finding" not in response.model_dump_json()
+    assert "primary_issue" not in payload["tasks"][0]["verdict"]
     assert "private-owner" not in response.model_dump_json()
     assert "private/repository" not in response.model_dump_json()
     task_query_sql = _sql(session.calls[1])

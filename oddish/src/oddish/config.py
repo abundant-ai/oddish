@@ -1330,6 +1330,9 @@ class Settings(BaseSettings):
     # ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0 to restore Bedrock routing once the
     # credentials are fixed.
     claude_code_force_direct_api: bool = True
+    # Opt-in per-request QA routing. Pool quotas are explicit deployment config;
+    # workers never infer independent capacity from the number of API keys.
+    qa_model_routing_enabled: bool = False
 
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set

@@ -1,20 +1,18 @@
 """Authenticated delivery-checklist endpoints (docs/delivery-design.md).
 
-Reads need the ordinary TASKS scope; every mutation is admin-only. All
-readiness state is computed in ``oddish.core.deliveries`` — these routes
+Reads and work coordination need the ordinary TASKS scope; readiness mutations
+are admin-only. Readiness state is computed in ``oddish.core.deliveries`` — these routes
 only add auth and transaction boundaries.
 """
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from models import UserModel
+from fastapi import APIRouter, Depends, HTTPException
+from models import UserModel, UserRole
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
+    claim_delivery_qa_core,
     create_customer_core,
     create_delivery_core,
     delete_delivery_core,
@@ -24,6 +22,7 @@ from oddish.core.deliveries import (
     list_customers_core,
     list_deliveries_core,
     patch_delivery_core,
+    patch_delivery_qa_work_core,
     remove_delivery_task_core,
     set_manual_check_core,
 )
@@ -38,8 +37,12 @@ from oddish.schemas import (
     DeliveryResponse,
     DeliveryTasksAdd,
     ManualCheckSet,
+    QAWorkClaim,
+    QAWorkPatch,
     TaskQAHistoryResponse,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 
@@ -100,6 +103,8 @@ async def _fill_user_names(
     """
     ids: set[str] = set()
     for row in board.tasks:
+        if row.qa_work.owner_user_id:
+            ids.add(row.qa_work.owner_user_id)
         for check in row.checks:
             if check.checked_by_user_id:
                 ids.add(check.checked_by_user_id)
@@ -132,6 +137,7 @@ async def _fill_user_names(
         if display:
             names[user_id] = display
     for row in board.tasks:
+        row.qa_owner_name = names.get(row.qa_work.owner_user_id or "")
         for check in row.checks:
             check.checked_by_name = names.get(check.checked_by_user_id or "")
         for defect in row.defects:
@@ -152,6 +158,7 @@ async def get_delivery_board(
         board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=auth.org_id
         )
+        board.qa_viewer_user_id = auth.user_id
         await _fill_user_names(session, auth.org_id, board)
         return board
 
@@ -229,9 +236,7 @@ async def set_manual_check(
         return {"check_key": data.check_key, "checked": data.checked}
 
 
-@router.post(
-    "/deliveries/{delivery_id}/finalize", response_model=DeliveryBoardResponse
-)
+@router.post("/deliveries/{delivery_id}/finalize", response_model=DeliveryBoardResponse)
 async def finalize_delivery(
     delivery_id: str,
     auth: Annotated[AuthContext, Depends(require_admin)],
@@ -257,3 +262,46 @@ async def get_task_qa_history(
         return await get_task_qa_history_core(
             session, task_id=task_id, org_id=auth.org_id
         )
+
+
+@router.post("/deliveries/{delivery_id}/qa-work/claim")
+async def claim_qa_work(
+    delivery_id: str,
+    data: QAWorkClaim,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    auth.require_scope(APIKeyScope.TASKS)
+    if not auth.user_id:
+        raise HTTPException(status_code=403, detail="QA claims require a user identity")
+    async with get_session() as session:
+        claimed = await claim_delivery_qa_core(
+            session,
+            delivery_id=delivery_id,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+            data=data,
+        )
+        await session.commit()
+        return {"claimed_version_ids": claimed}
+
+
+@router.patch("/deliveries/{delivery_id}/qa-work")
+async def patch_qa_work(
+    delivery_id: str,
+    data: QAWorkPatch,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    auth.require_scope(APIKeyScope.TASKS)
+    if not auth.user_id:
+        raise HTTPException(status_code=403, detail="QA work requires a user identity")
+    async with get_session() as session:
+        await patch_delivery_qa_work_core(
+            session,
+            delivery_id=delivery_id,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+            is_admin=auth.user_role == UserRole.ADMIN,
+            data=data,
+        )
+        await session.commit()
+        return {"updated": data.version_id}

@@ -532,10 +532,11 @@ async def get_trial_logs_structured_core(
     *,
     trial_id: str,
     org_id: str | None = None,
+    verifier_only: bool = False,
 ) -> dict:
     """Get structured trial logs with optional org scoping."""
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    return await read_trial_logs_structured(trial)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 async def get_trial_trajectory_core(

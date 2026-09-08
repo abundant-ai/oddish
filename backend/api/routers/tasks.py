@@ -138,7 +138,7 @@ from oddish.schemas import (
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
-    PreTrialAuditRequest,
+    QARunRequest,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1530,12 +1530,18 @@ async def cancel_tasks(
 async def retry_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    body: QARunRequest | None = None,
 ) -> dict:
     """Create replacement task-level QA over every eligible agent trial."""
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
-        return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
+        return await rerun_task_qa_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            environment=body.environment if body is not None else None,
+        )
 
 
 @router.post("/tasks/{task_id}/qa/backfill")
@@ -1565,7 +1571,7 @@ async def backfill_task_qa(
 async def rerun_pre_trial_audit(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    body: PreTrialAuditRequest | None = None,
+    body: QARunRequest | None = None,
 ) -> dict:
     """Queue the pre-trial audit for the task's current version.
 

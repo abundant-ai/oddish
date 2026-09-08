@@ -77,6 +77,7 @@ import {
   isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
+  taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
@@ -410,8 +411,7 @@ function TaskVerdictChip({
       ? `QA rejected this task (${task.verdict.confidence} confidence)`
       : "QA rejected this task";
   } else {
-    chipClass =
-      "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
+    chipClass = "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
     label = "QA failed";
     tip = task.verdict_error
       ? `QA failed: ${task.verdict_error}`
@@ -591,6 +591,12 @@ export function ExperimentTrialsTable({
   const AGENT_COLUMN_MIN = 140;
   const DEFAULT_AGENT_WIDTH = 180;
   const DEFAULT_TASK_WIDTH = 240;
+  const [rejectedOnly, setRejectedOnly] = useState(false);
+  const rejectedTasks = useMemo(
+    () => tasks.filter(taskHasRejectedVerdict),
+    [tasks]
+  );
+  const rejectedCount = rejectedTasks.length;
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -625,6 +631,7 @@ export function ExperimentTrialsTable({
   // then synthesize the verdict), so the toolbar exposes one Run QA / Cancel
   // QA action rather than separate analysis + verdict controls.
   const [isRunningQA, setIsRunningQA] = useState(false);
+  const [qaEnvironment, setQAEnvironment] = useState("");
   const [isCancellingQA, setIsCancellingQA] = useState(false);
   const [qaError, setQAError] = useState<string | null>(null);
   const [tagBulkOpen, setTagBulkOpen] = useState(false);
@@ -743,7 +750,9 @@ export function ExperimentTrialsTable({
       // Drawer and detail panels update their own query fields through
       // replaceState, which does not refresh useSearchParams. Start from the
       // live address so a delayed filter write cannot erase task/trial/tab.
-      const currentQuery = new URLSearchParams(window.location.search).toString();
+      const currentQuery = new URLSearchParams(
+        window.location.search
+      ).toString();
       const params = new URLSearchParams(currentQuery);
       const hidden = Array.from(hiddenAgents).sort();
       const dimmed = Array.from(dimmedStatuses).sort();
@@ -881,9 +890,13 @@ export function ExperimentTrialsTable({
   }, [visibleAgents]);
 
   const filteredTasks = useMemo(() => {
+    const reviewTasks =
+      showAnalysis && rejectedOnly
+        ? rejectedTasks
+        : tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
     const searchFiltered = query
-      ? tasks.filter((task) => {
+      ? reviewTasks.filter((task) => {
           // Comma-separated queries use OR logic (any substring matches).
           const terms = query
             .split(",")
@@ -896,7 +909,7 @@ export function ExperimentTrialsTable({
             .toLowerCase();
           return terms.some((term) => haystack.includes(term));
         })
-      : tasks;
+      : reviewTasks;
 
     // Apply row-level filter using visible non-baseline agents.
     const rowFiltered =
@@ -944,6 +957,9 @@ export function ExperimentTrialsTable({
   }, [
     tasks,
     deferredTaskSearch,
+    rejectedTasks,
+    rejectedOnly,
+    showAnalysis,
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
@@ -1318,9 +1334,7 @@ export function ExperimentTrialsTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           task_ids: taskIds,
-          ...(scopedExperimentId
-            ? { experiment_id: scopedExperimentId }
-            : {}),
+          ...(scopedExperimentId ? { experiment_id: scopedExperimentId } : {}),
         }),
       });
       if (!res.ok) {
@@ -1393,6 +1407,8 @@ export function ExperimentTrialsTable({
           // the task verdict.
           const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ environment: qaEnvironment || null }),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
@@ -1910,6 +1926,33 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
+        {showAnalysis && (rejectedCount > 0 || rejectedOnly) && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
+            <div>
+              <p className="text-base font-semibold text-red-700 dark:text-red-300">
+                {rejectedCount} loaded {rejectedCount === 1 ? "task" : "tasks"}{" "}
+                rejected by QA
+              </p>
+              <p className="mt-1 text-sm">
+                Review the rejection reasons before including these tasks in a
+                delivery.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              aria-pressed={rejectedOnly}
+              onClick={() => {
+                setRejectedOnly(!rejectedOnly);
+                setTaskSearch("");
+                setRowFilterMode("none");
+                clearSelection();
+              }}
+            >
+              {rejectedOnly ? "Show all tasks" : "Review rejected tasks"}
+            </Button>
+          </div>
+        )}
         {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
@@ -2030,19 +2073,34 @@ export function ExperimentTrialsTable({
                       </InlineBtn>
                     )}
                     {canRerun && (
-                      <InlineBtn
-                        onClick={handleRunQAForSelectedTasks}
-                        disabled={
-                          isRunningQA ||
-                          isCancellingQA ||
-                          selectedQARunnableTasks.length === 0
-                        }
-                      >
-                        {isRunningQA ? "Queueing" : "Run QA"}
-                        <InlineCount>
-                          {selectedQARunnableTasks.length}
-                        </InlineCount>
-                      </InlineBtn>
+                      <>
+                        <select
+                          aria-label="QA sandbox provider"
+                          value={qaEnvironment}
+                          onChange={(event) =>
+                            setQAEnvironment(event.target.value)
+                          }
+                          disabled={isRunningQA}
+                          className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
+                        >
+                          <option value="">QA: Worker default</option>
+                          <option value="modal">QA: Modal</option>
+                          <option value="daytona">QA: Daytona</option>
+                        </select>
+                        <InlineBtn
+                          onClick={handleRunQAForSelectedTasks}
+                          disabled={
+                            isRunningQA ||
+                            isCancellingQA ||
+                            selectedQARunnableTasks.length === 0
+                          }
+                        >
+                          {isRunningQA ? "Queueing" : "Run QA"}
+                          <InlineCount>
+                            {selectedQARunnableTasks.length}
+                          </InlineCount>
+                        </InlineBtn>
+                      </>
                     )}
                     {canUnlinkTasks && (
                       <>
@@ -2537,6 +2595,27 @@ export function ExperimentTrialsTable({
                             )}
                           </div>
                         </div>
+                        {showAnalysis && taskHasRejectedVerdict(task) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onTaskSelect?.(task, {
+                                orderedTasks: filteredTasks,
+                                taskIndex: index,
+                              })
+                            }
+                            className="mt-1 block w-full truncate text-left text-xs text-red-700 hover:underline dark:text-red-300"
+                            title={
+                              task.verdict?.primary_issue ||
+                              task.verdict?.reasoning ||
+                              "QA rejected this task"
+                            }
+                          >
+                            {task.verdict?.primary_issue ||
+                              task.verdict?.reasoning ||
+                              "QA rejected this task. Open findings for details."}
+                          </button>
+                        )}
                       </TableCell>
                       {renderedAgents.map((agent) => {
                         const trials = grouped.get(agent.key) ?? EMPTY_TRIALS;

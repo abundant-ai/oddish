@@ -280,6 +280,7 @@ def create_app() -> FastAPI:
         model_endpoints,
         notifications,
         orgs,
+        qa_work,
         skills,
         public,
         public_analysis,
@@ -307,6 +308,7 @@ def create_app() -> FastAPI:
     api.include_router(documents.router)
     api.include_router(feedback.router)
     api.include_router(deliveries.router)
+    api.include_router(qa_work.router)
     api.include_router(public.router)
     api.include_router(public_analysis.router)
     api.include_router(qa_eval.router)

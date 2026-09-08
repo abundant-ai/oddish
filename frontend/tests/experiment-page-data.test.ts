@@ -139,3 +139,21 @@ test("preserves a historical classification whose subtype is absent", () => {
     evidence: "Historical grade",
   });
 });
+
+test("experiment rows retain the rejection preview before trial pages load", () => {
+  const primaryIssue = "The verifier accepts an empty solution.";
+  const page = openPage(
+    task({
+      verdict_status: "success",
+      verdict: {
+        verdict: "reject",
+        is_good: false,
+        confidence: "high",
+        primary_issue: primaryIssue,
+      },
+    })
+  );
+  const [row] = buildExperimentTasks([page], undefined, false);
+  assert.equal(row.verdict?.primary_issue, primaryIssue);
+  assert.equal(row.trials, undefined);
+});

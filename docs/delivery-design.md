@@ -112,7 +112,8 @@ Built-in automated checks (each toggleable / parameterized in `check_config`):
 
 1. **pre_trial_passed** — audit on the current version exists and passed.
 2. **min_rollouts** — ≥ N eligible trials on the current version across ≥ M
-   agents (defaults: the existing verdict evidence bar, 5 trials / 3 agents).
+   agents (defaults: 5 trials / 3 agents, independently configurable from verdict
+   generation, which needs only one eligible trial).
 3. **verdict_ok** — verdict exists for the current version, status not FAILED,
    classification acceptable (no oracle/nop-style violations).
 4. **no_must_fix** — no open `must_fix` action items against the current

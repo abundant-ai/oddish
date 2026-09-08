@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import is_nop_oracle_agent, settings
+from oddish.core.analysis_payload import qa_trial_evidence
 from oddish.core.idempotency import (
     IdempotencyConflict,
     IdempotencyStore,
@@ -34,7 +35,6 @@ from oddish.workers.analysis_trials import (
     build_qa_brief,
     create_analysis_trial,
     pre_trial_item_ids,
-    qa_trial_evidence,
 )
 
 _QA_EVAL_SOURCE_STATUSES = (TrialStatus.SUCCESS, TrialStatus.FAILED)

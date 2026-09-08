@@ -821,6 +821,9 @@ class TaskVersionModel(TimestampedMixin, Base):
         server_default=text("'{}'::text[]"),
     )
 
+    # Human coordination is shared by every delivery of this version.
+    qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
     pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1140,7 +1143,7 @@ class TrialModel(TimestampedMixin, Base):
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Whether an ATIF trajectory file exists for this trial
+    # Whether this trial has a readable ATIF trajectory JSON object
     has_trajectory: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
@@ -1642,6 +1645,44 @@ class TrialEventModel(Base):
     )
 
 
+class ModelRequestPoolModel(Base):
+    """Provider observations; one row per verified independent quota pool."""
+
+    __tablename__ = "model_request_pools"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_load: Mapped[float] = mapped_column(Float, server_default="0")
+
+
+class ModelRequestLeaseModel(Base):
+    """In-flight estimates, then actual usage retained for one minute."""
+
+    __tablename__ = "model_request_leases"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    pool_id: Mapped[str] = mapped_column(Text, nullable=False)
+    worker_job_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    __table_args__ = (
+        Index("ix_model_request_pool_expiry", "pool_id", "expires_at"),
+        Index("ix_model_request_worker_created", "worker_job_id", "created_at"),
+    )
+
+
+class QueueDispatchStateModel(Base):
+    """Durable fair-share cursors, locked only while planning/reserving launches."""
+
+    __tablename__ = "queue_dispatch_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cursors: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
 class QueueSlotModel(Base):
     """Worker slot lease keyed by queue key."""
 
@@ -1659,6 +1700,9 @@ class QueueSlotModel(Base):
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Retained through adoption until the first job claim commits.
+    launch_demand: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         Index(

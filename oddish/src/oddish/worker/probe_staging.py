@@ -58,6 +58,7 @@ def stage_query_cli(work_task_dir: Path) -> None:
 _ANALYSIS_TEST_SH = """#!/bin/sh
 OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
 mkdir -p "$OUT"
+echo "0.0" > "$OUT/reward.txt"
 SRC="/logs/{artifact}"
 TESTS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -d "/logs/{artifact}.submissions" ]; then

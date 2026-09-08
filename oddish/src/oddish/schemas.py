@@ -643,8 +643,8 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
-class PreTrialAuditRequest(BaseModel):
-    """Optional execution settings for a fresh source audit."""
+class QARunRequest(BaseModel):
+    """Optional sandbox selection for a QA or pre-trial audit rerun."""
 
     environment: Literal["modal", "daytona"] | None = Field(
         None,
@@ -1091,8 +1091,13 @@ class PublicExperimentTaskRow(BaseModel):
     updated_at: datetime
 
 
+class ExperimentTaskVerdict(ExperimentPageVerdict):
+    primary_issue: str | None = None
+
+
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    verdict: ExperimentTaskVerdict | None = None
 
 
 class ExperimentPageSummary(BaseModel):
@@ -1361,7 +1366,8 @@ class TrialResponse(BaseModel):
 
     # Trajectory
     has_trajectory: bool = Field(
-        False, description="Whether an ATIF trajectory file exists for this trial"
+        False,
+        description="Whether this trial has a readable ATIF trajectory JSON object",
     )
 
     analysis_status: AnalysisStatus | None = None
@@ -2006,7 +2012,11 @@ class ImportedTrialSpec(BaseModel):
         ),
     )
     has_trajectory: bool = Field(
-        False, description="Whether the uploaded archive contains a trajectory file"
+        False,
+        description=(
+            "Whether the uploaded archive contains a readable ATIF trajectory "
+            "JSON object"
+        ),
     )
     harbor_config: dict | None = Field(
         None,
@@ -2660,6 +2670,52 @@ class DeliveryDefect(BaseModel):
     acknowledged_at: datetime | None = None
 
 
+QAIssueCategory = Literal[
+    "instructions", "verifier", "environment", "evidence", "qa_execution"
+]
+
+
+class QAWorkMetadata(BaseModel):
+    owner_user_id: str | None = None
+    claimed_at: datetime | None = None
+    issue_categories: list[QAIssueCategory] = Field(default_factory=list, max_length=5)
+    note: str = Field(default="", max_length=4000)
+
+
+class QAWorkPatch(BaseModel):
+    version_id: str
+    release: bool = False
+    issue_categories: list[QAIssueCategory] | None = Field(default=None, max_length=5)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class QAWorkClaim(BaseModel):
+    version_ids: list[str] = Field(min_length=1, max_length=5000)
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class QAWorkAssign(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=1000)
+    assignee: str = Field(min_length=1, max_length=320)
+    replace: bool = False
+
+
+class QAWorkAssignResponse(BaseModel):
+    owner_user_id: str
+    assigned_task_ids: list[str] = Field(default_factory=list)
+    unchanged_task_ids: list[str] = Field(default_factory=list)
+    skipped_task_ids: list[str] = Field(default_factory=list)
+
+
+class DeliveryQAStatus(BaseModel):
+    status: Literal[
+        "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
+    ] = "never"
+    trial_id: str | None = None
+    finished_at: datetime | None = None
+    detail: str = "No QA result recorded"
+
+
 class DeliveryTaskBoardRow(BaseModel):
     delivery_task_id: str
     task_id: str
@@ -2674,10 +2730,15 @@ class DeliveryTaskBoardRow(BaseModel):
     internal_note: str | None
     checks: list[DeliveryCheckResult]
     defects: list[DeliveryDefect] = Field(default_factory=list)
+    qa: DeliveryQAStatus = Field(default_factory=DeliveryQAStatus)
+    qa_work: QAWorkMetadata = Field(default_factory=QAWorkMetadata)
+    qa_owner_name: str | None = None
     ready: bool
 
 
 class DeliveryBoardResponse(BaseModel):
+    qa_as_of: datetime | None = None
+    qa_viewer_user_id: str | None = None
     delivery: DeliveryResponse
     check_config: DeliveryCheckConfig
     tasks: list[DeliveryTaskBoardRow]
