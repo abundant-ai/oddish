@@ -75,6 +75,7 @@ import {
   Loader2,
   Star,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -1039,7 +1040,7 @@ export function TaskDetailClient({
     setJudgeError(null);
     // force:false keeps stored trial analyses; only the verdict is redone.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
+      const res = await apiFetch(`/api/tasks/${task.id}/qa/backfill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: false, enable_analysis: true }),
@@ -1062,7 +1063,7 @@ export function TaskDetailClient({
     setIsCancellingJudge(true);
     setJudgeError(null);
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
+      const res = await apiFetch(`/api/tasks/${task.id}/qa/cancel`, {
         method: "POST",
       });
       if (!res.ok) {

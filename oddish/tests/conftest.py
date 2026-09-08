@@ -35,6 +35,17 @@ async def session():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_cost_exclusions():
+    """Cost exclusions are cached per process for a minute; tests that insert
+    exclusion rows must not see another test's (or their own earlier) snapshot."""
+    from oddish.core.cost_exclusions import invalidate_cost_exclusions
+
+    invalidate_cost_exclusions()
+    yield
+    invalidate_cost_exclusions()
+
+
+@pytest.fixture(autouse=True)
 def _recycle_db_engine():
     """Recreate the shared async engine (NullPool) before each test.
 

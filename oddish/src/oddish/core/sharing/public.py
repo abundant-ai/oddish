@@ -45,7 +45,7 @@ from .helpers import (
 from oddish.db import (
     ExperimentModel,
     TrialModel,
-    get_session,
+    get_read_session,
     task_experiments,
 )
 from oddish.schemas import (
@@ -95,7 +95,7 @@ def _user_tag_refs(views) -> list[UserTagRef]:
 
 async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialModel:
     """Load a public trial, then release the DB session before artifact I/O."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -112,7 +112,7 @@ async def _detached_public_trial_with_display_names(
     :func:`_get_detached_public_trial` releases it. The experiment is loaded
     once here and handed to the trial lookup so it isn't re-queried.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         experiment = await get_public_experiment(session, public_token)
         if not experiment:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -148,7 +148,7 @@ async def list_public_experiments(
 )
 async def get_public_experiment_info(public_token: str) -> PublicExperimentResponse:
     """Get public experiment metadata by share token."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         experiment = await get_public_experiment(session, public_token)
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
@@ -167,7 +167,7 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
 async def get_public_experiment_cost_totals(
     public_token: str,
 ) -> ExperimentCostTotals:
-    async with get_session() as session:
+    async with get_read_session() as session:
         experiment = await get_public_experiment(session, public_token)
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
@@ -189,7 +189,7 @@ async def get_public_experiment_open(
     before_task_id: str | None = None,
     include_summary: bool = True,
 ) -> PublicExperimentOpenResponse:
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_public_experiment_open_core(
             session,
             public_token=public_token,
@@ -209,7 +209,7 @@ async def get_public_experiment_focus(
     task: str | None = None,
     trial: str | None = None,
 ) -> PublicExperimentFocusResponse:
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_public_experiment_focus_core(
             session,
             public_token=public_token,
@@ -228,7 +228,7 @@ async def get_public_experiment_trial_page(
     before_created_at: datetime | None = None,
     before_trial_id: str | None = None,
 ) -> ExperimentTrialPageResponse:
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_public_experiment_trial_page_core(
             session,
             public_token=public_token,
@@ -311,7 +311,7 @@ async def get_public_task_status(
     include_trials: bool = True,
 ) -> PublicTaskStatusResponse:
     """Get task status for a public experiment."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
@@ -351,7 +351,7 @@ async def list_public_task_trials(
     Probes are experimental and never exposed publicly, so this always
     filters to real attempts (``probe=False``) regardless of caller input.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         trials = await list_task_trials_for_public_experiment(
             session, public_token, task_id
         )
@@ -374,7 +374,7 @@ async def get_public_trial_live(
     attempt: int | None = Query(None),
     after_seq: int = Query(0),
 ) -> dict:
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -474,11 +474,11 @@ async def list_public_task_files(
     ),
 ):
     """List all files in a public task's S3 directory."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -492,6 +492,7 @@ async def list_public_task_files(
                 cursor=cursor,
                 presign=presign,
                 task_s3_prefix=task_s3_prefix,
+                expanded=expanded,
                 version=version,
             )
         )
@@ -504,6 +505,7 @@ async def list_public_task_files(
         cursor=cursor,
         presign=presign,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
         version=version,
     )
 
@@ -518,11 +520,11 @@ async def get_public_task_file_content(
     max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific public task file from S3."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix = await resolve_task_file_source(
+        version, task_s3_prefix, expanded = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -531,6 +533,7 @@ async def get_public_task_file_content(
         file_path=file_path,
         presign=presign,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
         version=version,
         max_bytes=max_bytes,
     )

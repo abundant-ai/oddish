@@ -26,7 +26,7 @@ from oddish.core.deliveries import (
     remove_delivery_task_core,
     set_manual_check_core,
 )
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
     CustomerResponse,
@@ -65,7 +65,7 @@ async def list_deliveries(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[DeliveryListItem]:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_deliveries_core(session, org_id=auth.org_id)
 
 
@@ -74,7 +74,7 @@ async def list_customers(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[CustomerResponse]:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         customers = await list_customers_core(session, org_id=auth.org_id)
         return [CustomerResponse.model_validate(c) for c in customers]
 
@@ -154,7 +154,7 @@ async def get_delivery_board(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> DeliveryBoardResponse:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=auth.org_id
         )
@@ -183,9 +183,7 @@ async def delete_delivery(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
     async with get_session() as session:
-        await delete_delivery_core(
-            session, delivery_id=delivery_id, org_id=auth.org_id
-        )
+        await delete_delivery_core(session, delivery_id=delivery_id, org_id=auth.org_id)
         await session.commit()
         return {"deleted": delivery_id}
 
@@ -258,7 +256,7 @@ async def get_task_qa_history(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TaskQAHistoryResponse:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await get_task_qa_history_core(
             session, task_id=task_id, org_id=auth.org_id
         )

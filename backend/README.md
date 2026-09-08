@@ -189,8 +189,13 @@ endpoint are required; bucket defaults to `data` and region to `us-east-1`:
 Common optional settings:
 
 - `CORS_ALLOWED_ORIGINS`
+- `CORS_ALLOWED_ORIGIN_REGEX`: origin pattern (for example `^https://oddish-[a-z0-9-]+\.vercel\.app$`) admitted in addition to the list, so per-branch Vercel previews can call the API directly when the dashboard runs with `NEXT_PUBLIC_API_DIRECT=1`
+
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
+- `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900): how long a container keeps a verified Clerk user's internal ids cached. Role and email always come from the token, so this only bounds how often a container re-reads the user row; API-key entries stay at 60 s.
+- `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables): how long a container serves the admin cost-exclusion lists from memory. The container that handles an edit refreshes immediately; others within this window.
+
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`

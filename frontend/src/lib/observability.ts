@@ -9,6 +9,15 @@ let configured = false;
 const TRACER_NAME = "oddish-frontend";
 const LOGFIRE_TRACE_URL = "/api/client-traces";
 
+function apiOriginPatterns(): RegExp[] {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) return [];
+  const escaped = apiUrl
+    .replace(/\/+$/, "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [new RegExp(`^${escaped}(/|$)`)];
+}
+
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
   if (explicit) return explicit;
@@ -52,6 +61,9 @@ export function ensureLogfireConfigured(): void {
         getWebAutoInstrumentations({
           "@opentelemetry/instrumentation-fetch": {
             clearTimingResources: true,
+            // Direct API mode calls the backend origin from the browser; send
+            // traceparent there too so those spans join the backend trace.
+            propagateTraceHeaderCorsUrls: apiOriginPatterns(),
           },
         }),
       ],
