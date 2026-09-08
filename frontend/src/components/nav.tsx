@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import useSWR from "swr";
 import {
   OrganizationSwitcher,
   SignInButton,
@@ -12,6 +13,8 @@ import {
 import { stripOrgSlug, withOrgSlug } from "@/lib/org-path";
 import { useAppPathname, useOrgHref } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
+import { fetcher } from "@/lib/api";
+import type { ModelEndpointAccessResponse } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,6 +26,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
+  Activity,
   BookOpen,
   ChevronDown,
   FileText,
@@ -91,6 +95,7 @@ type NavLink = {
   label: string;
   icon: React.ReactNode;
   prefix?: boolean;
+  operatorOnly?: boolean;
 };
 
 const PRIMARY_NAV_LINKS: NavLink[] = [
@@ -113,6 +118,12 @@ const PRIMARY_NAV_LINKS: NavLink[] = [
     label: "Deliveries",
     icon: <Package className="h-4 w-4" />,
     prefix: true,
+  },
+  {
+    href: "/models",
+    label: "Models",
+    icon: <Activity className="h-4 w-4" />,
+    operatorOnly: true,
   },
   ...(SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV
     ? [
@@ -142,6 +153,13 @@ export function Nav() {
   const { orgRole } = useAuth();
   const { signOut } = useClerk();
   const isOrgAdmin = isOrgAdminRole(orgRole);
+  const { data: modelAccess } = useSWR<ModelEndpointAccessResponse>(
+    isLoaded && isSignedIn ? "/api/models/access" : null,
+    fetcher
+  );
+  const primaryNavLinks = PRIMARY_NAV_LINKS.filter(
+    (link) => !link.operatorOnly || modelAccess?.allowed
+  );
 
   return (
     <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
@@ -164,7 +182,7 @@ export function Nav() {
                 align="start"
                 className="w-56 border-[#6f88b4]/20 p-2"
               >
-                {PRIMARY_NAV_LINKS.map((link) => (
+                {primaryNavLinks.map((link) => (
                   <DropdownMenuItem key={link.href} asChild>
                     <Link
                       href={orgHref(link.href)}
@@ -200,7 +218,7 @@ export function Nav() {
               />
             </Link>
             <div className="hidden items-center gap-4 sm:flex">
-              {PRIMARY_NAV_LINKS.map((link) => {
+              {primaryNavLinks.map((link) => {
                 const active = isNavLinkActive(pathname, link);
                 return (
                   <Button

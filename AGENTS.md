@@ -76,8 +76,8 @@ frontend/                       # Next.js App Router dashboard
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
-│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, experiments,
-│   │   │                       # qa, skills, documents, usage, settings, admin
+│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, deliveries,
+│   │   │                       # models, qa, skills, documents, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -564,19 +564,24 @@ alert settings, model endpoint smoke checks, and the global cost-exclusion
 lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
-that capability through `GET /admin/operator-access` and hides those controls
-for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+admin capabilities through `GET /admin/operator-access` and model-check access
+through `GET /models/access`, then hides those controls for other orgs.
+`GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
-`POST /admin/model-endpoints` sends one short `litellm_completion` request from
-the hosted API container using its platform provider credentials. It does not
-claim to exercise an agent's Responses, Messages, CLI, or sandbox path.
-Expected provider and configuration failures return a structured 200 response;
-unexpected integration/programming errors remain 500s. The request creates no
-task, trial, worker job, or persisted history. The operator-only frontend
-Diagnostics tab derives its model rows from `GET /admin/queue-health` capacity
-keys, runs "Test all" in batches of at most three, and keeps results only in
-browser state.
+`GET /models` lets any authenticated member discover whether their active org is
+the operator org and, when it is, returns the configured model queue keys.
+`GET /models/access` returns only the operator-access boolean without loading the catalog.
+`POST /models/check` requires an interactive Clerk user in the operator org and sends one
+short `litellm_completion` request from the hosted API container using its
+platform provider credentials. It does not claim to exercise an agent's
+Responses, Messages, CLI, or sandbox path. Expected provider and configuration
+failures return a structured 200 response; unexpected integration/programming
+errors remain 500s. The request creates no task, trial, worker job, or persisted
+history. The operator-only frontend `/models` page runs "Test all" in batches of
+at most three and keeps results only in browser state. Rows reopen stored results
+without another provider request; response text appears above expandable JSON
+details rendered by the shared CodeBlock component.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,
@@ -1617,6 +1622,19 @@ Preview deployment parses the unique `-api.modal.run` URL from Modal's output
 with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 `-api-qa-model.modal.run` URL is a separate endpoint and must never become the
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
+
+PR preview deploys and manual preview resets set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=300` and
+`ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` so up to 300 trial workers can run
+and be launched in one dispatcher pass. Previews also set
+`ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
+`ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
+limits do not prevent one model from filling that pool. Saved admin overrides
+still take precedence. Worker/container limits and model queue limits are
+baked into the image and appended as the final runtime secret so older provider
+secrets cannot replace the deployment values during container import. These
+workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+apply independently.
 
 ### GKE Placement Contract
 
