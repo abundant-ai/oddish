@@ -1142,6 +1142,7 @@ export interface ModelEndpointSummary {
   route: string;
   credential: string | null;
   testable: boolean;
+  is_configured: boolean;
 }
 
 export interface ModelEndpointAccessResponse {

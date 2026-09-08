@@ -129,6 +129,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         "allowed": True,
         "models": [
             {
+                "is_configured": True,
                 "credential": "AWS_BEARER_TOKEN_BEDROCK",
                 "model": "global.anthropic.test-model-05",
                 "provider": "bedrock",
@@ -136,6 +137,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "CURSOR_API_KEY",
                 "model": "cursor/test-model-02",
                 "provider": "cursor",
@@ -143,6 +145,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": False,
             },
             {
+                "is_configured": False,
                 "credential": "DEEPSEEK_API_KEY",
                 "model": "deepseek/deepseek-test-model-03",
                 "provider": "deepseek",
@@ -150,6 +153,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "GEMINI_API_KEY",
                 "model": "google/test-model-08",
                 "provider": "gemini",
@@ -157,6 +161,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": True,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-10",
                 "provider": "openai",
@@ -164,6 +169,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-11",
                 "provider": "openai",
@@ -171,6 +177,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "VERTEXAI_PROJECT",
                 "model": "vertex_ai/test-model-12",
                 "provider": "gemini",
@@ -178,6 +185,7 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
+                "is_configured": False,
                 "credential": "XAI_API_KEY",
                 "model": "xai/test-model-14",
                 "provider": "xai",
@@ -228,7 +236,7 @@ async def test_model_check_rejects_api_key_auth(scope):
 async def test_model_endpoint_returns_provider_response(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "gemini/test-model-07"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="request-123",
             choices=[
@@ -343,7 +351,7 @@ async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch)
     async def completion(**kwargs):
         assert kwargs["model"] == "anthropic/test-model-01"
         assert kwargs["api_key"] == "hdo-key"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="hdo-request",
             choices=[
@@ -378,7 +386,7 @@ async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
             "fireworks_ai/accounts/fireworks/models/test-model-04"
         )
         assert kwargs["api_key"] == "fireworks-key"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="fireworks-request",
             choices=[
@@ -413,7 +421,7 @@ async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
         assert kwargs["model"] == "openai/test-model-09"
         assert kwargs["api_key"] == "meta-key"
         assert kwargs["api_base"] == "https://meta.example/v1"
-        assert kwargs["max_tokens"] == 32
+        assert kwargs["max_tokens"] == 1024
         return SimpleNamespace(
             id="meta-request",
             choices=[
@@ -447,7 +455,7 @@ async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
         assert kwargs["model"] == "azure/test-deployment"
-        assert kwargs["max_completion_tokens"] == 32
+        assert kwargs["max_completion_tokens"] == 1024
         assert "max_tokens" not in kwargs
         assert kwargs["api_key"] == "azure-key"
         assert kwargs["api_base"] == "https://example.openai.azure.com"
@@ -529,7 +537,10 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
     assert payload["failure_kind"] == "provider"
     assert payload["transport"] == "litellm_completion"
     assert payload["status_code"] == status_code
-    assert payload["error"] == "Provider request failed (BadRequestError)"
+    assert f"HTTP {status_code}" in payload["error"]
+    assert "credential" in payload["error"]
+    if status_code == 404:
+        assert "does not establish a provider outage" in payload["error"]
     assert payload["request_id"] == f"provider-request-{status_code}"
 
 
@@ -868,3 +879,131 @@ async def test_model_access_does_not_load_catalog(
         response = await client.get("/models/access")
     assert response.status_code == 200
     assert response.json() == {"allowed": allowed}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", [None, "", " \n\t"])
+async def test_model_endpoint_requires_visible_text(monkeypatch, content):
+    calls = 0
+
+    async def completion(**kwargs):
+        nonlocal calls
+        calls += 1
+        assert kwargs["max_tokens"] == 1024
+        assert kwargs["messages"] == [
+            {
+                "role": "user",
+                "content": "Reply with exactly this text: Hello from Oddish.",
+            }
+        ]
+        return SimpleNamespace(
+            id="empty-text-request",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=content, reasoning_content="Internal reasoning"
+                    ),
+                    finish_reason="length",
+                )
+            ],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "xai/test-model-13"}
+        )
+        cached = await client.post("/models/check", json={"model": "xai/test-model-13"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["response"] == ""
+    assert payload["failure_kind"] == "provider"
+    assert payload["error"] == "Provider returned no text response."
+    assert payload["request_id"] == "empty-text-request"
+    assert cached.json() == payload
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_accepts_nonblank_text_without_exact_prompt_match(
+    monkeypatch,
+):
+    async def completion(**_kwargs):
+        return SimpleNamespace(
+            id="text-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="  Hello! \n"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": "xai/test-model-13"}
+        )
+
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["response"] == "Hello!"
+    assert payload["error"] is None
+    assert payload["failure_kind"] is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_distinguishes_legacy_names_from_configured_runtime_models(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        type(model_endpoints_router.settings),
+        "get_known_queue_keys",
+        lambda _self: {"claude-sonnet-4-6"},
+    )
+
+    async def historical_facets(_session, *, org_id):
+        return SimpleNamespace(
+            models=[
+                "anthropic/claude-sonnet-4-6-20250514",
+                "anthropic/opus-5",
+                "global.anthropic.claude-sonnet-4-6",
+            ]
+        )
+
+    monkeypatch.setattr(
+        model_endpoints_router, "browse_task_facets_core", historical_facets
+    )
+    catalog = await model_endpoints_router._model_endpoint_catalog("org-1")
+    configured = [entry for entry in catalog if entry.is_configured]
+    assert len(configured) == 1
+    assert configured[0].model == "global.anthropic.claude-sonnet-4-6"
+    assert configured[0].route == "bedrock"
+    assert {entry.model for entry in catalog if not entry.is_configured} == {
+        "anthropic/claude-sonnet-4-6-20250514",
+        "anthropic/opus-5",
+    }
+
+
+@pytest.mark.parametrize(
+    "status_code, expected",
+    [
+        (400, "supported request parameters"),
+        (401, "API key"),
+        (403, "not permitted"),
+        (404, "does not establish a provider outage"),
+        (429, "rate limit or quota"),
+        (503, "server error"),
+    ],
+)
+def test_provider_failure_explanations_do_not_copy_exception_text(
+    status_code, expected
+):
+    failure = OpenAIError("Authorization: Bearer secret-that-must-not-be-shown")
+    message = model_endpoints_router._safe_failure_message(
+        failure, "provider", status_code
+    )
+    assert expected in message
+    assert str(status_code) in message
+    assert "secret-that-must-not-be-shown" not in message
