@@ -13,12 +13,13 @@ the repository rules that are easy to misread from command output.
 
 ```bash
 oddish --help
+oddish version
 oddish status --json
 ```
 
 API-backed commands require `ODDISH_API_KEY`. Never print, log, commit, or
-return its value. The API target resolves in this order:
-`ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then hosted Oddish.
+return its value. `oddish version` is local. The API target resolves in this
+order: `ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then hosted Oddish.
 
 Run `oddish <command> --help` before relying on an option not shown here.
 `--json` exists on many operational commands, but it is not a global option.

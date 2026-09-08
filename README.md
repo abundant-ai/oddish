@@ -42,6 +42,8 @@ uv pip install oddish
 uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
+`oddish version` prints the installed package.
+
 ### 2. Generate an API key [here](https://oddish.app/)
 
 Sign in, select an organization, and create a key from the dashboard. Organization
