@@ -1,7 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  useEffectEvent,
+} from "react";
 import useSWR from "swr";
+import {
+  observeFileListRevision,
+  receiveFileListRevision,
+  type FileListRevision,
+} from "@/lib/file-list-revision";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -79,6 +91,7 @@ interface TaskFile {
 }
 
 interface FilesListingResponse {
+  source_hash?: string | null;
   files?: TaskFile[];
   dirs?: Array<{ path: string }>;
   cursor?: string | null;
@@ -654,6 +667,33 @@ export function TaskFilesPanel({
       : ((verdictTask ?? task)?.current_version ?? null);
   const currentContentHash = checksVersion?.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
+  const fileListIdentity = JSON.stringify([
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion ? currentVersion : null,
+  ]);
+  const [fileRevision, setFileRevision] = useState<FileListRevision>({
+    identity: fileListIdentity,
+    observedHash: currentContentHash,
+    requestHash: currentContentHash,
+    receivedHash: null,
+  });
+  const observedRevision = observeFileListRevision(
+    fileRevision,
+    fileListIdentity,
+    currentContentHash
+  );
+  if (observedRevision !== fileRevision) setFileRevision(observedRevision);
+  const listingContentHash = observedRevision.requestHash;
+  // Read the latest task fingerprint when an in-flight listing completes,
+  // without making late-arriving details cancel that request preemptively.
+  const acceptFileListing = useEffectEvent(
+    (hash: string | null, identity: string) => {
+      if (identity !== observedRevision.identity) return false;
+      const received = receiveFileListRevision(observedRevision, hash);
+      setFileRevision(received);
+      return received.requestHash === observedRevision.requestHash;
+    }
+  );
   const rootListing = directoryListings[""];
   const visibleTree = useMemo(
     () =>
@@ -870,14 +910,14 @@ export function TaskFilesPanel({
       if (shouldScopeFilesToVersion && currentVersion != null) {
         params.set("version", String(currentVersion));
       }
-      if (currentContentHash) params.set("source_hash", currentContentHash);
+      if (listingContentHash) params.set("source_hash", listingContentHash);
       return `${resolvedFilesUrl}?${params.toString()}`;
     },
     [
       resolvedFilesUrl,
       shouldScopeFilesToVersion,
       currentVersion,
-      currentContentHash,
+      listingContentHash,
       taskPaneExists,
       loadFilesLazily,
       loadsTaskTreeByDirectory,
@@ -1258,6 +1298,10 @@ export function TaskFilesPanel({
             if (cancelled) return;
             const chunk = raw as FilesStreamChunk;
             if (chunk.type === "listing" && !receivedListing) {
+              if (
+                !acceptFileListing(chunk.source_hash ?? null, fileListIdentity)
+              )
+                return;
               const tree = buildTreeFromListing(chunk.files || []);
               receivedListing = true;
               applyListing(tree);
@@ -1274,7 +1318,11 @@ export function TaskFilesPanel({
         } else {
           // Plain JSON listing (trial files, and any non-streaming source).
           const data: FilesListingResponse = await res.json();
-          if (cancelled) return;
+          if (
+            cancelled ||
+            !acceptFileListing(data.source_hash ?? null, fileListIdentity)
+          )
+            return;
           if (loadsTaskTreeByDirectory) {
             paintedTree = true;
             setDirectoryListings((listings) => ({
@@ -1317,6 +1365,7 @@ export function TaskFilesPanel({
     taskId,
     filesUrl,
     resolvedFilesUrl,
+    fileListIdentity,
     buildListingUrl,
     taskPaneExists,
     loadsTaskTreeByDirectory,

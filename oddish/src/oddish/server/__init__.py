@@ -882,7 +882,7 @@ async def list_task_files(
 ):
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -895,9 +895,11 @@ async def list_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
-                task_s3_prefix=task_s3_prefix,
-                expanded=expanded,
-                version=version,
+                task_s3_prefix=source.task_s3_prefix,
+                expanded=source.expanded,
+                expanded_manifest_key=source.expanded_manifest_key,
+                source_hash=source.content_hash,
+                version=source.version,
             )
         )
 
@@ -908,9 +910,11 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         inline=inline,
     )
 
@@ -925,7 +929,7 @@ async def get_task_file_content(
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -933,9 +937,11 @@ async def get_task_file_content(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         max_bytes=max_bytes,
     )
 
