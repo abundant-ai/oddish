@@ -18,7 +18,7 @@ def test_registered_queries_cover_builder_reads():
     assert guard.find_stray_load_only_sites() == []
 
 
-@pytest.mark.parametrize("column", ["harbor_config", "reward"])
+@pytest.mark.parametrize("column", ["harbor_config", "reward", "error_message"])
 def test_delivery_qa_missing_column_is_rejected(tmp_path, monkeypatch, column):
     # harbor_config is read by the evaluator; reward by its imported evidence
     # serializer. Both modules must participate in the column check.

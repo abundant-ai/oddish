@@ -2,10 +2,12 @@
 
 import asyncio
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 from oddish.core.analysis_payload import audit_fingerprint, qa_trial_evidence
+from oddish.core.delivery_qa import counts_as_delivery_qa_source
 from oddish.core.deliveries import (
     _customer_safe_board,
     claim_delivery_qa_core,
@@ -185,6 +187,54 @@ async def test_qa_status_tracks_replacement_and_evidence_changes(session, change
     session.expunge_all()
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     assert board.tasks[0].qa.status == expected
+
+
+def _setup_failure_trial(**overrides):
+    row = SimpleNamespace(
+        agent="mini-swe-agent",
+        error_message="NotFoundError: Model not found",
+        result={"harbor_exception": {"exception_type": "NotFoundError"}},
+        input_tokens=0,
+        output_tokens=0,
+        has_trajectory=False,
+        total_steps=0,
+    )
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    return row
+
+
+def test_setup_failure_without_work_is_not_delivery_evidence():
+    assert counts_as_delivery_qa_source(_setup_failure_trial(), sql_eligible=True) is False
+
+
+def test_setup_failure_with_agent_work_stays_delivery_evidence():
+    assert (
+        counts_as_delivery_qa_source(
+            _setup_failure_trial(input_tokens=8), sql_eligible=True
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_failure_without_work_does_not_outdate_delivery_qa(session):
+    """Admission omits these rows; the board must use the same set."""
+    delivery, task, version, experiment, qa, _ = await _reviewed_delivery(session)
+    dud = _trial(task, experiment, version.id, status=TrialStatus.FAILED)
+    dud.error_message = "NotFoundError: Model not found"
+    dud.result = {"harbor_exception": {"exception_type": "NotFoundError"}}
+    dud.input_tokens = 0
+    dud.output_tokens = 0
+    dud.has_trajectory = False
+    dud.total_steps = 0
+    dud.finished_at = utcnow() - timedelta(hours=3)
+    session.add(dud)
+    await session.flush()
+    session.expunge_all()
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    assert board.tasks[0].qa.status == "accepted"
+    assert board.tasks[0].qa.trial_id == qa.id
 
 
 @pytest.mark.asyncio

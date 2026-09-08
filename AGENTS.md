@@ -446,8 +446,8 @@ imports preserve the original timestamps and exploitation annotations.
 
 Delivery boards expose the latest QA run's evidence coverage and completion time.
 `oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
-audit with the current default version, using the same eligibility clauses and
-evidence serialization as QA admission. A recent timestamp alone does not make
+audit with the current default version, using the same eligibility clauses,
+setup-failure-without-work filter, and evidence serialization as QA admission. A recent timestamp alone does not make
 a result current. The board's seven-day/24-hour counter includes current accepted
 and rejected results, excluding execution failures and in-flight runs; it does
 not change the existing delivery sign-off requirements.

@@ -89,7 +89,10 @@ _COVERAGE_UNITS = (
         "delivery_qa_statuses",
         _PKG_ROOT / "core" / "delivery_qa.py",
         (
-            (_PKG_ROOT / "core" / "delivery_qa.py", ("evaluate_delivery_qa",)),
+            (
+                _PKG_ROOT / "core" / "delivery_qa.py",
+                ("evaluate_delivery_qa", "counts_as_delivery_qa_source"),
+            ),
             (_PKG_ROOT / "core" / "analysis_payload.py", ("qa_trial_evidence",)),
         ),
     ),
