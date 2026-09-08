@@ -44,7 +44,7 @@ def test_deployed_worker_limits_survive_runtime_import(monkeypatch):
         assert modal_app.WORKER_MAX_CONTAINERS == 300
         assert len(modal_app.runtime_secrets) == dependency_count
         settings = Settings(_env_file=None)
-        assert settings.get_model_concurrency("openai/gpt-5.4-mini") == 300
+        assert settings.get_model_concurrency("openai/test-model-10") == 300
         assert settings.get_model_concurrency("nop_oracle") >= 300
     finally:
         monkeypatch.undo()

@@ -17,22 +17,23 @@ from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserRole
 
 
+# Synthetic model IDs retain only the prefixes needed to exercise provider routing.
 _TEST_MODELS = {
-    "anthropic-hdo/claude-sonnet-4-6",
-    "cursor/composer-2.5",
-    "deepseek/deepseek-v4-flash",
-    "fireworks/minimax-m3",
-    "global.anthropic.claude-opus-5",
-    "global.anthropic.claude-sonnet-5",
-    "google/gemini-3.5-flash",
-    "google/gemini-3.7-flash",
-    "meta/super_nova_ext",
-    "minimax/minimax-m3",
-    "openai/gpt-5.4-mini",
-    "openai/gpt-5.6-sol",
-    "vertex_ai/gemini-3-pro-preview",
-    "xai/grok-code-fast-1",
-    "xai/v9m-rl-learnability-tp8",
+    "anthropic-hdo/test-model-01",
+    "cursor/test-model-02",
+    "deepseek/deepseek-test-model-03",
+    "fireworks/test-model-04",
+    "global.anthropic.test-model-05",
+    "global.anthropic.test-model-06",
+    "google/test-model-07",
+    "google/test-model-08",
+    "meta/test-model-09",
+    "minimax/test-model-04",
+    "openai/test-model-10",
+    "openai/test-model-11",
+    "vertex_ai/test-model-12",
+    "xai/test-model-13",
+    "xai/test-model-14",
 }
 
 
@@ -83,8 +84,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         settings_type,
         "get_known_queue_keys",
         lambda _self: {
-            "global.anthropic.claude-opus-5",
-            "openai/gpt-5.4-mini",
+            "global.anthropic.test-model-05",
+            "openai/test-model-10",
             "task_expand",
         },
     )
@@ -100,13 +101,13 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         assert org_id == "org-1"
         return SimpleNamespace(
             models=[
-                "global.anthropic.claude-opus-5",
-                "cursor/composer-2.5",
-                "dsh/deepseek-v4-flash",
-                "google/gemini-3.7-flash",
-                "grok-build/xai/v9m-rl-learnability-tp8",
-                "openai/gpt-5.6-sol",
-                "vertex_ai/gemini-3-pro-preview",
+                "global.anthropic.test-model-05",
+                "cursor/test-model-02",
+                "dsh/deepseek-test-model-03",
+                "google/test-model-08",
+                "grok-build/xai/test-model-14",
+                "openai/test-model-11",
+                "vertex_ai/test-model-12",
                 "nop_oracle",
             ]
         )
@@ -129,56 +130,56 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         "models": [
             {
                 "credential": "AWS_BEARER_TOKEN_BEDROCK",
-                "model": "global.anthropic.claude-opus-5",
+                "model": "global.anthropic.test-model-05",
                 "provider": "bedrock",
                 "route": "bedrock",
                 "testable": True,
             },
             {
                 "credential": "CURSOR_API_KEY",
-                "model": "cursor/composer-2.5",
+                "model": "cursor/test-model-02",
                 "provider": "cursor",
                 "route": "cursor",
                 "testable": False,
             },
             {
                 "credential": "DEEPSEEK_API_KEY",
-                "model": "deepseek/deepseek-v4-flash",
+                "model": "deepseek/deepseek-test-model-03",
                 "provider": "deepseek",
                 "route": "deepseek",
                 "testable": True,
             },
             {
                 "credential": "GEMINI_API_KEY",
-                "model": "google/gemini-3.7-flash",
+                "model": "google/test-model-08",
                 "provider": "gemini",
                 "route": "gemini",
                 "testable": True,
             },
             {
                 "credential": "OPENAI_API_KEY",
-                "model": "openai/gpt-5.4-mini",
+                "model": "openai/test-model-10",
                 "provider": "openai",
                 "route": "openai",
                 "testable": True,
             },
             {
                 "credential": "OPENAI_API_KEY",
-                "model": "openai/gpt-5.6-sol",
+                "model": "openai/test-model-11",
                 "provider": "openai",
                 "route": "openai",
                 "testable": True,
             },
             {
                 "credential": "VERTEXAI_PROJECT",
-                "model": "vertex_ai/gemini-3-pro-preview",
+                "model": "vertex_ai/test-model-12",
                 "provider": "gemini",
                 "route": "vertex_ai",
                 "testable": True,
             },
             {
                 "credential": "XAI_API_KEY",
-                "model": "xai/v9m-rl-learnability-tp8",
+                "model": "xai/test-model-14",
                 "provider": "xai",
                 "route": "xai",
                 "testable": True,
@@ -214,7 +215,7 @@ async def test_model_check_rejects_api_key_auth(scope):
         transport=ASGITransport(app=_app(api_key_auth)), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "openai/gpt-5.4-mini"}
+            "/models/check", json={"model": "openai/test-model-10"}
         )
 
     assert response.status_code == 403
@@ -226,11 +227,13 @@ async def test_model_check_rejects_api_key_auth(scope):
 @pytest.mark.asyncio
 async def test_model_endpoint_returns_provider_response(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == "gemini/gemini-3.5-flash"
+        assert kwargs["model"] == "gemini/test-model-07"
         assert kwargs["max_tokens"] == 32
         return SimpleNamespace(
             id="request-123",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="I am Gemini."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
@@ -239,29 +242,31 @@ async def test_model_endpoint_returns_provider_response(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": " Google/Gemini-3.5-Flash "}
+            "/models/check", json={"model": " Google/Test-Model-07 "}
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert isinstance(payload["latency_ms"], int)
     assert payload["ok"] is True
-    assert payload["model"] == "google/gemini-3.5-flash"
-    assert payload["resolved_model"] == "gemini/gemini-3.5-flash"
+    assert payload["model"] == "google/test-model-07"
+    assert payload["resolved_model"] == "gemini/test-model-07"
     assert payload["provider"] == "gemini"
     assert payload["transport"] == "litellm_completion"
     assert payload["failure_kind"] is None
-    assert payload["response"] == "I am Gemini."
+    assert payload["response"] == "Test completion."
     assert payload["request_id"] == "request-123"
 
 
 @pytest.mark.asyncio
 async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == ("bedrock/global.anthropic.claude-sonnet-5")
+        assert kwargs["model"] == ("bedrock/global.anthropic.test-model-06")
         return SimpleNamespace(
             id="bedrock-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
@@ -271,14 +276,14 @@ async def test_model_endpoint_adds_litellm_bedrock_provider_prefix(monkeypatch):
     ) as client:
         response = await client.post(
             "/models/check",
-            json={"model": "global.anthropic.claude-sonnet-5"},
+            json={"model": "global.anthropic.test-model-06"},
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["model"] == "global.anthropic.claude-sonnet-5"
-    assert payload["resolved_model"] == ("bedrock/global.anthropic.claude-sonnet-5")
+    assert payload["model"] == "global.anthropic.test-model-06"
+    assert payload["resolved_model"] == ("bedrock/global.anthropic.test-model-06")
     assert payload["provider"] == "bedrock"
 
 
@@ -290,7 +295,7 @@ async def test_model_endpoint_rejects_hidden_provider_override():
         response = await client.post(
             "/models/check",
             json={
-                "model": "global.anthropic.claude-sonnet-5",
+                "model": "global.anthropic.test-model-06",
                 "route": "anthropic",
             },
         )
@@ -308,7 +313,7 @@ async def test_model_endpoint_rejects_incompatible_provider_route():
     ) as client:
         response = await client.post(
             "/models/check",
-            json={"model": "xai/grok-code-fast-1", "route": "azure"},
+            json={"model": "xai/test-model-13", "route": "azure"},
         )
 
     assert response.status_code == 422
@@ -324,7 +329,7 @@ async def test_model_endpoint_rejects_cursor_cli_model():
     ) as client:
         response = await client.post(
             "/models/check",
-            json={"model": "cursor/composer-2.5", "route": "cursor"},
+            json={"model": "cursor/test-model-02", "route": "cursor"},
         )
 
     assert response.status_code == 422
@@ -336,12 +341,14 @@ async def test_model_endpoint_rejects_cursor_cli_model():
 @pytest.mark.asyncio
 async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == "anthropic/claude-sonnet-4-6"
+        assert kwargs["model"] == "anthropic/test-model-01"
         assert kwargs["api_key"] == "hdo-key"
         assert kwargs["max_tokens"] == 32
         return SimpleNamespace(
             id="hdo-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Claude."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setattr(
@@ -354,25 +361,29 @@ async def test_model_endpoint_remaps_anthropic_hdo_and_uses_hdo_key(monkeypatch)
     ) as client:
         response = await client.post(
             "/models/check",
-            json={"model": "anthropic-hdo/claude-sonnet-4-6"},
+            json={"model": "anthropic-hdo/test-model-01"},
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["resolved_model"] == "anthropic/claude-sonnet-4-6"
+    assert payload["resolved_model"] == "anthropic/test-model-01"
     assert payload["provider"] == "anthropic-hdo"
 
 
 @pytest.mark.asyncio
 async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == ("fireworks_ai/accounts/fireworks/models/minimax-m3")
+        assert kwargs["model"] == (
+            "fireworks_ai/accounts/fireworks/models/test-model-04"
+        )
         assert kwargs["api_key"] == "fireworks-key"
         assert kwargs["max_tokens"] == 32
         return SimpleNamespace(
             id="fireworks-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="MiniMax."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setattr(
@@ -384,14 +395,14 @@ async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "fireworks/minimax-m3"}
+            "/models/check", json={"model": "fireworks/test-model-04"}
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
     assert payload["resolved_model"] == (
-        "fireworks_ai/accounts/fireworks/models/minimax-m3"
+        "fireworks_ai/accounts/fireworks/models/test-model-04"
     )
     assert payload["provider"] == "fireworks"
 
@@ -399,13 +410,15 @@ async def test_model_endpoint_remaps_fireworks_for_litellm(monkeypatch):
 @pytest.mark.asyncio
 async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == "openai/super_nova_ext"
+        assert kwargs["model"] == "openai/test-model-09"
         assert kwargs["api_key"] == "meta-key"
         assert kwargs["api_base"] == "https://meta.example/v1"
         assert kwargs["max_tokens"] == 32
         return SimpleNamespace(
             id="meta-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="Meta."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setattr(model_endpoints_router.settings, "meta_api_key", "meta-key")
@@ -420,20 +433,20 @@ async def test_model_endpoint_remaps_meta_to_compatible_openai_api(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "meta/super_nova_ext"}
+            "/models/check", json={"model": "meta/test-model-09"}
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["resolved_model"] == "openai/super_nova_ext"
+    assert payload["resolved_model"] == "openai/test-model-09"
     assert payload["provider"] == "meta"
 
 
 @pytest.mark.asyncio
 async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     async def completion(**kwargs):
-        assert kwargs["model"] == "azure/oddish-gpt"
+        assert kwargs["model"] == "azure/test-deployment"
         assert kwargs["max_completion_tokens"] == 32
         assert "max_tokens" not in kwargs
         assert kwargs["api_key"] == "azure-key"
@@ -442,7 +455,9 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
         assert "base_url" not in kwargs
         return SimpleNamespace(
             id="azure-request",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="GPT."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     settings_type = type(model_endpoints_router.settings)
@@ -459,7 +474,9 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
     monkeypatch.setattr(
         settings_type,
         "resolve_azure_openai_deployment",
-        lambda _self, model: "oddish-gpt" if model == "openai/gpt-5.4-mini" else None,
+        lambda _self, model: (
+            "test-deployment" if model == "openai/test-model-10" else None
+        ),
     )
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
 
@@ -467,13 +484,13 @@ async def test_model_endpoint_uses_azure_resource_root_for_litellm(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "openai/gpt-5.4-mini"}
+            "/models/check", json={"model": "openai/test-model-10"}
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["resolved_model"] == "azure/oddish-gpt"
+    assert payload["resolved_model"] == "azure/test-deployment"
     assert payload["provider"] == "openai"
     assert payload["route"] == "azure"
     assert payload["credential"] == "AZURE_OPENAI_API_KEY"
@@ -502,7 +519,7 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/test-model-13"}
         )
 
     assert response.status_code == 200
@@ -543,7 +560,7 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/test-model-13"}
         )
 
     assert response.status_code == 200
@@ -577,7 +594,7 @@ async def test_model_endpoint_never_returns_or_logs_provider_exception_secrets(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/test-model-13"}
         )
 
     assert response.status_code == 200
@@ -620,7 +637,7 @@ async def test_model_endpoint_releases_failed_check_for_immediate_retry(
             with pytest.raises(asyncio.CancelledError):
                 await model_endpoints_router.check_model_endpoint(
                     model_endpoints_router.ModelEndpointCheckRequest(
-                        model="minimax/minimax-m3"
+                        model="minimax/test-model-04"
                     ),
                     AuthContext(
                         method=AuthMethod.CLERK_JWT,
@@ -631,12 +648,14 @@ async def test_model_endpoint_releases_failed_check_for_immediate_retry(
                 )
         else:
             response = await client.post(
-                "/models/check", json={"model": "minimax/minimax-m3"}
+                "/models/check", json={"model": "minimax/test-model-04"}
             )
             assert response.status_code == 500
-        retry = await client.post("/models/check", json={"model": "minimax/minimax-m3"})
+        retry = await client.post(
+            "/models/check", json={"model": "minimax/test-model-04"}
+        )
         cached = await client.post(
-            "/models/check", json={"model": "minimax/minimax-m3"}
+            "/models/check", json={"model": "minimax/test-model-04"}
         )
 
     assert retry.status_code == 200
@@ -672,7 +691,7 @@ async def test_expired_model_check_preserves_newer_result(
 
     monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
     request = model_endpoints_router.ModelEndpointCheckRequest(
-        model="minimax/minimax-m3"
+        model="minimax/test-model-04"
     )
     auth = AuthContext(
         method=AuthMethod.CLERK_JWT,
@@ -715,7 +734,7 @@ async def test_model_endpoint_reports_configuration_errors(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "openai/gpt-5.4-mini"}
+            "/models/check", json={"model": "openai/test-model-10"}
         )
 
     assert response.status_code == 200
@@ -759,7 +778,9 @@ async def test_model_endpoint_reuses_recent_model_route_result(monkeypatch):
         now += 10.0
         return SimpleNamespace(
             id="request-123",
-            choices=[SimpleNamespace(message=SimpleNamespace(content="I am Grok."))],
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content="Test completion."))
+            ],
         )
 
     monkeypatch.setitem(
@@ -771,11 +792,9 @@ async def test_model_endpoint_reuses_recent_model_route_result(monkeypatch):
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
-        first = await client.post(
-            "/models/check", json={"model": "xai/grok-code-fast-1"}
-        )
+        first = await client.post("/models/check", json={"model": "xai/test-model-13"})
         repeated = await client.post(
-            "/models/check", json={"model": "xai/grok-code-fast-1"}
+            "/models/check", json={"model": "xai/test-model-13"}
         )
 
     assert first.status_code == 200
@@ -788,7 +807,7 @@ def test_model_endpoint_rejects_duplicate_while_first_check_is_running():
     check = {
         "org_id": "org-1",
         "identity": "user-1",
-        "model": "xai/grok-code-fast-1",
+        "model": "xai/test-model-13",
         "route": "xai",
     }
     assert model_endpoints_router._begin_model_check(**check) is None
@@ -822,7 +841,7 @@ async def test_model_endpoint_requires_operator_org(monkeypatch):
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
         response = await client.post(
-            "/models/check", json={"model": "minimax/minimax-m3"}
+            "/models/check", json={"model": "minimax/test-model-04"}
         )
 
     assert response.status_code == 403
