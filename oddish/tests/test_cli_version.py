@@ -138,3 +138,19 @@ def test_version_check_current_exits_zero(monkeypatch):
     assert result.exit_code == 0, result.output
     assert '"update_available": false' in result.stdout
     assert '"latest": "0.1.13"' in result.stdout
+
+
+def test_version_check_non_pypi_does_not_claim_up_to_date(monkeypatch):
+    monkeypatch.setattr(
+        "oddish.cli.version.inspect_install",
+        lambda: _pypi_info(source="editable", editable_path="file:///tmp/oddish"),
+    )
+    monkeypatch.setattr("oddish.cli.version.fetch_pypi_latest", lambda: "0.1.14")
+    result = runner.invoke(app, ["version", "--check"])
+    assert result.exit_code == 0, result.output
+    assert "not from PyPI" in result.stdout
+    assert "up to date" not in result.stdout
+
+    json_result = runner.invoke(app, ["version", "--check", "--json"])
+    assert json_result.exit_code == 0, json_result.output
+    assert '"update_available": null' in json_result.stdout
