@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -137,6 +138,49 @@ def test_url_fragment_derives_from_modal_app_label():
     expected = f"abundant-ai-preview--oddish-pr-{{0}}{m.group(1)}.modal.run"
     assert expected == URL_FRAGMENT
     assert expected in WORKFLOW.read_text()
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        f"Created web function api_app => {PREVIEW_URL}",
+        f"Created web function api_app =>\n│   {PREVIEW_URL}\n"
+        f"Created web function qa_model_gateway =>\n│   {PREVIEW_URL.replace('-api.', '-api-qa-model.')}",
+        f"{PREVIEW_URL.replace('-api.', '-api-qa-model.')}\n{PREVIEW_URL}",
+        f"{PREVIEW_URL}\n{PREVIEW_URL}",
+    ],
+)
+def test_extract_modal_api_url_ignores_gateway_and_duplicate_output(tmp_path, log):
+    log_path = tmp_path / "deploy.log"
+    log_path.write_text(log)
+    result = subprocess.run(
+        [sys.executable, str(PREVIEW / "extract_modal_api_url.py"), str(log_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == PREVIEW_URL
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "Deployment failed",
+        PREVIEW_URL.replace("-api.", "-api-qa-model."),
+        f"{PREVIEW_URL}\n{PREVIEW_URL.replace('pr-0-', 'pr-1-')}",
+    ],
+)
+def test_extract_modal_api_url_rejects_missing_or_ambiguous_api(tmp_path, log):
+    log_path = tmp_path / "deploy.log"
+    log_path.write_text(log)
+    result = subprocess.run(
+        [sys.executable, str(PREVIEW / "extract_modal_api_url.py"), str(log_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Expected one Modal API URL" in result.stderr
 
 
 def test_prepare_stops_before_supabase_wait():

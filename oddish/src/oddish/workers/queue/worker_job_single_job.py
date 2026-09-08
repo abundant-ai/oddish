@@ -197,6 +197,9 @@ candidate AS (
       AND  wj.kind::text = ANY($10::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
+      AND  ($11::boolean IS NULL OR (
+          (wj.priority > 0) = $11 AND wj.org_id IS NOT DISTINCT FROM $12::text
+      ))
       AND  tr.deleted_at IS NULL
       AND  tk.deleted_at IS NULL
     ORDER  BY wj.priority DESC,
@@ -221,6 +224,13 @@ claimed AS (
     RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
               attempts, max_attempts, queue_key, org_id, parent_job_id,
               harbor_variant_id, execution_lane, claimed_at
+),
+cleared_launch AS (
+    UPDATE queue_slots AS qs
+    SET launch_demand = NULL
+    FROM claimed
+    WHERE qs.queue_key = $1 AND qs.slot = $3 AND qs.locked_by = $2
+      AND qs.launch_demand IS NOT NULL
 ),
 bound_capacity AS (
     UPDATE sandbox_capacity_leases AS lease
@@ -368,10 +378,16 @@ async def claim_single_worker_job(
     modal_function_call_id: str | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
+
+    Hosted launches additionally scope claims to the allocated org and priority
+    class. The existing priority/user/FIFO order applies inside that scope;
+    unscoped callers retain the original claim behavior.
 
     Returns ``None`` if no row was available. The claim is scoped to
     ``harbor_variant_id`` so a worker only picks up jobs of the Harbor variant
@@ -405,6 +421,8 @@ async def claim_single_worker_job(
             capacity_slot,
             SANDBOX_CAPACITY_LEASE_SECONDS,
             sorted(kind.value for kind in HANDLERS),
+            priority_class,
+            org_id,
         )
     finally:
         await connection.close()
@@ -614,6 +632,8 @@ async def run_single_worker_job(
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
@@ -645,6 +665,8 @@ async def run_single_worker_job(
             capacity_provider=capacity_provider,
             capacity_slot=capacity_slot,
         )
+    if priority_class is not None:
+        claim_kwargs.update(priority_class=priority_class, org_id=org_id)
     job = await claim_single_worker_job(queue_key, **claim_kwargs)
     if job is None:
         return False
@@ -762,6 +784,8 @@ async def drain_worker_jobs(
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
@@ -805,6 +829,8 @@ async def drain_worker_jobs(
                 capacity_provider=capacity_provider,
                 capacity_slot=capacity_slot,
             )
+        if priority_class is not None:
+            run_kwargs.update(priority_class=priority_class, org_id=org_id)
         job_found = await run_job(queue_key, **run_kwargs)
         if not job_found:
             break

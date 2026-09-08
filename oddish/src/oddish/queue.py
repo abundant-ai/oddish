@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, not_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,9 @@ from oddish.config import (
     is_nop_oracle_agent,
     settings,
 )
+from oddish.core.analysis_payload import qa_trial_evidence
 from oddish.core.baseline_gate import (
-    GATE_SKIP_PREFIX,
     GateOutcome,
-    baseline_agent_clause,
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -36,6 +35,7 @@ from oddish.core.verdict_state import (
     abandon_verdict,
     cancel_verdict,
     complete_verdict,
+    fail_verdict,
     queue_verdict,
     reset_verdict,
 )
@@ -59,6 +59,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import TaskSubmission, TrialSpec
@@ -1507,16 +1508,7 @@ async def qa_eligible_trial_ids(
     from oddish.workers.queue.provider_failures import is_setup_failure_without_work
 
     exception_type = TrialModel.result["harbor_exception"]["exception_type"].astext
-    conditions = [
-        TrialModel.task_id == task_id,
-        TrialModel.kind == AGENT_TRIAL_KIND,
-        TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.imported_at.is_(None),
-        func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
-        TrialModel.status != TrialStatus.SKIPPED,
-        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
-        not_(baseline_agent_clause(TrialModel.agent)),
-    ]
+    conditions = [TrialModel.task_id == task_id, *qa_eligible_trial_clauses()]
     if task_version_id is not None:
         conditions.append(TrialModel.task_version_id == task_version_id)
     rows = (
@@ -1546,28 +1538,28 @@ async def qa_eligible_trial_ids(
     ]
 
 
-async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
+async def start_qa_for_task(
+    session: AsyncSession, task: TaskModel, *, environment: str | None = None
+) -> bool:
     """Move a settled task into its QA stage, or complete it.
 
     With QA-eligible current-version trials: queue the verdict bookkeeping,
-    create the QA trial (the verdict is only requested above the evidence
-    bar), and put the task in VERDICT_PENDING. With none -- every live trial
+    create the QA trial with a verdict requested, and put the task in
+    VERDICT_PENDING. With none -- every live trial
     is a bulk-migrated import, was skipped/cancelled, or is a nop/oracle
     baseline -- complete the task with a deterministic rejection if current
-    audit or baseline facts establish one; otherwise clear the verdict.
+    audit or baseline facts establish one; otherwise record insufficient evidence.
 
     The caller must hold the task row lock and wait for task_audit_pending
     to clear. Returns True when a QA trial was created.
     """
-    from oddish.workers.analysis_trials import (
-        create_qa_trial,
-        has_verdict_evidence,
-        pre_trial_item_ids,
-        qa_trial_evidence,
-    )
     from oddish.core.verdict_sync import (
         apply_deterministic_verdict_rules,
         build_verdict_payload,
+    )
+    from oddish.workers.analysis_trials import (
+        create_qa_trial,
+        pre_trial_item_ids,
     )
 
     eligible = await qa_eligible_trial_ids(
@@ -1604,26 +1596,26 @@ async def start_qa_for_task(session: AsyncSession, task: TaskModel) -> bool:
             payload = build_verdict_payload(verdict, [])
             complete_verdict(task, payload=payload, now=utcnow())
         else:
-            # Clear, do not restore: with zero eligible trials there is no
-            # replacement QA to run, so a published verdict must not linger
-            # (manual backfill / setup-failure-only tasks).
-            reset_verdict(task)
+            fail_verdict(
+                task,
+                error="Insufficient evidence: no eligible solver trials for the current task version.",
+                now=utcnow(),
+            )
         return False
 
-    with_verdict = await has_verdict_evidence(session, eligible)
     task.status = TaskStatus.VERDICT_PENDING
     queue_verdict(task)
     await create_qa_trial(
         session,
         task=task,
         eligible_trial_ids=eligible,
-        with_verdict=with_verdict,
+        with_verdict=True,
+        environment=environment,
     )
     logger.info(
-        "task %s: qa covers %d trials (verdict=%s)",
+        "task %s: qa covers %d eligible trials",
         task.id,
         len(eligible),
-        with_verdict,
     )
     return True
 
@@ -1671,7 +1663,7 @@ async def maybe_start_task_qa_stage(
     """Check if a task's current-version agent trials are done; transition it.
 
     With QA-eligible trials -> create the task-level QA trial (classify every
-    eligible trial; synthesize the verdict only above the evidence bar) and
+    eligible trial and synthesize a verdict) and
     move the task to VERDICT_PENDING. Otherwise -> COMPLETED. A task goes
     straight from RUNNING to VERDICT_PENDING rather than passing through a
     separate ANALYZING stage.

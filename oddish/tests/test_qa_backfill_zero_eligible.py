@@ -46,7 +46,8 @@ async def test_start_qa_zero_eligible_clears_published_verdict(monkeypatch):
     assert queued is False
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict is None
-    assert task.verdict_status is None
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert "Insufficient evidence" in (task.verdict_error or "")
 
 
 @pytest.mark.asyncio
@@ -88,14 +89,19 @@ async def test_backfill_withdraws_before_zero_eligible_admission(monkeypatch):
         async def commit(self):
             return None
 
-    async def fake_start(session, t):
+    async def fake_start(session, t, *, environment=None):
         # Mimic zero-eligible after backfill already called queue_verdict.
         assert t.verdict is None
         assert t.verdict_status == VerdictStatus.QUEUED
-        from oddish.core.verdict_state import reset_verdict
+        from oddish.core.verdict_state import fail_verdict
+        from oddish.db import utcnow
 
         t.status = TaskStatus.COMPLETED
-        reset_verdict(t)
+        fail_verdict(
+            t,
+            error="Insufficient evidence: no eligible solver trials for the current task version.",
+            now=utcnow(),
+        )
         return False
 
     monkeypatch.setattr(
@@ -103,6 +109,9 @@ async def test_backfill_withdraws_before_zero_eligible_admission(monkeypatch):
     )
     monkeypatch.setattr(
         "oddish.queue.task_audit_pending", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "oddish.queue.qa_eligible_trial_ids", AsyncMock(return_value=[])
     )
     monkeypatch.setattr("oddish.queue.start_qa_for_task", fake_start)
     monkeypatch.setattr(
@@ -113,4 +122,4 @@ async def test_backfill_withdraws_before_zero_eligible_admission(monkeypatch):
 
     assert result["status"] == "completed"
     assert task.verdict is None
-    assert task.verdict_status is None
+    assert task.verdict_status == VerdictStatus.FAILED

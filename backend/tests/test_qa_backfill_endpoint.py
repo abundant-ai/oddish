@@ -12,7 +12,7 @@ import pytest
 
 from api.routers import tasks as tasks_router
 from api.routers import trials as trials_router
-from oddish.schemas import BackfillQARequest, PreTrialAuditRequest
+from oddish.schemas import BackfillQARequest, QARunRequest
 
 
 def _fake_auth():
@@ -73,7 +73,7 @@ async def test_pre_trial_route_passes_task_to_core(monkeypatch, environment):
     monkeypatch.setattr(tasks_router, "rerun_pre_trial_audit_core", fake_core)
     monkeypatch.setattr(tasks_router, "get_session", _fake_get_session)
 
-    body = PreTrialAuditRequest(environment=environment) if environment else None
+    body = QARunRequest(environment=environment) if environment else None
     result = await tasks_router.rerun_pre_trial_audit("tsk", _fake_auth(), body)  # type: ignore[arg-type]
 
     assert result["status"] == "queued"
@@ -95,3 +95,29 @@ async def test_trial_analysis_route_passes_trial_to_core(monkeypatch):
 
     assert result["status"] == "queued"
     assert captured == {"trial_id": "tr-1", "org_id": "org-1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_qa_retry_route_passes_environment_to_core(monkeypatch, environment):
+    from unittest.mock import AsyncMock
+
+    core = AsyncMock(return_value={"status": "queued"})
+    monkeypatch.setattr(tasks_router, "rerun_task_qa_core", core)
+    monkeypatch.setattr(tasks_router, "get_session", _fake_get_session)
+    body = QARunRequest(environment=environment) if environment else None
+
+    await tasks_router.retry_task_qa("tsk", _fake_auth(), body)
+
+    assert core.await_args.kwargs == {
+        "task_id": "tsk",
+        "org_id": "org-1",
+        "environment": environment,
+    }
+
+
+def test_qa_environment_rejects_unsupported_provider():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        QARunRequest(environment="unsupported")

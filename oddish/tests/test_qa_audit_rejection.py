@@ -229,7 +229,7 @@ async def create_qa(task_id):
             .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
             .limit(1)
         )
-        assert qa.harbor_config["analysis_payload"]["with_verdict"] is False
+        assert qa.harbor_config["analysis_payload"]["with_verdict"] is True
         return qa.id
 
 
@@ -271,7 +271,7 @@ async def test_backfill_rejects_unreadable_source_before_reset(audit_task):
         )
 
 
-def qa_artifact(source_id, *, findings=True):
+def qa_artifact(source_id, *, findings=True, with_verdict=True):
     entry = _good_qa_entry(source_id)
     entry["analysis"].update(classification="GOOD_FAILURE", subtype="misdiagnosis")
     if findings:
@@ -282,7 +282,12 @@ def qa_artifact(source_id, *, findings=True):
                 "evidence": "Unrelated to this failure.",
             }
         ]
-    return {"trials": [entry], "verdict": None}
+    return {
+        "trials": [entry],
+        "verdict": {"verdict": "reject" if findings else "accept", "confidence": "high"}
+        if with_verdict
+        else None,
+    }
 
 
 async def settle(trial_id):
@@ -294,7 +299,8 @@ async def settle(trial_id):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tier", ["must_fix", "should_fix", None])
-async def test_one_trial_rejection_preserves_trial_classification(audit_task, tier):
+@pytest.mark.parametrize("run_count", [1, 3])
+async def test_same_agent_runs_store_verdict_after_qa(audit_task, tier, run_count):
     task_id, version_id, source_id, artifacts = audit_task
     async with get_session() as session:
         version = await session.get(TaskVersionModel, version_id)
@@ -303,8 +309,40 @@ async def test_one_trial_rejection_preserves_trial_classification(audit_task, ti
             if tier
             else {"items": []}
         )
+    source_ids = [source_id]
+    async with get_session() as session:
+        source = await session.get(TrialModel, source_id)
+        for i in range(1, run_count):
+            row = TrialModel(
+                id=f"{source_id}-{i}",
+                name=f"solver-{i}",
+                task_id=task_id,
+                task_version_id=version_id,
+                experiment_id=source.experiment_id,
+                agent=source.agent,
+                provider="local",
+                queue_key="test",
+                kind="agent",
+                status=TrialStatus.SUCCESS,
+                reward=0.0,
+                has_trajectory=True,
+            )
+            session.add(row)
+            source_ids.append(row.id)
     qa_id = await create_qa(task_id)
-    artifacts[qa_id] = qa_artifact(source_id, findings=tier is not None)
+    async with get_session() as session:
+        qa = await session.get(TrialModel, qa_id)
+        assert set(qa.harbor_config["analysis_payload"]["trial_ids"]) == set(source_ids)
+    artifacts[qa_id] = {
+        "trials": [
+            qa_artifact(tid, findings=tier is not None)["trials"][0]
+            for tid in source_ids
+        ],
+        "verdict": {
+            "verdict": "reject" if tier == "must_fix" else "accept",
+            "confidence": "high",
+        },
+    }
     await settle(qa_id)
     await analysis_trials.handle_analysis_trial_settled(qa_id)  # Duplicate delivery.
     async with get_session() as session:
@@ -319,7 +357,10 @@ async def test_one_trial_rejection_preserves_trial_classification(audit_task, ti
             assert task.verdict["verdict"] == "reject"
             assert task.verdict["is_good"] is False
         else:
-            assert task.verdict is None
+            assert task.verdict["verdict"] == "accept"
+        assert task.verdict["_graded_by"] == qa_id
+        for tid in source_ids:
+            assert (await session.get(TrialModel, tid)).analysis["_graded_by"] == qa_id
 
 
 @pytest.mark.asyncio
@@ -348,6 +389,12 @@ async def test_zero_eligible_trials_wait_for_audit_then_finish(audit_task, has_f
         assert (task.verdict or {}).get("verdict") == (
             "reject" if has_finding else None
         )
+        if not has_finding:
+            assert task.verdict_status == VerdictStatus.FAILED
+            assert (
+                task.verdict_error
+                == "Insufficient evidence: no eligible solver trials for the current task version."
+            )
         assert (
             await session.scalar(
                 select(TrialModel.id).where(
@@ -360,12 +407,36 @@ async def test_zero_eligible_trials_wait_for_audit_then_finish(audit_task, has_f
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("audit_finishes_first", [True, False])
+@pytest.mark.parametrize("remaining_defect", [True, False])
 async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacement(
-    audit_task, audit_finishes_first
+    audit_task, audit_finishes_first, remaining_defect
 ):
     task_id, version_id, source_id, artifacts = audit_task
+    async with get_session() as session:
+        version = await session.get(TaskVersionModel, version_id)
+        old_items = [
+            {
+                **FINDING,
+                "id": "finding",
+                "dimension": "oracle",
+                "problem_type": "mismatch",
+                "file": "solution/solve.sh",
+                "line_start": 3,
+                "line_end": 3,
+                "title": "The reference copies a binary instead of building source",
+                "detail": "The reference installs a bundled executable without compiling source.",
+                "recommendation": "Build the required source in the reference script.",
+            }
+        ]
+        if remaining_defect:
+            old_items.append({"id": "remaining", **FINDING})
+        version.pre_trial = {"items": old_items}
     old_qa = await create_qa(task_id)
     artifacts[old_qa] = qa_artifact(source_id)
+    if remaining_defect:
+        artifacts[old_qa]["trials"][0]["analysis"]["exploitation"].append(
+            {"links_to": "remaining", "exploited": False, "causal": False}
+        )
     async with get_session() as session:
         await rerun_pre_trial_audit_core(session, task_id=task_id)
     async with get_session() as session:
@@ -376,7 +447,7 @@ async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacem
         )
         task = await session.get(TaskModel, task_id)
         assert task.verdict is None
-    artifacts[audit.id] = {"items": []}
+    artifacts[audit.id] = {"items": [FINDING] if remaining_defect else []}
     first, last = (audit.id, old_qa) if audit_finishes_first else (old_qa, audit.id)
     await settle(first)
     async with get_session() as session:
@@ -401,13 +472,22 @@ async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacem
         )
         assert len(qas) == 2
         fresh = next(qa for qa in qas if qa.id != old_qa)
-        assert fresh.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"] == []
-    artifacts[fresh.id] = qa_artifact(source_id, findings=False)
+        finding_ids = fresh.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"]
+        assert len(finding_ids) == int(remaining_defect)
+        assert "finding" not in finding_ids
+        assert "remaining" not in finding_ids
+    artifacts[fresh.id] = qa_artifact(source_id, findings=remaining_defect)
+    if remaining_defect:
+        artifacts[fresh.id]["trials"][0]["analysis"]["exploitation"][0]["links_to"] = (
+            finding_ids[0]
+        )
+        # A model accept cannot waive the real defect left after re-auditing.
+        artifacts[fresh.id]["verdict"]["verdict"] = "accept"
     await settle(fresh.id)
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         assert task.status == TaskStatus.COMPLETED
-        assert task.verdict is None
+        assert task.verdict["verdict"] == ("reject" if remaining_defect else "accept")
         assert (await session.get(TrialModel, source_id)).analysis[
             "_graded_by"
         ] == fresh.id
@@ -635,7 +715,7 @@ async def test_failed_audit_replacement_does_not_restore_old_rejection(audit_tas
         )
         assert fresh.harbor_config["analysis_payload"]["with_verdict"] is False
         assert fresh.harbor_config["analysis_payload"]["pre_trial_must_fix_ids"] == []
-    artifacts[fresh.id] = qa_artifact(source_id, findings=False)
+    artifacts[fresh.id] = qa_artifact(source_id, findings=False, with_verdict=False)
     await settle(fresh.id)
     async with get_session() as session:
         assert (await session.get(TaskModel, task_id)).verdict is None
@@ -672,3 +752,47 @@ async def test_cancel_between_audit_settlement_and_import_remains_cancelled(audi
             )
             is None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "baseline", [None, ("oracle", 0.0), ("nop", 1.0), ("oracle", 1.0)]
+)
+async def test_zero_eligible_trials_never_retain_old_acceptance(audit_task, baseline):
+    task_id, version_id, source_id, _ = audit_task
+    async with get_session() as session:
+        source = await session.get(TrialModel, source_id)
+        source.status = TrialStatus.SKIPPED
+        version = await session.get(TaskVersionModel, version_id)
+        version.pre_trial = {"items": []}
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        task.verdict = {"verdict": "accept", "is_good": True}
+        task.verdict_status = VerdictStatus.SUCCESS
+        if baseline:
+            session.add(
+                TrialModel(
+                    id=f"{source_id}-baseline",
+                    name="baseline",
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=source.experiment_id,
+                    agent=baseline[0],
+                    reward=baseline[1],
+                    kind="agent",
+                    provider="local",
+                    queue_key="test",
+                    status=TrialStatus.SUCCESS,
+                )
+            )
+        await session.flush()
+        assert not await start_qa_for_task(session, task)
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
+        if baseline in [("oracle", 0.0), ("nop", 1.0)]:
+            assert task.verdict["verdict"] == "reject"
+            assert task.verdict_status == VerdictStatus.SUCCESS
+        else:
+            assert task.verdict is None
+            assert task.verdict_status == VerdictStatus.FAILED
+            assert "Insufficient evidence" in task.verdict_error

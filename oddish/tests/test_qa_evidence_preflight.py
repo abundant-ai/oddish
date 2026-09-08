@@ -102,3 +102,52 @@ async def test_qa_source_evidence_skips_artifacts_for_unstarted_trial(
     evidence_reads.result.assert_not_awaited()
     evidence_reads.verifier.assert_not_awaited()
     evidence_reads.trajectory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", [None, "modal", "daytona"])
+async def test_qa_rerun_passes_environment_through_admission(monkeypatch, environment):
+    from oddish.core.endpoints.qa import rerun_task_qa_core
+    from oddish.db import TaskModel, TrialModel, TrialStatus
+
+    source = TrialModel(
+        id="source-1",
+        task_id="task-1",
+        kind="agent",
+        status=TrialStatus.SUCCESS,
+    )
+    task = TaskModel(id="task-1", name="demo", org_id="org-1", trials=[source])
+    session = AsyncMock()
+    session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: task)
+    session.scalar.return_value = 0  # No active solver trials.
+    monkeypatch.setattr(
+        "oddish.queue.live_analysis_trial_id", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "oddish.queue.task_audit_pending", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "oddish.queue.qa_eligible_trial_ids", AsyncMock(return_value=[source.id])
+    )
+    monkeypatch.setattr(
+        "oddish.core.endpoints.qa.qa_source_evidence_errors", AsyncMock(return_value=())
+    )
+    create_qa = AsyncMock()
+    monkeypatch.setattr("oddish.workers.analysis_trials.create_qa_trial", create_qa)
+
+    result = await rerun_task_qa_core(
+        session,
+        task_id=task.id,
+        org_id=task.org_id,
+        environment=environment,
+    )
+
+    assert result["status"] == "queued"
+    create_qa.assert_awaited_once_with(
+        session,
+        task=task,
+        eligible_trial_ids=[source.id],
+        with_verdict=True,
+        environment=environment,
+    )
+    session.commit.assert_awaited_once()

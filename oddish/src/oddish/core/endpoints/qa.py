@@ -251,12 +251,13 @@ async def rerun_task_qa_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """Create a replacement qa-kind trial for a finished task.
 
     Resets every live agent trial's classification, then creates one QA trial
-    that reclassifies the eligible set and synthesizes a verdict when the
-    evidence bar is met. Queuing the replacement withdraws the old verdict.
+    that reclassifies all eligible trials and requests a verdict once at least
+    one exists. Queuing the replacement withdraws the old verdict.
     """
     return await backfill_task_analysis_core(
         session,
@@ -264,6 +265,7 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
+        environment=environment,
     )
 
 
@@ -274,6 +276,7 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA for a task.
 
@@ -283,7 +286,7 @@ async def backfill_task_analysis_core(
     front so the UI shows them as pending (all live trials, or just
     ``trial_ids``). Returns ``status: "queued"`` when a QA trial was
     created, or ``"completed"`` when admission finished with no eligible
-    trials (deterministic rejection or a cleared verdict).
+    trials (deterministic rejection or insufficient-evidence failure).
     """
     from oddish.queue import (
         live_analysis_trial_id,
@@ -398,7 +401,7 @@ async def backfill_task_analysis_core(
     # old verdict while this API still claims success.
     queue_verdict(task)
     task.finished_at = None
-    queued = await start_qa_for_task(session, task)
+    queued = await start_qa_for_task(session, task, environment=environment)
 
     await session.commit()
     return {
