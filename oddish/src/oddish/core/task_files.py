@@ -16,13 +16,11 @@ async def resolve_task_file_source(
 ) -> tuple[int | None, str | None, bool | None]:
     """Authorize a task and select the exact version source used for file reads.
 
-    Returns ``(version, task_s3_prefix, expanded)``. ``expanded`` is the
-    database's answer to "was the per-file tree under ``v{N}-files/`` built
-    from the archive this row points at?": the expand worker stamps
-    ``expanded_manifest_key`` after promoting a tree, and an in-place
-    overwrite clears it in the same transaction that switches the archive, so
-    readers can trust it without probing storage for the manifest. ``None``
-    when there is no version row to ask.
+    Returns ``(version, task_s3_prefix, expanded)``. A missing expansion stamp
+    skips the extracted tree. A present stamp is only a hint: storage must
+    still validate its manifest against the selected archive because an
+    overwrite can replace the tree after this query. ``None`` means there is
+    no version row to consult.
     """
 
     version_join = (

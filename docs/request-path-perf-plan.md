@@ -284,37 +284,21 @@ in Python. Same statement count (the budget test still pins 5), a fraction of
 the bytes for tasks that were re-uploaded or retried many times.
 `get_task_status_trials` stays for callers that pivot on another version.
 
-**2b. Storage: ask the database, not the bucket.** The plan proposed caching the
-"manifest matches archive" answer for 60 s. Reading the expand worker showed
-the answer already lives in the database: `_promote_expansion_if_current`
-stamps `task_versions.expanded_manifest_key` under the version row's lock
-after writing the manifest, and the in-place overwrite clears it in the same
-transaction that switches `task_s3_key`. So `resolve_task_file_source` (which
-every file route already calls) now returns that stamp as `expanded`, and the
-storage layer:
+**2b. Storage: use expansion hints without changing read contracts.**
+`resolve_task_file_source` returns the database's expansion stamp as
+`expanded`. `False` skips extracted-file probes. `True` and `None` retain
+manifest validation against the selected archive: the shared `v{N}-files/`
+folder can be replaced after the database query. Missing members fall back
+to the selected bundle. Skipping source validation requires the immutable
+layout described in Phase 4a; the database stamp alone is insufficient.
 
-- lists or reads the expanded tree without the manifest HEAD + GET when
-  `expanded` is `True`, and without the archive HEAD either;
-- reads a member with one GET and falls back to the archive only on
-  `NoSuchKey` (oversize skips, mid-flight expansions), instead of HEAD then GET;
-  a presigned URL keeps the presence check because it cannot fall back later;
-- skips the expanded probes entirely when `expanded` is `False`;
-- probes exactly as before when the caller has no row (`None`), which is what
-  keeps the existing storage tests valid.
+Recursive trial listings remain complete because `oddish pull` consumes one
+inventory without pagination. Non-recursive listings retain their existing
+limits and cursors. No storage layout change or backfill is introduced.
 
-No cache, no staleness window, no invalidation hook. Per task-file read on an
-expanded version: HEAD archive, HEAD manifest, GET manifest, HEAD member, GET
-member (five storage round trips, plus another HEAD archive on the archive
-path) become one GET.
-
-Also in this phase: `list_objects_all(prefix, max_keys=)` stops paginating at
-the cap and recursive trial listings pass their `limit` and report
-`truncated`; the Clerk JWKS is fetched at `app.startup` and one transport
-failure on the fetch is retried, so a cold container's first request neither
-waits for nor fails on that hop.
-
-Verify: `/tasks/{id}/files/{path}` handler time minus SQL time (the storage
-share) on expanded versions drops to about one object GET.
+The Clerk JWKS is fetched in the background at startup, with one retry for a
+transport failure. Startup does not wait for that task, so a sufficiently
+early request can still fetch the keys itself.
 
 
 ### Phase 3. The browser talks to the backend (implemented behind the flag: `perf/request-path-phase3`)

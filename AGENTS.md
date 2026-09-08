@@ -1099,12 +1099,12 @@ Storage defaults:
   `tasks/<task_id>/v<N>-files/` plus a `.oddish-manifest.json` sentinel and
   then stamps `task_versions.expanded_manifest_key` under the version row's
   lock; an in-place overwrite clears the stamp in the transaction that switches
-  `task_s3_key`. That stamp is the reader's answer: `resolve_task_file_source`
-  returns it as `expanded`, and the storage layer lists or reads the tree
-  without probing for the manifest (`True`), goes straight to the bundle
-  (`False`), or probes as a fallback (`None`, callers without the row). A read
-  vouched for by the database that still misses a member (oversize skip,
-  mid-flight expansion) falls back to the bundle on the `NoSuchKey`.
+  `task_s3_key`. `resolve_task_file_source` returns it as `expanded`.
+  `False` skips the extracted tree; `True` and `None` still validate the
+  manifest against the selected archive because an overwrite can replace
+  the tree after the database read. Missing members fall back to the bundle.
+- Recursive trial-file listings remain complete for CLI downloads; only
+  non-recursive listings use `limit` and continuation cursors.
 - Harbor job outputs: `/tmp/harbor-jobs`
 
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
