@@ -1699,6 +1699,9 @@ class TaskBrowseResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    # Tasks matching the active filters across every page, not just the ones in
+    # ``items`` -- what the browser's "N matching tasks" label reports.
+    total: int
 
 
 class AgentModelFacet(BaseModel):

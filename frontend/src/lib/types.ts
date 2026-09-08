@@ -419,6 +419,9 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+  // Tasks matching the active filters across every page, not just the ones in
+  // `items` — what the "N matching tasks" label reports.
+  total: number;
 }
 
 // The backend response also carries a deprecated `experiments` field that is

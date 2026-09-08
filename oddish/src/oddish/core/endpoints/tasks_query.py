@@ -1121,7 +1121,7 @@ async def browse_tasks_core(
         )
         if unknown_tokens & ({*ast.all} | {*ast.any_}):
             return TaskBrowseResponse(
-                items=[], limit=limit, offset=offset, has_more=False
+                items=[], limit=limit, offset=offset, has_more=False, total=0
             )
         if not resolved_filter.is_empty():
             for predicate in build_filter_predicates(resolved_filter):
@@ -1810,6 +1810,28 @@ async def browse_tasks_core(
     has_more = len(raw_rows) > limit
     visible_rows = raw_rows[:limit]
 
+    # Total across every page, for the browser's "N matching tasks" label. The
+    # count repeats the (expensive) filter work, so skip it whenever the page
+    # already IS the whole result set: first page with nothing after it.
+    # ``name_rank == 1`` mirrors the page query -- one row per task name, the
+    # same de-duplication -- so the two can never disagree.
+    if offset == 0 and not has_more:
+        total = len(visible_rows)
+    else:
+        total_started_at = now()
+        total_result = await session.execute(
+            select(func.count())
+            .select_from(ranked_tasks_subquery)
+            .where(ranked_tasks_subquery.c.name_rank == 1)
+        )
+        total = int(total_result.scalar() or 0)
+        if record_timing is not None:
+            record_timing(
+                "browse_total",
+                elapsed_ms(total_started_at),
+                "Browse tasks total count query",
+            )
+
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
     cost_scope_active = sort == "cost_desc"
@@ -2171,6 +2193,7 @@ async def browse_tasks_core(
         limit=limit,
         offset=offset,
         has_more=has_more,
+        total=total,
     )
     if record_timing is not None:
         record_timing(

@@ -6,7 +6,7 @@ import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ImportDialog } from "@/components/import-dialog";
 import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
-import { useTaskBrowseRevalidate } from "@/lib/use-task-browse";
+import { useTaskBrowse, useTaskBrowseRevalidate } from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
 
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
@@ -18,6 +18,28 @@ export function TasksPageNumber() {
   const searchParams = useSearchParams();
   const offset = Math.max(Number(searchParams.get("offset") ?? "0") || 0, 0);
   return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
+}
+
+// How many tasks match the active filters across every page — the grid shows
+// at most TASKS_PAGE_SIZE of them. Reads the same browse state the grid does,
+// through the same SWR key, so this renders from the grid's cache entry
+// instead of issuing a second request.
+export function TasksMatchCount() {
+  const searchParams = useSearchParams();
+  const { data } = useTaskBrowse(new URLSearchParams(searchParams.toString()));
+  // Nothing to claim until a response lands: a count guessed from the page
+  // would be wrong for every filter state with more than one page.
+  if (!data) return null;
+  // A backend that predates the field sends no total. Saying nothing beats
+  // rendering "0 matching tasks" over a grid that is plainly showing some.
+  const total = data.total;
+  if (typeof total !== "number") return null;
+  return (
+    <>
+      {total.toLocaleString()} matching {total === 1 ? "task" : "tasks"}
+      {" · "}
+    </>
+  );
 }
 
 // Every refresh path revalidates the grid's client-side browse fetch only —

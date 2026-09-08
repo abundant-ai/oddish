@@ -697,3 +697,39 @@ async def test_browse_boolean_no_is_complement():
             assert await _names(session, has_trajectory=False) == {"beta"}
     finally:
         await engine.dispose()
+
+
+async def test_browse_total_counts_every_matching_page():
+    """``total`` counts the whole filtered set, not the page. Both branches
+    matter: the page query already knows the answer when the first page holds
+    everything, and only the wider result needs the extra COUNT."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            # Whole set on one page -> counted without the extra query.
+            whole = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            assert whole.has_more is False
+            assert whole.total == 3
+            assert len(whole.items) == 3
+
+            # Paged: every page reports the full total, never its own length.
+            first = await browse_tasks_core(session, org_id=ORG, limit=2, offset=0)
+            assert first.has_more is True
+            assert len(first.items) == 2
+            assert first.total == 3
+
+            last = await browse_tasks_core(session, org_id=ORG, limit=2, offset=2)
+            assert last.has_more is False
+            assert len(last.items) == 1
+            assert last.total == 3
+
+            # Filters narrow the total the same way they narrow the items.
+            running = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, statuses=["running"]
+            )
+            assert {item.name for item in running.items} == {"beta"}
+            assert running.total == 1
+    finally:
+        await engine.dispose()
