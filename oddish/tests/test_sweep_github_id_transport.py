@@ -61,18 +61,23 @@ def test_unset_github_id_does_not_change_request_hash():
     """A submission that omits github_id must fingerprint identically to its
     pre-github_id form, so an in-flight Idempotency-Key retried across the
     deploy boundary does not spuriously 409."""
-    from oddish.core.idempotency import _canonical_digest, _registry_auth_fingerprints
+    from oddish.core.idempotency import (
+        _canonical_digest,
+        _omit_stable_defaults,
+        _registry_auth_fingerprints,
+    )
 
     submission = _submission()  # github_id is None
     # The body a pre-github_id client/server would hash: the same pipeline
     # compute_request_hash runs, minus the github_id key.
     data = submission.model_dump(mode="json")
-    data.pop("github_id")
     if hasattr(submission, "registry_auth"):
         data["registry_auth"] = _registry_auth_fingerprints(
             getattr(submission, "registry_auth", None)
         )
-    assert compute_request_hash(submission) == _canonical_digest(data)
+    assert compute_request_hash(submission) == _canonical_digest(
+        _omit_stable_defaults(data)
+    )
 
 
 def test_set_github_id_changes_request_hash():
@@ -80,3 +85,56 @@ def test_set_github_id_changes_request_hash():
     assert compute_request_hash(_submission()) != compute_request_hash(
         _submission(github_id="123456")
     )
+
+
+def test_unset_curated_model_flags_do_not_change_request_hash():
+    """Default provider / allow_unknown_model must fingerprint like a pre-field body.
+
+    Adding those keys to AgentModelPair would otherwise 409 an honest retry of
+    a sweep reserved before this deploy.
+    """
+    from oddish.core.idempotency import _canonical_digest, _registry_auth_fingerprints
+
+    submission = _submission()
+    data = submission.model_dump(mode="json")
+    data.pop("github_id", None)
+    for config in data["configs"]:
+        config.pop("provider", None)
+        config.pop("allow_unknown_model", None)
+    if hasattr(submission, "registry_auth"):
+        data["registry_auth"] = _registry_auth_fingerprints(
+            getattr(submission, "registry_auth", None)
+        )
+    assert compute_request_hash(submission) == _canonical_digest(data)
+
+
+def test_explicit_provider_changes_request_hash():
+    pinned = TaskSweepSubmission(
+        task_id="task_lg",
+        configs=[
+            AgentModelPair(
+                agent="nop",
+                model="nop/nop",
+                n_trials=1,
+                provider="fireworks",
+            )
+        ],
+        user=None,
+    )
+    assert compute_request_hash(_submission()) != compute_request_hash(pinned)
+
+
+def test_allow_unknown_model_true_changes_request_hash():
+    allowed = TaskSweepSubmission(
+        task_id="task_lg",
+        configs=[
+            AgentModelPair(
+                agent="nop",
+                model="nop/nop",
+                n_trials=1,
+                allow_unknown_model=True,
+            )
+        ],
+        user=None,
+    )
+    assert compute_request_hash(_submission()) != compute_request_hash(allowed)
