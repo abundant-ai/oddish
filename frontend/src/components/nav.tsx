@@ -1,18 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import Link from "next/link";
 import useSWR from "swr";
 import {
   OrganizationSwitcher,
   SignInButton,
   useAuth,
   useClerk,
-  useOrganization,
   useUser,
 } from "@clerk/nextjs";
+import { stripOrgSlug, withOrgSlug } from "@/lib/org-path";
+import { useAppPathname, useOrgHref } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { fetcher } from "@/lib/api";
 import type { ModelEndpointAccessResponse } from "@/lib/types";
@@ -83,6 +82,14 @@ const SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV = false;
 
 const DOCS_URL = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md";
 
+/** Keep the current page, swap the org slug, and hard-load so Clerk URL sync
+ *  and the URL-keyed router cache cannot pin the previous workspace. */
+function organizationSwitchPath(org: { slug: string | null }) {
+  if (!org.slug) return "/dashboard";
+  const appPath = stripOrgSlug(window.location.pathname);
+  return withOrgSlug(appPath === "/" ? "/dashboard" : appPath, org.slug);
+}
+
 type NavLink = {
   href: string;
   label: string;
@@ -140,11 +147,11 @@ function isNavLinkActive(pathname: string, link: NavLink): boolean {
 }
 
 export function Nav() {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
+  const orgHref = useOrgHref();
   const { user, isLoaded, isSignedIn } = useUser();
   const { orgRole } = useAuth();
   const { signOut } = useClerk();
-  const { organization } = useOrganization();
   const isOrgAdmin = isOrgAdminRole(orgRole);
   const { data: modelAccess } = useSWR<ModelEndpointAccessResponse>(
     isLoaded && isSignedIn ? "/api/models/access" : null,
@@ -153,23 +160,6 @@ export function Nav() {
   const primaryNavLinks = PRIMARY_NAV_LINKS.filter(
     (link) => !link.operatorOnly || modelAccess?.allowed
   );
-
-  // Full reload on org switch. Org-scoped SWR keys and Next's client router
-  // cache (RSC payloads, kept ~30s by staleTimes.dynamic) are both keyed on
-  // plain URLs with no org id, so previous-workspace data would otherwise
-  // survive a switch. router.refresh() clears only the current route, so a
-  // hard navigation is the reliable way to drop every cached route at once.
-  const prevOrgId = useRef(organization?.id);
-  useEffect(() => {
-    if (
-      prevOrgId.current !== undefined &&
-      organization?.id !== prevOrgId.current
-    ) {
-      window.location.assign("/dashboard");
-      return;
-    }
-    prevOrgId.current = organization?.id;
-  }, [organization?.id]);
 
   return (
     <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
@@ -195,7 +185,7 @@ export function Nav() {
                 {primaryNavLinks.map((link) => (
                   <DropdownMenuItem key={link.href} asChild>
                     <Link
-                      href={link.href}
+                      href={orgHref(link.href)}
                       data-active={isNavLinkActive(pathname, link)}
                       className="hover:bg-muted focus:bg-muted data-[active=true]:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                     >
@@ -218,7 +208,7 @@ export function Nav() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <Link href="/dashboard" className="shrink-0 sm:hidden">
+            <Link href={orgHref("/dashboard")} className="shrink-0 sm:hidden">
               <Image
                 src="/oddish.png"
                 alt="Oddish"
@@ -239,7 +229,7 @@ export function Nav() {
                     className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
                   >
                     <Link
-                      href={link.href}
+                      href={orgHref(link.href)}
                       className="flex items-center gap-2"
                       data-active={active}
                     >
@@ -268,14 +258,21 @@ export function Nav() {
                     <span>Docs</span>
                   </a>
                 </Button>
-                {/* No afterSelect/afterCreateOrganizationUrl: Clerk's
-                    client-side navigation would render /dashboard from the
-                    URL-keyed router cache (previous org's payload) before the
-                    org-change effect below fires its hard reload. Routing the
-                    switch solely through that reload avoids the stale flash. */}
                 <OrganizationSwitcher
                   hidePersonal
                   appearance={navSwitcherAppearance}
+                  afterSelectOrganizationUrl={(org) => {
+                    const dest = organizationSwitchPath(org);
+                    window.location.assign(
+                      `${dest}${window.location.search}${window.location.hash}`,
+                    );
+                    return dest;
+                  }}
+                  afterCreateOrganizationUrl={(org) => {
+                    const dest = withOrgSlug("/dashboard", org.slug);
+                    window.location.assign(dest);
+                    return dest;
+                  }}
                 />
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
@@ -315,7 +312,7 @@ export function Nav() {
                     <DropdownMenuSeparator className="my-1" />
                     <DropdownMenuItem asChild>
                       <Link
-                        href="/settings"
+                        href={orgHref("/settings")}
                         className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                       >
                         <User className="h-4 w-4" />
@@ -325,7 +322,7 @@ export function Nav() {
                     {isOrgAdmin && (
                       <DropdownMenuItem asChild>
                         <Link
-                          href="/admin"
+                          href={orgHref("/admin")}
                           className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                         >
                           <Shield className="h-4 w-4" />
