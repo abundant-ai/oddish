@@ -1,4 +1,4 @@
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Beaker } from "lucide-react";
@@ -21,7 +21,7 @@ export default function ExperimentsPage() {
             <AlertDescription>
               Open an experiment from the dashboard to view its trials.{" "}
               <Link
-                href="/dashboard"
+                href="/"
                 className="text-blue-400 hover:text-blue-300 hover:underline"
               >
                 Go to dashboard

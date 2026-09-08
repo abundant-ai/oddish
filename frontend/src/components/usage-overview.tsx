@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";

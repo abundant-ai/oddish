@@ -1,6 +1,6 @@
 "use client";
 
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import { type ProbeTrial } from "@/lib/probe-summary";
 import { ProbeRunSummary } from "@/components/probe-run-summary";

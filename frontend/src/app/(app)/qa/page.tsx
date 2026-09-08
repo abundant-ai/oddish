@@ -1,5 +1,5 @@
-import { orgRedirect } from "@/lib/org-redirect";
+import { redirect } from "next/navigation";
 
-export default async function QaPage() {
-  await orgRedirect("/qa/runs");
+export default function QaPage() {
+  redirect("/qa/runs");
 }

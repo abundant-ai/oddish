@@ -1,5 +1,5 @@
-import { orgRedirect } from "@/lib/org-redirect";
+import { redirect } from "next/navigation";
 
-export default async function PresetsPage() {
-  await orgRedirect("/qa/skills");
+export default function PresetsPage() {
+  redirect("/qa/skills");
 }

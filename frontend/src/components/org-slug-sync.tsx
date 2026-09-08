@@ -18,7 +18,10 @@ export function OrgSlugSync() {
 
   useEffect(() => {
     if (!isLoaded || !organization?.slug) return;
-    if (parseOrgSlug(pathname) === organization.slug) return;
+    const urlSlug = parseOrgSlug(pathname);
+    // Unprefixed /tasks stays for middleware to 307. Only a *wrong* slug
+    // in the address bar needs a hard load (org switch / pasted URL).
+    if (!urlSlug || urlSlug === organization.slug) return;
     const appPath = stripOrgSlug(pathname);
     const dest = withOrgSlug(
       appPath === "/" ? "/dashboard" : appPath,

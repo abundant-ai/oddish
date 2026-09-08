@@ -1,5 +1,5 @@
+import { redirect } from "next/navigation";
 import { auth } from "@clerk/nextjs/server";
-import { orgRedirect } from "@/lib/org-redirect";
 import { isOrgAdminRole } from "@/lib/org-roles";
 
 // Server-side gate for /admin and everything under it (tabs, /admin/users/*).
@@ -13,7 +13,7 @@ export default async function AdminLayout({
 }) {
   const { orgRole } = await auth();
   if (!isOrgAdminRole(orgRole)) {
-    await orgRedirect("/dashboard");
+    redirect("/dashboard");
   }
   return <>{children}</>;
 }

@@ -1,7 +1,7 @@
 "use client";
 
-import { AppLink as Link } from "@/components/app-link";
 import Image from "next/image";
+import Link from "next/link";
 import {
   OrganizationSwitcher,
   SignInButton,
@@ -10,7 +10,7 @@ import {
   useUser,
 } from "@clerk/nextjs";
 import { stripOrgSlug, withOrgSlug } from "@/lib/org-path";
-import { useAppPathname } from "@/lib/use-org-href";
+import { useAppPathname, useOrgHref } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Button } from "@/components/ui/button";
 import {
@@ -137,6 +137,7 @@ function isNavLinkActive(pathname: string, link: NavLink): boolean {
 
 export function Nav() {
   const pathname = useAppPathname();
+  const orgHref = useOrgHref();
   const { user, isLoaded, isSignedIn } = useUser();
   const { orgRole } = useAuth();
   const { signOut } = useClerk();
@@ -166,7 +167,7 @@ export function Nav() {
                 {PRIMARY_NAV_LINKS.map((link) => (
                   <DropdownMenuItem key={link.href} asChild>
                     <Link
-                      href={link.href}
+                      href={orgHref(link.href)}
                       data-active={isNavLinkActive(pathname, link)}
                       className="hover:bg-muted focus:bg-muted data-[active=true]:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                     >
@@ -189,7 +190,7 @@ export function Nav() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <Link href="/dashboard" className="shrink-0 sm:hidden">
+            <Link href={orgHref("/dashboard")} className="shrink-0 sm:hidden">
               <Image
                 src="/oddish.png"
                 alt="Oddish"
@@ -210,7 +211,7 @@ export function Nav() {
                     className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
                   >
                     <Link
-                      href={link.href}
+                      href={orgHref(link.href)}
                       className="flex items-center gap-2"
                       data-active={active}
                     >
@@ -293,7 +294,7 @@ export function Nav() {
                     <DropdownMenuSeparator className="my-1" />
                     <DropdownMenuItem asChild>
                       <Link
-                        href="/settings"
+                        href={orgHref("/settings")}
                         className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                       >
                         <User className="h-4 w-4" />
@@ -303,7 +304,7 @@ export function Nav() {
                     {isOrgAdmin && (
                       <DropdownMenuItem asChild>
                         <Link
-                          href="/admin"
+                          href={orgHref("/admin")}
                           className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                         >
                           <Shield className="h-4 w-4" />

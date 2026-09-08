@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import useSWR from "swr";
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { type ProbeSummary } from "@/lib/probe-summary";
 import { ProbeRunSummary } from "@/components/probe-run-summary";

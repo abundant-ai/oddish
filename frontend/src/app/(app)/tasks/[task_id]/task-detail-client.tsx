@@ -1,6 +1,6 @@
 "use client";
 
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";

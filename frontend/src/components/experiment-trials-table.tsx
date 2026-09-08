@@ -53,8 +53,7 @@ import {
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
-import { AppLink as Link } from "@/components/app-link";
-import { useOrgHref } from "@/lib/use-org-href";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
@@ -587,7 +586,6 @@ export function ExperimentTrialsTable({
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
   const router = useRouter();
-  const orgHref = useOrgHref();
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -2698,9 +2696,7 @@ export function ExperimentTrialsTable({
                                               onProbeSelect(trial, task);
                                             } else {
                                               router.push(
-                                                orgHref(
-                                                  `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
-                                                ),
+                                                `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`
                                               );
                                             }
                                             return;

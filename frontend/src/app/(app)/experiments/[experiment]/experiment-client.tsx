@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";

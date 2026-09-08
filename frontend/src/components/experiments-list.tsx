@@ -1,4 +1,4 @@
-import { AppLink as Link } from "@/components/app-link";
+import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import {
