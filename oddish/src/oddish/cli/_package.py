@@ -102,6 +102,8 @@ def upgrade_command(
     *,
     executable: str | None = None,
     which: Callable[[str], str | None] = shutil.which,
+    force: bool = False,
+    pin_version: str | None = None,
 ) -> list[str]:
     """Return ``uv pip install --upgrade oddish`` for this interpreter."""
     if info.source == "editable":
@@ -117,19 +119,22 @@ def upgrade_command(
             "(`uv pip install oddish`). Reinstall with that command, then retry."
         )
 
+    package = f"{PACKAGE_NAME}=={pin_version}" if pin_version else PACKAGE_NAME
     python = executable or sys.executable
     if info.manager == "uv-pip":
         _require_binary("uv", which=which)
-        return [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            python,
-            "--upgrade",
-            PACKAGE_NAME,
-        ]
-    return [python, "-m", "pip", "install", "--upgrade", PACKAGE_NAME]
+        command = ["uv", "pip", "install", "--python", python]
+        if force:
+            # uv's ``--force-reinstall`` aliases ``--reinstall`` and rebuilds
+            # every package in the environment. Target oddish only.
+            command.extend(["--reinstall-package", PACKAGE_NAME])
+        command.extend(["--upgrade", package])
+        return command
+    command = [python, "-m", "pip", "install"]
+    if force:
+        command.append("--force-reinstall")
+    command.extend(["--upgrade", package])
+    return command
 
 
 def fetch_pypi_latest(*, client: httpx.Client | None = None) -> str:

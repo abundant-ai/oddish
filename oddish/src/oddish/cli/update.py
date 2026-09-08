@@ -56,17 +56,22 @@ def update_cmd(
     """
     info = inspect_install()
     try:
-        command = upgrade_command(info)
-    except PackageError as exc:
-        _fail(str(exc), json_output=json_output, info=info)
-
-    try:
         latest = fetch_pypi_latest()
     except PackageError as exc:
-        if not force:
-            _fail(str(exc), json_output=json_output, info=info, command=command)
         latest = None
+        pypi_error = exc
+    else:
+        pypi_error = None
     already_latest = latest is not None and not is_outdated(info.version, latest)
+    # Pin the installed version so ``--force`` cannot resolve a different
+    # (older, interpreter-compatible) PyPI release.
+    pin_version = info.version if force and already_latest else None
+    try:
+        command = upgrade_command(info, force=force, pin_version=pin_version)
+    except PackageError as exc:
+        _fail(str(exc), json_output=json_output, info=info)
+    if pypi_error is not None and not force:
+        _fail(str(pypi_error), json_output=json_output, info=info, command=command)
 
     payload = {
         **info.as_dict(),
