@@ -340,3 +340,70 @@ async def test_no_org_claim_email_in_dead_and_live_org_adopts_the_live_one(
             user_ids=[dead_user.id, live_user.id],
             clerk_user_ids=[clerk_user_id],
         )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_unknown_clerk_org_stays_unprovisioned_outside_preview(
+    monkeypatch,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    clerk_user_id = f"clerk_missing_{suffix}"
+    clerk_org_id = f"org_missing_{suffix}"
+    _mock_refresh(monkeypatch)
+    monkeypatch.setattr(prov, "_preview_app", lambda: False)
+
+    try:
+        async with get_session() as session:
+            result = await get_or_create_user_from_clerk(
+                session,
+                clerk_user_id,
+                clerk_org_id,
+                f"missing_{suffix}@example.com",
+                "org:admin",
+            )
+        assert result is None
+    finally:
+        await _purge(org_ids=[], user_ids=[], clerk_user_ids=[clerk_user_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_unknown_clerk_org_is_created_on_preview(monkeypatch) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    clerk_user_id = f"clerk_preview_{suffix}"
+    clerk_org_id = f"org_preview_{suffix}"
+    _mock_refresh(monkeypatch)
+    monkeypatch.setattr(prov, "_preview_app", lambda: True)
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "")
+
+    created_org_id = None
+    try:
+        async with get_session() as session:
+            result = await get_or_create_user_from_clerk(
+                session,
+                clerk_user_id,
+                clerk_org_id,
+                f"preview_{suffix}@example.com",
+                "org:admin",
+            )
+            assert result is not None
+            user, org = result
+            created_org_id = org.id
+            assert org.clerk_org_id == clerk_org_id
+            assert org.slug == f"preview-{clerk_org_id}"
+            assert user.org_id == org.id
+            assert user.clerk_user_id == clerk_user_id
+    finally:
+        await _purge(
+            org_ids=[created_org_id] if created_org_id else [],
+            user_ids=[],
+            clerk_user_ids=[clerk_user_id],
+        )
+
+
+def test_preview_app_detects_pr_modal_name(monkeypatch) -> None:
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-1531")
+    assert prov._preview_app() is True
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-staging")
+    assert prov._preview_app() is False
