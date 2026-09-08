@@ -210,14 +210,16 @@ def _render_orphaned(orphaned: dict[str, Any]) -> None:
     counts = orphaned.get("counts") or {}
     stale = counts.get("running_stale_heartbeat", 0)
     stuck = counts.get("active_tasks_without_active_trials", 0)
-    header_style = "red" if (stale or stuck) else "green"
+    stranded = counts.get("retrying_without_worker", 0)
+    header_style = "red" if (stale or stuck or stranded) else "green"
     console.print(
         f"[bold cyan]Stuck / orphaned[/bold cyan] "
         f"(stale ≥ {orphaned.get('stale_after_minutes', '?')}m)"
     )
     console.print(
         f"  [{header_style}]stale-heartbeat trials {stale}[/]   "
-        f"[{header_style}]tasks without active work {stuck}[/]"
+        f"[{header_style}]tasks without active work {stuck}[/]   "
+        f"[{header_style}]retrying without a worker job {stranded}[/]"
     )
     samples = orphaned.get("trial_samples") or []
     if samples:

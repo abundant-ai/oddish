@@ -44,7 +44,6 @@ from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     _CLAIM_WORKER_JOB_SQL,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -326,6 +325,15 @@ def test_trial_retry_backoff_honors_harbor_retry_after_hint():
 
 
 class _FakeConnection:
+    def transaction(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def transaction():
+            yield
+
+        return transaction()
+
     def __init__(self, *, update_result: str = "UPDATE 1") -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
@@ -372,14 +380,14 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
     assert status == WorkerJobStatus.RETRYING
     assert connection.closed is True
-    assert len(connection.calls) == 3
+    assert len(connection.calls) == 5
 
     # The retry decision re-reads the current row before choosing.
-    reread_sql, reread_args = connection.calls[0]
+    reread_sql, reread_args = connection.calls[2]
     assert "SELECT attempts, max_attempts" in reread_sql
     assert reread_args == ("wj-1",)
 
-    worker_sql, worker_args = connection.calls[1]
+    worker_sql, worker_args = connection.calls[3]
     assert "status = 'RETRYING'" in worker_sql
     # The retry row must start UNLINKED: a kept handle can point at a pod that
     # still exists, blinding the orphan sweeper's live-unlinked guard while the
@@ -395,14 +403,14 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     assert retry_at is not None
     assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
 
-    trial_sql, trial_args = connection.calls[2]
+    trial_sql, trial_args = connection.calls[4]
     assert "UPDATE trials" in trial_sql
     assert "status = 'RETRYING'" in trial_sql
     assert "error_message = $2" in trial_sql
     assert "next_retry_at = $3" in trial_sql
     assert "current_worker_id = NULL" in trial_sql
     assert "current_queue_slot = NULL" in trial_sql
-    assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
+    assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at, 2)
 
 
 @pytest.mark.asyncio

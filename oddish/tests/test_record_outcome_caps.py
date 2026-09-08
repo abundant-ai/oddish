@@ -6,14 +6,27 @@ mid-attempt must bind at the very next failure decision.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
+
+import pytest
 
 import oddish.workers.queue.worker_job_single_job as wjs
-from oddish.db import WorkerJobStatus
+from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.jobs.registry import JobFailure, JobOutcome
 from oddish.workers.queue.worker_job_single_job import _record_outcome
 
 
 class _FakeConnection:
+    def transaction(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def transaction():
+            yield
+
+        return transaction()
+
     def __init__(self, current_attempts, current_max):
         self._row = {"attempts": current_attempts, "max_attempts": current_max}
         self.executed: list[str] = []
@@ -63,3 +76,33 @@ def test_uncapped_failure_still_retries(monkeypatch):
     status, conn = _run({}, snapshot=(1, 6), current=(1, 6), monkeypatch=monkeypatch)
     assert status == WorkerJobStatus.RETRYING
     assert any("'RETRYING'" in sql for sql in conn.executed)
+
+
+def test_failed_commit_does_not_run_trial_settlement(monkeypatch):
+    conn = _FakeConnection(6, 6)
+
+    @asynccontextmanager
+    async def failed_commit():
+        yield
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(conn, "transaction", failed_commit)
+    monkeypatch.setattr(wjs, "_open_connection", AsyncMock(return_value=conn))
+    hook = AsyncMock()
+    monkeypatch.setattr(
+        "oddish.workers.queue.trial_handler._run_post_trial_hooks", hook
+    )
+    with pytest.raises(RuntimeError, match="commit failed"):
+        asyncio.run(
+            _record_outcome(
+                job_id="j1",
+                worker_id="w1",
+                outcome=JobOutcome.fail("boom"),
+                attempts=6,
+                max_attempts=6,
+                kind=WorkerJobKind.TRIAL,
+                subject_table="trials",
+                subject_id="t1",
+            )
+        )
+    hook.assert_not_awaited()

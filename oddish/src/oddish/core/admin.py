@@ -119,6 +119,7 @@ class OrphanedTaskSample(BaseModel):
 class OrphanedStateCounts(BaseModel):
     running_stale_heartbeat: int
     active_tasks_without_active_trials: int
+    retrying_without_worker: int = 0
 
 
 class OrphanedStateResponse(BaseModel):
@@ -476,8 +477,37 @@ async def get_orphaned_state_core(
         )
     ).all()
 
+    stranded_rows = (
+        await session.execute(
+            text("""
+                SELECT tr.id AS trial_id, tr.task_id, tr.queue_key,
+                       tr.status::text AS status,
+                       'retrying_without_worker'::text AS issue,
+                       tr.harbor_stage, tr.current_worker_id, tr.current_queue_slot,
+                       tr.claimed_at, tr.heartbeat_at, tr.updated_at,
+                       COUNT(*) OVER () AS total
+                FROM trials tr JOIN tasks t ON t.id = tr.task_id
+                WHERE tr.status = 'RETRYING'
+                  AND tr.deleted_at IS NULL AND t.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                  AND (CAST(:org_id AS TEXT) IS NULL OR tr.org_id = :org_id)
+                  AND tr.updated_at < NOW() - make_interval(mins => :stale_after_minutes)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM worker_jobs j
+                      WHERE j.kind::text = 'TRIAL' AND j.subject_table = 'trials'
+                        AND j.subject_id = tr.id
+                        AND j.status::text IN ('QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED')
+                  )
+                ORDER BY tr.updated_at, tr.id
+                LIMIT 20
+            """),
+            {"org_id": org_id, "stale_after_minutes": stale_after_minutes},
+        )
+    ).all()
+
     return OrphanedStateResponse(
         counts=OrphanedStateCounts(
+            retrying_without_worker=int(stranded_rows[0].total) if stranded_rows else 0,
             running_stale_heartbeat=int(counts_row.running_stale_heartbeat or 0),
             active_tasks_without_active_trials=int(
                 counts_row.active_tasks_without_active_trials or 0
@@ -497,7 +527,7 @@ async def get_orphaned_state_core(
                 heartbeat_at=row.heartbeat_at,
                 updated_at=row.updated_at,
             )
-            for row in trial_rows
+            for row in [*trial_rows, *stranded_rows]
         ],
         task_samples=[
             OrphanedTaskSample(

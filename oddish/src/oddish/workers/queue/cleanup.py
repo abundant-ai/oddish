@@ -34,6 +34,7 @@ from oddish.config import (
     settings,
 )
 from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.retry_reconciliation import reconcile_terminal_retry_trials
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.verdict_state import fail_verdict, queue_verdict
@@ -497,11 +498,9 @@ async def cleanup_orphaned_queue_state(
 ) -> dict[str, int]:
     """Reconcile stale scheduling state so the queue can make progress.
 
-    The only scheduling failure mode after the unified refactor is a
-    ``worker_jobs`` row stuck in ``RUNNING`` with a stale heartbeat
-    (worker crashed without committing its terminal state). Everything
-    else -- stage transitions, terminal-runtime-ref cleanup -- is
-    either handled by the handler commit or kept as a safety net here.
+    Reap stalled workers and repair retrying trial mirrors whose worker
+    jobs already failed or were cancelled. Missing jobs and ambiguous
+    successful jobs remain visible in orphan diagnostics for investigation.
     """
     ec2_inventory: Ec2InventorySnapshot | None = None
     ec2_orphan_snapshot_errors = 0
@@ -540,6 +539,9 @@ async def cleanup_orphaned_queue_state(
     unprovisioned_sandbox_runs_finalized = 0
 
     async with get_session() as session:
+        terminal_retry_trials = await reconcile_terminal_retry_trials(
+            session, stale_after_minutes=stale_after_minutes, dry_run=False,
+        )
         (
             worker_jobs_retried,
             worker_jobs_failed,
@@ -646,6 +648,7 @@ async def cleanup_orphaned_queue_state(
     stale_trial_events_purged = await purge_stale_trial_events()
 
     return {
+        "terminal_retry_trials_reconciled": len(terminal_retry_trials),
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
