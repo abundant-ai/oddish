@@ -9,6 +9,7 @@ import {
   useClerk,
   useUser,
 } from "@clerk/nextjs";
+import { stripOrgSlug, withOrgSlug } from "@/lib/org-path";
 import { useAppPathname } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Button } from "@/components/ui/button";
@@ -76,6 +77,14 @@ const navSwitcherAppearance = {
 const SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV = false;
 
 const DOCS_URL = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md";
+
+/** Keep the current page, swap the org slug, and hard-load so Clerk URL sync
+ *  and the URL-keyed router cache cannot pin the previous workspace. */
+function organizationSwitchPath(org: { slug: string | null }) {
+  if (!org.slug) return "/dashboard";
+  const appPath = stripOrgSlug(window.location.pathname);
+  return withOrgSlug(appPath === "/" ? "/dashboard" : appPath, org.slug);
+}
 
 type NavLink = {
   href: string;
@@ -230,14 +239,21 @@ export function Nav() {
                     <span>Docs</span>
                   </a>
                 </Button>
-                {/* No afterSelect/afterCreateOrganizationUrl: Clerk's
-                    client-side navigation would render /dashboard from the
-                    URL-keyed router cache (previous org's payload) before the
-                    org-change effect below fires its hard reload. Routing the
-                    switch solely through that reload avoids the stale flash. */}
                 <OrganizationSwitcher
                   hidePersonal
                   appearance={navSwitcherAppearance}
+                  afterSelectOrganizationUrl={(org) => {
+                    const dest = organizationSwitchPath(org);
+                    window.location.assign(
+                      `${dest}${window.location.search}${window.location.hash}`,
+                    );
+                    return dest;
+                  }}
+                  afterCreateOrganizationUrl={(org) => {
+                    const dest = `/${org.slug}/dashboard`;
+                    window.location.assign(dest);
+                    return dest;
+                  }}
                 />
                 <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
