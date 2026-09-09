@@ -1958,6 +1958,13 @@ experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
 
+The experiment drawer canonicalizes task/trial deep links with native browser
+history updates, without triggering a route navigation. Opening a visible task
+pane starts its file listing even while Overview is selected; switching between
+Overview and Files preserves the listing request, selection, and expanded
+folders. Keep the task navigation and overview mounted while the listing loads.
+Hidden task panes still defer their file requests.
+
 Delivery board view state lives in URL parameters: `page` (one-based),
 `filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
