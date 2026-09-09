@@ -1097,6 +1097,7 @@ class ExperimentTaskVerdict(ExperimentPageVerdict):
 
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    must_fix_count: int | None = None
     verdict: ExperimentTaskVerdict | None = None
 
 

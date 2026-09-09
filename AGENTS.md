@@ -1976,6 +1976,12 @@ counts show no row. Persisted `_verifier` CTRF counts are the sole source.
 Historical trials without that summary show no count; opening a trial must not
 list or read its artifacts to reconstruct one.
 
+Experiment task rows give the name its own wrapping line, with verdict,
+findings link, version, and cost underneath. Member experiment task pages
+include nullable `must_fix_count`, computed from the current version's completed
+source audit; unknown or unfinished audits stay null. Public pages do not expose
+that count. Do not parse the rejection explanation to infer a finding count.
+
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
 experiment membership and its scoped trials without deleting the task, even
