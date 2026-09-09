@@ -363,6 +363,8 @@ test.describe("critical task and trial subtree", () => {
       ],
     };
     page.on("request", (request) => requests.push(request.url()));
+    const responses: string[] = [];
+    page.on("response", (response) => responses.push(response.url()));
 
     await page.route(/\/api\/tasks\/browse(?:\?|$)/, async (route) => {
       await route.fulfill({ json: browseResponse });
@@ -673,7 +675,12 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, taskPanelPattern)).toBe(1);
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
     await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
-    await expect.poll(() => requestCount(requests, taskFilesPattern)).toBe(1);
+    // The dev server runs React Strict Mode, which can abort and replay the
+    // mount effect. Check that loading starts here; count completed responses
+    // after releasing the gate instead of counting the cancelled attempt.
+    await expect
+      .poll(() => requestCount(requests, taskFilesPattern))
+      .toBeGreaterThan(0);
     // The tree is already loading while Overview is selected. Its pending
     // response must not replace the task navigation or the trial summary.
     const taskFilesButton = page.getByRole("button", {
@@ -693,6 +700,7 @@ test.describe("critical task and trial subtree", () => {
     await expect(
       page.getByText("No files found", { exact: true })
     ).toBeVisible();
+    await expect.poll(() => requestCount(responses, taskFilesPattern)).toBe(1);
     const fileRequestsBeforeTabs = requestCount(requests, taskFilesPattern);
     await taskFilesButton.click();
     await page.getByRole("button", { name: "Overview", exact: true }).click();
