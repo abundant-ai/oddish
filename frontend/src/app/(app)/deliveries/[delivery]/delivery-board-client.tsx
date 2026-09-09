@@ -1772,6 +1772,8 @@ export function DeliveryBoardClient({
                           }
                           onClaim={() => claimWork([row], 1)}
                           onAssign={async (userId) => {
+                            setActionError(null);
+                            setNotice(null);
                             const result = await postJson<{
                               skipped_task_ids: string[];
                             }>("/api/tasks/qa-work/assign", "POST", {
@@ -1779,12 +1781,14 @@ export function DeliveryBoardClient({
                               assignee: userId,
                               replace: !!row.qa_work.owner_user_id,
                             });
-                            await mutate();
                             if (result.skipped_task_ids.length) {
-                              throw new Error(
-                                "This task was just assigned to someone else. Review its current owner before reassigning."
+                              setActionError(
+                                `${row.task_name} was just assigned to someone else. Review its current owner before reassigning.`
                               );
+                              await mutate();
+                              return;
                             }
+                            await mutate();
                             setNotice(`Owner updated for ${row.task_name}.`);
                           }}
                           onRelease={() =>
