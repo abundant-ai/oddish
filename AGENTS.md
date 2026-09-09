@@ -1051,7 +1051,8 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   task config, an exact Thunder `gpu_type` is transferred to the task's native
   GPU field, and backend capabilities are checked before provisioning. Modal
   must reject A6000 rather than remap it. A no-ID ledger is fast-finalized; a
-  run with an external ID remains claim-blocked and retains its Thunder capacity
+  provisioned `RUNNING` run is eligible for handoff, but any run with an
+  external ID remains claim-blocked and retains its Thunder capacity
   lease until cleanup confirms teardown and clears
   `reroute_pending_teardown`. Requested/completed/rejected/failed handoffs emit
   structured `metric=thunder_capacity_handoff` logs and the bounded

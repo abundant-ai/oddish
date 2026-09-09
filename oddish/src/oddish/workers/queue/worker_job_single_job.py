@@ -546,7 +546,7 @@ async def _record_reroute_outcome(
     subject_table: str | None,
     subject_id: str | None,
 ) -> WorkerJobStatus | None:
-    """Atomically hand an unprovisioned Thunder trial to a default-lane provider."""
+    """Hand a Thunder trial to a default-lane provider, gating on teardown."""
     if (
         not settings.thunder_capacity_fallback
         or reroute.target_environment != settings.thunder_fallback_provider
@@ -662,7 +662,13 @@ async def _record_reroute_outcome(
                 or sandbox_run["trial_id"] != subject_id
                 or sandbox_run["deleted_at"] is not None
                 or sandbox_run["state"]
-                not in {"PROVISIONING", "TERMINATING", "TERMINATED", "FAILED"}
+                not in {
+                    "PROVISIONING",
+                    "RUNNING",
+                    "TERMINATING",
+                    "TERMINATED",
+                    "FAILED",
+                }
             ):
                 _emit_thunder_handoff_event(
                     "rejected",
