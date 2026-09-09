@@ -1016,6 +1016,14 @@ when the primary issue is empty or absent. The full report stays in task detail;
 public experiment rows retain the verdict label, acceptance flag, and confidence
 without the prose preview.
 
+Experiment pages automatically consume independent task and trial cursors, one
+bounded request at a time per resource (100 tasks or 250 trials), without waiting
+for scroll or button clicks. Graphs wait for both collections to finish so partial
+trial pages cannot appear as final pass rates. Failed pages retain downloaded rows
+and expose Retry without advancing the failed cursor. Active experiments refresh
+loaded pages every 30 seconds. The task-name column omits the spend-exclusion badge;
+experiment spend summaries retain their exclusion explanation.
+
 Experiment pages use independent task and trial cursors. The first `/open` page
 includes the exact experiment summary; later task pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
