@@ -48,7 +48,6 @@ test("only the most recent experiments are kept", () => {
   }
 
   assert.equal(JSON.parse(stored as string).length, MAX_REMEMBERED_EXPERIMENTS);
-  // The oldest fell off; the newest survived.
   assert.deepEqual(readHiddenAgents(stored, "exp_0"), []);
   assert.deepEqual(
     readHiddenAgents(stored, `exp_${MAX_REMEMBERED_EXPERIMENTS + 9}`),

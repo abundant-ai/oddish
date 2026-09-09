@@ -1,29 +1,33 @@
-// Remembers which agent columns are hidden on an experiment's results table.
-//
-// The table already keeps `hiddenAgents` in the `?hide=` query param, so a
-// refresh — or a link someone shares — restores the columns. What the URL
-// cannot do is survive *leaving*: returning from the Experiments list follows a
-// plain link with no `?hide=`, and the choice is gone. Storage covers that gap.
-//
-// The two layers do not compete. `?hide=` still wins whenever it is present, so
-// a shared link shows the sender's view; storage is consulted only when the
-// param is absent.
-//
-// Scoped per experiment: agent keys like `codex` recur across experiments, so a
-// single global list would hide columns in experiments the user never touched.
+/**
+ * Remembers which agent columns are hidden on an experiment's results table.
+ *
+ * The table keeps `hiddenAgents` in the `?hide=` query param, so a refresh —
+ * or a shared link — restores the columns. What the URL cannot do is survive
+ * leaving: returning from the Experiments list follows a plain link with no
+ * `?hide=`, and the choice is gone. Storage covers that gap.
+ *
+ * The layers do not compete. `?hide=` wins whenever present, so a shared link
+ * shows the sender's view; storage is consulted only when the param is absent.
+ *
+ * Scoped per experiment: agent keys such as `codex` recur across experiments,
+ * so a single global list would hide columns in experiments never touched.
+ */
 
-// Follows the `oddish.<page>.<setting>` convention set by
-// `oddish.tasks.autoRefresh` in tasks-client.tsx.
+/** Storage key, following the `oddish.<page>.<setting>` convention set by `oddish.tasks.autoRefresh`. */
 export const EXPERIMENT_COLUMNS_STORAGE_KEY = "oddish.experiment.hiddenAgents";
 
-// Per-experiment entries would otherwise accumulate for every experiment ever
-// opened. Keeping the most recent handful covers the experiments someone is
-// actually working in.
+/**
+ * How many experiments to remember, most-recently-set first.
+ *
+ * Entries would otherwise accumulate for every experiment ever opened; this
+ * covers the ones actually being worked in.
+ */
 export const MAX_REMEMBERED_EXPERIMENTS = 50;
 
 type StoredEntry = { id: string; hidden: string[] };
 
-/** Parse the store, dropping anything that is not a well-formed entry.
+/**
+ * Parse the store, dropping anything that is not a well-formed entry.
  *
  * Every unreadable shape yields an empty store rather than throwing: a corrupt
  * entry must never leave the results table with columns missing and no way to
@@ -61,11 +65,12 @@ export function readHiddenAgents(
   return entry ? [...entry.hidden] : [];
 }
 
-/** Record this experiment's hidden columns, returning the new stored value.
+/**
+ * Record this experiment's hidden columns, returning the new stored value.
  *
  * The experiment moves to the front so the cap evicts by least-recently-set.
- * Hiding nothing removes the entry outright — the default state is not worth
- * a slot, and storing it would evict an experiment the user did customize.
+ * Hiding nothing removes the entry outright — the default state is not worth a
+ * slot, and storing it would evict an experiment that was customized.
  */
 export function writeHiddenAgents(
   raw: string | null,

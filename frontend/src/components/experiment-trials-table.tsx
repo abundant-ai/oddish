@@ -672,15 +672,6 @@ export function ExperimentTrialsTable({
   const isFirstFilterSync = useRef(true);
   const didHydrateHiddenAgents = useRef(false);
 
-  // Restore the saved column layout when the URL does not carry one. `?hide=`
-  // survives a refresh but not a departure: coming back from the Experiments
-  // list follows a plain link with no query, so without this the hidden
-  // columns reappear. A link that does carry `?hide=` still wins -- the effect
-  // above owns that case and this one stands down.
-  //
-  // Read in an effect rather than during render: this table renders on the
-  // server, and touching localStorage while rendering would break hydration
-  // (same reason as the comment in tasks-client.tsx).
   useEffect(() => {
     if (didHydrateHiddenAgents.current) return;
     if (!experimentId || searchParams.get("hide")) return;
@@ -692,9 +683,6 @@ export function ExperimentTrialsTable({
     if (stored.length > 0) setHiddenAgents(new Set(stored));
   }, [experimentId, searchParams]);
 
-  // Persist afterwards. The first pass is skipped so the seed above (or the
-  // URL) is never mistaken for the user clearing every column, which would
-  // erase the entry before it was ever read.
   useEffect(() => {
     if (!experimentId) return;
     if (!didHydrateHiddenAgents.current) {
