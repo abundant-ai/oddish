@@ -31,6 +31,11 @@ MAX_FAILURE_WARNINGS = 3
 # outage worth aborting the run for. A tiny tail batch of one flaky user must
 # not trip the early stop.
 ALL_FAILED_ABORT_FLOOR = 10
+# The singleton reconciler runs every four minutes by default. Preserve identities on ambiguous
+# Clerk errors, but do not ask for the same missing users on every sweep.
+FAILURE_RETRY_SECONDS = 15 * 60
+_retry_after = 0.0
+_deferred_users = 0
 
 
 @dataclass
@@ -39,6 +44,7 @@ class BackfillSummary:
     set: int = 0
     skipped: int = 0
     failed: int = 0
+    deferred: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -46,6 +52,7 @@ class BackfillSummary:
             "github_id_backfill_set": self.set,
             "github_id_backfill_skipped": self.skipped,
             "github_id_backfill_failed": self.failed,
+            "github_id_backfill_deferred": self.deferred,
         }
 
 
@@ -66,6 +73,7 @@ async def backfill_github_id(
     session (C). Phase C re-checks preconditions because a row can change
     between phases.
     """
+    global _retry_after, _deferred_users
     summary = BackfillSummary()
 
     # Read the secret off the module at call time so tests can monkeypatch it.
@@ -76,6 +84,11 @@ async def backfill_github_id(
         return summary
 
     start = time.monotonic()
+    if start < _retry_after:
+        summary.deferred = _deferred_users
+        return summary
+    _retry_after = 0.0
+    _deferred_users = 0
     semaphore = asyncio.Semaphore(max(1, concurrency))
     after_id: str | None = None
     cutoff = github_id_recheck_cutoff()
@@ -91,7 +104,9 @@ async def backfill_github_id(
         if time.monotonic() - start >= time_budget_seconds:
             break
         remaining = (
-            batch_size if max_users is None else min(batch_size, max_users - summary.scanned)
+            batch_size
+            if max_users is None
+            else min(batch_size, max_users - summary.scanned)
         )
         if remaining <= 0:
             break
@@ -226,15 +241,20 @@ async def backfill_github_id(
 
         summary.scanned += len(candidates)
 
-        # Persistent-failure backoff (no cross-run state): if an entire batch of
-        # non-trivial size failed, Clerk is likely down — stop rather than keep
-        # rescanning the same window and flooding logs.
-        if batch_failed == len(candidates) and len(candidates) >= ALL_FAILED_ABORT_FLOOR:
+        # An entirely failed batch can mean an outage or a wrong Clerk instance.
+        # Back off in this warm container without stamping any user as absent.
+        if (
+            batch_failed == len(candidates)
+            and len(candidates) >= ALL_FAILED_ABORT_FLOOR
+        ):
             logger.warning(
                 "github_id backfill: entire batch of %s Clerk fetches failed; "
-                "stopping run early (Clerk likely unreachable)",
+                "retrying in %s seconds (check Clerk availability and instance)",
                 len(candidates),
+                FAILURE_RETRY_SECONDS,
             )
+            _retry_after = time.monotonic() + FAILURE_RETRY_SECONDS
+            _deferred_users = batch_failed
             break
 
         if len(candidates) < remaining:

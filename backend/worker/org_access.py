@@ -1,7 +1,7 @@
 """Keep unapproved organizations out of hosted workers, including old queue rows."""
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, union
 
 from models import OrganizationModel
 from oddish.db import (
@@ -51,47 +51,42 @@ async def cancel_unapproved_runs() -> int:
         OrganizationModel.execution_enabled.is_(True),
         OrganizationModel.deleted_at.is_(None),
     )
+    # Start from active work once. A correlated task -> jobs -> trials probe
+    # repeats a scan of historical jobs for every task when no work is active.
+    active_jobs = (
+        select(WorkerJobModel.subject_table, WorkerJobModel.subject_id)
+        .where(
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                    WorkerJobStatus.BLOCKED,
+                ]
+            )
+        )
+        .cte("active_jobs")
+    )
+    active_tasks = union(
+        select(TrialModel.task_id).where(TrialModel.status.in_(ACTIVE_TRIAL_STATUSES)),
+        select(TaskModel.id).join(
+            active_jobs,
+            (active_jobs.c.subject_table == "tasks")
+            & (active_jobs.c.subject_id == TaskModel.id),
+        ),
+        select(TrialModel.task_id).join(
+            active_jobs,
+            (active_jobs.c.subject_table == "trials")
+            & (active_jobs.c.subject_id == TrialModel.id),
+        ),
+    )
     async with get_session() as session:
         tasks = list(
             (
                 await session.scalars(
                     select(TaskModel.id)
-                    .where(
-                        select(TrialModel.id)
-                        .where(
-                            TrialModel.task_id == TaskModel.id,
-                            TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
-                        )
-                        .exists()
-                        | select(WorkerJobModel.id)
-                        .where(
-                            WorkerJobModel.status.in_(
-                                [
-                                    WorkerJobStatus.QUEUED,
-                                    WorkerJobStatus.RETRYING,
-                                    WorkerJobStatus.RUNNING,
-                                    WorkerJobStatus.BLOCKED,
-                                ]
-                            ),
-                            (
-                                (WorkerJobModel.subject_table == "tasks")
-                                & (WorkerJobModel.subject_id == TaskModel.id)
-                            )
-                            | (
-                                (WorkerJobModel.subject_table == "trials")
-                                & WorkerJobModel.subject_id.in_(
-                                    select(TrialModel.id)
-                                    .where(TrialModel.task_id == TaskModel.id)
-                                    .correlate(TaskModel)
-                                )
-                            ),
-                        )
-                        .exists()
-                    )
-                    .where(
-                        (TaskModel.org_id.is_(None)) | (~TaskModel.org_id.in_(approved))
-                    )
-                    .distinct()
+                    .where(TaskModel.id.in_(active_tasks))
+                    .where(TaskModel.org_id.is_(None) | ~TaskModel.org_id.in_(approved))
                     .limit(100)
                 )
             ).all()
