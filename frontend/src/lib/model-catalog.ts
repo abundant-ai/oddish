@@ -36,6 +36,7 @@ export const ROUTE_LABELS: Record<string, string> = {
   openrouter: "OpenRouter",
   vertex_ai: "Google Vertex AI",
   xai: "xAI",
+  "xai-swem": "xAI SWEM",
   zai: "Z.ai",
 };
 
@@ -57,8 +58,7 @@ export function modelCatalogRows(
   query: string,
   provider: string,
   status: ModelStatus | "all",
-  sort: ModelSort,
-  includePreviouslyUsed = false
+  sort: ModelSort
 ) {
   const terms = searchWords(query);
   return models
@@ -88,10 +88,9 @@ export function modelCatalogRows(
     })
     .filter((row) => {
       const searchable = searchWords(
-        `${row.endpoint.model} ${row.endpoint.provider} ${row.endpoint.route} ${row.provider}`
+        `${row.endpoint.model} ${row.endpoint.provider} ${row.endpoint.route} ${row.provider} ${row.endpoint.credential ?? ""}`
       ).join(" ");
       return (
-        (includePreviouslyUsed || row.endpoint.is_configured) &&
         (provider === "all" || row.endpoint.route === provider) &&
         (status === "all" || row.status === status) &&
         terms.every((term) => searchable.includes(term))

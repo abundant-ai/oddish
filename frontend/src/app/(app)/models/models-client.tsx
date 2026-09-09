@@ -54,7 +54,6 @@ export function ModelsClient() {
   const [checks, setChecks] = useState<Record<string, ModelCheckState>>({});
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
 
-  const [includePreviouslyUsed, setIncludePreviouslyUsed] = useState(false);
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("all");
   const [status, setStatus] = useState<ModelStatus | "all">("all");
@@ -69,8 +68,7 @@ export function ModelsClient() {
     query,
     provider,
     status,
-    sort,
-    includePreviouslyUsed
+    sort
   );
   const providers = [...new Set(data?.models.map(({ route }) => route))].sort(
     (a, b) => (ROUTE_LABELS[a] ?? a).localeCompare(ROUTE_LABELS[b] ?? b)
@@ -324,22 +322,12 @@ export function ModelsClient() {
                   : `Test ${testableModels.length} matching ${testableModels.length === 1 ? "model" : "models"}`}
               </Button>
             </div>
-            <label className="text-muted-foreground flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={includePreviouslyUsed}
-                onChange={(event) =>
-                  setIncludePreviouslyUsed(event.target.checked)
-                }
-              />
-              Include previously used models
-            </label>
-            {includePreviouslyUsed && (
-              <p className="text-muted-foreground text-xs">
-                Previously used names may be retired or invalid. A failed check
-                applies to that model and provider route.
-              </p>
-            )}
+            <p className="text-muted-foreground text-xs">
+              Known text models for configured providers, deployment entries,
+              and previously used names. A configured credential does not
+              confirm model access; run a test to check. Provider catalogs may
+              include retired models and omit private or newly released models.
+            </p>
           </CardHeader>
           <CardContent className="p-0">
             {isLoading ? (
@@ -348,15 +336,11 @@ export function ModelsClient() {
               </div>
             ) : !data?.models.length ? (
               <div className="text-muted-foreground px-4 py-10 text-center text-sm">
-                No model queue keys are configured.
+                No known models were found for this deployment.
               </div>
             ) : !rows.length ? (
               <div className="text-muted-foreground space-y-2 px-4 py-10 text-center text-sm">
-                <p>
-                  {includePreviouslyUsed
-                    ? "No models match your search and filters."
-                    : "No configured models match your search and filters. Enable previously used models to search historical names."}
-                </p>
+                <p>No models match your search and filters.</p>
                 <Button variant="outline" size="sm" onClick={clearFilters}>
                   Clear filters
                 </Button>
@@ -471,11 +455,25 @@ export function ModelsClient() {
                                 >
                                   {model}
                                 </div>
-                                {!endpoint.is_configured && (
-                                  <span className="text-muted-foreground text-xs">
-                                    Previously used
-                                  </span>
-                                )}
+                                <span className="text-muted-foreground text-xs">
+                                  {endpoint.source === "provider_catalog"
+                                    ? "Provider catalog"
+                                    : endpoint.source === "deployment"
+                                      ? "Deployment entry"
+                                      : "Previously used"}
+                                </span>
+                                <div className="text-muted-foreground text-xs">
+                                  {endpoint.credential_configured === true
+                                    ? "Credential configured"
+                                    : endpoint.credential_configured === false
+                                      ? "Credential missing"
+                                      : "Uses runtime authentication"}
+                                  {endpoint.credential && (
+                                    <code className="ml-1 break-all">
+                                      ({endpoint.credential})
+                                    </code>
+                                  )}
+                                </div>
                                 <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block lg:hidden">
                                   {provider}
                                 </div>

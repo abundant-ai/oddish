@@ -1497,6 +1497,8 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 1024
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+    # Extra/private model IDs for the operator catalog, independent of job limits.
+    model_catalog: list[str] = Field(default_factory=list)
     # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
     # the LLM trials BLOCKED until the baselines finish, then releases them only
     # if the baselines validate the task (oracle passes, nop fails). Otherwise
