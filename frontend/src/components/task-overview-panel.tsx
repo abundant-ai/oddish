@@ -614,6 +614,7 @@ export function TaskOverviewPanel({
           <TaskVerdictBadge
             task={verdictTask}
             variant="inline"
+            qaActive={qaActive}
             detail={
               taskHasRejectedVerdict(verdictTask) && mustFixCount > 0
                 ? `${mustFixCount} Must Fix`

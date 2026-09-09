@@ -664,6 +664,17 @@ export interface ExperimentCostTotals {
   experiment_cost_excluded?: boolean;
 }
 
+export interface TaskPanelResponse {
+  task: Task;
+  version: TaskVersionSummary | null;
+  can_retry: boolean;
+  cancel: "task" | "qa" | null;
+  active_trials: number;
+  qa_active: boolean;
+  can_run_qa: boolean;
+  has_analysis: boolean;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   versions: TaskVersionSummary[];

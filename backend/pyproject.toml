@@ -74,6 +74,8 @@ override-dependencies = ["harbor==0.16.1"]
 # gitignored jobs/ runtime cache, dist/, __pycache__/, etc.).
 [tool.setuptools]
 py-modules = [
+    "org_access",
+    "provision_org",
     "backfill_github_id",
     "carl",
     "carl_agent",

@@ -9,6 +9,11 @@ from time import monotonic
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from litellm import (
+    APIConnectionError as LiteLLMAPIConnectionError,
+    APIError as LiteLLMAPIError,
+    Timeout as LiteLLMTimeout,
+)
 from oddish.config import (
     OPENAI_PROVIDER_AZURE,
     anthropic_hdo_bare_model_id,
@@ -21,6 +26,7 @@ from oddish.config import (
 )
 from oddish.core.endpoints import browse_task_facets_core
 from oddish.db import get_session
+from openai import OpenAIError
 from pydantic import BaseModel, Field, field_validator
 
 from api.services.model_catalog import (
@@ -439,7 +445,6 @@ async def check_model_endpoint(
             # This is deliberately narrower than a trial: it exercises LiteLLM's
             # completion transport, not an agent CLI or sandbox startup.
             import litellm
-            from openai import OpenAIError
 
             try:
                 completion = await litellm.acompletion(
@@ -453,7 +458,12 @@ async def check_model_endpoint(
                     timeout=15,
                     **kwargs,
                 )
-            except OpenAIError as caught:
+            except (
+                OpenAIError,
+                LiteLLMAPIError,
+                LiteLLMTimeout,
+                LiteLLMAPIConnectionError,
+            ) as caught:
                 failure = caught
                 failure_kind = "provider"
             else:
