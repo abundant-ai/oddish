@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from oddish.cli import app
-from oddish.cli._package import InstallInfo, inspect_install, is_outdated
+from oddish.cli._package import InstallInfo, PackageError, inspect_install, is_outdated
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -98,3 +98,9 @@ def test_version_check(monkeypatch):
     other = runner.invoke(app, ["version", "--check"])
     assert other.exit_code == 0 and "not from PyPI" in other.stdout and "up to date" not in other.stdout
     assert '"update_available": null' in runner.invoke(app, ["version", "--check", "--json"]).stdout
+    def _fail_pypi() -> str:
+        raise PackageError("Could not reach PyPI")
+
+    monkeypatch.setattr("oddish.cli.version.fetch_pypi_latest", _fail_pypi)
+    failed = runner.invoke(app, ["version", "--check", "--json"])
+    assert failed.exit_code == 1 and '"action": "error"' in failed.stdout

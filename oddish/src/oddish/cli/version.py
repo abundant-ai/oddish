@@ -44,7 +44,12 @@ def version_cmd(
         try:
             latest = fetch_pypi_latest()
         except PackageError as exc:
-            error_console.print(f"[red]Error:[/red] {exc}")
+            if json_output:
+                typer.echo(
+                    json.dumps({**payload, "action": "error", "error": str(exc)}, indent=2)
+                )
+            else:
+                error_console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
         pypi_install = info.source == "pypi"
         outdated = pypi_install and is_outdated(info.version, latest)

@@ -125,7 +125,7 @@ def upgrade_command(
         return [*command, "--upgrade", package]
     command = [python, "-m", "pip", "install"]
     if force:
-        command.append("--force-reinstall")
+        command.extend(["--force-reinstall", "--no-deps"])
     return [*command, "--upgrade", package]
 
 

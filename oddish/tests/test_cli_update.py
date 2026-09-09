@@ -65,7 +65,16 @@ def test_upgrade_command_force_reinstalls():
     pip_command = upgrade_command(
         _info(manager="pip"), executable="/opt/venv/bin/python", which=lambda _n: None, force=True
     )
-    assert "--force-reinstall" in pip_command
+    assert pip_command == [
+        "/opt/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-deps",
+        "--upgrade",
+        "oddish",
+    ]
 
 
 def _patch_update(monkeypatch, info: InstallInfo, latest: str = "0.1.14") -> None:
