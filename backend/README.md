@@ -156,6 +156,31 @@ retain the existing quota rules and administrator controls; approval is a separa
 mandatory check, including when quota enforcement is disabled. This change does
 not introduce a hard global spending ceiling for approved organizations.
 
+Preview setup ends with `.github/scripts/preview/sync_org_approvals.py`, after
+migrations, sample seeding, and restoration of preview-owned API keys. This
+reads production approval decisions once and applies them in one preview
+transaction. Approval is matched by Clerk ID; legacy Personal organizations
+without Clerk IDs use their original database ID. Approved identities are
+included even when none of their tasks were sampled. Unknown/revoked identities
+are denied, while budgets, memberships, and API keys remain preview-owned.
+The ordinary sample loader never inserts or overwrites `execution_enabled`.
+
+Production must already have the approval column and reviewed decisions before
+this step is enabled. A missing source column fails explicitly. Abundant,
+SRE-World, and Abundant CyberMasters are successful-access fixtures: the sync
+requires production to approve their exact Clerk IDs and fails atomically if
+any approved source identity cannot be accessed in the preview. These fixture
+IDs validate operator decisions; they do not grant approval. New organizations
+still default to unapproved. Run the same sync against existing preview URLs
+to refresh their decisions without rebuilding or redeploying them.
+
+This runs in the existing database job even when seeding is skipped, and logs
+elapsed time. It overlaps credential publication; the job awaits both before
+deployment. It adds no CI job, image build, browser test, or fleet-wide loop.
+Approval changes reach a preview on its next preparation/sync, not immediately
+when production is edited. A standalone reset rebuilds from production and then
+reapplies the current decisions through the same final step.
+
 Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
 check approval before each job and every 15 seconds during execution; losing
 approval or failing to read it cancels the handler. The reconciler also cancels
