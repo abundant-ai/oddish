@@ -1929,7 +1929,7 @@ export function TaskFilesPanel({
         </div>
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden @2xl/file-browser:flex-row">
-          <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b @2xl/file-browser:max-h-none @2xl/file-browser:w-56 @2xl/file-browser:shrink-0 @2xl/file-browser:border-r @2xl/file-browser:border-b-0 @3xl/file-browser:w-64">
+          <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto overscroll-contain border-b @2xl/file-browser:max-h-none @2xl/file-browser:w-56 @2xl/file-browser:shrink-0 @2xl/file-browser:border-r @2xl/file-browser:border-b-0 @3xl/file-browser:w-64">
             <div className="p-2">
               {taskPaneExists && (
                 <div className="border-border mb-2 border-b pb-2">
@@ -2130,7 +2130,10 @@ export function TaskFilesPanel({
                 )}
               </div>
             )}
-            <div ref={contentRef} className="bg-card flex-1 overflow-auto">
+            <div
+              ref={contentRef}
+              className="bg-card flex-1 overflow-auto overscroll-contain"
+            >
               {activePane === "overview" && overviewAvailable ? (
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}

@@ -1593,7 +1593,7 @@ export function TrialDetailPanel({
           </TabsList>
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto overscroll-contain">
           <ActiveTabContent
             active={effectiveTab === "summary"}
             value="summary"
