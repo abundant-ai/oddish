@@ -24,4 +24,4 @@ def test_image_contains_org_approval_module(monkeypatch, variant):
 
     # Both API auth and worker startup import this top-level module. uv_sync
     # installs dependencies only, so setuptools py-modules cannot supply it.
-    assert "org_access" in copied_modules
+    assert {"org_access", "endpoint_health", "endpoint_health_worker"} <= copied_modules

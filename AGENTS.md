@@ -1503,6 +1503,22 @@ sweep):
    within a single run. The DM claim key is `"dm:{alert.key}:{recipient}"`,
    so each person is DMed at most once per task version, ever.
 
+Endpoint health monitoring is hosted-only. `endpoint_health_worker.py` registers
+an independent one-minute check schedule and hourly 30-day retention job;
+`endpoint_health.py` owns explicit `ODDISH_ENDPOINT_MONITORS` configuration,
+provider calls, database claims, and incident transitions. Production registers
+these schedules by default; staging/previews require the deploy-time
+`ODDISH_ENABLE_ENDPOINT_MONITORING=true` flag. No targets means unmonitored.
+`endpoint_monitors` owns current state and expiring claim tokens;
+`endpoint_checks` stores completed observations. Provider calls hold no DB
+connection. Results update current state, append history, and write any Slack
+outbox events in ONE transaction; late/duplicate claims are ignored. Reuse the
+existing Slack sender rather than posting from the check loop. Two consecutive
+provider failures open an incident, success resolves it, and internal check errors
+cannot establish or resolve provider outages. Operator Admin's overview reads
+one small current-state query; history is lazy and bounded. Configuration,
+limits, delivery semantics, and isolated test instructions are in backend/README.md.
+
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. `_POST_SUCCESS_HOOKS` in
 `worker/functions.py` contains only `notify_github_trial` for successful
