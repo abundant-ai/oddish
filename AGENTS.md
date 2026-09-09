@@ -570,7 +570,9 @@ through `GET /models/access`, then hides those controls for other orgs.
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
 `GET /models` lets any authenticated member discover whether their active org is
-the operator org and, when it is, returns the configured model queue keys.
+the operator org and, when it is, returns known models for configured provider
+credentials, Azure deployment names, explicit `ODDISH_MODEL_CATALOG` entries,
+model queue settings, and models previously used by that organization.
 `GET /models/access` returns only the operator-access boolean without loading the catalog.
 `POST /models/check` requires an interactive Clerk user in the operator org and sends one
 short `litellm_completion` request from the hosted API container using its
@@ -581,10 +583,20 @@ errors remain 500s. The request creates no task, trial, worker job, or persisted
 history. Checks ask for "Hello from Oddish." with a 1,024-token output budget
 (shared with reasoning on reasoning models), and pass only with nonblank text
 in the completion message; empty text returns a provider failure. The operator-only
-catalog marks each entry with `is_configured` (present in the environment's
-configured queue keys, rather than only historical task facets). The frontend
-`/models` page defaults to configured entries; previously used names are opt-in
-and may be retired or invalid. Fixed HTTP failure explanations distinguish missing
+catalog reads the installed LiteLLM package's bundled chat-model registry without
+provider discovery requests. It reports `source` (`provider_catalog`, `deployment`,
+or `previously_used`) and `credential_configured` (presence only; null for runtime
+SDK authentication). No credential values are returned. All entries are visible
+by default regardless of scheduling limits; names may be retired or inaccessible.
+Public OpenAI and explicit Azure deployments are independently testable regardless
+of the default job route. xAI SWEM uses a separate `xai-swem` route and
+`XAI_SWEM_API_KEY`; checks and cached results are keyed by model and route.
+Catalog model spelling is preserved for case-sensitive provider/deployment IDs.
+`ODDISH_MODEL_CATALOG` is a JSON list of extra/private provider-prefixed model IDs;
+its prefixes select provider connections independently of the default job route
+(including `xai-swem/<model>`). It does not change scheduling limits. Catalog
+coverage tracks the pinned LiteLLM release and does not claim to enumerate account
+entitlements. Fixed HTTP failure explanations distinguish missing
 models/access from credentials, limits, and server errors without returning
 provider exception text. The page searches and filters the catalog, sorts columns, and tests
 only the matching testable models captured at click time in batches of at most
@@ -671,8 +683,19 @@ selected-version trial preview remains capped at 20 rows. The handler uses at
 most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
-remains the compatibility bundle for CLI and drawer consumers during the soak;
+remains the compatibility bundle for CLI and explicit full-history operations;
 do not point the task route back at it.
+
+`GET /tasks/{task_id}/panel?version=N` supplies task-panel audit metadata,
+selected-version content hash, verdict, and action availability in two SQL
+statements. Omitted version selects the task's default; missing or deleted
+explicit versions return 404. Hosted readers use the verified organization ID.
+The file panel uses this resource instead of polling `/detail` and basic task
+state independently. Files load independently, overview trial evidence loads
+on tab intent, and full retry targets load only on click; experiment-scoped
+retries retain their host trial set. Unknown audit metadata keeps reruns disabled.
+The normal 30-second panel poll detects in-place file revisions; active QA/audits
+poll every five seconds.
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
@@ -1648,6 +1671,27 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash
@@ -1840,7 +1884,11 @@ and — deliberately, for link-unfurl bots — `/experiments/*` plus
 Authenticated app pages live under `/orgs/{orgSlug}/…` (for example
 `/orgs/acme/tasks`). Unprefixed `/tasks` and the short-lived
 `/{orgSlug}/tasks` shape redirect when signed in. `/share/*` and `/datasets/*`
-stay unprefixed.
+stay unprefixed. Selecting another organization opens its dashboard with no
+query string or fragment, so resource IDs from the previous organization are
+not carried into the destination workspace. `OrgSlugSync` uses the same
+dashboard destination when the active organization changes before navigation
+finishes, rather than restoring the previous resource URL.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value
@@ -1848,6 +1896,11 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+The shared authenticated proxy adds `next_auth`, `next_token`, `next_upstream`,
+`next_json` (buffered responses only), and `next_total` durations alongside
+backend timing, including errors. Task open/detail/panel use its streaming
+option. Streaming totals end at response construction, not the last body byte.
 
 **Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
 browser call the backend itself instead of going through those `/api/*`

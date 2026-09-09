@@ -260,14 +260,14 @@ async def org_with_users():
     extra_orgs: list[str] = []
 
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(OrganizationModel(execution_enabled=True, id=org_id, name=org_id, slug=org_id))
 
     async def add(handle: str, *, active: bool = True, in_org: str | None = None) -> UserModel:
         target_org = in_org or org_id
         user = _new_user(target_org, handle, active=active)
         async with get_session() as session:
             if in_org and in_org not in extra_orgs:
-                session.add(OrganizationModel(id=in_org, name=in_org, slug=in_org))
+                session.add(OrganizationModel(execution_enabled=True, id=in_org, name=in_org, slug=in_org))
                 extra_orgs.append(in_org)
                 await session.flush()
             session.add(user)
@@ -478,7 +478,7 @@ async def test_endpoint_handle_lookup_is_org_scoped(client, org_with_users):
     await add("carol")
     org_b = f"org_b_{uuid.uuid4().hex[:8]}"
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_b, name=org_b, slug=org_b))
+        session.add(OrganizationModel(execution_enabled=True, id=org_b, name=org_b, slug=org_b))
     key_id, raw = await _seed_key(org_b)
     try:
         resp = await _linkage(client, raw, "carol")
