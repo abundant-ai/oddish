@@ -15,7 +15,7 @@ function input(overrides: Partial<Parameters<typeof resolveStartTime>[0]> = {}) 
     timeOrigin: TIME_ORIGIN,
     navigationType: "navigate",
     firstOpenOnPage: true,
-    initialPath: TASK_PATH,
+    documentPath: TASK_PATH,
     currentPath: TASK_PATH,
     ...overrides,
   };
@@ -38,10 +38,13 @@ test("a client-side hop to another route uses the interaction clock", () => {
   // The regression this guards: PerformanceNavigationTiming.type describes the
   // DOCUMENT and stays "navigate" for the whole single-page session. Someone
   // who lands on the task list, browses, then opens a task would otherwise have
-  // their browsing time recorded as task-open latency.
+  // their browsing time recorded as task-open latency. The document path must
+  // therefore come from the navigation entry, never from a module-scope capture
+  // in this code-split module -- that first evaluates on the task route, long
+  // after the document that actually loaded.
   const now = TIME_ORIGIN + 20_000;
   const resolved = resolveStartTime(
-    input({ now, initialPath: "/tasks", currentPath: TASK_PATH })
+    input({ now, documentPath: "/tasks", currentPath: TASK_PATH })
   );
   assert.equal(resolved.startTime, now);
   assert.equal(resolved.source, "interaction");
@@ -56,16 +59,16 @@ test("later opens on the landing route still use the interaction clock", () => {
 
 test("a deep link straight to the task page counts as a landing", () => {
   const resolved = resolveStartTime(
-    input({ initialPath: TASK_PATH, currentPath: TASK_PATH })
+    input({ documentPath: TASK_PATH, currentPath: TASK_PATH })
   );
   assert.equal(resolved.source, "page-load");
 });
 
 test("missing path information declines page-load attribution", () => {
   for (const paths of [
-    { initialPath: null, currentPath: TASK_PATH },
-    { initialPath: TASK_PATH, currentPath: null },
-    { initialPath: null, currentPath: null },
+    { documentPath: null, currentPath: TASK_PATH },
+    { documentPath: TASK_PATH, currentPath: null },
+    { documentPath: null, currentPath: null },
   ]) {
     const resolved = resolveStartTime(input(paths));
     assert.equal(resolved.source, "interaction", JSON.stringify(paths));

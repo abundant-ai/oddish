@@ -199,7 +199,10 @@ Every span carries an `outcome` attribute:
 - `abandoned`: the person navigated away, switched files, or closed the view
   first. Excluding these from a latency percentile is correct; ignoring the
   rate itself is not, because a slow screen shows up as abandonment before it
-  shows up as a slow `ready`.
+  shows up as a slow `ready`. `open.abandon_reason` separates `unmount` (moved
+  within the app) from `page-hidden` (tab closed, refreshed, backgrounded, or
+  sent elsewhere) — the second is how someone giving up on a slow load usually
+  leaves, so treat a rise in it as a latency signal.
 
 `open.start_source` records which clock the span used. `page-load` means the
 first open after a hard navigation, backdated to `performance.timeOrigin` so

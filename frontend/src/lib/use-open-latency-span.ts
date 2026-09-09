@@ -46,8 +46,8 @@ export type ResolveStartTimeInput = {
   navigationType: string | null;
   /** Whether this is the first measured open since the document loaded. */
   firstOpenOnPage: boolean;
-  /** Path the document itself was served for, captured at module load. */
-  initialPath: string | null;
+  /** Path the document itself was fetched from (navigation timing entry). */
+  documentPath: string | null;
   /** Path this open is happening on. */
   currentPath: string | null;
   maxAttributableMs?: number;
@@ -73,9 +73,9 @@ export type ResolvedStartTime = {
  * Telling the two apart needs the path, not just the navigation type.
  * ``PerformanceNavigationTiming.type`` describes the DOCUMENT and stays
  * ``navigate`` for the entire single-page session, so it cannot distinguish
- * "landed here" from "clicked here twenty seconds later". Comparing against the
- * path the document was served for can: only an open on that same route can
- * legitimately claim the document's load time. Someone who lands on the task
+ * "landed here" from "clicked here twenty seconds later". The same entry's
+ * address can: only an open on the route the document was actually fetched
+ * from may claim that document's load time. Someone who lands on the task
  * list, browses, then opens a task is measured from the click.
  *
  * Pure and exported for tests — the React wrapper below owns only the effect
@@ -86,7 +86,7 @@ export function resolveStartTime({
   timeOrigin,
   navigationType,
   firstOpenOnPage,
-  initialPath,
+  documentPath,
   currentPath,
   maxAttributableMs = MAX_PAGE_LOAD_ATTRIBUTION_MS,
 }: ResolveStartTimeInput): ResolvedStartTime {
@@ -98,10 +98,10 @@ export function resolveStartTime({
   if (!firstOpenOnPage || !hardNavigation) {
     return { startTime: now, source: "interaction" };
   }
-  if (initialPath === null || currentPath === null) {
+  if (documentPath === null || currentPath === null) {
     return { startTime: now, source: "interaction" };
   }
-  if (initialPath !== currentPath) {
+  if (documentPath !== currentPath) {
     return { startTime: now, source: "interaction" };
   }
   if (!Number.isFinite(timeOrigin) || timeOrigin <= 0 || timeOrigin > now) {
@@ -141,18 +141,11 @@ type PendingOpen = {
   span: Span;
   subject: string;
   settled: boolean;
+  readAttributes: () => OpenLatencyAttributes | undefined;
 };
 
 /** One module-level latch: only the first open on a page can claim load time. */
 let pageLoadClaimed = false;
-
-/**
- * The route the document was served for. Read once at module evaluation, which
- * happens during the initial load and never again for the life of the tab, so
- * it stays the landing path across every client-side navigation afterwards.
- */
-const INITIAL_PATH =
-  typeof window === "undefined" ? null : window.location.pathname;
 
 /** Test seam — resets the page-load latch. */
 export function resetPageLoadAttribution(): void {
@@ -163,15 +156,35 @@ function currentPath(): string | null {
   return typeof window === "undefined" ? null : window.location.pathname;
 }
 
-function navigationType(): string | null {
-  if (typeof performance === "undefined") return null;
+/**
+ * The navigation timing entry, which describes the DOCUMENT: its type and the
+ * address it was fetched from. Both are needed together and come from one read.
+ *
+ * Deliberately not a module-scope constant. This module is code-split with the
+ * task routes, so it first evaluates when one of those routes loads — which,
+ * after a click from the task list, is long after the document did. Capturing
+ * the path at module evaluation would therefore record the task route as the
+ * landing route and hand it the document's load time, reintroducing the very
+ * inflation the path check exists to stop. The browser's own navigation entry
+ * has no such ambiguity: it is created once per document and soft navigations
+ * never touch it.
+ */
+function documentNavigation(): { type: string | null; path: string | null } {
+  if (typeof performance === "undefined") return { type: null, path: null };
   try {
     const [entry] = performance.getEntriesByType(
       "navigation"
     ) as PerformanceNavigationTiming[];
-    return entry?.type ?? null;
+    if (!entry) return { type: null, path: null };
+    let path: string | null = null;
+    try {
+      path = new URL(entry.name).pathname;
+    } catch {
+      path = null;
+    }
+    return { type: entry.type ?? null, path };
   } catch {
-    return null;
+    return { type: null, path: null };
   }
 }
 
@@ -195,6 +208,64 @@ function afterPaint(fn: () => void): () => void {
   };
 }
 
+const openSpans = new Set<PendingOpen>();
+
+type AbandonReason = "unmount" | "page-hidden";
+
+function settleOpen(
+  open: PendingOpen,
+  outcome: "ready" | "error" | "abandoned",
+  options: { error?: boolean; reason?: AbandonReason } = {}
+): void {
+  if (open.settled) return;
+  open.settled = true;
+  openSpans.delete(open);
+  open.span.setAttribute("outcome", outcome);
+  if (options.reason) open.span.setAttribute("open.abandon_reason", options.reason);
+  for (const [key, value] of Object.entries(open.readAttributes() ?? {})) {
+    open.span.setAttribute(key, value);
+  }
+  open.span.setStatus({
+    code: options.error ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+  });
+  open.span.end();
+}
+
+let unloadHandlerInstalled = false;
+
+/**
+ * Close every still-open span when the page goes away.
+ *
+ * React's unmount cleanup does not run when a tab is closed, refreshed, or sent
+ * to a typed-in URL, so on its own it misses the abandonments that matter most:
+ * a person giving up on a slow load closes the tab, they do not politely
+ * navigate within the app first. Worse, ``lib/observability.ts`` flushes the
+ * exporter on ``pagehide``, so those spans were still unended at flush time and
+ * shipped nowhere at all — silently deleting the slowest opens and biasing
+ * every percentile downwards.
+ *
+ * Hooked to ``visibilitychange`` rather than ``pagehide`` for ordering.
+ * ``lib/observability.ts`` registers its flush handlers when Logfire configures
+ * at app start, which is before this code-split module is ever imported, so a
+ * ``pagehide`` listener added here would run after that flush and end its spans
+ * too late to be exported. ``visibilitychange`` fires first and is followed by
+ * the ``pagehide`` flush, which then finds the spans already ended.
+ *
+ * A tab switch during a load therefore also settles as abandoned. That is the
+ * honest reading — nobody is waiting on a hidden tab — and
+ * ``open.abandon_reason`` keeps it separable from a real unmount.
+ */
+function ensureUnloadHandler(): void {
+  if (unloadHandlerInstalled || typeof document === "undefined") return;
+  unloadHandlerInstalled = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") return;
+    for (const open of [...openSpans]) {
+      settleOpen(open, "abandoned", { reason: "page-hidden" });
+    }
+  });
+}
+
 export function useOpenLatencySpan({
   name,
   subject,
@@ -203,62 +274,57 @@ export function useOpenLatencySpan({
   attributes,
 }: UseOpenLatencySpanOptions): void {
   const pending = useRef<PendingOpen | null>(null);
-  // Read inside effects without making them re-run on every render.
-  const latestAttributes = useRef<OpenLatencyAttributes | undefined>(
-    attributes
-  );
+  // Read at settle time without making the effects re-run on every render.
+  const latestAttributes = useRef<OpenLatencyAttributes | undefined>(attributes);
   latestAttributes.current = attributes;
 
   const settle = useRef(
-    (outcome: "ready" | "error" | "abandoned", error?: boolean) => {
+    (
+      outcome: "ready" | "error" | "abandoned",
+      options: { error?: boolean; reason?: AbandonReason } = {}
+    ) => {
       const open = pending.current;
-      if (!open || open.settled) return;
-      open.settled = true;
-      open.span.setAttribute("outcome", outcome);
-      for (const [key, value] of Object.entries(
-        latestAttributes.current ?? {}
-      )) {
-        open.span.setAttribute(key, value);
-      }
-      open.span.setStatus({
-        code: error ? SpanStatusCode.ERROR : SpanStatusCode.OK,
-      });
-      open.span.end();
+      if (open) settleOpen(open, outcome, options);
     }
   ).current;
 
   // Start/restart. Keyed on the subject so a switch closes the old open.
   useEffect(() => {
     if (subject === null) {
-      settle("abandoned");
+      settle("abandoned", { reason: "unmount" });
       pending.current = null;
       return;
     }
     if (pending.current?.subject === subject && !pending.current.settled) {
       return;
     }
-    settle("abandoned");
+    settle("abandoned", { reason: "unmount" });
+    ensureUnloadHandler();
 
     const firstOpenOnPage = !pageLoadClaimed;
     pageLoadClaimed = true;
+    const navigation = documentNavigation();
     const { startTime, source } = resolveStartTime({
       now: Date.now(),
       timeOrigin:
         typeof performance === "undefined" ? 0 : performance.timeOrigin,
-      navigationType: navigationType(),
+      navigationType: navigation.type,
       firstOpenOnPage,
-      initialPath: INITIAL_PATH,
+      documentPath: navigation.path,
       currentPath: currentPath(),
     });
 
-    pending.current = {
+    const open: PendingOpen = {
       subject,
       settled: false,
+      readAttributes: () => latestAttributes.current,
       span: trace.getTracer(TRACER_NAME).startSpan(name, {
         startTime,
         attributes: { "open.subject": subject, "open.start_source": source },
       }),
     };
+    pending.current = open;
+    openSpans.add(open);
   }, [name, subject, settle]);
 
   // Finish once the content is painted, or immediately on failure.
@@ -271,7 +337,7 @@ export function useOpenLatencySpan({
   useEffect(() => {
     if (!pending.current || pending.current.settled) return;
     if (failed) {
-      settle("error", true);
+      settle("error", { error: true });
       return;
     }
     if (!ready) return;
@@ -279,6 +345,11 @@ export function useOpenLatencySpan({
   }, [ready, failed, subject, settle]);
 
   // A person who navigates away before the content lands is the signal we most
-  // need; dropping those opens would quietly improve every percentile.
-  useEffect(() => () => settle("abandoned"), [settle]);
+  // need; dropping those opens would quietly improve every percentile. Tab
+  // closes and refreshes are caught by the visibility handler above instead,
+  // because this cleanup does not run for them.
+  useEffect(
+    () => () => settle("abandoned", { reason: "unmount" }),
+    [settle]
+  );
 }
