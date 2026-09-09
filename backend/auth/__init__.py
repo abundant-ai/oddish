@@ -225,10 +225,9 @@ async def get_auth_context(
                 try:
                     clerk_cached_auth: CachedAuthData | None = None
                     clerk_auth_context: AuthContext | None = None
-                    async with get_session() as session:
-                        clerk_result = await get_or_create_user_from_clerk(
-                            session, clerk_user_id, clerk_org_id, email, org_role
-                        )
+                    clerk_result = await get_or_create_user_from_clerk(
+                        clerk_user_id, clerk_org_id, email, org_role
+                    )
 
                     if clerk_result is None:
                         raise HTTPException(
