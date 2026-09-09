@@ -77,7 +77,7 @@ frontend/                       # Next.js App Router dashboard
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
 │   │   ├── (app)/              # Authenticated shell: dashboard, tasks, deliveries,
-│   │   │                       # models, qa, skills, documents, settings, admin
+│   │   │                       # qa, skills, documents, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -560,49 +560,15 @@ handlers must pass `auth.org_id`; never accept an organization selector from
 the client. A user cost drilldown returns 404 when the requested user belongs
 to another org. Deployment-wide diagnostics or mutations (global queue
 status/health and slot topology, model concurrency, shared-channel Slack
-alert settings, model endpoint smoke checks, and the global cost-exclusion
+alert settings and the global cost-exclusion
 lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
-admin capabilities through `GET /admin/operator-access` and model-check access
-through `GET /models/access`, then hides those controls for other orgs.
+admin capabilities through `GET /admin/operator-access`, then hides those
+controls for other orgs.
 `GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
-`GET /models` lets any authenticated member discover whether their active org is
-the operator org and, when it is, returns known models for configured provider
-credentials, Azure deployment names, explicit `ODDISH_MODEL_CATALOG` entries,
-model queue settings, and models previously used by that organization.
-`GET /models/access` returns only the operator-access boolean without loading the catalog.
-`POST /models/check` requires an interactive Clerk user in the operator org and sends one
-short `litellm_completion` request from the hosted API container using its
-platform provider credentials. It does not claim to exercise an agent's
-Responses, Messages, CLI, or sandbox path. Expected provider and configuration
-failures return a structured 200 response; unexpected integration/programming
-errors remain 500s. The request creates no task, trial, worker job, or persisted
-history. Checks ask for "Hello from Oddish." with a 1,024-token output budget
-(shared with reasoning on reasoning models), and pass only with nonblank text
-in the completion message; empty text returns a provider failure. The operator-only
-catalog reads the installed LiteLLM package's bundled chat-model registry without
-provider discovery requests. It reports `source` (`provider_catalog`, `deployment`,
-or `previously_used`) and `credential_configured` (presence only; null for runtime
-SDK authentication). No credential values are returned. All entries are visible
-by default regardless of scheduling limits; names may be retired or inaccessible.
-Public OpenAI and explicit Azure deployments are independently testable regardless
-of the default job route. xAI SWEM uses a separate `xai-swem` route and
-`XAI_SWEM_API_KEY`; checks and cached results are keyed by model and route.
-Catalog model spelling is preserved for case-sensitive provider/deployment IDs.
-`ODDISH_MODEL_CATALOG` is a JSON list of extra/private provider-prefixed model IDs;
-its prefixes select provider connections independently of the default job route
-(including `xai-swem/<model>`). It does not change scheduling limits. Catalog
-coverage tracks the pinned LiteLLM release and does not claim to enumerate account
-entitlements. Fixed HTTP failure explanations distinguish missing
-models/access from credentials, limits, and server errors without returning
-provider exception text. The page searches and filters the catalog, sorts columns, and tests
-only the matching testable models captured at click time in batches of at most
-three. It keeps results only in browser state. Rows reopen stored results
-without another provider request; response text appears above expandable JSON
-details rendered by the shared CodeBlock component.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,
@@ -737,9 +703,22 @@ need repository metadata or task-owner identity. The anonymous `/open` and
 React is not an access-control boundary. `/trial-page` returns at most 250
 projected trials and omits full analysis, errors, results, phase timing, Harbor
 config, and ORM relationships.
-In React, `/open` owns the page's initial loading and fatal-error state;
-`/trial-page` owns incremental trial loading and a retryable inline error, so a
-trial-page failure must not replace task shells that `/open` already returned.
+Experiment pages use `/results` for initial and incremental loading. Task and
+trial collections each use one SQL `DECLARE`/`FETCH` cursor, fetched in batches
+of 500 rows, within a read-only repeatable-read transaction so totals and rows agree.
+Both cursors close on completion, failure, or client disconnect. The transaction
+is required for cursor lifetime and snapshot consistency; this endpoint does not
+use the autocommit read session. SQL cursors avoid asyncpg's unnamed prepared
+statement cursor failures with the pooler's required `statement_cache_size=0`;
+do not switch this to `AsyncSession.stream` without a real-driver regression.
+Batches bound application row buffering, not
+the database query's own sort/aggregate memory or the total response size.
+The page displays downloaded task/trial counts independently of trials that
+finished running. Only a validated completion record marks the download complete;
+refresh failures retain and label the last complete results. A failed
+response retains any downloaded rows and exposes Retry, including when the request
+fails before metadata arrives. The older paginated endpoints remain available to
+other clients.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads
@@ -1016,16 +995,26 @@ when the primary issue is empty or absent. The full report stays in task detail;
 public experiment rows retain the verdict label, acceptance flag, and confidence
 without the prose preview.
 
-Experiment pages automatically consume independent task and trial cursors, one
-bounded request at a time per resource (100 tasks or 250 trials), without waiting
-for scroll or button clicks. Graphs wait for both collections to finish so partial
-trial pages cannot appear as final pass rates. Failed pages retain downloaded rows
-and expose Retry without advancing the failed cursor. Active experiments refresh
-loaded pages every 30 seconds. The task-name column omits the spend-exclusion badge;
-experiment spend summaries retain their exclusion explanation.
+Experiment pages use one `/experiments/{id}/results` NDJSON response (or the
+public token-scoped equivalent). It contains experiment metadata, individual task
+and trial records, and an explicit completion record. There are no page limits or
+cursor requests in the browser. Each collection is read with one query inside a
+repeatable-read, read-only transaction, closed on completion or disconnect. The
+database driver buffers each collection; serialization streams individual records.
+Public projections and
+model aliases match the existing public endpoints. Member and public Next proxies
+pass the response body through without buffering. The client paints incoming records
+once per animation frame, validates completion/counts, and keeps partial rows with
+Retry after interruption. Graphs require a complete response. Active experiments
+refresh the complete response every 30 seconds and retain the previous complete
+snapshot while refreshing. A failed refresh leaves that snapshot complete and its
+graphs visible, exposes Retry, and keeps the 30-second refresh timer running.
+An interrupted initial download remains incomplete. Task rows and the Cost/New
+Spend cards omit the “not real” spend-exclusion badge; accounting exclusions are
+unchanged.
 
-Experiment pages use independent task and trial cursors. The first `/open` page
-includes the exact experiment summary; later task pages request
+The older `/open` and `/trial-page` APIs remain available for existing clients.
+The first `/open` page includes the exact experiment summary; later pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
 whole-experiment aggregation. `/focus?task=...&trial=...` resolves one URL target
 without walking either cursor. Authenticated focus reads retain addressability
@@ -1883,7 +1872,7 @@ after the backend, so a new frontend never reaches an old backend.
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries, deletion |
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
-| `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` plus hosted operator model-endpoint smoke checks |
+| `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` and hosted operator diagnostics |
 | `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
 | `api/services/slack_unfurls.py` | Task/experiment summary queries and Slack block construction |
 | `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |

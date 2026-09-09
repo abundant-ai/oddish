@@ -3,11 +3,11 @@
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
-import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
+import { ExperimentResultsStatus } from "@/components/experiment-results-status";
 import { Nav } from "@/components/nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentResults } from "@/lib/use-experiment-results";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicDatasetPage() {
@@ -25,18 +25,14 @@ export default function PublicDatasetPage() {
   const {
     experiment,
     tasks,
-    openError,
+    error: openError,
     isLoading,
-    retryTrials,
+    isLoadingTrials,
+    refreshResults,
     trialsLoaded,
-    totalTrials,
-    trialsStalled,
-    isValidatingTrials,
-    isValidatingOpen,
-    mutateOpen,
-  } = useExperimentPages({
-    openUrl: publicBase ? `${publicBase}/open` : null,
-    trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
+    pagesComplete,
+  } = useExperimentResults({
+    url: publicBase ? `${publicBase}/results` : null,
     publicView: true,
   });
 
@@ -55,23 +51,15 @@ export default function PublicDatasetPage() {
           isLoading={isLoading}
           hasError={hasFatalError}
           inlineAlert={
-            trialsStalled ? (
-              <ExperimentPageLoadAlert
-                resource="trials"
-                loaded={trialsLoaded}
-                total={totalTrials}
-                isRetrying={isValidatingTrials}
-                onRetry={retryTrials}
-              />
-            ) : openError && experiment ? (
-              <ExperimentPageLoadAlert
-                resource="tasks"
-                loaded={tasks.length}
-                total={experiment.summary?.task_count ?? 0}
-                isRetrying={isValidatingOpen}
-                onRetry={() => void mutateOpen()}
-              />
-            ) : null
+            <ExperimentResultsStatus
+              summary={experiment?.summary}
+              tasksLoaded={tasks.length}
+              trialsLoaded={trialsLoaded}
+              complete={pagesComplete}
+              isLoading={isLoadingTrials}
+              hasError={Boolean(openError)}
+              onRetry={() => void refreshResults()}
+            />
           }
         />
       </main>
