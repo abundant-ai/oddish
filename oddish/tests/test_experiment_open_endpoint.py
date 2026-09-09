@@ -676,3 +676,169 @@ def test_trial_page_requires_both_page_fields_before_querying():
         )
     assert exc.value.status_code == 400
     assert session.calls == []
+
+
+class _StreamRows:
+    def __init__(self, rows):
+        self.rows = rows
+        self.closed = False
+
+    def mappings(self):
+        return self
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def close(self):
+        self.closed = True
+
+
+class _StreamSession(_Session):
+    def __init__(self, task_count=101, trial_count=505):
+        super().__init__(
+            _Result([_identity()]),
+            _Result([_summary(task_count=task_count, total=trial_count)]),
+        )
+        self.cursors = [
+            _StreamRows([_task(i) for i in range(task_count)]),
+            _StreamRows([_trial_page_row(_trial(i)) for i in range(trial_count)]),
+        ]
+        self.stream_queries = []
+        self.closed = False
+        self.isolation = None
+
+    async def execute(self, query):
+        if str(query).startswith("SET TRANSACTION"):
+            self.isolation = str(query)
+            return None
+        if self.results:
+            return await super().execute(query)
+        self.stream_queries.append(query)
+        return self.cursors[len(self.stream_queries) - 1]
+
+
+def _install_stream_session(monkeypatch, session):
+    from contextlib import asynccontextmanager
+    from oddish.core.endpoints import experiment_page
+
+    @asynccontextmanager
+    async def get_session():
+        try:
+            yield session
+        finally:
+            session.closed = True
+
+    async def exclusions(_session):
+        return CostExclusions()
+
+    monkeypatch.setattr(experiment_page, "get_session", get_session)
+    monkeypatch.setattr(experiment_page, "load_cost_exclusions", exclusions)
+    return experiment_page
+
+
+def test_results_stream_exceeds_both_page_limits_without_cursor_requests(monkeypatch):
+    import json
+
+    session = _StreamSession()
+    module = _install_stream_session(monkeypatch, session)
+
+    async def consume():
+        return [
+            json.loads(record)
+            async for record in module.stream_experiment_results(
+                experiment_id="experiment-1", org_id="org-1"
+            )
+        ]
+
+    records = asyncio.run(consume())
+    assert records[0]["type"] == "experiment"
+    assert sum(record["type"] == "task" for record in records) == 101
+    assert sum(record["type"] == "trial" for record in records) == 505
+    assert records[-1] == {"type": "complete"}
+    assert (
+        session.isolation == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    )
+    assert session.closed and all(cursor.closed for cursor in session.cursors)
+    assert len(session.stream_queries) == 2
+    for query in session.stream_queries:
+        assert " LIMIT " not in _sql(query)
+        assert " OFFSET " not in _sql(query)
+        assert "org-1" in _sql(query)
+
+
+def test_results_stream_disconnect_releases_cursor_and_transaction(monkeypatch):
+    session = _StreamSession()
+    module = _install_stream_session(monkeypatch, session)
+
+    async def disconnect():
+        response = await module.experiment_results_response(
+            experiment_id="experiment-1", org_id="org-1"
+        )
+        assert response.media_type == "application/x-ndjson"
+        await anext(response.body_iterator)
+        await anext(response.body_iterator)
+        await response.body_iterator.aclose()
+
+    asyncio.run(disconnect())
+    assert session.closed and session.cursors[0].closed
+    assert len(session.stream_queries) == 1
+
+
+def test_results_stream_checks_access_before_starting_http_response(monkeypatch):
+    session = _StreamSession()
+    module = _install_stream_session(monkeypatch, session)
+
+    async def denied(*args, **kwargs):
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    monkeypatch.setattr(module, "_member_experiment", denied)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            module.experiment_results_response(
+                experiment_id="private", org_id="other-org"
+            )
+        )
+    assert exc.value.status_code == 404
+    assert session.closed and not session.stream_queries
+
+
+def test_public_results_stream_uses_public_projection_and_model_aliases(monkeypatch):
+    import json
+
+    session = _StreamSession(task_count=1, trial_count=1)
+    session.results.pop(0)  # Public token lookup below owns experiment access.
+    session.cursors[0].rows = [
+        _task(1, must_fix_count=7, verdict_primary_issue="Private finding")
+    ]
+    module = _install_stream_session(monkeypatch, session)
+
+    async def shared(_session, token):
+        assert token == "share-token"
+        return SimpleNamespace(
+            id="experiment-1",
+            org_id="org-1",
+            name="Shared",
+            created_at=NOW,
+            updated_at=NOW,
+            last_activity_at=NOW,
+            public_model_renames={"openai/gpt-5.6": "Shared model"},
+        )
+
+    monkeypatch.setattr(module, "get_public_experiment", shared)
+
+    async def consume():
+        return [
+            json.loads(line)
+            async for line in module.stream_experiment_results(
+                public_token="share-token"
+            )
+        ]
+
+    records = asyncio.run(consume())
+    task = records[1]["task"]
+    assert "user" not in task and "must_fix_count" not in task
+    assert "primary_issue" not in task["verdict"]
+    assert "Private finding" not in json.dumps(records)
+    assert records[2]["trial"]["model"] == "Shared model"
+    assert records[-1] == {"type": "complete"}
+    assert "must_fix_count" not in _sql(session.stream_queries[0])
