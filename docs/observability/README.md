@@ -218,7 +218,14 @@ looking at the error state — read `error` as a count, not as a latency.
 first open after a hard navigation, backdated to `performance.timeOrigin` so
 the document request and hydration are included; `interaction` means a
 client-side open timed from mount. Compare the two only deliberately —
-`page-load` is a cold measurement and will always be slower.
+`page-load` is a cold measurement and will always be slower, so a shift in the
+mix moves a combined percentile without anything having got slower.
+
+Only `ui.task.open` can be a `page-load`. A file preview or a trajectory is
+reached by clicking, so its wait begins at the click however the page was
+reached; both pass `claimsPageLoad: false` (the default) and are always
+`interaction`. Set the opt-in only on an open that represents a route someone
+can land on directly.
 
 These are spans, not metrics, so the dimension rules above do not apply:
 each is an individual record and may carry task, trial, and file identifiers.

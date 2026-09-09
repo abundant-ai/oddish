@@ -130,6 +130,21 @@ export type UseOpenLatencySpanOptions = {
   /** True when the open failed and the content will never arrive. */
   failed?: boolean;
   /**
+   * Whether this open is allowed to claim the document's load time when it is
+   * the landing view. Opt-in, and false by default, because most opens cannot
+   * possibly be a landing: a file preview or a trajectory is reached by
+   * clicking, so its wait begins at the click no matter how the page was
+   * reached.
+   *
+   * Without the opt-in the single ``pageLoadClaimed`` latch is shared across
+   * every span name, so on a route with no page-level open (an experiment
+   * page, a trial drawer opened first) the first drawer to appear would claim
+   * it — backdating a deliberate click to ``performance.timeOrigin`` and
+   * folding in however long the person spent reading before clicking. Set it
+   * only on the open that represents the route itself.
+   */
+  claimsPageLoad?: boolean;
+  /**
    * Recorded on the span. Spans are individual records, so high-cardinality
    * values (ids, paths) are fine here — unlike the metric dimension rules in
    * ``docs/observability/README.md``.
@@ -305,6 +320,25 @@ function ensureUnloadHandler(): void {
     for (const open of [...openSpans]) {
       settleOpen(open, unfinishedOutcome(open), { reason: "page-hidden" });
     }
+    // Flush here rather than relying on the one in ``lib/observability.ts``.
+    // That handler is registered when Logfire configures at app start, before
+    // this code-split module exists, and listeners run in registration order --
+    // so it drains the exporter a moment before the spans above are created. A
+    // tab CLOSE is still covered, because ``pagehide`` follows with another
+    // flush. A tab SWITCH is not: no ``pagehide`` arrives, and the spans sit in
+    // the batch queue of a page the browser is free to freeze or discard.
+    // Those are the giving-up opens this handler exists to keep, so flush them
+    // now instead of hoping the 1s batch timer runs in a backgrounded tab.
+    try {
+      const provider = trace.getTracerProvider() as {
+        forceFlush?: () => Promise<void>;
+      };
+      provider.forceFlush?.().catch(() => {
+        /* best effort; the page is going away either way */
+      });
+    } catch {
+      /* swallow */
+    }
   });
 }
 
@@ -313,6 +347,7 @@ export function useOpenLatencySpan({
   subject,
   ready,
   failed = false,
+  claimsPageLoad = false,
   attributes,
 }: UseOpenLatencySpanOptions): void {
   const pending = useRef<PendingOpen | null>(null);
@@ -347,8 +382,8 @@ export function useOpenLatencySpan({
     }
     ensureUnloadHandler();
 
-    const firstOpenOnPage = !pageLoadClaimed;
-    pageLoadClaimed = true;
+    const firstOpenOnPage = claimsPageLoad && !pageLoadClaimed;
+    if (claimsPageLoad) pageLoadClaimed = true;
     const navigation = documentNavigation();
     const { startTime, source } = resolveStartTime({
       now: Date.now(),
@@ -372,7 +407,7 @@ export function useOpenLatencySpan({
     };
     pending.current = open;
     openSpans.add(open);
-  }, [name, subject, settle]);
+  }, [name, subject, claimsPageLoad, settle]);
 
   // Finish once the content is painted. A failure is recorded but is NOT
   // terminal: SWR retries (`errorRetryCount: 2` in `app/providers.tsx`) and the

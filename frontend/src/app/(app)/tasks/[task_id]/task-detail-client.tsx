@@ -699,11 +699,15 @@ export function TaskDetailClient({
   // the real results are still in flight -- with the previous task's data, on a
   // switch. Requiring a non-snapshot payload whose id matches the route rejects
   // both, so the span ends on the data people actually came for.
+  // The only open here that can be a landing view: a deep link or refresh lands
+  // on this route, so its wait legitimately starts at the document request.
+  // Files and trajectories are always reached by clicking and never opt in.
   useOpenLatencySpan({
     name: "ui.task.open",
     subject: taskId,
     ready: !isLoading && !isBrowseSnapshot && task?.id === taskId,
     failed: error != null,
+    claimsPageLoad: true,
     attributes: {
       "oddish.task_id": taskId,
       "oddish.trial_count": realTrialCount,
