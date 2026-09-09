@@ -782,3 +782,110 @@ test("initial results request failure offers Retry before any rows arrive", asyn
   ).toBeVisible();
   expect(requests).toBe(2);
 });
+
+for (const route of ["share", "datasets"] as const) {
+  test(`${route} missing token shows a fatal error without trial counts`, async ({
+    page,
+  }) => {
+    const token = `missing-${route}`;
+    await mockInfo(page, token);
+    await page.route(`**/api/public/experiments/${token}/results`, (request) =>
+      request.fulfill({ status: 404, json: { detail: "Experiment not found" } })
+    );
+    await page.goto(`/${route}/${token}`, { waitUntil: "domcontentloaded" });
+    await expect(
+      page.getByRole("heading", {
+        name:
+          route === "share"
+            ? "Failed to load experiment"
+            : "Failed to load dataset",
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        route === "share"
+          ? "The share link may be invalid or no longer public."
+          : "The dataset token may be invalid, or this experiment is not public."
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText("Loaded 0/0 trials.", { exact: true })
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Some trial results failed to load" })
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Retry", exact: true })
+    ).toBeVisible();
+  });
+}
+
+test("retry keeps partial rows visible until the replacement stream completes", async ({
+  page,
+}) => {
+  const token = "partial-retry-preserves-rows";
+  await mockInfo(page, token);
+  const initial = resultRecords([task({})], []);
+  const replacement = resultRecords([task({ name: "Replacement task" })], []);
+  await page.addInitScript(
+    ({ token, initial, header, remaining }) => {
+      const originalFetch = window.fetch.bind(window);
+      let requests = 0;
+      window.fetch = async (input, init) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (!url.endsWith(`/experiments/${token}/results`))
+          return originalFetch(input, init);
+        if (++requests === 1) return new Response(initial);
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(header));
+              (
+                window as typeof window & { finishResults: () => void }
+              ).finishResults = () => {
+                controller.enqueue(new TextEncoder().encode(remaining));
+                controller.close();
+              };
+            },
+          })
+        );
+      };
+    },
+    {
+      token,
+      initial: streamBody(initial.slice(0, -1)),
+      header: streamBody(replacement.slice(0, 1)),
+      remaining: streamBody(replacement.slice(1)),
+    }
+  );
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  const row = page.getByRole("button", { name: "Task one", exact: true });
+  await expect(row).toBeVisible();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      typeof (window as typeof window & { finishResults?: () => void })
+        .finishResults === "function"
+  );
+  // Let the replacement header's animation-frame update reach React.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+  );
+  await expect(row).toBeVisible();
+  await page.evaluate(() =>
+    (window as typeof window & { finishResults: () => void }).finishResults()
+  );
+  await expect(
+    page.getByRole("button", { name: "Replacement task", exact: true })
+  ).toBeVisible();
+  await expect(row).toHaveCount(0);
+});

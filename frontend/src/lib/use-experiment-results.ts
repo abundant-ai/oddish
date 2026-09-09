@@ -19,6 +19,7 @@ export function useExperimentResults({
   const [progress, setProgress] = useState<{
     url: string;
     results: ExperimentResults;
+    controller: AbortController;
   }>();
   const active = useRef<{ url: string; controller: AbortController } | null>(
     null
@@ -32,8 +33,9 @@ export function useExperimentResults({
     const publish = () => {
       frame = undefined;
       if (!latest || controller.signal.aborted) return;
-      setProgress({
+      const snapshot = {
         url: requestUrl,
+        controller,
         results: {
           experiment: {
             ...latest.experiment,
@@ -41,7 +43,14 @@ export function useExperimentResults({
           },
           trials: [...latest.trials],
         },
-      });
+      };
+      // A replacement stream starts with empty rows. Retain the previous
+      // snapshot until SWR can replace it with the completed response.
+      setProgress((previous) =>
+        previous?.url === requestUrl && previous.controller !== controller
+          ? previous
+          : snapshot
+      );
     };
     try {
       const response = await apiFetch(requestUrl, {

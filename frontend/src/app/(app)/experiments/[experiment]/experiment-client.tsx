@@ -442,7 +442,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
               </Alert>
             ) : openError ? (
               <ExperimentPageLoadAlert
-                resource="trials"
+                resource={hasFatalTaskLoadError ? "experiment" : "trials"}
                 loaded={trialsLoadedCount}
                 total={totalTrialCount}
                 isRetrying={isLoadingTrials}

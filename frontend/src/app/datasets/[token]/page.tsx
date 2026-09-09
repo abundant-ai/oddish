@@ -53,7 +53,8 @@ export default function PublicDatasetPage() {
           inlineAlert={
             openError ? (
               <ExperimentPageLoadAlert
-                resource="trials"
+                resource={hasFatalError ? "dataset" : "trials"}
+                description="The dataset token may be invalid, or this experiment is not public."
                 loaded={trialsLoaded}
                 total={totalTrials}
                 isRetrying={isLoadingTrials}

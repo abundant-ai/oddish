@@ -70,7 +70,8 @@ export default function PublicExperimentPage() {
             inlineAlert={
               openError ? (
                 <ExperimentPageLoadAlert
-                  resource="trials"
+                  resource={hasFatalError ? "experiment" : "trials"}
+                  description="The share link may be invalid or no longer public."
                   loaded={trialsLoaded}
                   total={totalTrials}
                   isRetrying={isLoadingTrials}
