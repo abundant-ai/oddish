@@ -683,8 +683,19 @@ selected-version trial preview remains capped at 20 rows. The handler uses at
 most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
-remains the compatibility bundle for CLI and drawer consumers during the soak;
+remains the compatibility bundle for CLI and explicit full-history operations;
 do not point the task route back at it.
+
+`GET /tasks/{task_id}/panel?version=N` supplies task-panel audit metadata,
+selected-version content hash, verdict, and action availability in two SQL
+statements. Omitted version selects the task's default; missing or deleted
+explicit versions return 404. Hosted readers use the verified organization ID.
+The file panel uses this resource instead of polling `/detail` and basic task
+state independently. Files load independently, overview trial evidence loads
+on tab intent, and full retry targets load only on click; experiment-scoped
+retries retain their host trial set. Unknown audit metadata keeps reruns disabled.
+The normal 30-second panel poll detects in-place file revisions; active QA/audits
+poll every five seconds.
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
@@ -1627,6 +1638,27 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash
@@ -1831,6 +1863,11 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+The shared authenticated proxy adds `next_auth`, `next_token`, `next_upstream`,
+`next_json` (buffered responses only), and `next_total` durations alongside
+backend timing, including errors. Task open/detail/panel use its streaming
+option. Streaming totals end at response construction, not the last body byte.
 
 **Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
 browser call the backend itself instead of going through those `/api/*`

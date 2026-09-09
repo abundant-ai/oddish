@@ -122,6 +122,7 @@ async def seed_org_with_trials():
     async with get_session() as session:
         session.add(
             OrganizationModel(
+                execution_enabled=True,
                 id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
             )
         )
@@ -204,6 +205,7 @@ async def seed_org_with_task_trials():
     async with get_session() as session:
         session.add(
             OrganizationModel(
+                execution_enabled=True,
                 id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
             )
         )

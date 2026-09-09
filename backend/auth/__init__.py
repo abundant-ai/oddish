@@ -9,6 +9,7 @@ from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
+from org_access import require_execution_org
 from oddish.timing import (
     begin_auth_timing,
     finish_auth_timing,
@@ -151,7 +152,6 @@ async def get_auth_context(
                     auth_context = AuthContext(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
-                        org=org,
                         org_slug=org.slug,
                         user_id=creator.id if creator else api_key.created_by_user_id,
                         user=creator,
@@ -252,7 +252,6 @@ async def get_auth_context(
                     clerk_auth_context = AuthContext(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
-                        org=org,
                         org_slug=org.slug,
                         user_id=user.id,
                         user=user,
@@ -309,6 +308,9 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     await authorize_bound_analysis_request(request, auth)
+    # Resolve organization data at the same boundary as approval, on both
+    # cache hits and misses. Auth caches contain identities, never ORM rows.
+    auth.org = await require_execution_org(auth.org_id)
     return auth
 
 
