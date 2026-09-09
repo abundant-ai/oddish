@@ -1289,6 +1289,13 @@ request issues is its latency budget. Three rules keep that number down:
   the task, trial, detail, browse and experiment-page reads. Raise a budget only
   with a reason in the diff.
 
+Pooled SQLAlchemy connections are idle in driver `AUTOCOMMIT` mode so the
+asyncpg connection health check sends only its test command, without a
+`BEGIN`/`ROLLBACK` pair. The exported engine is a `READ COMMITTED` view of
+that same pool: `engine.begin()`, ordinary sessions, and writes retain their
+transactions. Read sessions override the view for their checkout. The pool
+size is unchanged; NullPool workers retain their existing configuration.
+
 Two per-process caches take the remaining fixed costs off the request path:
 `load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
 per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
@@ -1526,6 +1533,15 @@ The file LISTING and file CONTENT endpoints both root at
 ``trials.trial_s3_key`` when set, so listed relative paths round-trip without
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
+
+The normal ATIF reader downloads the attempt manifest and selected
+`agent/trajectory.json` without preliminary existence checks: two GETs on
+a cache miss. Only storage missing-object errors activate missing-file
+behavior; permission and service errors propagate. Finished trajectories
+remain cached for 120 seconds in each process, keyed by trial, attempt, and
+artifact prefix. Request traces expose `storage.trajectory_cache.hit`,
+`storage_client_init.duration_ms`, and `trajectory_cache_wait.duration_ms`
+alongside storage request counts and download timings.
 
 ### Worker Runtime Invariants & Pitfalls
 

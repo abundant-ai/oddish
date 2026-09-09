@@ -28,6 +28,7 @@ from oddish.db.storage import (
     _cleanup_temp_directory,
     resolve_trial_directory,
 )
+from oddish.timing import current_request_timing, timed_phase
 from oddish.workers.agents.claude_code import (
     convert_claude_code_stream_text_to_trajectory,
 )
@@ -759,10 +760,19 @@ async def _read_trial_trajectory_from_s3(
     if layout.mode is TrialArtifactMode.EXACT:
         assert layout.artifact_prefix is not None
         trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
-        trajectory_file_exists = await storage.object_exists(trajectory_key)
-        if trajectory_file_exists:
+        trajectory_file_exists = True
+        try:
+            content = await storage.download_text(trajectory_key)
+        except ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) not in {
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            }:
+                raise
+            trajectory_file_exists = False
+        else:
             try:
-                content = await storage.download_text(trajectory_key)
                 if content:
                     parsed = _json.loads(content)
                     if isinstance(parsed, dict):
@@ -940,22 +950,33 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
 
 async def read_trial_trajectory(trial: TrialModel) -> dict | None:
     cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
+    timing = current_request_timing()
+    if timing is not None:
+        timing.trajectory_cache_hit = False
     if _should_cache_trial(trial):
         cached = _cache_get(_TRAJECTORY_CACHE, cache_key)
         if cached is not None:
+            if timing is not None:
+                timing.trajectory_cache_hit = True
             return cached  # type: ignore[return-value]
 
     lock = _get_lock(_TRAJECTORY_LOCKS, cache_key)
-    async with lock:
+    with timed_phase("trajectory_cache_wait"):
+        await lock.acquire()
+    try:
         if _should_cache_trial(trial):
             cached = _cache_get(_TRAJECTORY_CACHE, cache_key)
             if cached is not None:
+                if timing is not None:
+                    timing.trajectory_cache_hit = True
                 return cached  # type: ignore[return-value]
 
         result = await _read_trial_trajectory_uncached(trial)
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
+    finally:
+        lock.release()
 
 
 async def qa_source_evidence_errors(trial: TrialModel) -> tuple[str, ...]:
