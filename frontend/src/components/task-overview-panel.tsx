@@ -601,7 +601,7 @@ export function TaskOverviewPanel({
     <div className={cn("flex flex-col", className)}>
       {verdictTask ? (
         <div className="border-border border-b p-4">
-          <TaskVerdictBadge task={verdictTask} variant="inline" />
+          <TaskVerdictBadge task={verdictTask} variant="inline" qaActive={qaActive} />
         </div>
       ) : null}
 

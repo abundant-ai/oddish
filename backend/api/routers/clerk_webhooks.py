@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,13 +10,14 @@ from sqlalchemy import select
 from svix import Webhook, WebhookVerificationError
 
 from auth.provisioning import (
+    sync_clerk_org,
+    get_or_create_user_in_org,
     _apply_github_id,
     _github_account_from_clerk_payload,
     _mark_github_id_checked,
-    _refresh_user_github_identity,
     _seed_attribution_cache_from_github,
 )
-from models import OrganizationModel, UserModel, UserRole, generate_id
+from models import OrganizationModel, UserModel, UserRole
 from oddish.db import get_session, utcnow
 
 logger = logging.getLogger(__name__)
@@ -25,28 +25,6 @@ logger = logging.getLogger(__name__)
 CLERK_WEBHOOK_SECRET = os.getenv("CLERK_WEBHOOK_SECRET", "")
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
-
-
-def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
-    slug = slug.strip("-")
-    return slug or "org"
-
-
-async def _ensure_unique_org_slug(session, base_slug: str) -> str:
-    slug = base_slug or "org"
-    suffix = 1
-
-    while True:
-        result = await session.execute(
-            select(OrganizationModel)
-            .where(OrganizationModel.slug == slug)
-            .where(OrganizationModel.is_active == True)  # noqa: E712
-        )
-        if result.scalar_one_or_none() is None:
-            return slug
-        slug = f"{base_slug}-{suffix}"
-        suffix += 1
 
 
 def _map_role(role: str | None) -> UserRole:
@@ -67,7 +45,12 @@ def _resolve_org_id(payload: dict[str, Any]) -> str | None:
 
 
 def _resolve_user_id(payload: dict[str, Any]) -> str | None:
-    return payload.get("user_id") or payload.get("userId") or payload.get("userID")
+    return (
+        (payload.get("public_user_data") or {}).get("user_id")
+        or payload.get("user_id")
+        or payload.get("userId")
+        or payload.get("userID")
+    )
 
 
 def _resolve_user_email(payload: dict[str, Any]) -> str | None:
@@ -93,38 +76,6 @@ def _resolve_user_name(payload: dict[str, Any]) -> str | None:
     return first or last
 
 
-async def _upsert_org(
-    session, clerk_org_id: str, name: str | None, slug: str | None
-) -> OrganizationModel:
-    result = await session.execute(
-        select(OrganizationModel)
-        .where(OrganizationModel.clerk_org_id == clerk_org_id)
-        .where(OrganizationModel.is_active == True)  # noqa: E712
-    )
-    org = result.scalar_one_or_none()
-
-    if org:
-        if name and org.name != name:
-            org.name = name
-        if slug:
-            candidate = _slugify(slug)
-            if candidate and org.slug != candidate:
-                org.slug = await _ensure_unique_org_slug(session, candidate)
-        return org
-
-    base_slug = _slugify(slug or name or f"org-{clerk_org_id}")
-    base_slug = await _ensure_unique_org_slug(session, base_slug)
-    org = OrganizationModel(
-        id=generate_id(),
-        name=name or "Organization",
-        slug=base_slug,
-        clerk_org_id=clerk_org_id,
-    )
-    session.add(org)
-    await session.flush()
-    return org
-
-
 async def _upsert_user(
     session,
     org: OrganizationModel,
@@ -132,44 +83,14 @@ async def _upsert_user(
     email: str | None,
     name: str | None,
     role: UserRole,
-) -> UserModel:
-    result = await session.execute(
-        select(UserModel)
-        .where(UserModel.clerk_user_id == clerk_user_id)
-        .where(UserModel.org_id == org.id)
-        .where(UserModel.is_active == True)  # noqa: E712
+) -> UserModel | None:
+    if not org.is_active or org.deleted_at is not None:
+        return None
+    user = await get_or_create_user_in_org(
+        session, clerk_user_id, org, email, role.value, role
     )
-    user = result.scalar_one_or_none()
-    if user:
-        if name and not user.name:
-            user.name = name
-        if email and user.email != email:
-            user.email = email
-        if role and user.role != role:
-            user.role = role
-        return user
-
-    safe_email = email
-    if safe_email:
-        existing = await session.execute(
-            select(UserModel)
-            .where(UserModel.org_id == org.id)
-            .where(UserModel.email == safe_email)
-            .where(UserModel.is_active == True)  # noqa: E712
-        )
-        if existing.scalar_one_or_none():
-            safe_email = None
-
-    user = UserModel(
-        id=generate_id(),
-        org_id=org.id,
-        clerk_user_id=clerk_user_id,
-        email=safe_email or f"{clerk_user_id}@clerk.user",
-        name=name,
-        role=role,
-    )
-    session.add(user)
-    await session.flush()
+    if name:
+        user.name = name
     return user
 
 
@@ -271,11 +192,24 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
             await session.commit()
             return {"status": "ok"}
 
+        if event_type == "organization.deleted":
+            clerk_org_id = data.get("id")
+            if not clerk_org_id:
+                raise HTTPException(status_code=400, detail="Missing organization id")
+            # Serialize with creation callbacks; leave a tombstone even when
+            # deletion arrives first so an older event cannot restore access.
+            org = await sync_clerk_org(session, clerk_org_id, None, None)
+            org.execution_enabled = False
+            org.is_active = False
+            org.deleted_at = utcnow()
+            await session.commit()
+            return {"status": "ok"}
+
         if event_type in {"organization.created", "organization.updated"}:
             clerk_org_id = data.get("id")
             if not clerk_org_id:
                 raise HTTPException(status_code=400, detail="Missing organization id")
-            await _upsert_org(
+            await sync_clerk_org(
                 session,
                 clerk_org_id=clerk_org_id,
                 name=data.get("name"),
@@ -292,13 +226,13 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                     status_code=400, detail="Missing organization or user id"
                 )
 
-            org = await _upsert_org(
+            org = await sync_clerk_org(
                 session,
                 clerk_org_id=clerk_org_id,
                 name=(data.get("organization") or {}).get("name"),
                 slug=(data.get("organization") or {}).get("slug"),
             )
-            user = await _upsert_user(
+            await _upsert_user(
                 session,
                 org=org,
                 clerk_user_id=clerk_user_id,
@@ -306,9 +240,6 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                 name=_resolve_user_name(data),
                 role=_map_role(data.get("role")),
             )
-            # Membership payload carries no external_accounts; fetch from Clerk so
-            # new members land with github_id like login-time JIT provisioning.
-            await _refresh_user_github_identity(user, session)
             await session.commit()
             return {"status": "ok"}
 
@@ -320,7 +251,7 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                     status_code=400, detail="Missing organization or user id"
                 )
 
-            org = await _upsert_org(
+            org = await sync_clerk_org(
                 session,
                 clerk_org_id=clerk_org_id,
                 name=(data.get("organization") or {}).get("name"),

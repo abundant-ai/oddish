@@ -497,15 +497,16 @@ class StorageClient:
         if self._client is not None:
             return
 
-        self._session = aioboto3.Session()
-        self._client = await self._session.client(
-            "s3",
-            endpoint_url=settings.s3_endpoint_url,
-            aws_access_key_id=settings.s3_access_key,
-            aws_secret_access_key=settings.s3_secret_key,
-            region_name=settings.s3_region,
-            config=Config(signature_version="s3v4"),
-        ).__aenter__()
+        with timed_phase("storage_client_init"):
+            self._session = aioboto3.Session()
+            self._client = await self._session.client(
+                "s3",
+                endpoint_url=settings.s3_endpoint_url,
+                aws_access_key_id=settings.s3_access_key,
+                aws_secret_access_key=settings.s3_secret_key,
+                region_name=settings.s3_region,
+                config=Config(signature_version="s3v4"),
+            ).__aenter__()
 
     async def close(self):
         """Close the S3 client."""

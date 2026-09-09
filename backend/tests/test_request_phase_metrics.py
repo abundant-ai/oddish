@@ -51,6 +51,7 @@ async def _run_request(*, cold: bool, body: bytes = b'{"ok":true}'):
                 await asyncio.sleep(0)
         finish_auth_timing(auth)
         timing.record("db_sql", 0.5, stage="handler")
+        timing.trajectory_cache_hit = not cold
         scope["state"]["server_timing_metrics"].append(
             ("route_build", 2.0, "Route build")
         )
@@ -105,6 +106,8 @@ async def test_cold_and_warm_requests_emit_every_backend_phase(monkeypatch):
     assert observations[0]["external_http.duration_ms"] >= 5
     assert observations[1]["db.query_count"] == 1
     assert observations[1]["auth.cache.hit"] is True
+    assert observations[0]["storage.trajectory_cache.hit"] is False
+    assert observations[1]["storage.trajectory_cache.hit"] is True
     assert all(
         f"{phase}.duration_ms" in observation
         for observation in observations

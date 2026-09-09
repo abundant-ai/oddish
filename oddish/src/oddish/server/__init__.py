@@ -13,6 +13,7 @@ from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
 
+from oddish.core.endpoints.task_panel import get_task_panel_core
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_experiment_options_core,
@@ -103,6 +104,7 @@ from oddish.schemas import (
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskDetailResponse,
+    TaskPanelResponse,
     TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
@@ -587,6 +589,12 @@ async def get_task_open(task_id: str, version_id: str | None = None):
     """Bounded task-page header, aggregates, and trial preview."""
     async with get_read_session() as session:
         return await get_task_open_core(session, task_id=task_id, version_id=version_id)
+
+
+@api.get("/tasks/{task_id}/panel", response_model=TaskPanelResponse)
+async def get_task_panel(task_id: str, version: int | None = None):
+    async with get_read_session() as session:
+        return await get_task_panel_core(session, task_id=task_id, version=version)
 
 
 @api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)

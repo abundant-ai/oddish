@@ -10,7 +10,7 @@ import {
   useClerk,
   useUser,
 } from "@clerk/nextjs";
-import { stripOrgSlug, withOrgSlug } from "@/lib/org-path";
+import { withOrgSlug } from "@/lib/org-path";
 import { useAppPathname, useOrgHref } from "@/lib/use-org-href";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { fetcher } from "@/lib/api";
@@ -81,14 +81,6 @@ const navSwitcherAppearance = {
 const SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV = false;
 
 const DOCS_URL = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md";
-
-/** Keep the current page, swap the org slug, and hard-load so Clerk URL sync
- *  and the URL-keyed router cache cannot pin the previous workspace. */
-function organizationSwitchPath(org: { slug: string | null }) {
-  if (!org.slug) return "/dashboard";
-  const appPath = stripOrgSlug(window.location.pathname);
-  return withOrgSlug(appPath === "/" ? "/dashboard" : appPath, org.slug);
-}
 
 type NavLink = {
   href: string;
@@ -262,10 +254,8 @@ export function Nav() {
                   hidePersonal
                   appearance={navSwitcherAppearance}
                   afterSelectOrganizationUrl={(org) => {
-                    const dest = organizationSwitchPath(org);
-                    window.location.assign(
-                      `${dest}${window.location.search}${window.location.hash}`,
-                    );
+                    const dest = withOrgSlug("/dashboard", org.slug);
+                    window.location.assign(dest);
                     return dest;
                   }}
                   afterCreateOrganizationUrl={(org) => {

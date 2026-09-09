@@ -20,6 +20,8 @@ _PHASE_DESCRIPTIONS = {
     "external_http": "External HTTP",
     "db_commit": "Database commit",
     "storage_head": "Storage metadata requests",
+    "storage_client_init": "Storage client initialization",
+    "trajectory_cache_wait": "Wait for another trajectory reader",
     "storage_get": "Storage GET to response headers",
     "storage_read": "Storage response body reads",
     "storage_delete": "Storage batch deletes",
@@ -47,6 +49,7 @@ class RequestTiming:
     storage_bytes: int = 0
     archive_bytes: int = 0
     archive_cache_hit: bool | None = None
+    trajectory_cache_hit: bool | None = None
     file_source: str | None = None
     file_bytes: int | None = None
 
