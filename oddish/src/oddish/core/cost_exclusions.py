@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import logging
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import model_family_key, normalize_model_id
+from oddish.cache import TTLCache
+from oddish.config import model_family_key, normalize_model_id, settings
 from oddish.db import (
     CostExcludedExperimentModel,
     CostExcludedLlmKeyModel,
     CostExcludedModelModel,
     TrialModel,
 )
-from oddish.db.pg_errors import is_missing_table
+from oddish.db.optional_read import read_optional_table
 
 logger = logging.getLogger(__name__)
+
 
 REASON_MODEL = "model"
 REASON_EXPERIMENT = "experiment"
@@ -145,32 +145,44 @@ class CostExclusions:
         )
 
 
-async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
-    is_autocommit = session.info.get("oddish_read_autocommit") is True
-    # A missing optional table must not abort a caller's transaction, so normal
-    # sessions keep the savepoint. get_read_session marks driver autocommit on
-    # the session it owns; each SELECT already owns its transaction and
-    # PostgreSQL rejects SAVEPOINT there.
-    transaction_guard = nullcontext() if is_autocommit else session.begin_nested()
-    try:
-        async with transaction_guard:
-            llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
-            models = list(await session.scalars(select(CostExcludedModelModel)))
-            experiments = list(
-                await session.scalars(select(CostExcludedExperimentModel))
-            )
-    except ProgrammingError as exc:
-        if not is_missing_table(exc):
-            raise
-        logger.warning(
-            "cost exclusion lists unavailable (schema not migrated yet); "
-            "spend is shown unlabelled",
-            exc_info=True,
-        )
-        return CostExclusions()
+# The three lists change a few times a month from the admin page and are read
+# on every task, trial and experiment fetch. One entry per container, refreshed
+# at most once per ``settings.cost_exclusions_cache_seconds``, keeps those
+# three statements (plus the SAVEPOINT around them) off the request path. The
+# admin routers call ``invalidate_cost_exclusions`` after each edit so the
+# container that served the edit answers fresh; the TTL bounds the lag on
+# every other container.
+_cache: TTLCache[str, CostExclusions] = TTLCache(0.0, max_size=1)
+_CACHE_KEY = "all"
 
+
+def invalidate_cost_exclusions() -> None:
+    _cache.clear()
+
+
+async def _read_cost_exclusions(session: AsyncSession) -> CostExclusions:
+    llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
+    models = list(await session.scalars(select(CostExcludedModelModel)))
+    experiments = list(await session.scalars(select(CostExcludedExperimentModel)))
     return CostExclusions(
         llm_key_hashes=frozenset(row.key_hash for row in llm_keys),
         models=frozenset(row.model_name for row in models),
         experiment_ids=frozenset(row.experiment_id for row in experiments),
     )
+
+
+async def load_cost_exclusions(session: AsyncSession) -> CostExclusions:
+    ttl = settings.cost_exclusions_cache_seconds
+    if ttl > 0 and (cached := _cache.get(_CACHE_KEY)) is not None:
+        return cached
+    exclusions = await read_optional_table(
+        session,
+        lambda: _read_cost_exclusions(session),
+        table="cost exclusion lists",
+        degraded="spend is shown unlabelled",
+    )
+    if exclusions is None:
+        # Not cached: the lists come back the moment the migration lands.
+        return CostExclusions()
+    _cache.set(_CACHE_KEY, exclusions, ttl_seconds=ttl)
+    return exclusions

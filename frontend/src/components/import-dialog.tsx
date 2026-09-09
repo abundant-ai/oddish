@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Upload } from "lucide-react";
 import { TagPicker } from "@/components/tag-picker-lazy";
+import { apiFetch } from "@/lib/api";
 
 type ImportTrial = {
   job_name: string;
@@ -204,7 +205,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     }
 
     try {
-      const res = await fetch("/api/imports/zip", {
+      const res = await apiFetch("/api/imports/zip", {
         method: "POST",
         credentials: "include",
         body: form,

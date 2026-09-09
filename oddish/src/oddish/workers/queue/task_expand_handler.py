@@ -1,7 +1,7 @@
 """``TASK_EXPAND`` worker-job handler.
 
 Expands a task's ``.oddish-task.tar.gz`` archive into a sibling per-file
-S3 layout at ``tasks/{task_id}/v{N}-files/`` plus a
+S3 layout at ``tasks/{task_id}/v{N}-expanded/{token}/`` plus a
 ``.oddish-manifest.json`` sentinel that records the source archive's
 etag and key. The database-selected archive is never modified — this is a
 derived cache that lets the task-files drawer list objects directly and fetch
@@ -12,7 +12,8 @@ Payload shape::
 
     {"task_id": str, "version": int}
 
-The handler is idempotent: if a manifest already exists and its
+The version row selects the published manifest. Older ``v{N}-files/``
+manifests remain readable. The handler is idempotent: if a manifest exists and its
 ``archive_etag`` matches the current archive, expansion short-circuits,
 ``expanded_at`` is refreshed, and no objects are re-uploaded.
 """
@@ -23,6 +24,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import mimetypes
 import tarfile
 import uuid
@@ -45,6 +47,7 @@ from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 TASK_EXPAND_HEARTBEAT_INTERVAL_SECONDS = 30
 
 _MAX_CONCURRENT_MEMBER_UPLOADS = 8
+logger = logging.getLogger(__name__)
 
 
 async def _heartbeat_task_expand_worker_job(
@@ -95,10 +98,12 @@ def _expanded_prefix_for(task_id: str, version: int) -> str:
 
 
 def _staging_prefix_for(task_id: str, version: int) -> str:
-    return f"task-expand-staging/{task_id}/v{version}/{uuid.uuid4().hex}/"
+    return f"tasks/{task_id}/v{version}-expanded/{uuid.uuid4().hex}/"
 
 
-async def _version_content_hash(task_id: str, version: int) -> str | None:
+async def _version_expansion(
+    task_id: str, version: int
+) -> tuple[str | None, str | None]:
     version_id = f"{task_id}-v{version}"
     async with get_session() as session:
         row = await session.get(TaskVersionModel, version_id)
@@ -109,7 +114,11 @@ async def _version_content_hash(task_id: str, version: int) -> str | None:
                     TaskVersionModel.version == version,
                 )
             )
-        return str(row.content_hash) if row is not None and row.content_hash else None
+        return (
+            (row.content_hash, row.expanded_manifest_key)
+            if row is not None
+            else (None, None)
+        )
 
 
 async def _promote_expansion_if_current(
@@ -118,18 +127,18 @@ async def _promote_expansion_if_current(
     task_id: str,
     version: int,
     expected_content_hash: str | None,
-    expanded_prefix: str,
     manifest_key: str,
     manifest_bytes: bytes,
-    staged_objects: list[tuple[str, str]],
+    archive_key: str | None = None,
 ) -> bool:
-    """Publish a staged expansion only while its source version is current.
+    """Publish a complete immutable directory by switching the version pointer.
 
-    Member objects are staged outside the canonical prefix. The version-row
-    lock serializes the final promotion with in-place task overwrites, which
-    hold the same lock while replacing the archive and clearing this cache.
-    The manifest is written last, so readers never select a partial promotion.
+    Old directories remain readable for in-flight requests and signed URLs.
+    No storage delete or copy is required to publish the new files.
     """
+    await storage.upload_bytes(
+        manifest_bytes, manifest_key, content_type="application/json"
+    )
     version_id = f"{task_id}-v{version}"
     async with get_session() as session:
         row = await session.get(TaskVersionModel, version_id, with_for_update=True)
@@ -142,26 +151,20 @@ async def _promote_expansion_if_current(
                 )
                 .with_for_update()
             )
-        if row is not None and row.content_hash != expected_content_hash:
+        if row is None or row.content_hash != expected_content_hash:
             return False
-
-        await storage.delete_prefix(expanded_prefix)
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_MEMBER_UPLOADS)
-
-        async def _copy_one(source: str, destination: str) -> None:
-            async with semaphore:
-                await storage.copy_object(source, destination)
-
-        await asyncio.gather(*(_copy_one(*item) for item in staged_objects))
-        await storage.upload_bytes(
-            manifest_bytes,
-            manifest_key,
-            content_type="application/json",
-        )
-        if row is not None:
-            row.expanded_at = utcnow()
-            row.expanded_manifest_key = manifest_key
-            await session.commit()
+        if (
+            archive_key
+            and row.task_s3_key
+            and (
+                StorageClient._task_archive_key_from_prefix(row.task_s3_key)
+                != archive_key
+            )
+        ):
+            return False
+        row.expanded_at = utcnow()
+        row.expanded_manifest_key = manifest_key
+        await session.commit()
         return True
 
 
@@ -259,8 +262,8 @@ async def _migrate_loose_task_files(
     version: int,
     staging_prefix: str,
     loose_files: list[dict[str, object]],
-) -> tuple[dict, bytes, list[tuple[str, str]]]:
-    """Copy a loose-file task into the unified ``v{N}-files/`` layout.
+) -> tuple[dict, bytes]:
+    """Copy a loose-file task into a candidate publication directory.
 
     For pre-archive tasks the source bytes already live as individual
     S3 objects, so this is the moral equivalent of the tar-extraction
@@ -319,14 +322,6 @@ async def _migrate_loose_task_files(
     manifest_bytes = json.dumps(manifest_payload, sort_keys=True, default=str).encode(
         "utf-8"
     )
-    staged_objects = [
-        (
-            f"{staging_prefix}{entry['path']}",
-            f"{_expanded_prefix_for(task_id, version)}{entry['path']}",
-        )
-        for entry in manifest_files
-        if not entry.get("skipped")
-    ]
     return (
         {
             "status": "expanded",
@@ -334,7 +329,6 @@ async def _migrate_loose_task_files(
             "files": len(manifest_files),
         },
         manifest_bytes,
-        staged_objects,
     )
 
 
@@ -408,8 +402,12 @@ async def run_task_expand_job(
     archive_key = await _resolve_archive_key(storage, task_id, version)
     expanded_prefix = _expanded_prefix_for(task_id, version)
     manifest_key = f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
-    expected_content_hash = await _version_content_hash(task_id, version)
+    expected_content_hash, published_manifest_key = await _version_expansion(
+        task_id, version
+    )
+    manifest_key = published_manifest_key or manifest_key
     staging_prefix: str | None = None
+    publication_started = False
 
     heartbeat_stop = asyncio.Event()
     heartbeat_task: asyncio.Task | None = None
@@ -423,15 +421,11 @@ async def run_task_expand_job(
 
     try:
         # Confirm the source archive exists and grab its size + etag.
-        await storage._ensure_client()  # type: ignore[attr-defined]
-        try:
-            head = await storage._s3.head_object(  # type: ignore[attr-defined]
-                Bucket=settings.s3_bucket, Key=archive_key
-            )
-        except Exception as exc:
+        head = await storage.head_object(archive_key)
+        if head is None:
             # No archive. Pre-archive uploads via ``upload_task_directory``
             # stored loose per-file S3 objects at ``tasks/{task_id}/``;
-            # migrate those directly into the same ``v{N}-files/`` layout
+            # migrate those directly into the same immutable per-file layout
             # so the reader has one canonical fast path for every task.
             # A short-circuit on an existing manifest keeps re-runs cheap.
             if await storage.object_exists(manifest_key):
@@ -451,27 +445,27 @@ async def run_task_expand_job(
                 raise RuntimeError(
                     f"Task {task_id} v{version}: no archive at {archive_key} "
                     f"and no loose files under tasks/{task_id}/"
-                ) from exc
+                )
 
             staging_prefix = _staging_prefix_for(task_id, version)
-            result, manifest_bytes, staged_objects = await _migrate_loose_task_files(
+            result, manifest_bytes = await _migrate_loose_task_files(
                 storage,
                 task_id=task_id,
                 version=version,
                 staging_prefix=staging_prefix,
                 loose_files=loose_files,
             )
+            publication_started = True
             promoted = await _promote_expansion_if_current(
                 storage,
                 task_id=task_id,
                 version=version,
                 expected_content_hash=expected_content_hash,
-                expanded_prefix=expanded_prefix,
-                manifest_key=manifest_key,
+                manifest_key=f"{staging_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}",
                 manifest_bytes=manifest_bytes,
-                staged_objects=staged_objects,
             )
             if not promoted:
+                publication_started = False
                 console.print(
                     f"[yellow]TASK_EXPAND {task_id} v{version} discarded: "
                     "source version changed during loose-file migration[/yellow]"
@@ -481,6 +475,7 @@ async def run_task_expand_job(
                 f"[green]TASK_EXPAND {task_id} v{version} "
                 f"(loose_files): {result}[/green]"
             )
+            staging_prefix = None  # Published files are no longer temporary.
             return result
 
         archive_size = int(head.get("ContentLength") or 0)
@@ -531,7 +526,9 @@ async def run_task_expand_job(
 
         # Load the archive once (goes through the Phase-0 cache so a
         # later read doesn't re-download).
-        archive_bytes, _members, _texts = await storage._load_task_archive(archive_key)
+        archive_bytes, _members, _texts = await storage._load_task_archive(
+            archive_key, head=head
+        )
         staging_prefix = _staging_prefix_for(task_id, version)
 
         max_member = int(settings.tasks_expand_max_member_bytes)
@@ -625,29 +622,25 @@ async def run_task_expand_job(
             "files": manifest_files,
         }
         manifest_bytes = json.dumps(manifest_payload, sort_keys=True).encode("utf-8")
-        failed_indices = {fail[0] for fail in failures if fail is not None}
-        staged_objects = [
-            (target_key, f"{expanded_prefix}{manifest_files[idx]['path']}")
-            for idx, target_key, _body, _content_type in upload_plan
-            if idx not in failed_indices
-        ]
+        publication_started = True
         promoted = await _promote_expansion_if_current(
             storage,
             task_id=task_id,
             version=version,
             expected_content_hash=expected_content_hash,
-            expanded_prefix=expanded_prefix,
-            manifest_key=manifest_key,
+            manifest_key=f"{staging_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}",
             manifest_bytes=manifest_bytes,
-            staged_objects=staged_objects,
+            archive_key=archive_key,
         )
         if not promoted:
+            publication_started = False
             console.print(
                 f"[yellow]TASK_EXPAND {task_id} v{version} discarded: "
                 "source version changed during expansion[/yellow]"
             )
             return {"status": "stale_source"}
 
+        staging_prefix = None  # Published files are retained with the task.
         summary = {
             "status": "expanded",
             "files": len([f for f in manifest_files if not f.get("skipped")]),
@@ -659,11 +652,15 @@ async def run_task_expand_job(
         )
         return summary
     finally:
-        if staging_prefix is not None:
+        if staging_prefix is not None and not publication_started:
             try:
                 await storage.delete_prefix(staging_prefix)
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to remove unpublished task expansion %s",
+                    staging_prefix,
+                    exc_info=True,
+                )
         heartbeat_stop.set()
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)

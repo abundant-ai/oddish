@@ -8,10 +8,20 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.routers.cost_exclusions_shared import soft_delete, unavailable
+from api.routers.cost_exclusions_shared import (
+    invalidate_cost_exclusions,
+    soft_delete,
+    unavailable,
+)
+
 from auth import AuthContext, require_admin
 from auth.permissions import require_operator_org
-from oddish.db import CostExcludedExperimentModel, ExperimentModel, get_session
+from oddish.db import (
+    CostExcludedExperimentModel,
+    ExperimentModel,
+    get_read_session,
+    get_session,
+)
 
 router = APIRouter(prefix="/admin/cost-excluded-experiments", tags=["Admin"])
 
@@ -70,7 +80,7 @@ async def list_cost_excluded_experiments(
 ) -> list[CostExcludedExperimentResponse]:
     require_operator_org(auth)
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             rows = await session.scalars(
                 select(CostExcludedExperimentModel).order_by(
                     CostExcludedExperimentModel.created_at.desc()
@@ -127,7 +137,9 @@ async def add_cost_excluded_experiment(
                 raise HTTPException(
                     status_code=409, detail="experiment is already excluded"
                 )
+            invalidate_cost_exclusions()
             return _response(row)
+
     except ProgrammingError as exc:
         raise unavailable(exc)
 

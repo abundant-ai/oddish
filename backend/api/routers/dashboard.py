@@ -18,7 +18,7 @@ from models import UserModel
 from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.helpers import escape_like, parse_search_query
-from oddish.db import get_session
+from oddish.db import get_read_session
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
@@ -59,7 +59,7 @@ async def search_people(
     github_query = normalized_query.lstrip("@") or normalized_query
     github_partial = f"%{escape_like(github_query)}%"
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         rows = await session.execute(
             select(
                 UserModel.id,
@@ -162,7 +162,7 @@ async def get_cost_leaderboard(
 ) -> CostLeaderboardResponse:
     """Return only ranked display names and spend, with no admin cost metadata."""
     effective_window = None if window_days == 0 else window_days
-    async with get_session() as session:
+    async with get_read_session() as session:
         ranked_users = await get_cost_leaderboard_core(
             session,
             org_id=auth.org_id,
@@ -420,7 +420,7 @@ async def get_dashboard(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolve_started_at = now()
         (
             author_user_id,

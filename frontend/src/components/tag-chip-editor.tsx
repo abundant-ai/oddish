@@ -12,7 +12,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TagColorBar } from "@/components/tag-color-bar";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 import type { UserTagRef } from "@/lib/types";
 
@@ -75,7 +75,7 @@ export function TagChipEditor({
     if (!listRow) return;
     setSaving(true);
     setError(null);
-    const res = await fetch(`/api/tags/${encodeURIComponent(tag.tag_id)}`, {
+    const res = await apiFetch(`/api/tags/${encodeURIComponent(tag.tag_id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -302,16 +302,46 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
-def test_the_audit_policy_covers_model_tuning_and_binary_bypasses():
+def test_the_audit_policy_still_rejects_model_conditioned_grading():
     brief = build_audit_brief(task_name="demo")
 
     assert "Model-conditioned grading is a verifier defect" in brief
     assert "pass@k" in brief
     assert "Treat authoring instructions and generated settings the same" in brief
     assert "Do not report a fixed task only because every tested model fails" in brief
-    assert "decrypts, copies, or runs a bundled implementation" in brief
-    assert "verifier must still build and test the requested replacement" in brief
-    assert "hidden binary that only supplies expected outputs" in brief
+
+
+@pytest.mark.parametrize("kind", ["audit", "qa"])
+def test_both_briefs_distinguish_reference_packaging_from_solver_shortcuts(kind):
+    brief = (
+        build_audit_brief(task_name="demo")
+        if kind == "audit"
+        else build_qa_brief(task_name="demo", trial_ids=["t-1"], pre_trial_items=[])
+    )
+
+    assert "may install, decrypt, copy, or execute a bundled implementation" in brief
+    assert "reference installs the executable that the verifier runs" in brief
+    assert "normal solver grading path separately" in brief
+    assert "Copying a working implementation is not stored-answer replay" in brief
+    assert (
+        "A bundled implementation cannot replace the requested deliverable" not in brief
+    )
+
+    if kind == "audit":
+        assert "required source, language, build steps, and behavior" in brief
+        assert "solver can obtain a prohibited shortcut" in brief
+        assert (
+            "replays stored answers instead of performing required computation" in brief
+        )
+        assert "writes reward files or alters grading to claim success" in brief
+    else:
+        assert (
+            "This exception does not permit solver oracle copying under rule 6" in brief
+        )
+        assert (
+            "Oracle copying or other proven unintended access is BAD_SUCCESS" in brief
+        )
+        assert "fabricated rewards, and grading tampering" in brief
 
 
 def test_the_no_verdict_brief_does_not_contradict_itself():

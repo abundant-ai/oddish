@@ -41,7 +41,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   Bell,
@@ -393,7 +393,7 @@ function CreateAPIKeyModal({
     setError(null);
 
     try {
-      const res = await fetch(`/api/settings/api-keys`, {
+      const res = await apiFetch(`/api/settings/api-keys`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -596,7 +596,7 @@ function APIKeysPanel() {
     setRevokeError(null);
     setRevoking(revokeTarget.id);
     try {
-      const res = await fetch(`/api/settings/api-keys/${revokeTarget.id}`, {
+      const res = await apiFetch(`/api/settings/api-keys/${revokeTarget.id}`, {
         method: "DELETE",
       });
 
@@ -843,7 +843,7 @@ function ByokPanel() {
     if (!key) return;
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/settings/byok/keys/anthropic", {
+    const res = await apiFetch("/api/settings/byok/keys/anthropic", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
@@ -857,7 +857,7 @@ function ByokPanel() {
   async function removeKey() {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/settings/byok/keys/anthropic", {
+    const res = await apiFetch("/api/settings/byok/keys/anthropic", {
       method: "DELETE",
     });
     if (!res.ok) setError("Could not remove the key. Try again.");
@@ -1060,7 +1060,7 @@ function NotificationsPanel() {
     }
     setSaving(true);
     setError(null);
-    const res = await fetch("/api/settings/notifications", {
+    const res = await apiFetch("/api/settings/notifications", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
@@ -1183,7 +1183,7 @@ function DeleteAccountPanel() {
     setError(null);
 
     try {
-      const res = await fetch(`/api/settings/account`, { method: "DELETE" });
+      const res = await apiFetch(`/api/settings/account`, { method: "DELETE" });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new Error(data?.error || "Failed to delete account");

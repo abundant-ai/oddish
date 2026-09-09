@@ -1497,6 +1497,8 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 1024
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+    # Extra/private model IDs for the operator catalog, independent of job limits.
+    model_catalog: list[str] = Field(default_factory=list)
     # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
     # the LLM trials BLOCKED until the baselines finish, then releases them only
     # if the baselines validate the task (oracle passes, nop fails). Otherwise
@@ -1617,6 +1619,13 @@ class Settings(BaseSettings):
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
 
+    # Per-process cache for the admin cost-exclusion lists (excluded LLM keys,
+    # models and experiments), which every task, trial and experiment read
+    # consults. The admin routers invalidate locally on each edit; this bounds
+    # how long other containers keep labelling spend with the old lists. 0
+    # disables the cache (three statements per request again).
+    cost_exclusions_cache_seconds: float = 60.0
+
     # OpenAI-family routing. Azure is the enterprise default; public OpenAI
     # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.
     openai_provider: str = OPENAI_PROVIDER_AZURE
@@ -1632,6 +1641,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    fireworks_api_key: str | None = Field(default=None, alias="FIREWORKS_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
