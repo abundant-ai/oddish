@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { flushTelemetry } from "@/lib/observability";
+import { flushTelemetry } from "@/lib/telemetry-flush";
 import { resolveInteractionStart, takeOpenIntent } from "@/lib/open-intent";
 
 /**

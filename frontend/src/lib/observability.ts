@@ -3,6 +3,7 @@
 import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import * as logfire from "@pydantic/logfire-browser";
+import { flushTelemetry } from "@/lib/telemetry-flush";
 
 let configured = false;
 
@@ -84,38 +85,6 @@ export function recordClientError(
   const span = trace.getTracer(TRACER_NAME).startSpan(name, { attributes });
   span.setStatus({ code: SpanStatusCode.ERROR });
   span.end();
-}
-
-type FlushableProvider = { forceFlush?: () => Promise<void> };
-
-/**
- * Push queued spans to the exporter now instead of waiting for the batch timer.
- *
- * Reaching the real provider takes one extra step that is easy to miss.
- * ``trace.getTracerProvider()`` hands back a ``ProxyTracerProvider`` — a
- * stand-in the API registers so ``getTracer`` works before any SDK loads — and
- * it forwards tracer creation but implements no ``forceFlush``. Calling
- * ``provider.forceFlush?.()`` on it therefore skips silently: optional chaining
- * finds nothing, no error is raised, and nothing is flushed. The delegate it
- * wraps is the object that can actually flush.
- *
- * Returns whether a flush was genuinely started, so callers can tell "flushed"
- * from "quietly did nothing".
- */
-export function flushTelemetry(): boolean {
-  try {
-    const proxy = trace.getTracerProvider() as FlushableProvider & {
-      getDelegate?: () => FlushableProvider;
-    };
-    const provider = proxy.getDelegate?.() ?? proxy;
-    if (typeof provider.forceFlush !== "function") return false;
-    provider.forceFlush().catch(() => {
-      /* best effort; the page is usually going away */
-    });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function installFlushHandlers(): void {
