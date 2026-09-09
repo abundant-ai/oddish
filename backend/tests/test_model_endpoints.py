@@ -557,18 +557,19 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_name", ["Timeout", "APIConnectionError"])
-async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_name):
-    class Timeout(OpenAIError):
-        pass
-
-    class APIConnectionError(OpenAIError):
-        pass
-
-    error_type = {
-        "Timeout": Timeout,
-        "APIConnectionError": APIConnectionError,
-    }[error_name]
+@pytest.mark.parametrize(
+    ("error_name", "exception_attribute"),
+    [
+        ("APIError", "LiteLLMAPIError"),
+        ("Timeout", "LiteLLMTimeout"),
+        ("APIConnectionError", "LiteLLMAPIConnectionError"),
+    ],
+)
+async def test_model_endpoint_surfaces_litellm_failures(
+    monkeypatch, error_name, exception_attribute
+):
+    error_type = type(error_name, (Exception,), {})
+    monkeypatch.setattr(model_endpoints_router, exception_attribute, error_type)
 
     async def completion(**_kwargs):
         raise error_type("The provider did not respond")
