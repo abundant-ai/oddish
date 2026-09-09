@@ -485,13 +485,20 @@ async def test_migration_approves_only_reviewed_active_clerk_ids():
 
 
 @pytest.mark.asyncio
-async def test_clerk_membership_payload_creates_then_deletes_the_member(
-    org_id, monkeypatch
+@pytest.mark.parametrize("initial_email", [None, "old@example.test"])
+async def test_clerk_membership_payload_updates_then_deletes_the_member(
+    org_id, monkeypatch, initial_email
 ):
     from api.routers import clerk_webhooks
     from sqlalchemy import select
 
     monkeypatch.setattr(provisioning, "_refresh_user_github_identity", AsyncMock())
+    async with get_session() as session:
+        user, _ = await provisioning.get_or_create_user_from_clerk(
+            session, "user_nested", org_id, initial_email, "org:member"
+        )
+        original_user_id = user.id
+        assert user.email == (initial_email or "user_nested@clerk.user")
     event = {
         "type": "organizationMembership.created",
         "data": {
@@ -516,6 +523,14 @@ async def test_clerk_membership_payload_creates_then_deletes_the_member(
                 select(UserModel).where(UserModel.org_id == org_id)
             )
             assert user.clerk_user_id == "user_nested" and user.role == UserRole.ADMIN
+            assert user.id == original_user_id and user.email == "nested@example.test"
+        # A later partial notification must not erase the real email.
+        event["data"]["public_user_data"].pop("identifier")
+        assert (await client.post("/webhooks/clerk", json={})).status_code == 200
+        async with get_session() as session:
+            assert (
+                await session.get(UserModel, original_user_id)
+            ).email == "nested@example.test"
         with pytest.raises(HTTPException):
             await require_execution_org(org_id)
         event["type"] = "organizationMembership.deleted"
@@ -526,4 +541,104 @@ async def test_clerk_membership_payload_creates_then_deletes_the_member(
                     select(UserModel).where(UserModel.org_id == org_id)
                 )
                 is None
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [AuthMethod.CLERK_JWT, AuthMethod.API_KEY])
+async def test_org_routes_resolve_fresh_organization_after_identity_cache_hit(
+    org_id, method, monkeypatch
+):
+    from api.routers import orgs
+    import auth.verification as verification
+    from models import APIKeyModel, hash_api_key
+    from oddish.cache import TTLCache
+    from oddish.core.api_keys import create_api_key
+
+    monkeypatch.setattr(verification, "_auth_cache", TTLCache(900, max_size=100))
+    monkeypatch.setattr(provisioning, "_refresh_user_github_identity", AsyncMock())
+    monkeypatch.setattr(
+        auth,
+        "verify_clerk_jwt",
+        AsyncMock(
+            return_value={
+                "sub": "user_cached_org",
+                "org_id": org_id,
+                "email": "cached@example.test",
+                "org_role": "org:admin",
+            }
+        ),
+    )
+    invitation = AsyncMock(return_value={"id": "invitation_test"})
+    monkeypatch.setattr(orgs, "_create_clerk_invitation", invitation)
+    user_id = f"{org_id}_user"
+    key, raw_key = create_api_key(
+        org_id=org_id,
+        name="test",
+        created_by_user_id=user_id,
+        created_by_role=UserRole.ADMIN.value,
+    )
+    async with get_session() as session:
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                clerk_user_id="user_cached_org",
+                email="cached@example.test",
+                role=UserRole.ADMIN,
+            )
+        )
+        await session.flush()
+        session.add(key)
+    await set_approval(org_id, True)
+    token = raw_key if method == AuthMethod.API_KEY else "signed.jwt.token"
+    cache_key = (
+        f"apikey:{hash_api_key(raw_key)}"
+        if method == AuthMethod.API_KEY
+        else f"clerk:user_cached_org:{org_id}"
+    )
+    app = FastAPI()
+    app.include_router(orgs.router)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            first = await client.get("/org")
+            assert first.status_code == 200 and first.json()["name"] == "Abundant"
+            assert verification.get_cached_auth(cache_key) is not None
+            # Subsequent requests must use the cached identity. Organization
+            # data is resolved separately and must reflect database changes.
+            monkeypatch.setattr(
+                auth,
+                "verify_api_key",
+                AsyncMock(side_effect=AssertionError("cache miss")),
+            )
+            monkeypatch.setattr(
+                auth,
+                "get_or_create_user_from_clerk",
+                AsyncMock(side_effect=AssertionError("cache miss")),
+            )
+            async with get_session() as session:
+                org = await session.get(OrganizationModel, org_id)
+                org.name = "Renamed organization"
+            second = await client.get("/org")
+            assert (
+                second.status_code == 200
+                and second.json()["name"] == "Renamed organization"
+            )
+            invited = await client.post(
+                "/users", json={"email": "invite@example.test", "role": "member"}
+            )
+            assert invited.status_code == 200, invited.text
+            invitation.assert_awaited_once_with(
+                org_id, "invite@example.test", UserRole.MEMBER
+            )
+            await set_approval(org_id, False)
+            assert (await client.get("/org")).status_code == 403
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                APIKeyModel.__table__.delete().where(APIKeyModel.id == key.id)
             )

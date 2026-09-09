@@ -150,7 +150,11 @@ async def seeded(schema):
     )
 
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(
+            OrganizationModel(
+                id=org_id, name=org_id, slug=org_id, execution_enabled=True
+            )
+        )
         session.add(
             UserModel(
                 id=user_id,
