@@ -737,7 +737,19 @@ need repository metadata or task-owner identity. The anonymous `/open` and
 React is not an access-control boundary. `/trial-page` returns at most 250
 projected trials and omits full analysis, errors, results, phase timing, Harbor
 config, and ORM relationships.
-Experiment pages now use `/results` for initial and incremental loading. A failed
+Experiment pages use `/results` for initial and incremental loading. Task and
+trial collections each use one SQL `DECLARE`/`FETCH` cursor, fetched in batches
+of 500 rows, within a read-only repeatable-read transaction so totals and rows agree.
+Both cursors close on completion, failure, or client disconnect. The transaction
+is required for cursor lifetime and snapshot consistency; this endpoint does not
+use the autocommit read session. SQL cursors avoid asyncpg's unnamed prepared
+statement cursor failures with the pooler's required `statement_cache_size=0`;
+do not switch this to `AsyncSession.stream` without a real-driver regression.
+Batches bound application row buffering, not
+the database query's own sort/aggregate memory or the total response size.
+The page displays downloaded task/trial counts independently of trials that
+finished running. Only a validated completion record marks the download complete;
+refresh failures retain and label the last complete results. A failed
 response retains any downloaded rows and exposes Retry, including when the request
 fails before metadata arrives. The older paginated endpoints remain available to
 other clients.

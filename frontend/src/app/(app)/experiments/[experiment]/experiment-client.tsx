@@ -21,13 +21,13 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
+import { ExperimentResultsStatus } from "@/components/experiment-results-status";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { apiFetch, fetcher } from "@/lib/api";
 import { useExperimentResults } from "@/lib/use-experiment-results";
 import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { isOrgAdminRole } from "@/lib/org-roles";
-import { Loader2, Pencil } from "lucide-react";
+import { Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 
@@ -73,7 +73,6 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     isLoading,
     isLoadingTrials,
     trialsLoaded: trialsLoadedCount,
-    totalTrials: totalTrialCount,
     pagesComplete,
     refreshResults,
   } = useExperimentResults({
@@ -372,18 +371,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
             )
           }
           headerStatus={
-            isLoadingTrials ? (
-              <div className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>
-                  Loading trials
-                  {experimentOpen
-                    ? ` ${trialsLoadedCount}/${totalTrialCount}`
-                    : ""}
-                  …
-                </span>
-              </div>
-            ) : experimentShare?.shadow_of && canSeeQaReport ? (
+            experimentShare?.shadow_of && canSeeQaReport ? (
               <Link
                 href={`/experiments/${encodeExperimentRouteParam(experimentShare.shadow_of)}`}
                 className="text-muted-foreground text-[10px] hover:underline"
@@ -440,15 +428,17 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
-            ) : openError ? (
-              <ExperimentPageLoadAlert
-                resource="trials"
-                loaded={trialsLoadedCount}
-                total={totalTrialCount}
-                isRetrying={isLoadingTrials}
+            ) : (
+              <ExperimentResultsStatus
+                summary={experimentOpen?.summary}
+                tasksLoaded={tasksForExperiment.length}
+                trialsLoaded={trialsLoadedCount}
+                complete={pagesComplete}
+                isLoading={isLoadingTrials}
+                hasError={Boolean(openError)}
                 onRetry={() => void refreshResults()}
               />
-            ) : null
+            )
           }
           readOnly={false}
           allowRetry
