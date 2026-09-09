@@ -624,9 +624,21 @@ async def test_set_github_id_savepoint_swallows_concurrent_race(org_id) -> None:
                 )
             )
 
+    both_read = asyncio.Barrier(2)
+
     async def _claim(uid: str) -> str | None:
         async with get_session() as session:
             user = await session.get(UserModel, uid)
+            execute = session.execute
+
+            async def read_before_either_claims(*args, **kwargs):
+                result = await execute(*args, **kwargs)
+                await both_read.wait()
+                return result
+
+            # Both clash queries must see no holder, forcing the loser through
+            # savepoint rollback and its expired-attribute logging path.
+            session.execute = read_before_either_claims
             await _set_github_id_if_absent(session, user, "raced")
             return user.github_id
 
@@ -718,7 +730,7 @@ async def test_existing_identity_reads_only_user_and_org(monkeypatch, org_id):
     try:
         async with get_session() as session:
             user, org = await prov.get_or_create_user_from_clerk(
-                session, clerk_user_id, clerk_org_id, None, "member"
+                clerk_user_id, clerk_org_id, None, "member"
             )
             assert user.org_id == org.id == org_id
             assert user.role == UserRole.MEMBER

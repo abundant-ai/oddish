@@ -814,7 +814,13 @@ Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing pha
 `backend.request.phases` includes storage operation counts, downloaded/archive bytes,
 archive-cache hit/miss, file source, and known file bytes. SDK failures log only
 selected provider diagnostics, never request headers or file contents. Existing
-identity provisioning suppresses automatic relationship loads in its own queries;
+Clerk login resolves organization and GitHub data between database sessions, then
+rechecks organization/user rows before writing. The write session locks the
+observed user, rejects membership removal during HTTP, and applies fetched GitHub
+data only when the stored identity fields still match the pre-fetch snapshot.
+No login Clerk HTTP request may
+hold a database connection or provisioning lock. Membership callbacks retain their
+existing transaction ownership. Identity provisioning suppresses automatic relationship loads in its own queries;
 organization isolation, role refresh, and new-user provisioning remain unchanged.
 See `docs/task-file-latency.md` for the staged verification checklist.
 
