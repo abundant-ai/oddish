@@ -1807,7 +1807,11 @@ and — deliberately, for link-unfurl bots — `/experiments/*` plus
 Authenticated app pages live under `/orgs/{orgSlug}/…` (for example
 `/orgs/acme/tasks`). Unprefixed `/tasks` and the short-lived
 `/{orgSlug}/tasks` shape redirect when signed in. `/share/*` and `/datasets/*`
-stay unprefixed.
+stay unprefixed. Selecting another organization opens its dashboard with no
+query string or fragment, so resource IDs from the previous organization are
+not carried into the destination workspace. `OrgSlugSync` uses the same
+dashboard destination when the active organization changes before navigation
+finishes, rather than restoring the previous resource URL.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value
