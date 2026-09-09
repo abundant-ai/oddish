@@ -56,6 +56,12 @@ export function browseCountKey(searchParams: URLSearchParams): string {
   const q = searchParams.get("q") ?? searchParams.get("query");
   if (q) params.set("q", q);
   for (const key of BROWSE_FORWARD_KEYS) {
+    // `sort` reorders the page; it cannot change how many tasks match. An
+    // aggregate sort does add its metric join, but as a LEFT JOIN whose
+    // range predicates come from the aggregate FILTERS -- which are keyed
+    // above -- so the matching set is identical. Keying on it would miss the
+    // cached total and re-run the count for a pure reordering.
+    if (key === "sort") continue;
     const value = searchParams.get(key);
     if (value) params.set(key, value);
   }

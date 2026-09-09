@@ -63,6 +63,9 @@ export function buildBrowseQuery(
 
   for (const key of BROWSE_FORWARD_KEYS) {
     if (key === "created_within" || key === "trial_finished_within") continue;
+    // Ordering is meaningless for a count, and an aggregate sort would add its
+    // metric join to the count query for no change in the answer.
+    if (countOnly && key === "sort") continue;
     // A live preset owns created_after; don't let a stale absolute bound in
     // the URL / saved filter clobber the rolling window.
     if (key === "created_after" && presetActive) continue;

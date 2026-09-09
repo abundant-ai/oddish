@@ -733,6 +733,15 @@ async def test_browse_count_matches_the_filtered_set():
             )
             assert await _names(session, statuses=["running"]) == {"beta"}
 
+            # Sorting reorders the page; it cannot change how many match. The
+            # client relies on this to serve one cached count across sorts.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, sort="avg_score_desc"
+                )
+                == 3
+            )
+
             # An unknown tag matches nothing, on both paths.
             assert (
                 await browse_tasks_count_core(session, org_id=ORG, tags_all=["ghost"])
