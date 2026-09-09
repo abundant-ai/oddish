@@ -6,7 +6,10 @@ import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ImportDialog } from "@/components/import-dialog";
 import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
-import { useTaskBrowse, useTaskBrowseRevalidate } from "@/lib/use-task-browse";
+import {
+  useTaskBrowseCount,
+  useTaskBrowseRevalidate,
+} from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
 
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
@@ -21,22 +24,32 @@ export function TasksPageNumber() {
 }
 
 // How many tasks match the active filters across every page — the grid shows
-// at most TASKS_PAGE_SIZE of them. Reads the same browse state the grid does,
-// through the same SWR key, so this renders from the grid's cache entry
-// instead of issuing a second request.
+// at most TASKS_PAGE_SIZE of them. Its own request, keyed on the filters
+// alone, so it neither delays the cards nor re-runs when you page.
 export function TasksMatchCount() {
   const searchParams = useSearchParams();
-  const { data } = useTaskBrowse(new URLSearchParams(searchParams.toString()));
-  // Nothing to claim until a response lands: a count guessed from the page
-  // would be wrong for every filter state with more than one page.
-  if (!data) return null;
-  // A backend that predates the field sends no total. Saying nothing beats
-  // rendering "0 matching tasks" over a grid that is plainly showing some.
-  const total = data.total;
-  if (typeof total !== "number") return null;
+  const { total, isStale } = useTaskBrowseCount(
+    new URLSearchParams(searchParams.toString())
+  );
+  // Nothing to claim before the first answer lands: a count guessed from the
+  // page would be wrong for every filter state with more than one page.
+  if (total === null) return null;
+  const label = `${total.toLocaleString()} matching ${
+    total === 1 ? "task" : "tasks"
+  }`;
+  // While the next filter state is in flight — or after it failed — the
+  // number on screen belongs to the PREVIOUS filters. Dim it and say so,
+  // rather than letting a stale total pass as the current answer.
   return (
     <>
-      {total.toLocaleString()} matching {total === 1 ? "task" : "tasks"}
+      <span
+        className={cn(isStale && "opacity-50")}
+        aria-busy={isStale || undefined}
+        title={isStale ? `${label} (for the previous filters)` : undefined}
+      >
+        {label}
+        {isStale ? "…" : ""}
+      </span>
       {" · "}
     </>
   );

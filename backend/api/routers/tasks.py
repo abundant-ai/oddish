@@ -140,6 +140,7 @@ from oddish.schemas import (
     OrgProbeRow,
     QARunRequest,
     TaskBrowseFacets,
+    TaskBrowseCountResponse,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -668,12 +669,26 @@ async def get_experiment_cost_totals_route(
         )
 
 
-@router.get("/tasks/browse", response_model=TaskBrowseResponse)
+@router.get(
+    "/tasks/browse",
+    response_model=TaskBrowseResponse | TaskBrowseCountResponse,
+)
 async def browse_tasks(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    count_only: bool = Query(
+        False,
+        description=(
+            "Return only the number of matching tasks, as "
+            "{'total': N}, instead of a page. The dashboard fetches this "
+            "separately from the grid and caches it per filter set, so paging "
+            "does not re-run the count. Shares this endpoint's parameter "
+            "parsing so the count can never apply different filters than the "
+            "listing it labels."
+        ),
+    ),
     query: str | None = None,
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
@@ -815,7 +830,7 @@ async def browse_tasks(
             "ANDed with the flat filters."
         ),
     ),
-) -> TaskBrowseResponse:
+) -> TaskBrowseResponse | TaskBrowseCountResponse:
     """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
@@ -860,7 +875,7 @@ async def browse_tasks(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await browse_tasks_core(
+        result = await browse_tasks_core(
             session,
             org_id=auth.org_id,
             limit=limit,
@@ -940,7 +955,12 @@ async def browse_tasks(
             top_metric=top_metric,
             or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
+            count_only=count_only,
         )
+        if count_only:
+            assert isinstance(result, int)
+            return TaskBrowseCountResponse(total=result)
+        return result
 
 
 @router.get("/tasks/browse/facets", response_model=TaskBrowseFacets)

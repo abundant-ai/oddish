@@ -33,6 +33,7 @@ from oddish.core.endpoints import (
     browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
+    browse_tasks_count_core,
 )
 from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
@@ -699,37 +700,43 @@ async def test_browse_boolean_no_is_complement():
         await engine.dispose()
 
 
-async def test_browse_total_counts_every_matching_page():
-    """``total`` counts the whole filtered set, not the page. Both branches
-    matter: the page query already knows the answer when the first page holds
-    everything, and only the wider result needs the extra COUNT."""
+async def test_browse_count_matches_the_filtered_set():
+    """``browse_tasks_count_core`` counts the whole filtered set, independent
+    of any page window, and narrows with the same filters as the listing."""
     engine = create_async_engine(URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     try:
         await _setup(engine)
         async with maker() as session:
-            # Whole set on one page -> counted without the extra query.
-            whole = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
-            assert whole.has_more is False
-            assert whole.total == 3
-            assert len(whole.items) == 3
+            # The page no longer carries a total; the count is its own call.
+            page = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            assert not hasattr(page, "total")
+            assert len(page.items) == 3
 
-            # Paged: every page reports the full total, never its own length.
-            first = await browse_tasks_core(session, org_id=ORG, limit=2, offset=0)
-            assert first.has_more is True
-            assert len(first.items) == 2
-            assert first.total == 3
+            assert await browse_tasks_count_core(session, org_id=ORG) == 3
 
-            last = await browse_tasks_core(session, org_id=ORG, limit=2, offset=2)
-            assert last.has_more is False
-            assert len(last.items) == 1
-            assert last.total == 3
-
-            # Filters narrow the total the same way they narrow the items.
-            running = await browse_tasks_core(
-                session, org_id=ORG, limit=50, offset=0, statuses=["running"]
+            # Page window is irrelevant: same answer whatever limit/offset say,
+            # which is what lets one cached count serve every page.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, limit=2, offset=2
+                )
+                == 3
             )
-            assert {item.name for item in running.items} == {"beta"}
-            assert running.total == 1
+
+            # Filters narrow the count exactly as they narrow the items.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, statuses=["running"]
+                )
+                == 1
+            )
+            assert await _names(session, statuses=["running"]) == {"beta"}
+
+            # An unknown tag matches nothing, on both paths.
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, tags_all=["ghost"])
+                == 0
+            )
     finally:
         await engine.dispose()

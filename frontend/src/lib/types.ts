@@ -419,8 +419,12 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
-  // Tasks matching the active filters across every page, not just the ones in
-  // `items` — what the "N matching tasks" label reports.
+}
+
+// GET /api/tasks/browse?count_only=true — how many tasks match the active
+// filters across every page. Fetched separately from the grid and cached per
+// filter set, so paging never re-runs the count.
+export interface TaskBrowseCountResponse {
   total: number;
 }
 

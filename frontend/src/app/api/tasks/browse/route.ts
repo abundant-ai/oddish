@@ -17,11 +17,19 @@ import {
 export async function GET(request: NextRequest) {
   const display = request.nextUrl.searchParams;
   const query = new URLSearchParams();
-  query.set("limit", String(TASKS_PAGE_SIZE));
-  query.set(
-    "offset",
-    String(Math.max(Number(display.get("offset") ?? "0") || 0, 0))
-  );
+  // The count answers for the whole filter set, so it takes no page window —
+  // and the backend ignores limit/offset in this mode anyway. Omitting them
+  // keeps the upstream URL identical for every page of one filter state.
+  const countOnly = display.get("count_only") === "true";
+  if (countOnly) {
+    query.set("count_only", "true");
+  } else {
+    query.set("limit", String(TASKS_PAGE_SIZE));
+    query.set(
+      "offset",
+      String(Math.max(Number(display.get("offset") ?? "0") || 0, 0))
+    );
+  }
 
   // Tags are a structured filter (tags/tags_any/tags_none params), so only
   // free text + author are taken from the search box. `query` is the legacy

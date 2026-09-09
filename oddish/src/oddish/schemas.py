@@ -1699,8 +1699,16 @@ class TaskBrowseResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
-    # Tasks matching the active filters across every page, not just the ones in
-    # ``items`` -- what the browser's "N matching tasks" label reports.
+
+
+class TaskBrowseCountResponse(BaseModel):
+    """Tasks matching a filter set across every page.
+
+    Served by ``GET /tasks/browse/count``, separately from the page itself: the
+    count is the same for every page of one filter set, so pairing it with the
+    page would re-run the (expensive) filtered count on each pager click.
+    """
+
     total: int
 
 
