@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { flushTelemetry } from "@/lib/observability";
+import { resolveInteractionStart, takeOpenIntent } from "@/lib/open-intent";
 
 /**
  * User-perceived "time until I can use this" spans.
@@ -158,12 +160,23 @@ type PendingOpen = {
   /** Epoch ms the wait began; the span is not created until it ends. */
   startTime: number;
   startSource: OpenLatencyStartSource;
+  /** Which moment ``startTime`` came from: the document, a click, or mount. */
+  clock: "page-load" | "click" | "mount";
   settled: boolean;
   /** Whether the caller is reporting a failure right now. */
   failing: boolean;
   /** Whether any failure was seen during this open, recovered or not. */
   sawError: boolean;
-  readAttributes: () => OpenLatencyAttributes | undefined;
+  /**
+   * This open's own attributes, held here rather than read from a shared ref
+   * at settle time. Switching from task A to B re-renders with B's attributes
+   * before the effect settles A, so a shared ref would stamp B's identifiers
+   * onto A's record -- a span reading ``open.subject=A`` next to
+   * ``oddish.task_id=B``. Since those identifiers are how a slow open is
+   * traced back to its backend requests, that mismatch points at the wrong
+   * task. Only the matching subject may update this copy.
+   */
+  attributes: OpenLatencyAttributes | undefined;
 };
 
 /** One module-level latch: only the first open on a page can claim load time. */
@@ -265,12 +278,13 @@ function settleOpen(
     attributes: {
       "open.subject": open.subject,
       "open.start_source": open.startSource,
+      "open.clock": open.clock,
       outcome,
       "open.saw_error": open.sawError,
     },
   });
   if (options.reason) span.setAttribute("open.abandon_reason", options.reason);
-  for (const [key, value] of Object.entries(open.readAttributes() ?? {})) {
+  for (const [key, value] of Object.entries(open.attributes ?? {})) {
     span.setAttribute(key, value);
   }
   span.setStatus({
@@ -321,6 +335,9 @@ function ensureUnloadHandler(): void {
       settleOpen(open, unfinishedOutcome(open), { reason: "page-hidden" });
     }
     // Flush here rather than relying on the one in ``lib/observability.ts``.
+    // ``flushTelemetry`` reaches the delegate behind the ``ProxyTracerProvider``;
+    // calling ``forceFlush`` on the proxy itself finds no such method and skips
+    // without complaint, which is what the previous attempt here did.
     // That handler is registered when Logfire configures at app start, before
     // this code-split module exists, and listeners run in registration order --
     // so it drains the exporter a moment before the spans above are created. A
@@ -329,16 +346,7 @@ function ensureUnloadHandler(): void {
     // the batch queue of a page the browser is free to freeze or discard.
     // Those are the giving-up opens this handler exists to keep, so flush them
     // now instead of hoping the 1s batch timer runs in a backgrounded tab.
-    try {
-      const provider = trace.getTracerProvider() as {
-        forceFlush?: () => Promise<void>;
-      };
-      provider.forceFlush?.().catch(() => {
-        /* best effort; the page is going away either way */
-      });
-    } catch {
-      /* swallow */
-    }
+    flushTelemetry();
   });
 }
 
@@ -351,9 +359,22 @@ export function useOpenLatencySpan({
   attributes,
 }: UseOpenLatencySpanOptions): void {
   const pending = useRef<PendingOpen | null>(null);
-  // Read at settle time without making the effects re-run on every render.
+
+  // This render's attributes, readable from the start effect without making it
+  // a dependency. Call sites build the object inline, so it is a new reference
+  // every render; depending on it would restart the span on each one.
   const latestAttributes = useRef<OpenLatencyAttributes | undefined>(attributes);
   latestAttributes.current = attributes;
+
+  // Keep the in-flight open's attributes current, but only while they still
+  // describe it. On a switch this render already holds the NEW subject's
+  // attributes while the old open is still open, and copying those across
+  // would relabel the old record with the new subject's identifiers.
+  if (pending.current && !pending.current.settled) {
+    if (pending.current.subject === subject) {
+      pending.current.attributes = attributes;
+    }
+  }
 
   const settle = useRef(
     (
@@ -395,15 +416,33 @@ export function useOpenLatencySpan({
       currentPath: currentPath(),
     });
 
+    // A page-load open already counts from the document request, which starts
+    // before any click. An interaction open otherwise counts from mount, and
+    // for a route change that is after the destination chunk has downloaded
+    // and rendered -- so the click timestamp, when the navigation left one,
+    // is the only way to include the part of the wait that happened before
+    // this component existed.
+    const intent = takeOpenIntent(name, subject);
+    const interaction =
+      source === "interaction"
+        ? resolveInteractionStart({
+            mountedAt: startTime,
+            intentAt: intent?.at ?? null,
+          })
+        : null;
+
     const open: PendingOpen = {
       name,
       subject,
-      startTime,
+      startTime: interaction ? interaction.startTime : startTime,
       startSource: source,
+      clock: interaction ? interaction.source : "page-load",
       settled: false,
       failing: false,
       sawError: false,
-      readAttributes: () => latestAttributes.current,
+      // Snapshotted, not shared: from here on only a render whose subject
+      // still matches may update it (see the guard above).
+      attributes: latestAttributes.current,
     };
     pending.current = open;
     openSpans.add(open);

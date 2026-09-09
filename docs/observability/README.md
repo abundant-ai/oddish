@@ -183,8 +183,16 @@ its content has been painted:
 | Span | Ends when |
 |---|---|
 | `ui.task.open` | The task page's trial matrix is readable. |
-| `ui.files.open` | The selected file's contents are on screen. |
+| `ui.files.open` | The selected file's contents are on screen. Text previews only — see below. |
 | `ui.trajectory.open` | The selected trial's trajectory steps are on screen. |
+
+`ui.files.open` deliberately skips binary previews (spreadsheets, documents,
+images). Their fetch resolves when the signed download URL arrives, but the
+renderer then downloads the bytes itself and shows a loading message until they
+land, so treating the URL as readiness would close the span over a spinner and
+report success even when that second download fails. Measuring them needs the
+renderer to report its own readiness; until it does they are left out, because
+no number beats a wrong one.
 
 They are emitted by `useOpenLatencySpan`
 (`frontend/src/lib/use-open-latency-span.ts`) under service name
@@ -220,6 +228,15 @@ the document request and hydration are included; `interaction` means a
 client-side open timed from mount. Compare the two only deliberately —
 `page-load` is a cold measurement and will always be slower, so a shift in the
 mix moves a combined percentile without anything having got slower.
+
+`open.clock` says which moment the timer actually started from: `page-load`
+(the document request), `click` (a recorded navigation intent), or `mount`
+(the destination component appearing, used when no click was recorded).
+Prefer `click` over `mount` when judging an interaction: a `mount` open
+excludes the time spent downloading and rendering the destination, so a route
+whose chunk is slow to load looks fast. A rising share of `mount` means click
+sites are missing `markOpenIntent` (`frontend/src/lib/open-intent.ts`), not
+that the app got faster.
 
 Only `ui.task.open` can be a `page-load`. A file preview or a trajectory is
 reached by clicking, so its wait begins at the click however the page was

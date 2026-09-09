@@ -14,6 +14,7 @@ import {
   receiveFileListRevision,
   type FileListRevision,
 } from "@/lib/file-list-revision";
+import { markOpenIntent } from "@/lib/open-intent";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import {
   ResizableDrawer,
@@ -580,6 +581,7 @@ export function TaskFilesPanel({
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const selectFilePath = useCallback(
     (path: string) => {
+      markOpenIntent("ui.files.open", path);
       setSelectedFilePath(path);
       onSelectedFileChange?.(path);
     },
@@ -830,9 +832,22 @@ export function TaskFilesPanel({
   // separates previews already inlined in the listing from the ones that cost
   // a round trip -- without it a directory of cached files would flatter the
   // percentiles.
+  //
+  // Binary previews are deliberately NOT measured yet. Their fetcher resolves
+  // as soon as the signed download URL arrives, but that is not the file:
+  // ``ArrayBufferWrapper`` in ``components/renderers/file-renderer.tsx`` then
+  // downloads the bytes itself and shows "Loading spreadsheet..." until they
+  // land. Treating the URL as readiness would close the span while the person
+  // is still watching a spinner, and would report success even when that
+  // second download fails. Measuring them needs the renderer to report its own
+  // readiness; until it does, no number is better than a wrong one.
+  const measurableFilePath =
+    selectedFile && !isBinaryRendererFile(selectedFile.name)
+      ? selectedFilePath
+      : null;
   useOpenLatencySpan({
     name: "ui.files.open",
-    subject: selectedFilePath,
+    subject: measurableFilePath,
     ready: selectedPreview != null,
     failed: previewError != null,
     attributes: {
