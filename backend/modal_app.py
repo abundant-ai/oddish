@@ -943,7 +943,7 @@ ENV_VARS = {
             _deploy_value(
                 "ODDISH_THUNDER_MAX_CAPACITY", os.environ, LOCAL_DOTENV_VARS
             )
-            or "16"
+            or "128"
         )
     ),
     _THUNDER_SECRET_NAME_ENV: _THUNDER_SECRET_NAME,
