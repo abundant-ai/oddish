@@ -87,7 +87,10 @@ async def test_http_has_no_session_and_writes_use_new_session(
     )
     assert result == (user, org)
     assert user.github_id_checked_at is not None
-    assert upsert.call_args.kwargs == {"refresh_github_identity": False}
+    if existing_org:
+        upsert.assert_not_called()
+    else:
+        assert upsert.call_args.kwargs == {"refresh_github_identity": False}
     assert state["sessions"] == 0
     assert len(calls) == (1 if existing_org else 2)
 
@@ -285,3 +288,78 @@ async def test_webhook_update_during_clerk_fetch_wins(
                 if change == "deactivate"
                 else stored.deleted_at is not None
             )
+
+
+@pytest.mark.asyncio
+async def test_observed_user_is_the_locked_update_target(login, monkeypatch):
+    _state, org, user = login
+    user.clerk_user_id = None  # First lookup matched this invited user by email.
+    monkeypatch.setattr(prov, "get_org_from_clerk_id", AsyncMock(return_value=org))
+    monkeypatch.setattr(prov, "_find_user_in_org", AsyncMock(return_value=user))
+    monkeypatch.setattr(
+        prov, "fetch_github_identity_from_clerk", AsyncMock(return_value=None)
+    )
+    # Another row could now match the Clerk id. Never repeat resolution once
+    # the observed row has been selected by primary key and locked.
+    upsert = AsyncMock(side_effect=AssertionError("must update the locked user"))
+    monkeypatch.setattr(prov, "get_or_create_user_in_org", upsert)
+    result = await prov.get_or_create_user_from_clerk(
+        "clerk-user", "clerk-org", user.email, "admin"
+    )
+    assert result == (user, org)
+    assert user.clerk_user_id == "clerk-user"
+    assert user.role == UserRole.ADMIN
+    upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hard_delete", [False, True])
+async def test_concurrent_first_user_tombstone_is_denied(monkeypatch, hard_delete):
+    import os
+    import uuid
+
+    if not os.environ.get("ODDISH_DATABASE_URL"):
+        pytest.skip("local PostgreSQL required")
+    from oddish.db import get_session
+
+    suffix = uuid.uuid4().hex
+    org_id, user_id = f"org_{suffix}", f"user_{suffix}"
+    email = f"first-{suffix}@example.test"
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(
+                id=org_id, name="First race", slug=org_id, clerk_org_id=org_id
+            )
+        )
+
+    async def fetch_identity(_clerk_id):
+        async with get_session() as session:
+            session.add(
+                UserModel(
+                    id=user_id,
+                    org_id=org_id,
+                    clerk_user_id=user_id,
+                    email=email,
+                    role=UserRole.MEMBER,
+                )
+            )
+        return prov.ClerkGithubIdentity(None, None, None)
+
+    original_upsert = prov.get_or_create_user_in_org
+
+    async def upsert_then_delete(*args, **kwargs):
+        user = await original_upsert(*args, **kwargs)
+        async with get_session() as webhook_session:
+            removed = await webhook_session.get(UserModel, user_id)
+            if hard_delete:
+                await webhook_session.delete(removed)
+            else:
+                removed.deleted_at = datetime.now(timezone.utc)
+        return user
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", fetch_identity)
+    monkeypatch.setattr(prov, "get_or_create_user_in_org", upsert_then_delete)
+    assert (
+        await prov.get_or_create_user_from_clerk(user_id, org_id, email, "member")
+        is None
+    )

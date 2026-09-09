@@ -169,6 +169,7 @@ async def _set_github_id_if_absent(
         # Claim inside a SAVEPOINT: the assignment + flush must live under the
         # savepoint so a concurrent claim that raced past the clash query trips
         # uq_users_org_github_id here instead of poisoning the whole transaction.
+        user_id, org_id = user.id, user.org_id
         try:
             async with session.begin_nested():
                 user.github_id = github_id
@@ -178,8 +179,8 @@ async def _set_github_id_if_absent(
             logger.warning(
                 "Lost concurrent race claiming github_id %s for user %s in org %s",
                 github_id,
-                user.id,
-                user.org_id,
+                user_id,
+                org_id,
             )
         return
     user.github_id = github_id
@@ -599,31 +600,29 @@ async def get_or_create_user_from_clerk(
                 or current_user.deleted_at is not None
             ):
                 return None
-        user = await get_or_create_user_in_org(
-            session,
-            clerk_user_id,
-            org,
-            email,
-            org_role,
-            _DEFAULT_JIT_ROLE,
-            refresh_github_identity=False,
-        )
-        if observed_user_id is None:
-            # A concurrent first login may have supplied this row. Lock and
-            # reload identity fields before comparing with the absent snapshot.
-            await session.flush()
-            await session.refresh(
-                user,
-                attribute_names=[
-                    "github_id",
-                    "github_username",
-                    "github_id_checked_at",
-                    "is_active",
-                    "deleted_at",
-                ],
-                with_for_update=True,
+            user = current_user
+            _update_user_from_clerk(user, clerk_user_id, email, org_role)
+        else:
+            user = await get_or_create_user_in_org(
+                session,
+                clerk_user_id,
+                org,
+                email,
+                org_role,
+                _DEFAULT_JIT_ROLE,
+                refresh_github_identity=False,
             )
-            if not user.is_active or user.deleted_at is not None:
+            # A concurrent first login may have supplied this row. Re-read
+            # under lock, including tombstones, without changing its identity.
+            await session.flush()
+            user = await session.scalar(
+                select(UserModel)
+                .options(raiseload("*"))
+                .where(UserModel.id == user.id)
+                .execution_options(include_deleted=True, populate_existing=True)
+                .with_for_update()
+            )
+            if user is None or not user.is_active or user.deleted_at is not None:
                 return None
         current_github = (
             user.github_id,
