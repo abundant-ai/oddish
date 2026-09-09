@@ -106,7 +106,6 @@ import {
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
-import { NotRealSpendBadge } from "./not-real-spend-badge";
 import { apiFetch } from "@/lib/api";
 
 const PassAtKGraph = dynamic(
@@ -132,7 +131,7 @@ type ExperimentTrialsTableProps = {
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
+  pagesComplete?: boolean;
   showPassAtK?: boolean;
   /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
   experimentId?: string;
@@ -574,7 +573,7 @@ export function ExperimentTrialsTable({
   modelScopedAgents,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
+  pagesComplete = true,
   showPassAtK = false,
   experimentId,
   onTaskUnlink,
@@ -891,10 +890,7 @@ export function ExperimentTrialsTable({
   }, [visibleAgents]);
 
   const filteredTasks = useMemo(() => {
-    const reviewTasks =
-      showAnalysis && rejectedOnly
-        ? rejectedTasks
-        : tasks;
+    const reviewTasks = showAnalysis && rejectedOnly ? rejectedTasks : tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
     const searchFiltered = query
       ? reviewTasks.filter((task) => {
@@ -1955,7 +1951,12 @@ export function ExperimentTrialsTable({
           </div>
         )}
         {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
-        {showPassAtK ? (
+        {showPassAtK && !pagesComplete && (
+          <p role="status" className="text-muted-foreground text-sm">
+            Graphs will appear once all task and trial results have loaded.
+          </p>
+        )}
+        {showPassAtK && pagesComplete ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <div className="h-full min-w-0">
               <PassAtKGraph
@@ -2388,7 +2389,7 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
-                  const isTrialDataPending = !trialPagesComplete;
+                  const isTrialDataPending = !pagesComplete;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
@@ -2568,10 +2569,6 @@ export function ExperimentTrialsTable({
                                               : ""}
                                         </TooltipContent>
                                       </Tooltip>
-                                      <NotRealSpendBadge
-                                        excludedCostUsd={cost.excludedCostUsd}
-                                        totalCostUsd={cost.costUsd}
-                                      />
                                     </span>
                                   )}
                                 </div>
