@@ -1644,6 +1644,9 @@ All authenticated hosted routes check `organizations.execution_enabled` through
 `backend/org_access.py`, including cached API keys. This check returns the fresh
 organization row (without loading relationships), and `require_auth` supplies it
 on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+The shared Modal image must copy `org_access` through `add_local_python_source`
+in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
+installs dependencies without installing the backend project itself.
 Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
 create a Personal org or infer membership by email. Both Clerk webhook and login
 provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
