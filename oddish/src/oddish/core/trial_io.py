@@ -26,6 +26,7 @@ from oddish.db import TrialModel, get_storage_client
 from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
+    is_missing_object,
     resolve_trial_directory,
 )
 from oddish.timing import current_request_timing, timed_phase
@@ -764,11 +765,7 @@ async def _read_trial_trajectory_from_s3(
         try:
             content = await storage.download_text(trajectory_key)
         except ClientError as exc:
-            if str(exc.response.get("Error", {}).get("Code")) not in {
-                "404",
-                "NoSuchKey",
-                "NotFound",
-            }:
+            if not is_missing_object(exc):
                 raise
             trajectory_file_exists = False
         else:

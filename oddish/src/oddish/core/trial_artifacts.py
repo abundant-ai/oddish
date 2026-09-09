@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from oddish.core.harbor_artifacts import ODDISH_TRIAL_NAME_KEY, validate_trial_name
 from oddish.db.storage import (
     StorageClient,
+    is_missing_object,
     resolve_trial_s3_prefix,
     sanitize_s3_key_chars,
 )
@@ -166,11 +167,7 @@ async def resolve_trial_artifact_layout(
     try:
         manifest_text = await storage.download_text(manifest_key)
     except ClientError as exc:
-        if str(exc.response.get("Error", {}).get("Code")) not in {
-            "404",
-            "NoSuchKey",
-            "NotFound",
-        }:
+        if not is_missing_object(exc):
             raise
         if inferred_attempt:
             return TrialArtifactLayout(
