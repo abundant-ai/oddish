@@ -24,7 +24,7 @@ import { ExperimentDescription } from "@/components/experiment-description";
 import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { apiFetch, fetcher } from "@/lib/api";
-import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentResults } from "@/lib/use-experiment-results";
 import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
@@ -69,25 +69,18 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const {
     experiment: experimentOpen,
     tasks: tasksForExperiment,
-    openError,
+    error: openError,
     isLoading,
     isLoadingTrials,
-    retryTrials,
     trialsLoaded: trialsLoadedCount,
     totalTrials: totalTrialCount,
-    trialsStalled,
-    isValidatingTrials,
-    isValidatingOpen,
     pagesComplete,
-    mutateOpen,
-    mutateTrials,
-  } = useExperimentPages({
-    openUrl: encodedId ? `/api/experiments/${encodedId}/open` : null,
-    trialPageUrl: encodedId ? `/api/experiments/${encodedId}/trial-page` : null,
+    refreshResults,
+  } = useExperimentResults({
+    url: encodedId ? `/api/experiments/${encodedId}/results` : null,
   });
 
-  // What the experiment SPENT. Can't be derived from the trial pages above:
-  // they're paginated (so a client-side sum only covers what's loaded), and
+  // What the experiment SPENT. The streamed results can still be arriving, and
   // they're filtered to each task's current version (so they omit earlier
   // versions, superseded retries and probes, all of which were still billed).
   const costTotalsKey = experimentId
@@ -136,9 +129,9 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   // remove. Refetching is the correct (and self-healing) answer.
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
-      await Promise.all([mutateOpen(), mutateTrials(), refreshCostTotals()]);
+      await Promise.all([refreshResults(), refreshCostTotals()]);
     },
-    [mutateOpen, mutateTrials, refreshCostTotals]
+    [refreshResults, refreshCostTotals]
   );
 
   useEffect(() => {
@@ -193,8 +186,14 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       }
 
       setIsEditingName(false);
-      await mutateOpen(
-        (pages) => pages?.map((page) => ({ ...page, name: nextName })),
+      await refreshResults(
+        (current) =>
+          current
+            ? {
+                ...current,
+                experiment: { ...current.experiment, name: nextName },
+              }
+            : current,
         { revalidate: false }
       );
       void refreshTaskPages();
@@ -206,7 +205,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   };
 
   const handleUnlinkTask = async (task: Task) => {
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/experiments/${encodedId}/tasks/${encodeURIComponent(task.id)}`,
       {
         method: "DELETE",
@@ -222,20 +221,19 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    await mutateOpen(
-      (pages) =>
-        pages?.map((page) => ({
-          ...page,
-          tasks: page.tasks.filter((item) => item.id !== task.id),
-        })),
-      { revalidate: false }
-    );
-    await mutateTrials(
-      (pages) =>
-        pages?.map((page) => ({
-          ...page,
-          trials: page.trials.filter((item) => item.task_id !== task.id),
-        })),
+    await refreshResults(
+      (current) =>
+        current
+          ? {
+              experiment: {
+                ...current.experiment,
+                tasks: current.experiment.tasks.filter(
+                  (item) => item.id !== task.id
+                ),
+              },
+              trials: current.trials.filter((item) => item.task_id !== task.id),
+            }
+          : current,
       { revalidate: false }
     );
     await refreshTaskPages();
@@ -253,12 +251,14 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
       );
     }
 
-    await mutateTrials(
-      (pages) =>
-        pages?.map((page) => ({
-          ...page,
-          trials: page.trials.filter((item) => item.id !== trial.id),
-        })),
+    await refreshResults(
+      (current) =>
+        current
+          ? {
+              ...current,
+              trials: current.trials.filter((item) => item.id !== trial.id),
+            }
+          : current,
       { revalidate: false }
     );
     await refreshTaskPages();
@@ -440,21 +440,13 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
-            ) : trialsStalled ? (
+            ) : openError ? (
               <ExperimentPageLoadAlert
                 resource="trials"
                 loaded={trialsLoadedCount}
                 total={totalTrialCount}
-                isRetrying={isValidatingTrials}
-                onRetry={retryTrials}
-              />
-            ) : openError && experimentOpen ? (
-              <ExperimentPageLoadAlert
-                resource="tasks"
-                loaded={tasksForExperiment.length}
-                total={experimentOpen.summary?.task_count ?? 0}
-                isRetrying={isValidatingOpen}
-                onRetry={() => void mutateOpen()}
+                isRetrying={isLoadingTrials}
+                onRetry={() => void refreshResults()}
               />
             ) : null
           }

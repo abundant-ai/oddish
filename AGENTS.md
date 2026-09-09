@@ -737,9 +737,10 @@ need repository metadata or task-owner identity. The anonymous `/open` and
 React is not an access-control boundary. `/trial-page` returns at most 250
 projected trials and omits full analysis, errors, results, phase timing, Harbor
 config, and ORM relationships.
-In React, `/open` owns the page's initial loading and fatal-error state;
-`/trial-page` owns incremental trial loading and a retryable inline error, so a
-trial-page failure must not replace task shells that `/open` already returned.
+Experiment pages now use `/results` for initial and incremental loading. A failed
+response retains any downloaded rows and exposes Retry, including when the request
+fails before metadata arrives. The older paginated endpoints remain available to
+other clients.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads
@@ -1016,16 +1017,26 @@ when the primary issue is empty or absent. The full report stays in task detail;
 public experiment rows retain the verdict label, acceptance flag, and confidence
 without the prose preview.
 
-Experiment pages automatically consume independent task and trial cursors, one
-bounded request at a time per resource (100 tasks or 250 trials), without waiting
-for scroll or button clicks. Graphs wait for both collections to finish so partial
-trial pages cannot appear as final pass rates. Failed pages retain downloaded rows
-and expose Retry without advancing the failed cursor. Active experiments refresh
-loaded pages every 30 seconds. The task-name column omits the spend-exclusion badge;
-experiment spend summaries retain their exclusion explanation.
+Experiment pages use one `/experiments/{id}/results` NDJSON response (or the
+public token-scoped equivalent). It contains experiment metadata, individual task
+and trial records, and an explicit completion record. There are no page limits or
+cursor requests in the browser. Each collection is read with one query inside a
+repeatable-read, read-only transaction, closed on completion or disconnect. The
+database driver buffers each collection; serialization streams individual records.
+Public projections and
+model aliases match the existing public endpoints. Member and public Next proxies
+pass the response body through without buffering. The client paints incoming records
+once per animation frame, validates completion/counts, and keeps partial rows with
+Retry after interruption. Graphs require a complete response. Active experiments
+refresh the complete response every 30 seconds and retain the previous complete
+snapshot while refreshing. A failed refresh leaves that snapshot complete and its
+graphs visible, exposes Retry, and keeps the 30-second refresh timer running.
+An interrupted initial download remains incomplete. Task rows and the Cost/New
+Spend cards omit the “not real” spend-exclusion badge; accounting exclusions are
+unchanged.
 
-Experiment pages use independent task and trial cursors. The first `/open` page
-includes the exact experiment summary; later task pages request
+The older `/open` and `/trial-page` APIs remain available for existing clients.
+The first `/open` page includes the exact experiment summary; later pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
 whole-experiment aggregation. `/focus?task=...&trial=...` resolves one URL target
 without walking either cursor. Authenticated focus reads retain addressability

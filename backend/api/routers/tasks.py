@@ -579,6 +579,19 @@ async def list_tasks(
         return tasks
 
 
+@router.get("/experiments/{experiment_id}/results")
+async def get_experiment_results(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+):
+    from oddish.core.endpoints.experiment_page import experiment_results_response
+
+    auth.require_scope(APIKeyScope.READ)
+    return await experiment_results_response(
+        experiment_id=experiment_id, org_id=auth.org_id
+    )
+
+
 @router.get("/experiments/{experiment_id}/open", response_model=ExperimentOpenResponse)
 async def get_experiment_open(
     experiment_id: str,

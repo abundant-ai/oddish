@@ -1,7 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect as baseExpect, test, type Page } from "@playwright/test";
 
 import { fetchTrajectorySummary } from "../src/lib/use-trajectory-summary";
 import type { Task, Trial } from "../src/lib/types";
+
+// CI runs Next.js in dev mode; compiling and loading the public page can exceed
+// the default five-second assertion budget before any mocked API request starts.
+const expect = baseExpect.configure({ timeout: 15_000 });
+test.setTimeout(60_000);
 
 const emptyCostTotals = {
   cost_usd: 0,
@@ -76,6 +81,100 @@ function publicOpenResponse(publicTask: Task, hasActiveTrials = false) {
   };
 }
 
+function resultRecords(
+  tasks: Task[],
+  trials: Partial<Trial>[],
+  active = false
+) {
+  const header = publicOpenResponse(tasks[0], active);
+  header.tasks = [];
+  header.summary.task_count = tasks.length;
+  header.summary.trial_count = trials.length;
+  return [
+    { type: "experiment", experiment: header },
+    ...tasks.map((task) => ({
+      type: "task",
+      task: { ...task, trials: undefined },
+    })),
+    ...trials.map((trial) => ({
+      type: "trial",
+      trial: { ...trial, analysis: { status: null } },
+    })),
+    { type: "complete" },
+  ];
+}
+const streamBody = (records: unknown[]) =>
+  records.map((record) => JSON.stringify(record)).join("\n") + "\n";
+async function mockResults(
+  page: Page,
+  token: string,
+  tasks: Task[],
+  trials: Trial[] = []
+) {
+  await page.route(`**/api/public/experiments/${token}/results`, (route) =>
+    route.fulfill({
+      contentType: "application/x-ndjson",
+      body: streamBody(resultRecords(tasks, trials)),
+    })
+  );
+}
+async function mockInfo(page: Page, token: string) {
+  await page.route(`**/api/public/experiments/${token}`, (route) =>
+    route.fulfill({
+      json: { name: "Streamed experiment", public_token: token },
+    })
+  );
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
+    route.fulfill({ json: emptyCostTotals })
+  );
+}
+
+async function mockContinuousResults(
+  page: Page,
+  token: string,
+  initial: unknown[],
+  remaining: unknown[]
+) {
+  await page.addInitScript(
+    ({ token, initial, remaining }) => {
+      const originalFetch = window.fetch.bind(window);
+      const state = window as typeof window & {
+        finishResults: () => void;
+        resultRequests: number;
+      };
+      state.resultRequests = 0;
+      window.fetch = async (input, init) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (!url.endsWith(`/experiments/${token}/results`))
+          return originalFetch(input, init);
+        state.resultRequests++;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(encoder.encode(initial));
+              state.finishResults = () => {
+                controller.enqueue(encoder.encode(remaining));
+                controller.close();
+              };
+              init?.signal?.addEventListener("abort", () =>
+                controller.error(new DOMException("Aborted", "AbortError"))
+              );
+            },
+          }),
+          { headers: { "Content-Type": "application/x-ndjson" } }
+        );
+      };
+    },
+    { token, initial: streamBody(initial), remaining: streamBody(remaining) }
+  );
+}
+
 test("summary polling preserves the durable backend job state", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -144,16 +243,9 @@ test("public experiment exposes and retries an initial cost failure", async ({
           });
     }
   );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({ json: publicOpenResponse(publicTask) })
-  );
-  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
-    route.fulfill({
-      json: { revision: "2026-07-14T00:00:00Z", trials: [] },
-    })
-  );
+  await mockResults(page, token, [publicTask]);
 
-  await page.goto(`/share/${token}`);
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
 
   await expect(
     page.getByRole("heading", { name: "Failed to load experiment spend" })
@@ -171,185 +263,7 @@ test("public experiment exposes and retries an initial cost failure", async ({
   ).toHaveCount(0);
 });
 
-test("public experiment keeps task rows visible when trial pagination fails", async ({
-  page,
-}) => {
-  const token = "public-trial-page-retry";
-  const publicTask = task({
-    current_version: 1,
-    current_version_id: "task-1-v1",
-    reward_success: 0,
-    reward_sum: 0,
-    reward_total: 0,
-  });
-  let trialPageRequests = 0;
-
-  await page.route(`**/api/public/experiments/${token}`, (route) =>
-    route.fulfill({
-      json: {
-        name: "Public retry test",
-        public_token: token,
-        description: null,
-      },
-    })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) => route.fulfill({ json: emptyCostTotals })
-  );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({
-      json: {
-        experiment_id: "exp-1",
-        name: "Public retry test",
-        created_at: "2026-07-14T00:00:00Z",
-        revision: "2026-07-14T00:00:00Z",
-        has_active_trials: false,
-        summary: {
-          task_count: 1,
-          trial_count: 1,
-          completed: 0,
-          failed: 0,
-          skipped: 0,
-          active: 1,
-          reward_sum: 0,
-          reward_total: 0,
-          pass_count: 0,
-          partial_count: 0,
-          fail_count: 0,
-          harness_error_count: 0,
-          average_score: null,
-          qa_accepted: 0,
-          qa_rejected: 0,
-          qa_running: 0,
-          qa_failed: 0,
-        },
-        tasks: [publicTask],
-      },
-    })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/trial-page?*`,
-    (route) => {
-      trialPageRequests += 1;
-      if (trialPageRequests === 1) {
-        return route.fulfill({
-          status: 503,
-          json: { detail: "trial page unavailable" },
-        });
-      }
-      return route.fulfill({
-        json: {
-          revision: "2026-07-14T00:00:00Z",
-          trials: [],
-        },
-      });
-    }
-  );
-
-  await page.goto(`/share/${token}`);
-
-  await expect(page.getByText("Task one")).toBeVisible();
-  await expect(
-    page.getByText("The share link may be invalid or no longer public.")
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Some trial results failed to load" })
-  ).toBeVisible();
-
-  await page.getByRole("button", { name: "Retry" }).click();
-
-  await expect.poll(() => trialPageRequests).toBe(2);
-  await expect(
-    page.getByRole("heading", { name: "Some trial results failed to load" })
-  ).toHaveCount(0);
-  await expect(page.getByText("Task one")).toBeVisible();
-});
-
-test("later trial-page failure waits for an explicit retry", async ({ page }) => {
-  const token = "public-later-trial-page-retry";
-  const publicTask = task({ trials: undefined });
-  let trialPageRequests = 0;
-
-  await page.route(`**/api/public/experiments/${token}`, (route) =>
-    route.fulfill({
-      json: { name: "Bounded trials", public_token: token, description: null },
-    })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) => route.fulfill({ json: emptyCostTotals })
-  );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({
-      json: {
-        experiment_id: "exp-1",
-        name: "Bounded trials",
-        created_at: "2026-07-14T00:00:00Z",
-        revision: "2026-07-14T00:00:00Z",
-        has_active_trials: false,
-        summary: {
-          task_count: 1,
-          trial_count: 501,
-          completed: 501,
-          failed: 0,
-          skipped: 0,
-          active: 0,
-          reward_sum: 0,
-          reward_total: 0,
-          pass_count: 0,
-          partial_count: 0,
-          fail_count: 0,
-          harness_error_count: 0,
-          average_score: null,
-          qa_accepted: 0,
-          qa_rejected: 0,
-          qa_running: 0,
-          qa_failed: 0,
-        },
-        tasks: [publicTask],
-      },
-    })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/trial-page?*`,
-    (route) => {
-      trialPageRequests += 1;
-      if (trialPageRequests === 1) {
-        return route.fulfill({
-          json: {
-            revision: "2026-07-14T00:00:00Z",
-            trials: [],
-            next_created_at: "2026-07-13T00:00:00Z",
-            next_trial_id: "trial-250",
-          },
-        });
-      }
-      if (trialPageRequests === 2) {
-        return route.fulfill({
-          status: 503,
-          json: { detail: "later page unavailable" },
-        });
-      }
-      return route.fulfill({
-        json: { revision: "2026-07-14T00:00:00Z", trials: [] },
-      });
-    }
-  );
-
-  await page.goto(`/share/${token}`);
-  await expect.poll(() => trialPageRequests).toBe(2);
-  await expect(
-    page.getByRole("heading", { name: "Some trial results failed to load" })
-  ).toBeVisible();
-  await page.waitForTimeout(750);
-  expect(trialPageRequests).toBe(2);
-
-  await page.getByRole("button", { name: "Retry" }).click();
-  await expect.poll(() => trialPageRequests).toBe(3);
-});
-
-test("public deep link resolves a trial outside the loaded pages", async ({
+test("public deep link resolves a trial outside the streamed results", async ({
   page,
 }) => {
   const token = "public-focused-trial";
@@ -386,60 +300,25 @@ test("public deep link resolves a trial outside the loaded pages", async ({
       json: { name: "Focused links", public_token: token, description: null },
     })
   );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) =>
-      route.fulfill({
-        json: {
-          ...emptyCostTotals,
-          cost_usd: 12.34,
-          cost_trial_count: 101,
-          token_count: 123456,
-          token_trial_count: 101,
-        },
-      })
-  );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
     route.fulfill({
       json: {
-        experiment_id: "exp-1",
-        name: "Focused links",
-        created_at: "2026-07-14T00:00:00Z",
-        revision: "2026-07-14T00:00:00Z",
-        has_active_trials: false,
-        summary: {
-          task_count: 101,
-          trial_count: 1,
-          completed: 1,
-          failed: 0,
-          skipped: 0,
-          active: 0,
-          reward_sum: 1,
-          reward_total: 1,
-          pass_count: 1,
-          partial_count: 0,
-          fail_count: 0,
-          harness_error_count: 0,
-          average_score: 1,
-          qa_accepted: 0,
-          qa_rejected: 0,
-          qa_running: 0,
-          qa_failed: 0,
-        },
-        tasks: [task({ id: "task-1", name: "First page task" })],
+        ...emptyCostTotals,
+        cost_usd: 12.34,
+        cost_trial_count: 101,
+        token_count: 123456,
+        token_trial_count: 101,
       },
     })
   );
-  await page.route(
-    `**/api/public/experiments/${token}/trial-page?*`,
-    (route) =>
-      route.fulfill({
-        json: { revision: "2026-07-14T00:00:00Z", trials: [] },
-      })
-  );
+  await mockResults(page, token, [
+    task({ id: "task-1", name: "First loaded task" }),
+  ]);
   await page.route(`**/api/public/experiments/${token}/focus?*`, (route) => {
     focusRequests += 1;
-    const includeTrial = new URL(route.request().url()).searchParams.has("trial");
+    const includeTrial = new URL(route.request().url()).searchParams.has(
+      "trial"
+    );
     return route.fulfill({
       json: {
         revision: "2026-07-14T00:00:00Z",
@@ -457,21 +336,25 @@ test("public deep link resolves a trial outside the loaded pages", async ({
     (route) => route.fulfill({ json: { files: [] } })
   );
 
-  await page.goto(`/share/${token}?task=task-101`);
+  await page.goto(`/share/${token}?task=task-101`, {
+    waitUntil: "domcontentloaded",
+  });
 
   await expect.poll(() => focusRequests).toBe(1);
   await expect(page).toHaveURL(/task=task-101/);
   await expect(page).not.toHaveURL(/trial=/);
   await expect(page.getByText("$12.34", { exact: true })).toBeVisible();
 
-  await page.goto(`/share/${token}?task=task-101&trial=task-101-1`);
+  await page.goto(`/share/${token}?task=task-101&trial=task-101-1`, {
+    waitUntil: "domcontentloaded",
+  });
 
   await expect.poll(() => focusRequests).toBe(2);
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
   await expect(page).toHaveURL(/task=task-101&trial=task-101-1/);
 });
 
-test("retryable focus errors preserve the trial-page deep-link fallback", async ({
+test("retryable focus errors preserve the streamed-trial deep-link fallback", async ({
   page,
 }) => {
   const token = "public-focus-retry";
@@ -506,24 +389,15 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
       json: { name: "Focus retry", public_token: token, description: null },
     })
   );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) => route.fulfill({ json: emptyCostTotals })
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
+    route.fulfill({ json: emptyCostTotals })
   );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({ json: publicOpenResponse(publicTask) })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/trial-page?*`,
-    async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      await route.fulfill({
-        json: {
-          revision: "2026-07-14T00:00:00Z",
-          trials: [{ ...focusedTrial, analysis: {} }],
-        },
-      });
-    }
+  const records = resultRecords([publicTask], [focusedTrial]);
+  await mockContinuousResults(
+    page,
+    token,
+    records.slice(0, 2),
+    records.slice(2)
   );
   await page.route(`**/api/public/experiments/${token}/focus?*`, (route) => {
     focusRequests += 1;
@@ -538,90 +412,16 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
       route.fulfill({ json: { ...publicTask, trials: [focusedTrial] } })
   );
 
-  await page.goto(`/share/${token}?task=task-1&trial=task-1-2`);
+  await page.goto(`/share/${token}?task=task-1&trial=task-1-2`, {
+    waitUntil: "domcontentloaded",
+  });
 
   await expect.poll(() => focusRequests).toBe(1);
+  await page.evaluate(() =>
+    (window as typeof window & { finishResults: () => void }).finishResults()
+  );
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
   await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
-});
-
-test("public experiment resources and loaded pages refresh while active", async ({
-  page,
-}) => {
-  const token = "public-active-cost";
-  const publicTask = task({ trials: undefined });
-  let costRequests = 0;
-  let openRequests = 0;
-  let trialPageRequests = 0;
-  const laterPageCursors: string[] = [];
-  const pageErrors: string[] = [];
-
-  await page.clock.install();
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.route(`**/api/public/experiments/${token}`, (route) =>
-    route.fulfill({
-      json: { name: "Active cost", public_token: token, description: null },
-    })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) => {
-      costRequests += 1;
-      return route.fulfill({
-        json: {
-          ...emptyCostTotals,
-          cost_usd: costRequests,
-          cost_trial_count: 1,
-        },
-      });
-    }
-  );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) => {
-    openRequests += 1;
-    return route.fulfill({ json: publicOpenResponse(publicTask, true) });
-  });
-  await page.route(
-    `**/api/public/experiments/${token}/trial-page?*`,
-    (route) => {
-      trialPageRequests += 1;
-      const cursor = new URL(route.request().url()).searchParams.get(
-        "before_trial_id"
-      );
-      if (cursor) laterPageCursors.push(cursor);
-      return route.fulfill({
-        json: {
-          revision: "2026-07-14T00:00:00Z",
-          trials: [],
-          ...(!cursor && {
-            next_created_at: "2026-07-13T00:00:00Z",
-            next_trial_id:
-              trialPageRequests === 1
-                ? "trial-old-boundary"
-                : "trial-new-boundary",
-          }),
-        },
-      });
-    }
-  );
-
-  // The test controls timers; do not wait on unrelated scripts before advancing them.
-  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
-  await expect.poll(() => costRequests).toBe(1);
-  await expect.poll(() => openRequests).toBe(1);
-  await expect.poll(() => trialPageRequests).toBe(2);
-  await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
-  await expect.poll(() => laterPageCursors).toEqual(["trial-old-boundary"]);
-
-  await page.clock.runFor(30_100);
-
-  await expect.poll(() => costRequests).toBe(2);
-  await expect.poll(() => openRequests).toBe(2);
-  await expect.poll(() => trialPageRequests).toBe(4);
-  await expect
-    .poll(() => laterPageCursors)
-    .toEqual(["trial-old-boundary", "trial-new-boundary"]);
-  await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
-  expect(pageErrors).toEqual([]);
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {
@@ -667,49 +467,10 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
       },
     })
   );
-  await page.route(
-    `**/api/public/experiments/${token}/cost-totals`,
-    (route) => route.fulfill({ json: emptyCostTotals })
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
+    route.fulfill({ json: emptyCostTotals })
   );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) =>
-    route.fulfill({
-      json: {
-        experiment_id: "exp-1",
-        name: "Public drawer test",
-        created_at: "2026-07-14T00:00:00Z",
-        revision: "2026-07-14T00:00:00Z",
-        has_active_trials: false,
-        summary: {
-          task_count: 1,
-          trial_count: 1,
-          completed: 1,
-          failed: 0,
-          skipped: 0,
-          active: 0,
-          reward_sum: 0.5,
-          reward_total: 1,
-          pass_count: 0,
-          partial_count: 1,
-          fail_count: 0,
-          harness_error_count: 0,
-          average_score: 0.5,
-          qa_accepted: 0,
-          qa_rejected: 0,
-          qa_running: 0,
-          qa_failed: 0,
-        },
-        tasks: [publicTask],
-      },
-    })
-  );
-  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
-    route.fulfill({
-      json: {
-        revision: "2026-07-14T00:00:00Z",
-        trials: [{ ...publicTrial, analysis: {} }],
-      },
-    })
-  );
+  await mockResults(page, token, [publicTask], [publicTrial]);
   await page.route(
     `**/api/public/experiments/${token}/tasks/task-1/files?*`,
     (route) => route.fulfill({ json: { files: [] } })
@@ -751,7 +512,7 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
     }
   );
 
-  await page.goto(`/share/${token}`);
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
   await expect(
     page.getByRole("heading", { name: "Public drawer test" })
   ).toBeVisible();
@@ -771,180 +532,253 @@ test("public trial drawers defer trajectory work", async ({ page }) => {
   await expect(page.getByText("EXPENSIVE_STEP_BODY")).toBeVisible();
 });
 
-for (const delayedResource of ["tasks", "trials"] as const) {
-  test(`automatically loads 101 tasks and 505 trials before graphing, waiting for ${delayedResource}`, async ({
-    page,
-  }) => {
-    const token = `automatic-pages-${delayedResource}`;
-    const tasks = Array.from({ length: 101 }, (_, index) =>
-      task({
-        id: `task-${index + 1}`,
-        name: `Task ${index + 1}`,
-        total: 5,
-        completed: 5,
-        trials: undefined,
-      })
-    );
-    const trials = Array.from({ length: 505 }, (_, index) => ({
-      id: `trial-${index + 1}`,
-      task_id: `task-${Math.floor(index / 5) + 1}`,
-      agent: "codex",
-      model: "gpt-5",
-      provider: "openai",
-      status: "success",
-      reward: index < 250 ? 1 : 0,
-      created_at: "2026-07-14T00:00:00Z",
-      analysis: { status: null },
-    }));
-    const openResponse = publicOpenResponse(tasks[0]);
-    const taskCursors: (string | null)[] = [];
-    const trialCursors: (string | null)[] = [];
-    let releaseLastPage!: () => void;
-    const lastPageReady = new Promise<void>((resolve) => {
-      releaseLastPage = resolve;
-    });
-
-    await page.route(`**/api/public/experiments/${token}`, (route) =>
-      route.fulfill({
-        json: { name: "Automatic pages", public_token: token },
-      })
-    );
-    await page.route(
-      `**/api/public/experiments/${token}/cost-totals`,
-      (route) => route.fulfill({ json: emptyCostTotals })
-    );
-    await page.route(
-      `**/api/public/experiments/${token}/open?*`,
-      async (route) => {
-        const query = new URL(route.request().url()).searchParams;
-        const cursor = query.get("before_task_id");
-        taskCursors.push(cursor);
-        expect(query.get("limit")).toBe("100");
-        if (cursor && delayedResource === "tasks") await lastPageReady;
-        await route.fulfill({
-          json: {
-            ...openResponse,
-            summary: cursor
-              ? null
-              : {
-                  ...openResponse.summary,
-                  task_count: 101,
-                  trial_count: 505,
-                  completed: 505,
-                },
-            tasks: cursor ? tasks.slice(100) : tasks.slice(0, 100),
-            ...(!cursor && {
-              next_created_at: "2026-07-14T00:00:00Z",
-              next_task_id: "task-100",
-            }),
-          },
-        });
-      }
-    );
-    await page.route(
-      `**/api/public/experiments/${token}/trial-page?*`,
-      async (route) => {
-        const query = new URL(route.request().url()).searchParams;
-        const cursor = query.get("before_trial_id");
-        trialCursors.push(cursor);
-        expect(query.get("limit")).toBe("250");
-        const offset = cursor ? Number(cursor.split("-")[1]) : 0;
-        if (offset === 500 && delayedResource === "trials") await lastPageReady;
-        await route.fulfill({
-          json: {
-            revision: "2026-07-14T00:00:00Z",
-            trials: trials.slice(offset, offset + 250),
-            ...(offset < 500 && {
-              next_created_at: "2026-07-14T00:00:00Z",
-              next_trial_id: `trial-${offset + 250}`,
-            }),
-          },
-        });
-      }
-    );
-
-    await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
-    await expect.poll(() => taskCursors, { timeout: 15000 }).toEqual([null, "task-100"]);
-    await expect
-      .poll(() => trialCursors, { timeout: 15000 })
-      .toEqual([null, "trial-250", "trial-500"]);
-    await expect(
-      page.getByRole("button", { name: "Load next 250 trial results" })
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("button", { name: "Pass/k graph" })
-    ).toHaveAttribute("aria-pressed", "true");
-    const waiting = page.getByText(
-      "Graphs will appear once all task and trial results have loaded."
-    );
-    await expect(waiting).toBeVisible();
-    await expect(page.getByText("49.5%", { exact: true })).toHaveCount(0);
-
-    releaseLastPage();
-    await expect(waiting).toHaveCount(0);
-    await expect(page.getByText("49.5%", { exact: true })).toBeVisible({ timeout: 15000 });
-    expect(taskCursors).toEqual([null, "task-100"]);
-    expect(trialCursors).toEqual([null, "trial-250", "trial-500"]);
-  });
-}
-
-test("failed task pages retain visible rows and resume from the same cursor on Retry", async ({
+test("one continuous response shows 101 tasks and 505 trials, then enables graphs", async ({
   page,
 }) => {
-  const token = "task-page-retry";
-  const firstTask = task({ name: "First retained task" });
-  const nextTask = task({ id: "task-2", name: "Recovered second task" });
-  const response = publicOpenResponse(firstTask);
-  let laterRequests = 0;
-  await page.route(`**/api/public/experiments/${token}`, (route) =>
-    route.fulfill({ json: { name: "Task retry", public_token: token } })
+  const token = "continuous-results";
+  const tasks = Array.from({ length: 101 }, (_, i) =>
+    task({
+      id: `task-${i + 1}`,
+      name: `Task ${i + 1}`,
+      total: 5,
+      completed: 5,
+      trials: undefined,
+    })
   );
-  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
-    route.fulfill({ json: emptyCostTotals })
+  const trials = Array.from({ length: 505 }, (_, i) => ({
+    id: `trial-${i + 1}`,
+    task_id: `task-${Math.floor(i / 5) + 1}`,
+    agent: "codex",
+    model: "gpt-5",
+    provider: "openai",
+    status: "success" as const,
+    reward: i < 250 ? 1 : 0,
+    created_at: "2026-07-14T00:00:00Z",
+  }));
+  const records = resultRecords(tasks, trials);
+  await mockInfo(page, token);
+  const pageRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/(open|trial-page)(\?|$)/.test(request.url()))
+      pageRequests.push(request.url());
+  });
+  // A real ReadableStream lets the test keep one response open after records arrive.
+  await mockContinuousResults(
+    page,
+    token,
+    records.slice(0, 352),
+    records.slice(352)
   );
-  await page.route(`**/api/public/experiments/${token}/trial-page?*`, (route) =>
-    route.fulfill({ json: { trials: [] } })
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  await expect(
+    page.getByRole("button", { name: "Task 1", exact: true })
+  ).toBeVisible();
+  const waiting = page.getByText(
+    "Graphs will appear once all task and trial results have loaded."
   );
-  await page.route(`**/api/public/experiments/${token}/open?*`, (route) => {
-    const cursor = new URL(route.request().url()).searchParams.get(
-      "before_task_id"
-    );
-    if (cursor) {
-      expect(cursor).toBe("task-1");
-      laterRequests += 1;
-      if (laterRequests === 1)
-        return route.fulfill({
-          status: 503,
-          json: { detail: "task page unavailable" },
-        });
-    }
+  await expect(waiting).toBeVisible();
+  await expect(page.getByText("49.5%", { exact: true })).toHaveCount(0);
+  await page.evaluate(() =>
+    (window as typeof window & { finishResults: () => void }).finishResults()
+  );
+  await expect(waiting).toHaveCount(0);
+  await expect(page.getByText("49.5%", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  expect(
+    await page.evaluate(
+      () =>
+        (window as typeof window & { resultRequests: number }).resultRequests
+    )
+  ).toBe(1);
+  expect(pageRequests).toEqual([]);
+  await expect(page.getByRole("button", { name: /Load next/ })).toHaveCount(0);
+});
+
+test("an interrupted stream keeps loaded rows, hides graphs, and retries the full response", async ({
+  page,
+}) => {
+  const token = "interrupted-results";
+  await mockInfo(page, token);
+  const records = resultRecords([task({})], []);
+  let requests = 0;
+  await page.route(`**/api/public/experiments/${token}/results`, (route) => {
+    requests++;
     return route.fulfill({
-      json: {
-        ...response,
-        summary: cursor
-          ? null
-          : { ...response.summary, task_count: 2, trial_count: 0 },
-        tasks: [cursor ? nextTask : firstTask],
-        ...(!cursor && {
-          next_created_at: "2026-07-14T00:00:00Z",
-          next_task_id: "task-1",
-        }),
-      },
+      contentType: "application/x-ndjson",
+      body: streamBody(requests === 1 ? records.slice(0, -1) : records),
     });
   });
   await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
   await expect(
-    page.getByRole("heading", { name: "Some tasks failed to load" })
+    page.getByRole("button", { name: "Task one", exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText("First retained task", { exact: true })
+    page.getByRole("heading", { name: "Some trial results failed to load" })
   ).toBeVisible();
-  await page.getByRole("button", { name: "Retry" }).click();
+  await page.waitForTimeout(750);
+  expect(requests).toBe(1);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(
-    page.getByText("Recovered second task", { exact: true })
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Some tasks failed to load" })
+    page.getByRole("heading", { name: "Some trial results failed to load" })
   ).toHaveCount(0);
-  expect(laterRequests).toBe(2);
+  expect(requests).toBe(2);
+});
+
+test("active experiments refresh one complete response and cost totals", async ({
+  page,
+}) => {
+  const token = "active-results";
+  await mockInfo(page, token);
+  await page.clock.install();
+  let requests = 0,
+    costRequests = 0;
+  await page.route(`**/api/public/experiments/${token}/results`, (route) => {
+    requests++;
+    return route.fulfill({
+      contentType: "application/x-ndjson",
+      body: streamBody(resultRecords([task({})], [], true)),
+    });
+  });
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
+    route.fulfill({
+      json: {
+        ...emptyCostTotals,
+        cost_usd: ++costRequests,
+        cost_trial_count: 1,
+      },
+    })
+  );
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Task one", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Loading trials" })
+  ).toHaveCount(0);
+  expect(requests).toBe(1);
+  await page.clock.runFor(30_100);
+  await expect.poll(() => requests).toBe(2);
+  await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
+});
+
+for (const failure of ["HTTP error", "interrupted stream"] as const) {
+  test(`a refresh ${failure} preserves complete results and recovers automatically`, async ({
+    page,
+  }) => {
+    const token = `refresh-failure-${failure.replaceAll(" ", "-")}`;
+    await mockInfo(page, token);
+    await page.clock.install();
+    const trials = [1, 2].map((i) => ({
+      id: `trial-${i}`,
+      task_id: "task-1",
+      agent: "codex",
+      model: "gpt-5",
+      provider: "openai",
+      status: "success" as const,
+      reward: 1,
+      created_at: "2026-07-14T00:00:00Z",
+    }));
+    let requests = 0;
+    await page.route(`**/api/public/experiments/${token}/results`, (route) => {
+      requests++;
+      if (requests === 2 && failure === "HTTP error") {
+        return route.fulfill({ status: 503, json: { detail: "Unavailable" } });
+      }
+      const name =
+        requests === 1
+          ? "Task one"
+          : requests === 2
+            ? "Unfinished task"
+            : "Refreshed task";
+      const records = resultRecords(
+        [task({ name, total: 2, completed: 2 })],
+        trials,
+        requests < 3
+      );
+      return route.fulfill({
+        contentType: "application/x-ndjson",
+        body: streamBody(requests === 2 ? records.slice(0, -1) : records),
+      });
+    });
+    await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+    const graph = page.getByRole("heading", { name: "Pass/k", exact: true });
+    const row = page.getByRole("button", { name: "Task one", exact: true });
+    const error = page.getByRole("heading", {
+      name: "Some trial results failed to load",
+    });
+    await expect(graph).toBeVisible();
+    await expect(row).toBeVisible();
+    await page.clock.runFor(30_100);
+    await expect(error).toBeVisible();
+    expect(requests).toBe(2);
+    await expect(graph).toBeVisible();
+    await expect(row).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Trial 1 Pass", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Unfinished task", exact: true })
+    ).toHaveCount(0);
+    await page.clock.runFor(30_100);
+    await expect(
+      page.getByRole("button", { name: "Refreshed task", exact: true })
+    ).toBeVisible();
+    expect(requests).toBe(3);
+    await expect(error).toHaveCount(0);
+    await expect(graph).toBeVisible();
+  });
+}
+
+test("cost totals remain visible without not-real labels", async ({ page }) => {
+  const token = "cost-labels";
+  await mockInfo(page, token);
+  await mockResults(page, token, [task({})]);
+  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
+    route.fulfill({
+      json: {
+        ...emptyCostTotals,
+        cost_usd: 1190,
+        cost_trial_count: 1,
+        excluded_cost_usd: 1190,
+        owned_cost_usd: 1190,
+        owned_trial_count: 1,
+        owned_excluded_cost_usd: 1190,
+        experiment_cost_excluded: true,
+      },
+    })
+  );
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("$1,190", { exact: true })).toBeVisible();
+  await expect(page.getByText(/not real/i)).toHaveCount(0);
+});
+
+test("initial results request failure offers Retry before any rows arrive", async ({
+  page,
+}) => {
+  const token = "initial-stream-failure";
+  await mockInfo(page, token);
+  let requests = 0;
+  await page.route(`**/api/public/experiments/${token}/results`, (route) => {
+    requests++;
+    return requests === 1
+      ? route.fulfill({
+          status: 503,
+          json: { detail: "Temporarily unavailable" },
+        })
+      : route.fulfill({
+          contentType: "application/x-ndjson",
+          body: streamBody(resultRecords([task({})], [])),
+        });
+  });
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  await expect(
+    page.getByRole("button", { name: "Retry", exact: true })
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Task one", exact: true })
+  ).toBeVisible();
+  expect(requests).toBe(2);
 });
