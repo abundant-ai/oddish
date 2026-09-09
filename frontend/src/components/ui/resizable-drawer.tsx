@@ -169,6 +169,7 @@ export function ResizableDrawer({
       {/* Drawer */}
       <div
         ref={drawerRef}
+        data-slot="resizable-drawer"
         className={cn(
           "border-border bg-background fixed right-0 z-40 flex border-l shadow-2xl",
           "animate-in slide-in-from-right duration-300",

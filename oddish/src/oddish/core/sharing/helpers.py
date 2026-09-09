@@ -249,8 +249,14 @@ async def list_task_trials_for_task(
     *,
     probe: bool | None = None,
     version: int | None = None,
+    org_id: str | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
+
+    ``org_id`` scopes the listing to one organization's task inside the
+    query itself (the join on ``tasks`` is already there), so an
+    org-scoped caller needs no separate task lookup on the common path.
+
 
     Superseded trials (rows replaced by a user-driven retry) are
     hidden by default so the public trial list collapses the rerun
@@ -274,9 +280,12 @@ async def list_task_trials_for_task(
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
+    if org_id is not None:
+        conditions.append(TaskModel.org_id == org_id)
     query = select(TrialModel, TaskModel.task_path).join(
         TaskModel, TaskModel.id == TrialModel.task_id
     )
+
     if version is not None:
         query = query.join(
             TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id
@@ -350,12 +359,15 @@ async def list_task_files_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     inline: bool = True,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
     storage = get_storage_client()
 
     try:
-        return await storage.list_task_files(
+        result = await storage.list_task_files(
             task_id=task_id,
             prefix=prefix,
             recursive=recursive,
@@ -365,7 +377,10 @@ async def list_task_files_s3(
             version=version,
             task_s3_prefix=task_s3_prefix,
             inline=inline,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
         )
+        return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
     except Exception:
@@ -381,6 +396,9 @@ async def stream_task_files_s3(
     presign: bool,
     task_s3_prefix: str | None,
     version: int | None = None,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
 ):
     """Stream a task file listing chunk-by-chunk (tree first, then contents).
 
@@ -399,12 +417,18 @@ async def stream_task_files_s3(
         presign=presign,
         version=version,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
+        expanded_manifest_key=expanded_manifest_key,
     )
     started = False
     try:
         async for chunk in stream:
             started = True
-            yield chunk
+            yield (
+                {**chunk, "source_hash": source_hash}
+                if chunk["type"] == "listing"
+                else chunk
+            )
     except HTTPException:
         if not started:
             raise
@@ -451,19 +475,25 @@ async def get_task_file_content_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     max_bytes: int | None = None,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
 
     try:
-        return await storage.get_task_file_content(
+        result = await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
             version=version,
             task_s3_prefix=task_s3_prefix,
             max_bytes=max_bytes,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
         )
+        return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
     except Exception:

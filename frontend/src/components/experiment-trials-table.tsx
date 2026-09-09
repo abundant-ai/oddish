@@ -107,6 +107,7 @@ import {
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
 import { NotRealSpendBadge } from "./not-real-spend-badge";
+import { apiFetch } from "@/lib/api";
 
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
@@ -1292,7 +1293,7 @@ export function ExperimentTrialsTable({
     try {
       const results = await Promise.allSettled(
         selectedRetryableTrials.map(async (trial) => {
-          const res = await fetch(`/api/trials/${trial.id}/retry`, {
+          const res = await apiFetch(`/api/trials/${trial.id}/retry`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1329,7 +1330,7 @@ export function ExperimentTrialsTable({
         selectedCancellableTasks.find((task) => task.experiment_id)
           ?.experiment_id ||
         undefined;
-      const res = await fetch(`/api/tasks/cancel`, {
+      const res = await apiFetch(`/api/tasks/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1366,7 +1367,7 @@ export function ExperimentTrialsTable({
         selectedQACancellableTasks.map(async (task) => {
           // One task-level QA job; cancelling it stops both in-flight
           // classification and verdict synthesis.
-          const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
+          const res = await apiFetch(`/api/tasks/${task.id}/qa/cancel`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1405,7 +1406,7 @@ export function ExperimentTrialsTable({
         selectedQARunnableTasks.map(async (task) => {
           // One task-level QA job: (re)classify every trial, then synthesize
           // the task verdict.
-          const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
+          const res = await apiFetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ environment: qaEnvironment || null }),
@@ -1440,7 +1441,7 @@ export function ExperimentTrialsTable({
       if (tagBulkMode === "snapshot") {
         const results = await Promise.allSettled(
           selectedTaskList.map(async (task) => {
-            const res = await fetch(`/api/tags/assign`, {
+            const res = await apiFetch(`/api/tags/assign`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1475,7 +1476,7 @@ export function ExperimentTrialsTable({
           );
           return;
         }
-        const res = await fetch(`/api/tags/assign`, {
+        const res = await apiFetch(`/api/tags/assign`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

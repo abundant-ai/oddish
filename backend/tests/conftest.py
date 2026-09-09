@@ -53,3 +53,14 @@ pytest_plugins = ("pytest_asyncio",)
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cost_exclusions():
+    """Cost exclusions are cached per process for a minute; tests that insert
+    exclusion rows must not see another test's (or their own earlier) snapshot."""
+    from oddish.core.cost_exclusions import invalidate_cost_exclusions
+
+    invalidate_cost_exclusions()
+    yield
+    invalidate_cost_exclusions()
