@@ -1693,7 +1693,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
-    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.5.0" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.6.1" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2948,15 +2948,15 @@ wheels = [
 
 [[package]]
 name = "thunder-sandbox"
-version = "0.5.0"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/d8/e33008283441471aaa21f21bd8d6d218a7b18916055c53d6011a39a46fe5/thunder_sandbox-0.5.0.tar.gz", hash = "sha256:f5c803c296a1d6cf1da1793c6d1203b2c23354fbbf3bb4fc61743de4672f8772", size = 30006, upload-time = "2026-09-01T20:48:22.58Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/23/330e5ba906f61f7d34fc9ee96734da3f28deed4786f0e8cf520774333b0e/thunder_sandbox-0.6.1.tar.gz", hash = "sha256:b159ebef3f63ac70f03b9b08db1f5ccddc7a24ae3ad43eb67e0ad3022bdfaecd", size = 39742, upload-time = "2026-09-08T22:51:30.374Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/0d/b9d70a289ab2b7b3178f0d0dac4ac71f9775f8b9b9a203f974c1c808d30e/thunder_sandbox-0.5.0-py3-none-any.whl", hash = "sha256:ff2887ff7b8be31cf4ea882e2a94bbf090f4f87c3888a62f01f59b40d7c7eeb4", size = 34445, upload-time = "2026-09-01T20:48:21.376Z" },
+    { url = "https://files.pythonhosted.org/packages/47/2e/04c46b3aa4478d2fc910c5b9b0a5101a39303b12bded7ac19fe58e56d940/thunder_sandbox-0.6.1-py3-none-any.whl", hash = "sha256:f64ce150566fbbe11d9d1406b3187088383c30d441fb09b48929e8e99f31bf29", size = 44399, upload-time = "2026-09-08T22:51:28.862Z" },
 ]
 
 [[package]]
