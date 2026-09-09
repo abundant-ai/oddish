@@ -14,6 +14,7 @@ import {
   receiveFileListRevision,
   type FileListRevision,
 } from "@/lib/file-list-revision";
+import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -823,6 +824,24 @@ export function TaskFilesPanel({
     { revalidateOnFocus: false, shouldRetryOnError: false }
   );
   const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
+
+  // Keyed on the path, so clicking through a tree records one open per file
+  // rather than one long span for the whole browsing session. ``immediate``
+  // separates previews already inlined in the listing from the ones that cost
+  // a round trip -- without it a directory of cached files would flatter the
+  // percentiles.
+  useOpenLatencySpan({
+    name: "ui.files.open",
+    subject: selectedFilePath,
+    ready: selectedPreview != null,
+    failed: previewError != null,
+    attributes: {
+      "oddish.file_path": selectedFilePath ?? "",
+      "oddish.file_kind": selectedPreview?.kind ?? "unknown",
+      "oddish.file_immediate": immediatePreview != null,
+      "oddish.file_bytes": selectedFile?.size ?? 0,
+    },
+  });
 
   const verdictSource = panel?.task ?? task;
   // Task drawers request one directory page at a time. File-only and trial

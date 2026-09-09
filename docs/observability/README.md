@@ -172,6 +172,68 @@ JSON schema. Any future checked-in JSON must come from **Download dashboard as
 code** after the SQL has been exercised against deployed metrics; a handwritten
 lookalike is not treated as an importable export.
 
+## User-perceived open latency
+
+The metrics above describe the queue; `http.server.request.duration` describes
+one route. Neither answers how long a person waits for a screen, because one
+screen is several requests deep and neither clock includes render. Three
+browser spans measure that directly, from the moment a view is asked for until
+its content has been painted:
+
+| Span | Ends when |
+|---|---|
+| `ui.task.open` | The task page's trial matrix is readable. |
+| `ui.files.open` | The selected file's contents are on screen. |
+| `ui.trajectory.open` | The selected trial's trajectory steps are on screen. |
+
+They are emitted by `useOpenLatencySpan`
+(`frontend/src/lib/use-open-latency-span.ts`) under service name
+`oddish-frontend`, and require `NEXT_PUBLIC_LOGFIRE_ENABLED=true` plus
+`LOGFIRE_BROWSER_TOKEN` in the frontend deployment. Without those the
+OpenTelemetry API returns a no-op tracer and nothing is recorded.
+
+Every span carries an `outcome` attribute:
+
+- `ready`: the content painted. This is the population to measure.
+- `error`: the load failed and the content will never arrive.
+- `abandoned`: the person navigated away, switched files, or closed the view
+  first. Excluding these from a latency percentile is correct; ignoring the
+  rate itself is not, because a slow screen shows up as abandonment before it
+  shows up as a slow `ready`.
+
+`open.start_source` records which clock the span used. `page-load` means the
+first open after a hard navigation, backdated to `performance.timeOrigin` so
+the document request and hydration are included; `interaction` means a
+client-side open timed from mount. Compare the two only deliberately —
+`page-load` is a cold measurement and will always be slower.
+
+These are spans, not metrics, so the dimension rules above do not apply:
+each is an individual record and may carry task, trial, and file identifiers.
+Because fetch instrumentation propagates `traceparent`, one slow open expands
+into the API and database spans it caused.
+
+Weekly trend, for a dashboard panel:
+
+```sql
+SELECT
+    time_bucket('7 days', start_timestamp) AS week,
+    span_name,
+    COUNT(*) AS opens,
+    percentile_cont(0.50) WITHIN GROUP (ORDER BY duration) AS p50_seconds,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration) AS p95_seconds
+FROM records
+WHERE service_name = 'oddish-frontend'
+  AND deployment_environment = 'production'
+  AND span_name IN ('ui.task.open', 'ui.files.open', 'ui.trajectory.open')
+  AND attributes->>'outcome' = 'ready'
+GROUP BY week, span_name
+ORDER BY week
+```
+
+Establish a baseline over two or three weeks before adding a regression alert;
+the retention window on the Growth plan is 90 days, so roughly thirteen weeks
+of trend are available at any time.
+
 ## Alerts
 
 `logfire-oddish-alerts.sql` contains four Logfire alert queries:

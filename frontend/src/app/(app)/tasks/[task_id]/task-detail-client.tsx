@@ -52,6 +52,7 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
+import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
   formatRelativeTime,
@@ -690,6 +691,23 @@ export function TaskDetailClient({
     trialsForVersion,
     versions,
   } = useTaskOpenReader(taskId, initialVersionId);
+
+  // "Usable" is the trial matrix being readable, not the shell painting: the
+  // header renders off cached browse data long before the results people came
+  // for arrive.
+  useOpenLatencySpan({
+    name: "ui.task.open",
+    subject: taskId,
+    ready: !isLoading && task != null,
+    failed: error != null,
+    attributes: {
+      "oddish.task_id": taskId,
+      "oddish.trial_count": realTrialCount,
+      "oddish.agent_count": realAgentCount,
+      "oddish.version_count": versions.length,
+      "oddish.browse_snapshot": isBrowseSnapshot,
+    },
+  });
 
   const versionSummary: TrialAggregate = useMemo(
     () =>
