@@ -1539,7 +1539,10 @@ class ModalCostSpanModel(TimestampedMixin, Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    # Cost ledgers outgrow the collision budget of eight-character entity IDs.
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: uuid4().hex
+    )
     trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

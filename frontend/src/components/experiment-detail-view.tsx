@@ -15,10 +15,8 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -129,12 +127,7 @@ interface ExperimentDetailViewProps {
   onRetryCostTotals: () => void;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
-  hasMoreTasks?: boolean;
-  hasMoreTrials?: boolean;
-  canLoadTrials?: boolean;
-  loadNextTasks?: () => void;
-  loadNextTrials?: () => void;
+  pagesComplete?: boolean;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -214,9 +207,6 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
-  excludedCostUsd: number;
-  ownedExcludedCostUsd: number;
-  experimentCostExcluded: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -310,9 +300,6 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: false,
     billedTokenCount: 0,
     billedTokenTrialCount: 0,
-    excludedCostUsd: 0,
-    ownedExcludedCostUsd: 0,
-    experimentCostExcluded: false,
   };
 }
 
@@ -843,12 +830,6 @@ function ExperimentSummaryBar({
               }
             />
           )}
-          {!costPending && !costUnavailable && (
-            <NotRealSpendBadge
-              excludedCostUsd={summary.excludedCostUsd}
-              totalCostUsd={summary.costUsd}
-            />
-          )}
         </span>
         {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
@@ -936,13 +917,6 @@ function ExperimentSummaryBar({
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
               />
             )}
-            {!costPending && !costUnavailable && (
-              <NotRealSpendBadge
-                excludedCostUsd={summary.ownedExcludedCostUsd}
-                totalCostUsd={summary.ownedCostUsd}
-                wholeSubjectExcluded={summary.experimentCostExcluded}
-              />
-            )}
           </span>
           {!costPending &&
             !costUnavailable &&
@@ -1026,12 +1000,7 @@ export function ExperimentDetailView({
   onRetryCostTotals,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
-  hasMoreTasks = false,
-  hasMoreTrials = false,
-  canLoadTrials = false,
-  loadNextTasks = () => {},
-  loadNextTrials = () => {},
+  pagesComplete = true,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1674,9 +1643,6 @@ export function ExperimentDetailView({
       billedHasNative: exactCostTotals.billed_has_native,
       billedTokenCount: exactCostTotals.billed_token_count,
       billedTokenTrialCount: exactCostTotals.billed_token_trial_count,
-      excludedCostUsd: exactCostTotals.excluded_cost_usd ?? 0,
-      ownedExcludedCostUsd: exactCostTotals.owned_excluded_cost_usd ?? 0,
-      experimentCostExcluded: exactCostTotals.experiment_cost_excluded ?? false,
     };
   }, [deferredTasksForDerivedData, pageSummary, exactCostTotals]);
 
@@ -1871,10 +1837,12 @@ export function ExperimentDetailView({
           )}
 
           {hasError ? (
-            <Alert variant="destructive">
-              <AlertTitle>{errorTitle}</AlertTitle>
-              <AlertDescription>{errorDescription}</AlertDescription>
-            </Alert>
+            (inlineAlert ?? (
+              <Alert variant="destructive">
+                <AlertTitle>{errorTitle}</AlertTitle>
+                <AlertDescription>{errorDescription}</AlertDescription>
+              </Alert>
+            ))
           ) : (
             <div className="space-y-3">
               {inlineAlert}
@@ -1884,7 +1852,7 @@ export function ExperimentDetailView({
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
-                trialPagesComplete={trialPagesComplete}
+                pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1932,23 +1900,6 @@ export function ExperimentDetailView({
                     trialGroups,
                   });
                 }}
-              />
-              {hasMoreTrials && (
-                <div className="flex justify-center">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={loadNextTrials}
-                    disabled={!canLoadTrials}
-                  >
-                    Load next 250 trial results
-                  </Button>
-                </div>
-              )}
-              <ExperimentPaginationSentinel
-                hasMoreTasks={hasMoreTasks}
-                loadNextTasks={loadNextTasks}
               />
             </div>
           )}

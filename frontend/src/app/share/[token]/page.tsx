@@ -4,11 +4,11 @@ import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
+import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
 import { ShareNav } from "@/components/share-nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentResults } from "@/lib/use-experiment-results";
 import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
@@ -27,23 +27,15 @@ export default function PublicExperimentPage() {
   const {
     experiment,
     tasks: tasksForExperiment,
-    openError,
+    error: openError,
     isLoading,
     isLoadingTrials,
-    hasMoreTasks,
-    hasMoreTrials,
-    canLoadTrials,
-    loadNextTasks,
-    loadNextTrials,
-    retryTrials,
     trialsLoaded,
     totalTrials,
-    trialsStalled,
-    isValidatingTrials,
-    trialPagesComplete,
-  } = useExperimentPages({
-    openUrl: publicBase ? `${publicBase}/open` : null,
-    trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
+    pagesComplete,
+    refreshResults,
+  } = useExperimentResults({
+    url: publicBase ? `${publicBase}/results` : null,
     publicView: true,
   });
   const { resource: costTotals, refresh: refreshCostTotals } =
@@ -70,24 +62,27 @@ export default function PublicExperimentPage() {
             onRetryCostTotals={() => void refreshCostTotals()}
             isLoading={isLoading}
             isLoadingTrials={isLoadingTrials}
-            trialPagesComplete={trialPagesComplete}
-            hasMoreTasks={hasMoreTasks}
-            hasMoreTrials={hasMoreTrials}
-            canLoadTrials={canLoadTrials}
-            loadNextTasks={loadNextTasks}
-            loadNextTrials={loadNextTrials}
+            pagesComplete={pagesComplete}
             focusUrl={publicBase ? `${publicBase}/focus` : undefined}
             hasError={hasFatalError}
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
             inlineAlert={
-              trialsStalled ? (
-                <ExperimentTrialLoadAlert
+              openError ? (
+                <ExperimentPageLoadAlert
+                  resource="trials"
                   loaded={trialsLoaded}
                   total={totalTrials}
-                  isRetrying={isValidatingTrials}
-                  onRetry={retryTrials}
+                  isRetrying={isLoadingTrials}
+                  onRetry={() => void refreshResults()}
                 />
+              ) : null
+            }
+            headerStatus={
+              isLoadingTrials ? (
+                <span role="status" className="text-muted-foreground text-xs">
+                  Loading trials {trialsLoaded}/{totalTrials}…
+                </span>
               ) : null
             }
             headerLeft={
