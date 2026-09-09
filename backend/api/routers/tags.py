@@ -58,7 +58,7 @@ from oddish.core.tags.saved_filters import (
     list_saved_tag_filters_core,
     update_saved_tag_filter_core,
 )
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     ProfanityReportCreateRequest,
     ProfanityReportItem,
@@ -173,7 +173,7 @@ async def list_tags(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         rows = (
             await session.execute(
                 text(
@@ -307,7 +307,7 @@ async def list_tags_for_target(
     swallowed by the parameterized route.
     """
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         await _assert_target_in_org(
             session, scope=scope, target_id=target_id, org_id=auth.org_id
         )
@@ -332,7 +332,7 @@ async def get_tag(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListItem:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
     return TagListItem(
         id=tag["id"],
@@ -711,7 +711,7 @@ async def list_grants(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagGrantListResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         rows = (
             await session.execute(
                 text(
@@ -837,7 +837,7 @@ async def put_policy(
 async def list_profanity_reports(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ProfanityReportListResponse:
-    async with get_session() as session:
+    async with get_read_session() as session:
         rows = (
             await session.execute(
                 text(
@@ -919,7 +919,7 @@ async def list_filters(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SavedTagFilterListResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         items = await list_saved_tag_filters_core(
             session, org_id=auth.org_id or "", actor_user_id=auth.user_id or ""
         )
@@ -1039,7 +1039,7 @@ async def list_task_tags(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         await _assert_target_in_org(
             session, scope="TASK", target_id=task_id, org_id=auth.org_id
         )
@@ -1096,7 +1096,7 @@ async def list_experiment_tags(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         await _assert_target_in_org(
             session,
             scope="EXPERIMENT",

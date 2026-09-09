@@ -66,7 +66,7 @@ async def org_with_full_key():
     key_model, raw = create_api_key(org_id=org_id, name="g6", scope=APIKeyScope.FULL)
 
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(OrganizationModel(execution_enabled=True, id=org_id, name=org_id, slug=org_id))
         await session.flush()
         session.add(with_id)
         session.add(no_id)

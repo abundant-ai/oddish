@@ -9,16 +9,14 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import type { TaskPane } from "@/components/task-files-panel";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -61,7 +59,10 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { taskHasActiveVerdict } from "@/lib/job-status";
+import {
+  taskHasActiveVerdict,
+  taskHasRejectedVerdict,
+} from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -103,12 +104,17 @@ function DrawerContentLoading({ label }: { label: string }) {
   );
 }
 
+/** Which tasks next/prev may grow into as /open pages stream in. */
+type TaskNavScope = "experiment" | "rejected";
+
 type DrawerState = {
   isOpen: boolean;
   mode: DrawerMode;
   task: Task;
   taskIndex: number;
   orderedTasks: Task[];
+  /** `rejected` keeps review next/prev on rejected rows only. */
+  taskNavScope: TaskNavScope;
   trial: Trial | null;
   trialIndex: number | null;
   orderedTrials: Trial[];
@@ -129,12 +135,7 @@ interface ExperimentDetailViewProps {
   onRetryCostTotals: () => void;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
-  hasMoreTasks?: boolean;
-  hasMoreTrials?: boolean;
-  canLoadTrials?: boolean;
-  loadNextTasks?: () => void;
-  loadNextTrials?: () => void;
+  pagesComplete?: boolean;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -214,9 +215,6 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
-  excludedCostUsd: number;
-  ownedExcludedCostUsd: number;
-  experimentCostExcluded: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -310,9 +308,6 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: false,
     billedTokenCount: 0,
     billedTokenTrialCount: 0,
-    excludedCostUsd: 0,
-    ownedExcludedCostUsd: 0,
-    experimentCostExcluded: false,
   };
 }
 
@@ -703,7 +698,10 @@ function ExperimentSummaryBar({
           )}
         </span>
       </KpiTile>
-      <KpiTile label="Completion">
+      <KpiTile
+        label="Trials finished"
+        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+      >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {doneTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
@@ -843,12 +841,6 @@ function ExperimentSummaryBar({
               }
             />
           )}
-          {!costPending && !costUnavailable && (
-            <NotRealSpendBadge
-              excludedCostUsd={summary.excludedCostUsd}
-              totalCostUsd={summary.costUsd}
-            />
-          )}
         </span>
         {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
@@ -936,13 +928,6 @@ function ExperimentSummaryBar({
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
               />
             )}
-            {!costPending && !costUnavailable && (
-              <NotRealSpendBadge
-                excludedCostUsd={summary.ownedExcludedCostUsd}
-                totalCostUsd={summary.ownedCostUsd}
-                wholeSubjectExcluded={summary.experimentCostExcluded}
-              />
-            )}
           </span>
           {!costPending &&
             !costUnavailable &&
@@ -1026,12 +1011,7 @@ export function ExperimentDetailView({
   onRetryCostTotals,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
-  hasMoreTasks = false,
-  hasMoreTrials = false,
-  canLoadTrials = false,
-  loadNextTasks = () => {},
-  loadNextTrials = () => {},
+  pagesComplete = true,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1050,7 +1030,6 @@ export function ExperimentDetailView({
   onRerun,
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
@@ -1064,6 +1043,7 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  const [rejectedOnly, setRejectedOnly] = useState(false);
   // Task-definition pane addressing. The drawer can show the task's file
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
@@ -1317,6 +1297,9 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
+      } else if (!pendingUrlTrialId) {
+        // Keep ?trial= while a deep link is still resolving from task mode.
+        next.delete("trial");
       }
       if (activeTaskPane === "overview") {
         next.delete("taskPane");
@@ -1344,6 +1327,7 @@ export function ExperimentDetailView({
     activeTaskPane,
     drawerState,
     hasPendingUrlFocus,
+    pendingUrlTrialId,
     taskPaneFile,
     taskPaneLines,
   ]);
@@ -1383,6 +1367,7 @@ export function ExperimentDetailView({
             task: host,
             taskIndex: tasksForExperiment.indexOf(host),
             orderedTasks: tasksForExperiment,
+            taskNavScope: "experiment",
             trial,
             trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
             orderedTrials,
@@ -1411,6 +1396,7 @@ export function ExperimentDetailView({
       task,
       taskIndex,
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1430,15 +1416,74 @@ export function ExperimentDetailView({
       (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
+    // Preserve open order, then append newly streamed tasks in scope so
+    // next/prev grows with /open pages. Rejected review stays rejected-only,
+    // including dropping rows that are no longer rejected after a refresh.
+    const liveById = new Map(
+      tasksForExperiment.map((task) => [task.id, task] as const)
+    );
+    const remappedOrderedTasks = drawerState.orderedTasks
+      .map((task) => liveById.get(task.id))
+      .filter((task): task is Task => task != null);
+    const preservedOrderedTasks =
+      drawerState.taskNavScope === "rejected"
+        ? remappedOrderedTasks.filter(taskHasRejectedVerdict)
+        : remappedOrderedTasks;
+    const seen = new Set(preservedOrderedTasks.map((task) => task.id));
+    const growthPool =
+      drawerState.taskNavScope === "rejected"
+        ? tasksForExperiment.filter(taskHasRejectedVerdict)
+        : tasksForExperiment;
+    const scopedOrderedTasks = [
+      ...preservedOrderedTasks,
+      ...growthPool.filter((task) => !seen.has(task.id)),
+    ];
+    // Empty rejected nav must leave review scope; falling back to the full
+    // experiment list while still marked rejected oscillates forever.
+    const leaveRejectedNav =
+      drawerState.taskNavScope === "rejected" &&
+      scopedOrderedTasks.length === 0;
+    const orderedTasks = leaveRejectedNav
+      ? tasksForExperiment
+      : scopedOrderedTasks.length > 0
+        ? scopedOrderedTasks
+        : tasksForExperiment;
+    const taskNavScope = leaveRejectedNav
+      ? "experiment"
+      : drawerState.taskNavScope;
+    let nextTask = liveTask;
+    let resolvedTaskIndex = orderedTasks.findIndex(
+      (task) => task.id === liveTask.id
+    );
+    if (resolvedTaskIndex < 0 && orderedTasks.length > 0) {
+      // Open task left the nav set (e.g. no longer rejected); snap so
+      // taskIndex and the visible task stay aligned for next/prev.
+      resolvedTaskIndex = Math.min(
+        drawerState.taskIndex,
+        orderedTasks.length - 1
+      );
+      nextTask = orderedTasks[resolvedTaskIndex]!;
+    } else if (resolvedTaskIndex < 0) {
+      resolvedTaskIndex = 0;
+    }
+    const orderedChanged =
+      orderedTasks.length !== drawerState.orderedTasks.length ||
+      taskNavScope !== drawerState.taskNavScope ||
+      nextTask.id !== drawerState.task.id ||
+      orderedTasks.some(
+        (task, index) => task !== drawerState.orderedTasks[index]
+      );
     const liveTrialCount = liveTask.trials?.length ?? 0;
     const snapshotTrialCount = drawerState.task.trials?.length ?? 0;
     if (
       liveTask === drawerState.task &&
-      liveTrialCount === snapshotTrialCount
+      nextTask.id === drawerState.task.id &&
+      liveTrialCount === snapshotTrialCount &&
+      !orderedChanged
     ) {
       return;
     }
-    const { trialGroups, orderedTrials } = buildTrialGroups(liveTask);
+    const { trialGroups, orderedTrials } = buildTrialGroups(nextTask);
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
@@ -1446,20 +1491,32 @@ export function ExperimentDetailView({
     const resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
-        : drawerState.trial;
-    const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
+        : nextTask.id === drawerState.task.id
+          ? drawerState.trial
+          : null;
+    const snappedAway = nextTask.id !== drawerState.task.id;
+    if (leaveRejectedNav && rejectedOnly) {
+      setRejectedOnly(false);
+    }
     setDrawerState({
       ...drawerState,
-      task: liveTask,
-      taskIndex:
-        resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
-      orderedTasks: tasksForExperiment,
+      mode:
+        snappedAway && resolvedTrial == null ? "task" : drawerState.mode,
+      task: nextTask,
+      taskIndex: resolvedTaskIndex,
+      orderedTasks,
+      taskNavScope,
       trial: resolvedTrial,
       trialIndex: resolvedTrialIndex,
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+  }, [
+    tasksForExperiment,
+    drawerState,
+    buildTrialGroups,
+    rejectedOnly,
+  ]);
 
   const clearPendingDeepLink = useCallback(() => {
     setPendingUrlTaskSelector(null);
@@ -1516,6 +1573,7 @@ export function ExperimentDetailView({
         task: host,
         taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
         orderedTasks: tasksForExperiment,
+        taskNavScope: "experiment",
         trial: index >= 0 ? orderedTrials[index] : trial,
         trialIndex: index >= 0 ? index : null,
         orderedTrials,
@@ -1524,16 +1582,16 @@ export function ExperimentDetailView({
       const next = new URLSearchParams(window.location.search);
       next.set("task", host.id);
       next.set("trial", trial.id);
-      router.replace(urlWithSearch(next.toString()), { scroll: false });
+      // This only canonicalizes drawer state in the URL. A route navigation
+      // can suspend the whole experiment and reset its loaded table.
+      window.history.replaceState(
+        window.history.state,
+        "",
+        urlWithSearch(next.toString())
+      );
       clearPendingDeepLink();
     },
-    [
-      drawerState,
-      tasksForExperiment,
-      buildTrialGroups,
-      router,
-      clearPendingDeepLink,
-    ]
+    [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
   );
 
   // The trial page can satisfy a pending URL before the focused read returns.
@@ -1602,6 +1660,7 @@ export function ExperimentDetailView({
       task: host,
       taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1675,9 +1734,6 @@ export function ExperimentDetailView({
       billedHasNative: exactCostTotals.billed_has_native,
       billedTokenCount: exactCostTotals.billed_token_count,
       billedTokenTrialCount: exactCostTotals.billed_token_trial_count,
-      excludedCostUsd: exactCostTotals.excluded_cost_usd ?? 0,
-      ownedExcludedCostUsd: exactCostTotals.owned_excluded_cost_usd ?? 0,
-      experimentCostExcluded: exactCostTotals.experiment_cost_excluded ?? false,
     };
   }, [deferredTasksForDerivedData, pageSummary, exactCostTotals]);
 
@@ -1872,10 +1928,12 @@ export function ExperimentDetailView({
           )}
 
           {hasError ? (
-            <Alert variant="destructive">
-              <AlertTitle>{errorTitle}</AlertTitle>
-              <AlertDescription>{errorDescription}</AlertDescription>
-            </Alert>
+            (inlineAlert ?? (
+              <Alert variant="destructive">
+                <AlertTitle>{errorTitle}</AlertTitle>
+                <AlertDescription>{errorDescription}</AlertDescription>
+              </Alert>
+            ))
           ) : (
             <div className="space-y-3">
               {inlineAlert}
@@ -1885,7 +1943,7 @@ export function ExperimentDetailView({
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
-                trialPagesComplete={trialPagesComplete}
+                pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1893,17 +1951,17 @@ export function ExperimentDetailView({
                 allowRerun={allowRetry}
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
+                rejectedOnly={rejectedOnly}
+                onRejectedOnlyChange={setRejectedOnly}
                 onTrialSelect={(trial, task, context) => {
                   cancelPendingDeepLink();
-                  const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id
-                  );
                   setDrawerState({
                     isOpen: true,
                     mode: "trial",
                     task,
-                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                    orderedTasks: tasksForExperiment,
+                    taskIndex: context.taskIndex,
+                    orderedTasks: context.orderedTasks,
+                    taskNavScope: context.taskNavScope ?? "experiment",
                     trial,
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
@@ -1927,29 +1985,35 @@ export function ExperimentDetailView({
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
+                    taskNavScope: context.taskNavScope ?? "experiment",
                     trial: null,
                     trialIndex: null,
                     orderedTrials,
                     trialGroups,
                   });
                 }}
-              />
-              {hasMoreTrials && (
-                <div className="flex justify-center">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={loadNextTrials}
-                    disabled={!canLoadTrials}
-                  >
-                    Load next 250 trial results
-                  </Button>
-                </div>
-              )}
-              <ExperimentPaginationSentinel
-                hasMoreTasks={hasMoreTasks}
-                loadNextTasks={loadNextTasks}
+                onTaskNavChange={({ orderedTasks, taskNavScope }) => {
+                  setDrawerState((prev) => {
+                    if (!prev) return prev;
+                    const liveById = new Map(
+                      orderedTasks.map((task) => [task.id, task] as const)
+                    );
+                    const task =
+                      liveById.get(prev.task.id) ??
+                      tasksForExperiment.find((t) => t.id === prev.task.id) ??
+                      prev.task;
+                    const taskIndex = orderedTasks.findIndex(
+                      (candidate) => candidate.id === task.id
+                    );
+                    return {
+                      ...prev,
+                      task,
+                      taskIndex: taskIndex >= 0 ? taskIndex : prev.taskIndex,
+                      orderedTasks,
+                      taskNavScope,
+                    };
+                  });
+                }}
               />
             </div>
           )}

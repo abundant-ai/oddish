@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select, text, true
-from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from oddish.config import settings
 from oddish.core.cost_exclusions import (
@@ -26,7 +26,8 @@ from oddish.db import (
     TrialModel,
     analysis_spend_view,
 )
-from oddish.db.pg_errors import is_missing_table
+from oddish.db.optional_read import read_optional_table
+
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +253,7 @@ async def _analysis_and_compute_cost_by_org_user(
                 inclusive_start=inclusive_start,
             ),
         )
-        .group_by(
-            analysis_spend_view.c.org_id, analysis_spend_view.c.billed_user_id
-        )
+        .group_by(analysis_spend_view.c.org_id, analysis_spend_view.c.billed_user_id)
     )
     for org_id, user_id, cost_usd in analysis_rows.all():
         key = (org_id, user_id)
@@ -408,23 +407,20 @@ async def effective_limits_by_org_user_all_orgs(
     Degrades to base-only if ``quota_bumps`` is absent: it is the last of the
     three quota migrations, so "quotas exists, quota_bumps does not" is the
     realistic deploy-before-migrate window, and this read sits behind the whole
-    admin cost dashboard. The savepoint keeps the caller's transaction usable.
+    admin cost dashboard. Only a MISSING table degrades (``read_optional_table``
+    re-raises everything else): this fallback silently drops bumps, which is
+    the very bug it exists to prevent, so it must not double as a catch-all
+    for a broken query.
     """
-    try:
-        async with session.begin_nested():
-            return await _bump_aware_limits_by_org_user_all_orgs(session)
-    except ProgrammingError as exc:
-        # Only a MISSING table degrades. Any other SQL fault must surface: this
-        # fallback silently drops bumps, which is the very bug it exists to
-        # prevent, so it must not double as a catch-all for a broken query.
-        if not is_missing_table(exc):
-            raise
-        logger.warning(
-            "quota bumps unavailable (schema not migrated yet); reporting "
-            "base-only limits",
-            exc_info=True,
-        )
-        return await _base_limits_by_org_user_all_orgs(session)
+    limits = await read_optional_table(
+        session,
+        lambda: _bump_aware_limits_by_org_user_all_orgs(session),
+        table="quota_bumps",
+        degraded="reporting base-only limits",
+    )
+    if limits is not None:
+        return limits
+    return await _base_limits_by_org_user_all_orgs(session)
 
 
 async def _bump_aware_limits_by_org_user_all_orgs(
@@ -575,9 +571,7 @@ async def org_inflight_reported_usd(
 def quota_pause_limit_usd(hard_limit_usd: Decimal | None) -> Decimal | None:
     if hard_limit_usd is None:
         return None
-    reserves = [
-        hard_limit_usd * settings.quota_pause_remaining_percent / Decimal(100)
-    ]
+    reserves = [hard_limit_usd * settings.quota_pause_remaining_percent / Decimal(100)]
     if settings.quota_pause_remaining_usd is not None:
         reserves.append(settings.quota_pause_remaining_usd)
     reserve = max(reserves)

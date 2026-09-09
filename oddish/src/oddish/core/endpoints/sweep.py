@@ -430,7 +430,7 @@ async def create_task_sweep_core(
     Returns a tuple of (task, new_trials, is_append, experiment).
 
     When ``idempotency_key`` and ``idempotency_store`` are supplied (the cloud
-    backend wires both; the open-source server passes neither), the submission is
+    backend wires both; the standalone server passes neither), the submission is
     deduplicated: a faithful retry of a completed key raises ``IdempotencyReplay``
     carrying the stored response, and a key reused with a different body -- or one
     still in progress -- raises ``HTTPException(409)``. This short-circuits before

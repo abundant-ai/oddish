@@ -111,3 +111,13 @@ oddish pull <task_id> --watch
 - Package internals and implementation notes: [`AGENTS.md`](../AGENTS.md)
 - Complete CLI reference: [`DOCS.md`](../DOCS.md)
 - Self-hosting and deployment: [`../SELF_HOSTING.md`](../SELF_HOSTING.md)
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) allows personal and other noncommercial
+use, plus use by the organizations listed in the license. Commercial use outside
+those terms requires a separate license from the rights holders. Contact
+[the maintainer](https://github.com/RishiDesai).
+
+Rights already granted for code released under Apache 2.0 remain in place.
+See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own license.
