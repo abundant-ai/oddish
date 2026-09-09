@@ -1029,8 +1029,11 @@ pass the response body through without buffering. The client paints incoming rec
 once per animation frame, validates completion/counts, and keeps partial rows with
 Retry after interruption. Graphs require a complete response. Active experiments
 refresh the complete response every 30 seconds and retain the previous complete
-snapshot while refreshing. Task rows and the Cost/New Spend cards omit the
-“not real” spend-exclusion badge; accounting exclusions are unchanged.
+snapshot while refreshing. A failed refresh leaves that snapshot complete and its
+graphs visible, exposes Retry, and keeps the 30-second refresh timer running.
+An interrupted initial download remains incomplete. Task rows and the Cost/New
+Spend cards omit the “not real” spend-exclusion badge; accounting exclusions are
+unchanged.
 
 The older `/open` and `/trial-page` APIs remain available for existing clients.
 The first `/open` page includes the exact experiment summary; later pages request

@@ -663,6 +663,74 @@ test("active experiments refresh one complete response and cost totals", async (
   await expect(page.getByText("$2.00", { exact: true })).toBeVisible();
 });
 
+for (const failure of ["HTTP error", "interrupted stream"] as const) {
+  test(`a refresh ${failure} preserves complete results and recovers automatically`, async ({
+    page,
+  }) => {
+    const token = `refresh-failure-${failure.replaceAll(" ", "-")}`;
+    await mockInfo(page, token);
+    await page.clock.install();
+    const trials = [1, 2].map((i) => ({
+      id: `trial-${i}`,
+      task_id: "task-1",
+      agent: "codex",
+      model: "gpt-5",
+      provider: "openai",
+      status: "success" as const,
+      reward: 1,
+      created_at: "2026-07-14T00:00:00Z",
+    }));
+    let requests = 0;
+    await page.route(`**/api/public/experiments/${token}/results`, (route) => {
+      requests++;
+      if (requests === 2 && failure === "HTTP error") {
+        return route.fulfill({ status: 503, json: { detail: "Unavailable" } });
+      }
+      const name =
+        requests === 1
+          ? "Task one"
+          : requests === 2
+            ? "Unfinished task"
+            : "Refreshed task";
+      const records = resultRecords(
+        [task({ name, total: 2, completed: 2 })],
+        trials,
+        requests < 3
+      );
+      return route.fulfill({
+        contentType: "application/x-ndjson",
+        body: streamBody(requests === 2 ? records.slice(0, -1) : records),
+      });
+    });
+    await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+    const graph = page.getByRole("heading", { name: "Pass/k", exact: true });
+    const row = page.getByRole("button", { name: "Task one", exact: true });
+    const error = page.getByRole("heading", {
+      name: "Some trial results failed to load",
+    });
+    await expect(graph).toBeVisible();
+    await expect(row).toBeVisible();
+    await page.clock.runFor(30_100);
+    await expect(error).toBeVisible();
+    expect(requests).toBe(2);
+    await expect(graph).toBeVisible();
+    await expect(row).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Trial 1 Pass", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Unfinished task", exact: true })
+    ).toHaveCount(0);
+    await page.clock.runFor(30_100);
+    await expect(
+      page.getByRole("button", { name: "Refreshed task", exact: true })
+    ).toBeVisible();
+    expect(requests).toBe(3);
+    await expect(error).toHaveCount(0);
+    await expect(graph).toBeVisible();
+  });
+}
+
 test("cost totals remain visible without not-real labels", async ({ page }) => {
   const token = "cost-labels";
   await mockInfo(page, token);

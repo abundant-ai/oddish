@@ -70,12 +70,12 @@ export function useExperimentResults({
   );
   const hasActiveTrials = data?.experiment.has_active_trials ?? false;
   useEffect(() => {
-    if (!hasActiveTrials || error) return;
+    if (!hasActiveTrials) return;
     const interval = window.setInterval(() => {
       if (!active.current) void mutate();
     }, 30_000);
     return () => window.clearInterval(interval);
-  }, [hasActiveTrials, error, mutate]);
+  }, [hasActiveTrials, mutate]);
   // Keep a completed snapshot visible during refresh; only the initial load paints progressively.
   const results =
     data ?? (progress?.url === url ? progress.results : undefined);
@@ -98,7 +98,7 @@ export function useExperimentResults({
     isLoadingTrials: isValidating,
     trialsLoaded: results?.trials.length ?? 0,
     totalTrials: results?.experiment.summary?.trial_count ?? 0,
-    pagesComplete: !!data && !error,
+    pagesComplete: !!data,
     refreshResults: mutate,
   };
 }
