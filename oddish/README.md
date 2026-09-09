@@ -44,10 +44,6 @@ The CLI targets Oddish Cloud by default. All API-backed commands require
 uv pip install oddish
 ```
 
-`oddish version` prints the installed package; add `--check` to compare
-against the latest PyPI release. `oddish update` runs
-`uv pip install --upgrade oddish` for a PyPI install.
-
 Common environment variables:
 
 ```bash

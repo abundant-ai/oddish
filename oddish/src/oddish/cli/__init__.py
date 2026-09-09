@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
-
 from oddish.cli.admin import admin_app
 from oddish.cli.assign import assign
 from oddish.cli.backfill_analysis import backfill_analysis
@@ -18,11 +17,11 @@ from oddish.cli.experiment import experiment_app
 from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
-from oddish.cli.preflight import preflight
-from oddish.cli.probe import probe_app
 from oddish.cli.publish import publish, unpublish
-from oddish.cli.pull import pull
+from oddish.cli.probe import probe_app
 from oddish.cli.qa import qa_app
+from oddish.cli.pull import pull
+from oddish.cli.preflight import preflight
 from oddish.cli.run import run
 from oddish.cli.skill import skill
 from oddish.cli.status import status

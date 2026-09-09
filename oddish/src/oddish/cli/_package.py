@@ -1,12 +1,9 @@
-"""Inspect the installed ``oddish`` package and build a PyPI self-upgrade.
-
-``oddish version`` describes the local install. ``oddish update`` upgrades a
-``uv pip install oddish`` install from PyPI and refuses editable or git trees.
-"""
+"""Inspect the installed ``oddish`` package and build a PyPI self-upgrade."""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +22,7 @@ Manager = Literal["uv-pip", "pip"]
 
 
 class PackageError(Exception):
-    """The current install cannot be described safely."""
+    """The current install cannot be described or upgraded safely."""
 
 
 @dataclass(frozen=True)
@@ -87,7 +84,6 @@ def inspect_install(
         )
     except metadata.PackageNotFoundError:
         pass
-
     return InstallInfo(
         version=version,
         source=source,
@@ -105,7 +101,6 @@ def upgrade_command(
     force: bool = False,
     pin_version: str | None = None,
 ) -> list[str]:
-    """Return ``uv pip install --upgrade oddish`` for this interpreter."""
     if info.source == "editable":
         location = info.editable_path or "this checkout"
         raise PackageError(
@@ -122,41 +117,27 @@ def upgrade_command(
     package = f"{PACKAGE_NAME}=={pin_version}" if pin_version else PACKAGE_NAME
     python = executable or sys.executable
     if info.manager == "uv-pip":
-        _require_binary("uv", which=which)
+        if which("uv") is None:
+            raise PackageError("`uv` is not on PATH. Install it or reinstall oddish with pip.")
         command = ["uv", "pip", "install", "--python", python]
         if force:
-            # uv's ``--force-reinstall`` aliases ``--reinstall`` and rebuilds
-            # every package in the environment. Target oddish only.
             command.extend(["--reinstall-package", PACKAGE_NAME])
-        command.extend(["--upgrade", package])
-        return command
+        return [*command, "--upgrade", package]
     command = [python, "-m", "pip", "install"]
     if force:
         command.append("--force-reinstall")
-    command.extend(["--upgrade", package])
-    return command
+    return [*command, "--upgrade", package]
 
 
-def fetch_pypi_latest(*, client: httpx.Client | None = None) -> str:
-    close = client is None
-    http = client or httpx.Client(timeout=10.0)
+def fetch_pypi_latest() -> str:
     try:
-        response = http.get(PYPI_JSON_URL)
-        response.raise_for_status()
-        payload = response.json()
-        version = (
-            payload.get("info", {}).get("version")
-            if isinstance(payload, dict)
-            else None
-        )
-        if not isinstance(version, str) or not version.strip():
-            raise PackageError("PyPI did not return a package version.")
-        return version.strip()
+        payload = httpx.get(PYPI_JSON_URL, timeout=10.0).json()
     except httpx.HTTPError as exc:
         raise PackageError(f"Could not reach PyPI: {exc}") from exc
-    finally:
-        if close:
-            http.close()
+    version = payload.get("info", {}).get("version") if isinstance(payload, dict) else None
+    if not isinstance(version, str) or not version.strip():
+        raise PackageError("PyPI did not return a package version.")
+    return version.strip()
 
 
 def is_outdated(current: str, latest: str) -> bool:
@@ -164,24 +145,17 @@ def is_outdated(current: str, latest: str) -> bool:
 
 
 def query_installed_version(executable: str) -> str:
-    """Read the package version from a (possibly just-upgraded) interpreter."""
     completed = subprocess.run(
-        [
-            executable,
-            "-c",
-            "from importlib.metadata import version; print(version('oddish'))",
-        ],
+        [executable, "-c", "from importlib.metadata import version; print(version('oddish'))"],
         check=False,
         capture_output=True,
         text=True,
     )
-    if completed.returncode != 0:
+    version = completed.stdout.strip()
+    if completed.returncode != 0 or not version:
         raise PackageError(
             completed.stderr.strip() or "Could not read the installed oddish version."
         )
-    version = completed.stdout.strip()
-    if not version:
-        raise PackageError("The upgraded interpreter reported an empty version.")
     return version
 
 
@@ -199,32 +173,16 @@ def _source_from_direct_url(raw_direct: str | None) -> tuple[Source, str | None]
     dir_info = parsed.get("dir_info")
     if isinstance(dir_info, dict) and dir_info.get("editable"):
         return "editable", url_text
-    if parsed.get("vcs_info"):
-        return "other", None
-    if url_text and url_text.startswith("file:"):
+    if parsed.get("vcs_info") or (url_text and url_text.startswith("file:")):
         return "other", None
     return "pypi", None
-
-
-def _require_binary(
-    name: str, *, which: Callable[[str], str | None] = shutil.which
-) -> None:
-    if which(name) is None:
-        raise PackageError(
-            f"`{name}` is not on PATH. Install it or reinstall oddish with pip."
-        )
 
 
 def _version_key(value: str) -> tuple[int, ...]:
     numbers: list[int] = []
     for part in value.split("."):
-        digits = ""
-        for char in part:
-            if char.isdigit():
-                digits += char
-            else:
-                break
-        if not digits:
+        match = re.match(r"\d+", part)
+        if not match:
             break
-        numbers.append(int(digits))
-    return tuple(numbers) if numbers else (0,)
+        numbers.append(int(match.group()))
+    return tuple(numbers) or (0,)

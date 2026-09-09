@@ -375,7 +375,6 @@ async def test_unknown_clerk_org_is_created_on_preview(monkeypatch) -> None:
     clerk_org_id = f"org_preview_{suffix}"
     _mock_refresh(monkeypatch)
     monkeypatch.setattr(prov, "_preview_app", lambda: True)
-    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "")
 
     created_org_id = None
     try:

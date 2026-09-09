@@ -22,49 +22,27 @@ from oddish.cli.config import console, error_console
 
 
 def update_cmd(
-    json_output: Annotated[
-        bool, typer.Option("--json", help="Print JSON instead of text.")
-    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print JSON instead of text.")] = False,
     check: Annotated[
         bool,
-        typer.Option(
-            "--check",
-            help="Report whether a newer PyPI release is available without installing.",
-        ),
+        typer.Option("--check", help="Report whether a newer PyPI release is available."),
     ] = False,
     dry_run: Annotated[
-        bool,
-        typer.Option(
-            "--dry-run",
-            help="Print the upgrade command without running it.",
-        ),
+        bool, typer.Option("--dry-run", help="Print the upgrade command without running it.")
     ] = False,
     force: Annotated[
-        bool,
-        typer.Option(
-            "--force",
-            help="Reinstall even when the PyPI version already matches.",
-        ),
+        bool, typer.Option("--force", help="Reinstall even when the PyPI version already matches.")
     ] = False,
 ) -> None:
-    """Upgrade this CLI from PyPI (the `uv pip install oddish` path).
-
-    Compares the installed package with the latest PyPI release, then runs
-    `uv pip install --upgrade oddish` into this interpreter (or `python -m pip`
-    if uv is not on PATH). Editable and git installs are refused. No API key
-    required.
-    """
+    """Upgrade this CLI from PyPI (`uv pip install oddish`). No API key required."""
     info = inspect_install()
     try:
         latest = fetch_pypi_latest()
+        pypi_error = None
     except PackageError as exc:
         latest = None
         pypi_error = exc
-    else:
-        pypi_error = None
     already_latest = latest is not None and not is_outdated(info.version, latest)
-    # Pin the installed version so ``--force`` cannot resolve a different
-    # (older, interpreter-compatible) PyPI release.
     pin_version = info.version if force and already_latest else None
     try:
         command = upgrade_command(info, force=force, pin_version=pin_version)
@@ -108,9 +86,7 @@ def update_cmd(
             console.print(f"Updating oddish {info.version} via {via}")
 
     completed = subprocess.run(
-        command,
-        check=False,
-        stdout=sys.stderr if json_output else None,
+        command, check=False, stdout=sys.stderr if json_output else None
     )
     if completed.returncode != 0:
         _fail(
@@ -125,7 +101,6 @@ def update_cmd(
         new_version = query_installed_version(sys.executable)
     except PackageError:
         new_version = None
-
     payload["action"] = "updated"
     payload["new_version"] = new_version
     if json_output:
@@ -138,11 +113,7 @@ def update_cmd(
 
 
 def _emit(
-    payload: dict[str, object],
-    *,
-    json_output: bool,
-    info: InstallInfo,
-    latest: str | None,
+    payload: dict[str, object], *, json_output: bool, info: InstallInfo, latest: str | None
 ) -> None:
     if json_output:
         typer.echo(json.dumps(payload, indent=2))
@@ -170,12 +141,7 @@ def _fail(
     if json_output:
         typer.echo(
             json.dumps(
-                {
-                    **info.as_dict(),
-                    "action": "error",
-                    "error": message,
-                    "command": command,
-                },
+                {**info.as_dict(), "action": "error", "error": message, "command": command},
                 indent=2,
             )
         )

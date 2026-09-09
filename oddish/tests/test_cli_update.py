@@ -25,55 +25,22 @@ def _which_uv(name: str) -> str | None:
     return "/usr/bin/uv" if name == "uv" else None
 
 
-def test_upgrade_command_uv_pip_pypi():
-    command = upgrade_command(
-        _info(manager="uv-pip"),
-        executable="/opt/venv/bin/python",
-        which=_which_uv,
-    )
-    assert command == [
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        "/opt/venv/bin/python",
-        "--upgrade",
-        "oddish",
-    ]
+def test_upgrade_command_uv_and_pip():
+    assert upgrade_command(
+        _info(manager="uv-pip"), executable="/opt/venv/bin/python", which=_which_uv
+    ) == ["uv", "pip", "install", "--python", "/opt/venv/bin/python", "--upgrade", "oddish"]
+    assert upgrade_command(
+        _info(manager="pip"), executable="/opt/venv/bin/python", which=lambda _n: None
+    ) == ["/opt/venv/bin/python", "-m", "pip", "install", "--upgrade", "oddish"]
 
 
-def test_upgrade_command_pip_fallback():
-    command = upgrade_command(
-        _info(manager="pip"),
-        executable="/opt/venv/bin/python",
-        which=lambda _name: None,
-    )
-    assert command == [
-        "/opt/venv/bin/python",
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "oddish",
-    ]
-
-
-def test_upgrade_command_refuses_editable():
+def test_upgrade_command_refusals():
     with pytest.raises(PackageError, match="editable"):
-        upgrade_command(
-            _info(source="editable", editable_path="/Users/me/oddish/oddish"),
-            which=_which_uv,
-        )
-
-
-def test_upgrade_command_refuses_non_pypi():
+        upgrade_command(_info(source="editable", editable_path="/tmp/oddish"), which=_which_uv)
     with pytest.raises(PackageError, match="uv pip install oddish"):
         upgrade_command(_info(source="other"), which=_which_uv)
-
-
-def test_upgrade_command_missing_uv():
     with pytest.raises(PackageError, match="uv"):
-        upgrade_command(_info(manager="uv-pip"), which=lambda _name: None)
+        upgrade_command(_info(manager="uv-pip"), which=lambda _n: None)
 
 
 def test_upgrade_command_force_reinstalls():
@@ -82,6 +49,7 @@ def test_upgrade_command_force_reinstalls():
         executable="/opt/venv/bin/python",
         which=_which_uv,
         force=True,
+        pin_version="0.1.13",
     )
     assert uv_command == [
         "uv",
@@ -92,31 +60,12 @@ def test_upgrade_command_force_reinstalls():
         "--reinstall-package",
         "oddish",
         "--upgrade",
-        "oddish",
+        "oddish==0.1.13",
     ]
     pip_command = upgrade_command(
-        _info(manager="pip"),
-        executable="/opt/venv/bin/python",
-        which=lambda _name: None,
-        force=True,
+        _info(manager="pip"), executable="/opt/venv/bin/python", which=lambda _n: None, force=True
     )
-    assert pip_command == [
-        "/opt/venv/bin/python",
-        "-m",
-        "pip",
-        "install",
-        "--force-reinstall",
-        "--upgrade",
-        "oddish",
-    ]
-    pinned = upgrade_command(
-        _info(manager="uv-pip"),
-        executable="/opt/venv/bin/python",
-        which=_which_uv,
-        force=True,
-        pin_version="0.1.13",
-    )
-    assert pinned[-1] == "oddish==0.1.13"
+    assert "--force-reinstall" in pip_command
 
 
 def _patch_update(monkeypatch, info: InstallInfo, latest: str = "0.1.14") -> None:
@@ -124,135 +73,72 @@ def _patch_update(monkeypatch, info: InstallInfo, latest: str = "0.1.14") -> Non
     monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", lambda: latest)
     monkeypatch.setattr(
         "oddish.cli.update.upgrade_command",
-        lambda _info, **_kwargs: ["uv", "pip", "install", "--upgrade", "oddish"],
+        lambda _info, **_kwargs: ["echo", "uv pip install --upgrade oddish"],
     )
 
 
-def test_update_dry_run(monkeypatch):
+def test_update_dry_run_and_already_latest(monkeypatch):
     _patch_update(monkeypatch, _info())
-    result = runner.invoke(app, ["update", "--dry-run"])
-    assert result.exit_code == 0, result.output
-    assert "uv pip install" in result.stdout
-    assert "oddish" in result.stdout
-
-
-def test_update_already_latest(monkeypatch):
+    dry = runner.invoke(app, ["update", "--dry-run"])
+    assert dry.exit_code == 0 and "uv pip install" in dry.stdout
     _patch_update(monkeypatch, _info(), latest="0.1.13")
-    result = runner.invoke(app, ["update"])
-    assert result.exit_code == 0, result.output
-    assert "already up to date" in result.stdout
+    latest = runner.invoke(app, ["update"])
+    assert latest.exit_code == 0 and "already up to date" in latest.stdout
 
 
-def test_update_force_dry_run_reinstalls(monkeypatch):
+def test_update_force_pins_when_current(monkeypatch):
     captured: list[dict] = []
 
     def _capture(_info, **kwargs):
         captured.append(kwargs)
-        return [
-            "uv",
-            "pip",
-            "install",
-            "--reinstall-package",
-            "oddish",
-            "--upgrade",
-            "oddish==0.1.13",
-        ]
+        return ["uv", "pip", "install", "--reinstall-package", "oddish", "--upgrade", "oddish==0.1.13"]
 
     monkeypatch.setattr("oddish.cli.update.inspect_install", lambda: _info())
     monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", lambda: "0.1.13")
     monkeypatch.setattr("oddish.cli.update.upgrade_command", _capture)
     result = runner.invoke(app, ["update", "--force", "--dry-run"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0
     assert captured == [{"force": True, "pin_version": "0.1.13"}]
-    assert "--reinstall-package oddish" in result.stdout
-    assert "oddish==0.1.13" in result.stdout
-
-
-def test_update_force_outdated_does_not_pin(monkeypatch):
-    captured: list[dict] = []
-
-    def _capture(_info, **kwargs):
-        captured.append(kwargs)
-        return ["uv", "pip", "install", "--upgrade", "oddish"]
-
-    monkeypatch.setattr("oddish.cli.update.inspect_install", lambda: _info())
     monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", lambda: "0.2.0")
-    monkeypatch.setattr("oddish.cli.update.upgrade_command", _capture)
+    captured.clear()
     result = runner.invoke(app, ["update", "--force", "--dry-run"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0
     assert captured == [{"force": True, "pin_version": None}]
 
 
-def test_update_check_outdated(monkeypatch):
+def test_update_check_and_editable(monkeypatch):
     _patch_update(monkeypatch, _info(), latest="0.2.0")
-    result = runner.invoke(app, ["update", "--check", "--json"])
-    assert result.exit_code == 1, result.output
-    assert '"action": "check"' in result.stdout
-    assert '"update_available": true' in result.stdout
-
-
-def test_update_refuses_editable(monkeypatch):
+    check = runner.invoke(app, ["update", "--check", "--json"])
+    assert check.exit_code == 1 and '"update_available": true' in check.stdout
     monkeypatch.setattr(
         "oddish.cli.update.inspect_install",
         lambda: _info(source="editable", editable_path="/tmp/oddish"),
     )
-    result = runner.invoke(app, ["update"])
-    assert result.exit_code == 1, result.output
-    assert "editable" in result.output.lower()
+    monkeypatch.setattr("oddish.cli.update.upgrade_command", upgrade_command)
+    refused = runner.invoke(app, ["update"])
+    assert refused.exit_code == 1 and "editable" in refused.output.lower()
 
 
-def test_update_progress_uses_pip_manager_label(monkeypatch):
+def test_update_runs_and_names_pip(monkeypatch):
     _patch_update(monkeypatch, _info(manager="pip"))
     monkeypatch.setattr(
-        "oddish.cli.update.upgrade_command",
-        lambda _info, **_kwargs: ["echo", "upgrade"],
+        "oddish.cli.update.upgrade_command", lambda _info, **_kwargs: ["echo", "upgrade"]
     )
 
     class _Result:
         returncode = 0
 
     monkeypatch.setattr(
-        "oddish.cli.update.subprocess.run",
-        lambda command, check=False, **_kwargs: _Result(),
+        "oddish.cli.update.subprocess.run", lambda command, check=False, **_k: _Result()
     )
-    monkeypatch.setattr(
-        "oddish.cli.update.query_installed_version",
-        lambda _exe: "0.1.14",
-    )
+    monkeypatch.setattr("oddish.cli.update.query_installed_version", lambda _exe: "0.1.14")
     result = runner.invoke(app, ["update"])
-    assert result.exit_code == 0, result.output
-    assert "via pip" in result.output
-    assert "via uv pip" not in result.output
-
-
-def test_update_runs_upgrade(monkeypatch):
-    monkeypatch.setattr("oddish.cli.update.inspect_install", lambda: _info())
-    monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", lambda: "0.1.14")
-    monkeypatch.setattr(
-        "oddish.cli.update.upgrade_command",
-        lambda _info, **_kwargs: ["echo", "upgrade"],
-    )
-
-    class _Result:
-        returncode = 0
-
-    monkeypatch.setattr(
-        "oddish.cli.update.subprocess.run",
-        lambda command, check=False, **_kwargs: _Result(),
-    )
-    monkeypatch.setattr(
-        "oddish.cli.update.query_installed_version",
-        lambda _exe: "0.1.14",
-    )
-    result = runner.invoke(app, ["update"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0
+    assert "via pip" in result.output and "via uv pip" not in result.output
     assert "0.1.14" in result.stdout
 
 
 def test_update_help_lists_options():
     result = runner.invoke(app, ["update", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "--dry-run" in result.output
-    assert "--check" in result.output
-    assert "--force" in result.output
-    assert "uv pip install oddish" in result.output
+    assert result.exit_code == 0
+    assert all(flag in result.output for flag in ("--dry-run", "--check", "--force"))

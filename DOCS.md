@@ -8,11 +8,9 @@
 uv pip install oddish
 ```
 
-Refresh that install with `oddish update` (`uv pip install --upgrade oddish`
-into the same interpreter). `oddish version` prints the installed package;
-add `--check` to compare against the latest PyPI release.
+`oddish update` upgrades that install. `oddish version --check` compares with PyPI.
 
-To install the development tree instead of the published wheel:
+To install the development tree:
 
 ```bash
 uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"

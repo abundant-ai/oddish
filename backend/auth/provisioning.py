@@ -362,65 +362,28 @@ async def get_org_from_clerk_id(
     return org_result.scalar_one_or_none()
 
 
-async def _preview_org_label(clerk_org_id: str) -> tuple[str, str]:
-    slug = f"preview-{clerk_org_id}"
-    name = "Preview"
-    if not CLERK_SECRET_KEY:
-        return name, slug
-    url = f"https://api.clerk.com/v1/organizations/{clerk_org_id}"
-    try:
-        async with RequestTimedAsyncClient(timeout=10) as client:
-            response = await client.get(
-                url, headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
-            )
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch Clerk org %s: %s", clerk_org_id, exc)
-        return name, slug
-    if isinstance(data, dict):
-        raw_name = data.get("name")
-        if isinstance(raw_name, str) and raw_name.strip():
-            name = raw_name.strip()
-    return name, slug
-
-
-async def _create_preview_org(
+async def _resolve_org(
     session: AsyncSession, clerk_org_id: str
-) -> OrganizationModel:
-    name, slug = await _preview_org_label(clerk_org_id)
+) -> OrganizationModel | None:
+    org = await get_org_from_clerk_id(session, clerk_org_id)
+    if org or not _preview_app():
+        return org
     try:
         async with session.begin_nested():
             org = OrganizationModel(
                 id=generate_id(),
-                name=name,
-                slug=slug,
+                name="Preview",
+                slug=f"preview-{clerk_org_id}",
                 clerk_org_id=clerk_org_id,
             )
             session.add(org)
             await session.flush()
-            logger.info(
-                "Preview JIT-created org %s for clerk_org_id=%s",
-                org.id,
-                clerk_org_id,
-            )
             return org
     except IntegrityError:
         org = await get_org_from_clerk_id(session, clerk_org_id)
         if org:
             return org
         raise
-
-
-async def _resolve_org(
-    session: AsyncSession, clerk_org_id: str
-) -> OrganizationModel | None:
-    org = await get_org_from_clerk_id(session, clerk_org_id)
-    if org:
-        return org
-    if _preview_app():
-        return await _create_preview_org(session, clerk_org_id)
-    return None
 
 
 async def get_or_create_personal_org(
@@ -555,10 +518,8 @@ async def get_or_create_user_from_clerk(
     Get or create a user from Clerk JWT claims.
 
     If the user doesn't exist and belongs to a Clerk org, we create the user.
-    If no org is found locally, returns None (org must be provisioned first),
-    except on preview apps which JIT-create the Clerk org. The preview seed
-    only copies orgs that own sampled experiments, so a signed-in Clerk org
-    is often missing.
+    If no org is found locally, returns None, except preview apps which
+    JIT-create the Clerk org.
     """
     if clerk_org_id:
         org = await _resolve_org(session, clerk_org_id)
