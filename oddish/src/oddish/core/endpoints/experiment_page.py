@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -254,15 +255,6 @@ def _experiment_task_rows(
             ),
             240,
         ).label("verdict_primary_issue"),
-        func.coalesce(
-            func.jsonb_array_length(
-                func.jsonb_path_query_array(
-                    func.coalesce(current_version.pre_trial, text("'{}'::jsonb")),
-                    text("'$.items[*] ? (@.tier == \"must_fix\")'"),
-                )
-            ),
-            0,
-        ).label("verdict_must_fix"),
         func.left(TaskModel.verdict_error, 200).label("verdict_error"),
         TaskModel.created_at,
         TaskModel.updated_at,
@@ -278,7 +270,23 @@ def _experiment_task_rows(
         stats.c.average_score,
     ]
     if include_user:
-        columns.append(TaskModel.user)
+        columns.extend(
+            [
+                TaskModel.user,
+                case(
+                    (
+                        current_version.pre_trial_status == VerdictStatus.SUCCESS,
+                        func.jsonb_array_length(
+                            func.jsonb_path_query_array(
+                                current_version.pre_trial,
+                                cast('$.items[*] ? (@.tier == "must_fix")', JSONPATH),
+                            )
+                        ),
+                    ),
+                    else_=None,
+                ).label("must_fix_count"),
+            ]
+        )
     return (
         select(*columns)
         .select_from(TaskModel)
@@ -345,7 +353,6 @@ def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
         values["verdict"] = {
             **values["verdict"].model_dump(),
             "primary_issue": row["verdict_primary_issue"],
-            "must_fix": int(row["verdict_must_fix"] or 0),
         }
     values["github_meta"] = _parse_github_meta(row["tags"])
     return ExperimentTaskRow.model_validate(values)

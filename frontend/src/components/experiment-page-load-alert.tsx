@@ -1,12 +1,14 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
-export function ExperimentTrialLoadAlert({
+export function ExperimentPageLoadAlert({
+  resource,
   loaded,
   total,
   isRetrying,
   onRetry,
 }: {
+  resource: "tasks" | "trials";
   loaded: number;
   total: number;
   isRetrying: boolean;
@@ -14,10 +16,12 @@ export function ExperimentTrialLoadAlert({
 }) {
   return (
     <Alert variant="destructive">
-      <AlertTitle>Some trial results failed to load</AlertTitle>
+      <AlertTitle>
+        Some {resource === "trials" ? "trial results" : "tasks"} failed to load
+      </AlertTitle>
       <AlertDescription className="flex flex-wrap items-center gap-2">
         <span>
-          Loaded {loaded}/{total} trials.
+          Loaded {loaded}/{total} {resource}.
         </span>
         <Button
           type="button"

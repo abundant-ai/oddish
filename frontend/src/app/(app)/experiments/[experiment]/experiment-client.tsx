@@ -21,7 +21,7 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
+import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { apiFetch, fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
@@ -72,17 +72,13 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     openError,
     isLoading,
     isLoadingTrials,
-    hasMoreTasks,
-    hasMoreTrials,
-    canLoadTrials,
-    loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded: trialsLoadedCount,
     totalTrials: totalTrialCount,
     trialsStalled,
     isValidatingTrials,
-    trialPagesComplete,
+    isValidatingOpen,
+    pagesComplete,
     mutateOpen,
     mutateTrials,
   } = useExperimentPages({
@@ -298,12 +294,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           onRetryCostTotals={() => void refreshCostTotals()}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
-          trialPagesComplete={trialPagesComplete}
-          hasMoreTasks={hasMoreTasks}
-          hasMoreTrials={hasMoreTrials}
-          canLoadTrials={canLoadTrials}
-          loadNextTasks={loadNextTasks}
-          loadNextTrials={loadNextTrials}
+          pagesComplete={pagesComplete}
           focusUrl={
             encodedId ? `/api/experiments/${encodedId}/focus` : undefined
           }
@@ -450,21 +441,21 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
             ) : trialsStalled ? (
-              // Outranks the refresh alert below: this one carries the only
-              // recovery control.
-              <ExperimentTrialLoadAlert
+              <ExperimentPageLoadAlert
+                resource="trials"
                 loaded={trialsLoadedCount}
                 total={totalTrialCount}
                 isRetrying={isValidatingTrials}
                 onRetry={retryTrials}
               />
-            ) : openError && tasksForExperiment.length > 0 ? (
-              <Alert>
-                <AlertTitle>Could not refresh experiment</AlertTitle>
-                <AlertDescription>
-                  Showing the most recently loaded task data.
-                </AlertDescription>
-              </Alert>
+            ) : openError && experimentOpen ? (
+              <ExperimentPageLoadAlert
+                resource="tasks"
+                loaded={tasksForExperiment.length}
+                total={experimentOpen.summary?.task_count ?? 0}
+                isRetrying={isValidatingOpen}
+                onRetry={() => void mutateOpen()}
+              />
             ) : null
           }
           readOnly={false}

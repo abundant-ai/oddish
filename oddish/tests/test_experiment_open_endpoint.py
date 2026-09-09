@@ -123,7 +123,6 @@ def _task(index: int, **overrides):
         "verdict_is_good": "true",
         "verdict_confidence": "high",
         "verdict_primary_issue": None,
-        "verdict_must_fix": 0,
         "verdict_error": None,
         "created_at": NOW - timedelta(seconds=index),
         "updated_at": NOW,
@@ -281,31 +280,27 @@ def test_experiment_open_includes_rejection_preview_without_full_report():
         "is_good": False,
         "confidence": "high",
         "primary_issue": reason,
-        "must_fix": 0,
     }
     sql = _sql(session.calls[2])
     assert (
         "left(coalesce(nullif(tasks.verdict ->> 'primary_issue', ''), tasks.verdict ->> 'reasoning'), 240) AS verdict_primary_issue"
         in sql
     )
-    assert "jsonb_path_query_array" in sql
-    assert "must_fix" in sql
     assert len(session.calls) == 4
 
 
-def test_experiment_open_includes_must_fix_count():
-    session, response = _open(
-        _task(
-            1,
-            verdict_label="reject",
-            verdict_is_good="false",
-            verdict_primary_issue="The source audit reported 2 must-fix findings.",
-            verdict_must_fix=2,
-        )
-    )
-    assert response.tasks[0].verdict is not None
-    assert response.tasks[0].verdict.must_fix == 2
-    assert "jsonb_path_query_array" in _sql(session.calls[2])
+@pytest.mark.parametrize("count", [None, 0, 1, 12])
+def test_experiment_open_includes_current_audit_count_without_findings(count):
+    session, response = _open(_task(1, must_fix_count=count))
+    payload = response.model_dump()["tasks"][0]
+    assert payload["must_fix_count"] == count
+    assert "pre_trial" not in payload
+    sql = _sql(session.calls[2])
+    assert "pre_trial_status = 'SUCCESS'" in sql
+    assert "jsonb_array_length(jsonb_path_query_array(" in sql
+    assert '$.items[*] ? (@.tier == "must_fix")' in sql
+    assert "AS must_fix_count" in sql
+    assert len(session.calls) == 4
 
 
 def test_experiment_open_caps_rows_and_returns_a_stable_boundary():
@@ -417,6 +412,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
         1,
         user="private-owner",
         verdict_primary_issue="Private QA finding",
+        must_fix_count=7,
         tags={
             "github_meta": (
                 '{"category":"JS","world":"World_7",'
@@ -458,6 +454,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     assert "owner" not in payload
     assert "link" not in payload
     assert "user" not in payload["tasks"][0]
+    assert "must_fix_count" not in payload["tasks"][0]
     assert payload["tasks"][0]["github_meta"] == {
         "category": "JS",
         "world": "World_7",
@@ -469,6 +466,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     assert "private/repository" not in response.model_dump_json()
     task_query_sql = _sql(session.calls[1])
     assert 'tasks."user"' not in task_query_sql
+    assert "must_fix_count" not in task_query_sql
 
 
 def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():

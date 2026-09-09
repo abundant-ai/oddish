@@ -54,13 +54,13 @@ test("rejected experiment copy uses the must-fix count", () => {
   expect(
     rejectedMustFixLabel({
       ...rejected,
-      verdict: { ...rejected.verdict, must_fix: 1 },
+      must_fix_count: 1,
     })
   ).toBe("1 Must Fix");
   expect(
     rejectedMustFixLabel({
       ...rejected,
-      verdict: { ...rejected.verdict, must_fix: 3 },
+      must_fix_count: 3,
     })
   ).toBe("3 Must Fix");
 });

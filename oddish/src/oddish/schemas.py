@@ -1093,11 +1093,11 @@ class PublicExperimentTaskRow(BaseModel):
 
 class ExperimentTaskVerdict(ExperimentPageVerdict):
     primary_issue: str | None = None
-    must_fix: int = 0
 
 
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    must_fix_count: int | None = None
     verdict: ExperimentTaskVerdict | None = None
 
 

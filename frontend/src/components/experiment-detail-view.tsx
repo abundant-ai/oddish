@@ -15,7 +15,6 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
@@ -129,12 +128,7 @@ interface ExperimentDetailViewProps {
   onRetryCostTotals: () => void;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
-  hasMoreTasks?: boolean;
-  hasMoreTrials?: boolean;
-  canLoadTrials?: boolean;
-  loadNextTasks?: () => void;
-  loadNextTrials?: () => void;
+  pagesComplete?: boolean;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -1026,12 +1020,7 @@ export function ExperimentDetailView({
   onRetryCostTotals,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
-  hasMoreTasks = false,
-  hasMoreTrials = false,
-  canLoadTrials = false,
-  loadNextTasks = () => {},
-  loadNextTrials = () => {},
+  pagesComplete = true,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1446,13 +1435,27 @@ export function ExperimentDetailView({
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
         : drawerState.trial;
-    const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
+    // Keep a caller-supplied subset (e.g. rejected-only review order) instead
+    // of replacing it with the full experiment list when trials stream in.
+    const liveById = new Map(
+      tasksForExperiment.map((task) => [task.id, task] as const)
+    );
+    const preservedOrderedTasks = drawerState.orderedTasks
+      .map((task) => liveById.get(task.id))
+      .filter((task): task is Task => task != null);
+    const orderedTasks =
+      preservedOrderedTasks.length > 0
+        ? preservedOrderedTasks
+        : tasksForExperiment;
+    const resolvedTaskIndex = orderedTasks.findIndex(
+      (task) => task.id === liveTask.id
+    );
     setDrawerState({
       ...drawerState,
       task: liveTask,
       taskIndex:
         resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
-      orderedTasks: tasksForExperiment,
+      orderedTasks,
       trial: resolvedTrial,
       trialIndex: resolvedTrialIndex,
       orderedTrials,
@@ -1884,7 +1887,7 @@ export function ExperimentDetailView({
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
-                trialPagesComplete={trialPagesComplete}
+                pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1932,23 +1935,6 @@ export function ExperimentDetailView({
                     trialGroups,
                   });
                 }}
-              />
-              {hasMoreTrials && (
-                <div className="flex justify-center">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={loadNextTrials}
-                    disabled={!canLoadTrials}
-                  >
-                    Load next 250 trial results
-                  </Button>
-                </div>
-              )}
-              <ExperimentPaginationSentinel
-                hasMoreTasks={hasMoreTasks}
-                loadNextTasks={loadNextTasks}
               />
             </div>
           )}

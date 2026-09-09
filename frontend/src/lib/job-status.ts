@@ -148,7 +148,7 @@ export function taskHasRejectedVerdict(task: Task): boolean {
 
 /** Short experiment-row copy for a rejected task. */
 export function rejectedMustFixLabel(task: Task): string {
-  const count = task.verdict?.must_fix ?? 0;
+  const count = task.must_fix_count ?? 0;
   if (count > 0) {
     return `${count} Must Fix`;
   }
