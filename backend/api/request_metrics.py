@@ -67,6 +67,8 @@ class BackendPhaseMetricsMiddleware:
             )
             if timing.archive_cache_hit is not None:
                 attributes["storage.archive_cache.hit"] = timing.archive_cache_hit
+            if timing.trajectory_cache_hit is not None:
+                attributes["storage.trajectory_cache.hit"] = timing.trajectory_cache_hit
             if timing.file_source is not None:
                 attributes["storage.file.source"] = timing.file_source
             if timing.file_bytes is not None:

@@ -682,7 +682,7 @@ async def reconcile_queue_state():
         try:
             summary["unapproved_tasks_cancelled"] = await cancel_unapproved_runs()
         except Exception as e:
-            phase_errors.append(f"unapproved_org_cleanup: {e}")
+            phase_errors.append(f"unapproved_org_cleanup: {type(e).__name__}: {e}")
             log_exception("reconcile phase failed", phase="unapproved_org_cleanup")
 
         try:
@@ -755,6 +755,16 @@ async def reconcile_queue_state():
                 await backfill_github_id(max_users=200, time_budget_seconds=60.0)
             ).as_dict()
             summary.update({k: int(v) for k, v in gid_counts.items()})
+            if gid_counts["github_id_backfill_failed"]:
+                phase_errors.append(
+                    "github_id_backfill: Clerk identity lookups failed; "
+                    "existing identities preserved (see Clerk HTTP errors in logs)"
+                )
+            if gid_counts["github_id_backfill_deferred"]:
+                phase_errors.append(
+                    "github_id_backfill: retry deferred after failed Clerk batch; "
+                    "existing identities preserved"
+                )
             if any(gid_counts.values()):
                 console.print(
                     "metric=github_id_backfill "
