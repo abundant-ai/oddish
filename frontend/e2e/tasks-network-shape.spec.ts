@@ -47,6 +47,9 @@ const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 // /api/tasks/browse/experiment-options are separate resources and must not
 // count here — the `?` requires the query form.
 const BROWSE_RE = /\/api\/tasks\/browse\?/;
+// The matching-task count is a sibling path, so BROWSE_RE (which requires
+// "browse?") never matches it and the two fetches stay countable apart.
+const COUNT_RE = /\/api\/tasks\/browse\/count\?/;
 const FACETS_RE = /\/api\/tasks\/browse\/facets/;
 const TAGS_RE = /\/api\/tags(\?|$)/;
 const LEADERBOARD_RE = /\/api\/leaderboard\?/;
@@ -175,6 +178,7 @@ test.describe("tasks page network shape", () => {
 
     await holdCountedResponses(page, [
       BROWSE_RE,
+      COUNT_RE,
       FACETS_RE,
       TAGS_RE,
       LEADERBOARD_RE,
@@ -203,6 +207,12 @@ test.describe("tasks page network shape", () => {
     // own, not a revalidation.
     await page.waitForTimeout(1_500);
     expect(countSince(log, 0, BROWSE_RE)).toBe(1);
+    // The count rides beside the grid, not inside it: one fetch of its own,
+    // and never more than one for a filter state.
+    await expect
+      .poll(() => countSince(log, 0, COUNT_RE), { timeout: 10_000 })
+      .toBe(1);
+    expect(countSince(log, 0, COUNT_RE)).toBe(1);
 
     // Phase 2 — leave through the nav (client-side, cache intact) and come
     // back. The grid must paint from the cache: the browse revalidation is
@@ -248,6 +258,9 @@ test.describe("tasks page network shape", () => {
       .toBe(1);
     await page.waitForTimeout(1_500);
     expect(countSince(log, filterMark, BROWSE_RE)).toBe(1);
+    // New filters mean a new answer, so the count is re-asked exactly once —
+    // its cache key carries the filters (but never the page offset).
+    expect(countSince(log, filterMark, COUNT_RE)).toBe(1);
     expect(countSince(log, filterMark, FACETS_RE)).toBe(0);
     expect(countSince(log, filterMark, TAGS_RE)).toBe(0);
 

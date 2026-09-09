@@ -17,6 +17,10 @@ import type {
 // re-resolves rolling windows against the current time — the same semantics
 // the grid had while it was server-rendered.
 const BROWSE_KEY_PREFIX = "/api/tasks/browse?";
+// A sibling path, not a flag on the grid URL: it keeps the two fetches
+// distinguishable in the network shape (see e2e/tasks-network-shape.spec.ts,
+// which asserts one grid fetch per filter state).
+const BROWSE_COUNT_KEY_PREFIX = "/api/tasks/browse/count?";
 
 /**
  * Builds the SWR cache key — and fetch URL — for one browse state from the
@@ -55,8 +59,7 @@ export function browseCountKey(searchParams: URLSearchParams): string {
     const value = searchParams.get(key);
     if (value) params.set(key, value);
   }
-  params.set("count_only", "true");
-  return `${BROWSE_KEY_PREFIX}${params.toString()}`;
+  return `${BROWSE_COUNT_KEY_PREFIX}${params.toString()}`;
 }
 
 // Staging has shown multi-second browse responses; a hung fetch should fail
