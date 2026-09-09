@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import json
 
-from oddish.cli import app
-from oddish.cli._package import InstallInfo, PackageError, inspect_install, is_outdated
+import pytest
 from typer.testing import CliRunner
+
+from oddish.cli import app
+from oddish.cli._package import (
+    InstallInfo,
+    PackageError,
+    fetch_pypi_latest,
+    inspect_install,
+    is_outdated,
+)
 
 runner = CliRunner()
 
@@ -64,6 +72,16 @@ def test_inspect_install_sources(monkeypatch):
             return "{not-json" if name == "direct_url.json" else "uv"
 
     assert inspect_install(which=_which_uv, distribution=_Broken()).source == "pypi"  # type: ignore[arg-type]
+
+
+def test_fetch_pypi_latest_rejects_non_json(monkeypatch):
+    class _Resp:
+        def json(self) -> object:
+            raise json.JSONDecodeError("Expecting value", "", 0)
+
+    monkeypatch.setattr("oddish.cli._package.httpx.get", lambda *_a, **_k: _Resp())
+    with pytest.raises(PackageError, match="PyPI"):
+        fetch_pypi_latest()
 
 
 def test_is_outdated():

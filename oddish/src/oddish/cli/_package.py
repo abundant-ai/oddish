@@ -132,7 +132,7 @@ def upgrade_command(
 def fetch_pypi_latest() -> str:
     try:
         payload = httpx.get(PYPI_JSON_URL, timeout=10.0).json()
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
         raise PackageError(f"Could not reach PyPI: {exc}") from exc
     version = payload.get("info", {}).get("version") if isinstance(payload, dict) else None
     if not isinstance(version, str) or not version.strip():
