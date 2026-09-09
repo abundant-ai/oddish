@@ -1116,6 +1116,42 @@ async def test_discovered_model_uses_catalog_case_and_route(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_bedrock", [False, True])
+@pytest.mark.parametrize("route", [None, "anthropic"])
+async def test_claude_case_fallback_preserves_anthropic_route(
+    monkeypatch, include_bedrock, route
+):
+    model = "anthropic/claude-sonnet-4-6"
+    entries = {(model, "anthropic", "anthropic")}
+    if include_bedrock:
+        entries.add(("global.anthropic.claude-sonnet-4-6", "bedrock", "bedrock"))
+    monkeypatch.setattr(model_endpoints_router, "provider_models", lambda: entries)
+
+    async def completion(**kwargs):
+        assert kwargs["model"] == model
+        return SimpleNamespace(
+            id="anthropic-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": model.upper(), "route": route}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["model"] == model
+    assert payload["resolved_model"] == model
+    assert payload["provider"] == "anthropic"
+    assert payload["route"] == "anthropic"
+
+
+@pytest.mark.asyncio
 async def test_alternate_xai_credentials_are_selected_and_cached_separately(
     monkeypatch,
 ):
