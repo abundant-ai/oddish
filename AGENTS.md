@@ -1675,7 +1675,15 @@ Hosted dispatch filters unapproved orgs, and both worker lanes inject an approva
 callback into the core runner before execution and every 15 seconds. Keep that
 policy in backend; self-hosted core runners default to no callback. The reconciler
 and operator revoke command use the existing task cancellation/remote teardown
-path. See `backend/README.md` for initial migration IDs, deployment order, operator
+path. Cleanup builds candidate task IDs from active trials and task/trial jobs
+before looking up tasks; do not restore per-task correlated job-history scans.
+Worker-job diagnostics compare the native status enum so PostgreSQL can use
+status indexes. The GitHub identity backfill preserves users on Clerk HTTP
+errors. An entirely failed batch of at least 10 users backs off for 15 minutes
+in the warm reconciler process (a restart resets the cooldown); failed/deferred
+lookups remain visible in the reconciler heartbeat rather than reporting health.
+Cleanup heartbeat errors include the exception class, including bare timeouts.
+See `backend/README.md` for initial migration IDs, deployment order, operator
 approval commands, and the separate live Clerk organization settings.
 
 ### Configuration (backend)
