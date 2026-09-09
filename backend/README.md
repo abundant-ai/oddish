@@ -108,14 +108,18 @@ curl -H "Authorization: Bearer ok_abc123..." "$API_URL/tasks"
 3. Otherwise validate Clerk JWT and resolve org/user.
 4. Read the organization's `execution_enabled` approval from the database on
    every authenticated request, including cached identities and existing keys.
-   Missing approval returns HTTP 403 before the route runs.
+   Missing approval returns HTTP 403 before the route runs. This same read
+   supplies current organization data to `/org` and invitation routes, so a
+   cached identity never means missing or stale organization details.
 
 Clerk tokens must select an organization (`org_id`, or `o.id` in v2 tokens).
 Missing selection returns HTTP 403; it never creates a Personal organization or
 chooses membership by email. If a selected organization has not arrived through
 Clerk's webhook yet, the backend fetches it from Clerk and creates the local
 record. A failed Clerk request returns HTTP 503 so the client can retry.
-Membership callbacks read Clerk's `public_user_data.user_id` field.
+Membership callbacks read Clerk's `public_user_data.user_id` field and update
+the same user record created by login. Supplied emails replace provisioning
+placeholders; partial callbacks without an email preserve the stored address.
 Organization synchronization serializes conflicting callbacks and preserves
 approval and deletion state. Creation and membership events cannot grant access.
 

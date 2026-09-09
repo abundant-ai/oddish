@@ -354,74 +354,59 @@ async def get_or_create_user_in_org(
         .where(UserModel.is_active == True)  # noqa: E712
     )
     user = result.scalar_one_or_none()
-    if user:
-        resolved_role = resolve_role(org_role, user.role)
-        if resolved_role != user.role:
-            user.role = resolved_role
-        await _refresh_user_github_identity(user, session)
-        return user
-
-    if email:
-        existing_email = await session.execute(
+    if user is None and email:
+        result = await session.execute(
             select(UserModel)
             .options(raiseload("*"))
             .where(UserModel.org_id == org.id)
             .where(UserModel.email == email)
-            .where(UserModel.is_active == True)  # noqa: E712
-        )
-        existing_user = existing_email.scalar_one_or_none()
-        if existing_user:
-            existing_user.clerk_user_id = clerk_user_id
-            resolved_role = resolve_role(org_role, existing_user.role)
-            if resolved_role != existing_user.role:
-                existing_user.role = resolved_role
-            await _refresh_user_github_identity(existing_user, session)
-            return existing_user
-
-    role = resolve_role(org_role, default_role)
-    provisioning_email = email or f"{clerk_user_id}@clerk.user"
-    user = UserModel(
-        id=generate_id(),
-        org_id=org.id,
-        clerk_user_id=clerk_user_id,
-        email=provisioning_email,
-        role=role,
-    )
-    try:
-        # Two requests for a Clerk user's first page load can both miss the
-        # reads above. Keep the losing INSERT inside a savepoint so its unique
-        # email violation does not abort the request's outer transaction.
-        async with session.begin_nested():
-            session.add(user)
-            await session.flush()
-    except IntegrityError:
-        result = await session.execute(
-            select(UserModel)
-            .options(raiseload("*"))
-            .where(UserModel.clerk_user_id == clerk_user_id)
-            .where(UserModel.org_id == org.id)
-            .where(UserModel.is_active == True)  # noqa: E712
+            .where(UserModel.is_active.is_(True))
         )
         user = result.scalar_one_or_none()
-        if user is None:
+
+    if user is None:
+        provisioning_email = email or f"{clerk_user_id}@clerk.user"
+        user = UserModel(
+            id=generate_id(),
+            org_id=org.id,
+            clerk_user_id=clerk_user_id,
+            email=provisioning_email,
+            role=resolve_role(org_role, default_role),
+        )
+        try:
+            # Concurrent first requests can miss both lookups. A savepoint
+            # keeps the losing INSERT from aborting the outer transaction.
+            async with session.begin_nested():
+                session.add(user)
+                await session.flush()
+        except IntegrityError:
             result = await session.execute(
                 select(UserModel)
                 .options(raiseload("*"))
+                .where(UserModel.clerk_user_id == clerk_user_id)
                 .where(UserModel.org_id == org.id)
-                .where(UserModel.email == provisioning_email)
-                .where(UserModel.is_active == True)  # noqa: E712
+                .where(UserModel.is_active.is_(True))
             )
             user = result.scalar_one_or_none()
-        if user is None:
-            raise
+            if user is None:
+                result = await session.execute(
+                    select(UserModel)
+                    .options(raiseload("*"))
+                    .where(UserModel.org_id == org.id)
+                    .where(UserModel.email == provisioning_email)
+                    .where(UserModel.is_active.is_(True))
+                )
+                user = result.scalar_one_or_none()
+            if user is None:
+                raise
 
-        user.clerk_user_id = clerk_user_id
-        resolved_role = resolve_role(org_role, user.role)
-        if resolved_role != user.role:
-            user.role = resolved_role
-
+    # Login and membership callbacks share one identity update path. A missing
+    # email must never replace a real address with a provisioning placeholder.
+    user.clerk_user_id = clerk_user_id
+    if email:
+        user.email = email
+    user.role = resolve_role(org_role, user.role)
     await _refresh_user_github_identity(user, session)
-
     return user
 
 
