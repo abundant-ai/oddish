@@ -663,6 +663,17 @@ export interface ExperimentCostTotals {
   experiment_cost_excluded?: boolean;
 }
 
+export interface TaskPanelResponse {
+  task: Task;
+  version: TaskVersionSummary | null;
+  can_retry: boolean;
+  cancel: "task" | "qa" | null;
+  active_trials: number;
+  qa_active: boolean;
+  can_run_qa: boolean;
+  has_analysis: boolean;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   versions: TaskVersionSummary[];
@@ -1125,6 +1136,8 @@ export interface ModelEndpointCheckResponse {
   model: string;
   resolved_model: string;
   provider: string;
+  route: string;
+  credential: string | null;
   transport: "litellm_completion";
   failure_kind: "provider" | "configuration" | null;
   status_code: number | null;
@@ -1132,6 +1145,24 @@ export interface ModelEndpointCheckResponse {
   response: string | null;
   error: string | null;
   request_id: string | null;
+}
+
+export interface ModelEndpointSummary {
+  model: string;
+  provider: string;
+  route: string;
+  credential: string | null;
+  testable: boolean;
+  source: "provider_catalog" | "deployment" | "previously_used";
+  credential_configured: boolean | null;
+}
+
+export interface ModelEndpointAccessResponse {
+  allowed: boolean;
+}
+
+export interface ModelEndpointCatalogResponse extends ModelEndpointAccessResponse {
+  models: ModelEndpointSummary[];
 }
 
 export interface CostModelBreakdown {

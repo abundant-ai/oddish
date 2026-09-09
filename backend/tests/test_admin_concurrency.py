@@ -62,6 +62,9 @@ def operator_org(monkeypatch):
 async def test_admin_update_normalizes_key_and_reports_both_limits(monkeypatch):
     session = _Session()
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
@@ -90,6 +93,9 @@ async def test_admin_update_normalizes_key_and_reports_both_limits(monkeypatch):
 async def test_admin_clearing_an_override_falls_back_to_the_deploy_limit(monkeypatch):
     session = _Session()
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
     deploy_limit = settings.get_model_concurrency("minimax/minimax-m3")
 
     async with AsyncClient(
@@ -117,6 +123,9 @@ async def test_admin_clearing_an_override_falls_back_to_the_deploy_limit(monkeyp
 async def test_admin_get_normalizes_key_and_reads_database_override(monkeypatch):
     session = _Session(overrides={"minimax/minimax-m3": 96})
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
@@ -148,6 +157,9 @@ async def test_admin_get_reports_fresh_dynamic_advisory(
         advisory={"MiniMax/MiniMax-M3": advisory},
     )
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
     monkeypatch.setattr(settings, "dynamic_model_concurrency", True)
 
     async with AsyncClient(

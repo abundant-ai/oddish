@@ -9,6 +9,7 @@ from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
+from org_access import require_execution_org
 from oddish.timing import (
     begin_auth_timing,
     finish_auth_timing,
@@ -23,15 +24,17 @@ from auth.permissions import (
     can_manage_quotas,
 )
 from auth.resource_access import authorize_bound_analysis_request
-from auth.provisioning import get_or_create_user_from_clerk
+from auth.provisioning import get_or_create_user_from_clerk, resolve_role
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
+    AUTH_IDENTITY_TTL,
     CachedAuthData,
     get_cached_auth,
     set_cached_auth,
     verify_api_key,
     verify_clerk_jwt,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +152,6 @@ async def get_auth_context(
                     auth_context = AuthContext(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
-                        org=org,
                         org_slug=org.slug,
                         user_id=creator.id if creator else api_key.created_by_user_id,
                         user=creator,
@@ -203,13 +205,17 @@ async def get_auth_context(
                 cached = get_cached_auth(cache_key)
             record_cache_result(hit=cached is not None)
             if cached:
+                # The entry only maps Clerk ids to internal ids. Role and email
+                # come from the token just verified -- the same claims the
+                # miss path writes into the user row -- so a Clerk role change
+                # takes effect on the next request, not at cache expiry.
                 return AuthContext(
                     method=cached.method,
                     org_id=cached.org_id,
                     org_slug=cached.org_slug,
                     user_id=cached.user_id,
-                    user_email=cached.user_email,
-                    user_role=cached.user_role,
+                    user_email=email or cached.user_email,
+                    user_role=resolve_role(org_role, cached.user_role),
                     scope=cached.scope,
                     # Note: org/user ORM objects not included in cached response
                 )
@@ -246,7 +252,6 @@ async def get_auth_context(
                     clerk_auth_context = AuthContext(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
-                        org=org,
                         org_slug=org.slug,
                         user_id=user.id,
                         user=user,
@@ -256,8 +261,11 @@ async def get_auth_context(
                     )
 
                     if clerk_cached_auth is not None and clerk_auth_context is not None:
-                        set_cached_auth(cache_key, clerk_cached_auth)
+                        set_cached_auth(
+                            cache_key, clerk_cached_auth, ttl_seconds=AUTH_IDENTITY_TTL
+                        )
                         return clerk_auth_context
+
                 except Exception as exc:
                     if isinstance(exc, HTTPException):
                         raise
@@ -300,6 +308,9 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     await authorize_bound_analysis_request(request, auth)
+    # Resolve organization data at the same boundary as approval, on both
+    # cache hits and misses. Auth caches contain identities, never ORM rows.
+    auth.org = await require_execution_org(auth.org_id)
     return auth
 
 

@@ -22,6 +22,7 @@ class AuthContext:
 
     method: AuthMethod
     org_id: str | None = None
+    # Filled from the database by require_auth after checking approval.
     org: OrganizationModel | None = None
     org_slug: str | None = None
     user_id: str | None = None

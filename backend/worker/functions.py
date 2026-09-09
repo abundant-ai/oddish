@@ -159,6 +159,11 @@ ensure_builtin_handlers_registered()
 # the core package importing backend. Inert until a user has a key and the gate
 # is on; otherwise trials run on the platform keys as before.
 from .byok_resolver import install_byok_resolver
+from .org_access import (
+    authorize_worker_job,
+    approved_worker_job_counts,
+    cancel_unapproved_runs,
+)
 
 install_byok_resolver()
 
@@ -325,6 +330,7 @@ async def _run_one_job(
                     queue_slot=lock_slot,
                     modal_function_call_id=fc_id,
                     post_success_hooks=_POST_SUCCESS_HOOKS,
+                    authorize_job=authorize_worker_job,
                     harbor_variant_id=harbor_variant_id,
                     execution_lane=execution_lane,
                     capacity_provider="ec2",
@@ -343,6 +349,7 @@ async def _run_one_job(
                 budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
                 modal_function_call_id=fc_id,
                 post_success_hooks=_POST_SUCCESS_HOOKS,
+                authorize_job=authorize_worker_job,
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
                 worker_billing_spec=worker_billing_spec,
@@ -585,6 +592,12 @@ async def reconcile_queue_state():
         await configure_storage_paths()
 
         try:
+            summary["unapproved_tasks_cancelled"] = await cancel_unapproved_runs()
+        except Exception as e:
+            phase_errors.append(f"unapproved_org_cleanup: {type(e).__name__}: {e}")
+            log_exception("reconcile phase failed", phase="unapproved_org_cleanup")
+
+        try:
             stale_cleared = await cleanup_stale_queue_slots()
             summary["stale_slots_cleared"] = stale_cleared
             if stale_cleared > 0:
@@ -654,6 +667,16 @@ async def reconcile_queue_state():
                 await backfill_github_id(max_users=200, time_budget_seconds=60.0)
             ).as_dict()
             summary.update({k: int(v) for k, v in gid_counts.items()})
+            if gid_counts["github_id_backfill_failed"]:
+                phase_errors.append(
+                    "github_id_backfill: Clerk identity lookups failed; "
+                    "existing identities preserved (see Clerk HTTP errors in logs)"
+                )
+            if gid_counts["github_id_backfill_deferred"]:
+                phase_errors.append(
+                    "github_id_backfill: retry deferred after failed Clerk batch; "
+                    "existing identities preserved"
+                )
             if any(gid_counts.values()):
                 console.print(
                     "metric=github_id_backfill "
@@ -971,6 +994,7 @@ async def poll_queue():
             plan, reservations = await reserve_queue_launches(
                 partial(
                     build_dispatch_plan,
+                    _counts=approved_worker_job_counts,
                     max_workers=MAX_WORKERS_PER_POLL,
                     concurrency_limits_for=_effective_model_concurrency_limits,
                     capacity_limits_by_lane={

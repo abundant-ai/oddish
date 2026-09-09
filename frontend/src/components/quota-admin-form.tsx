@@ -30,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import type {
   QuotaBumpCreate,
   QuotaList,
@@ -170,7 +170,7 @@ export function QuotaAdminForm() {
     }
     setOrgError(undefined);
     setOrgSaving(true);
-    const res = await fetch("/api/quotas/org", {
+    const res = await apiFetch("/api/quotas/org", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(result),
@@ -335,7 +335,7 @@ export function QuotaAdminForm() {
     setSaving(true);
     const results = await Promise.all(
       [...payloads.entries()].map(async ([id, payload]) => {
-        const res = await fetch(`/api/quotas/${encodeURIComponent(id)}`, {
+        const res = await apiFetch(`/api/quotas/${encodeURIComponent(id)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),

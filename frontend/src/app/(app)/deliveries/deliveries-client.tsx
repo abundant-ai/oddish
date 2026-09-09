@@ -7,7 +7,7 @@ import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 import { Package, Plus } from "lucide-react";
 
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import type { Customer, DeliveryListItem } from "@/lib/types";
 import { CustomerCreateDialog } from "@/components/customer-create-dialog";
@@ -70,7 +70,7 @@ export function DeliveriesClient({
     setCreating(true);
     setCreateError(null);
     try {
-      const res = await fetch("/api/deliveries", {
+      const res = await apiFetch("/api/deliveries", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

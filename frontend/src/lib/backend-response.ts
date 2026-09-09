@@ -6,6 +6,11 @@ import {
   backendFetchHeaders,
 } from "./proxy-headers";
 
+import {
+  ServerTimingCollector,
+  joinServerTimingHeaders,
+} from "./server-timing";
+
 type JsonObject = Record<string, unknown>;
 
 type BackendJsonResult = {
@@ -68,64 +73,83 @@ export async function proxyBackendJson({
   method = "GET",
   body,
   signal,
+  stream = false,
 }: {
   request: Request;
   path: string;
   method?: "GET" | "PUT" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
+  stream?: boolean;
 }): Promise<NextResponse> {
+  const timings = new ServerTimingCollector();
+  const started = performance.now();
+  let response: NextResponse;
+  let upstream: Response | undefined;
   try {
-    const { getToken } = await auth();
-    const token = await getClerkToken(getToken);
+    const { getToken } = await timings.measureAsync("next_auth", () => auth());
+    const token = await timings.measureAsync("next_token", () =>
+      getClerkToken(getToken)
+    );
     if (!token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    const sendsBody = body !== undefined;
-    const res = await fetch(getBackendUrl(path), {
-      method,
-      cache: "no-store",
-      signal,
-      headers: backendFetchHeaders(
-        request,
-        sendsBody
-          ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
-          : getAuthHeaders(token)
-      ),
-      body: sendsBody ? JSON.stringify(body) : undefined,
-    });
-
-    const { data, parseError, status } = await readBackendJson(
-      res,
-      "Upstream error"
-    );
-    if (parseError) {
-      return attachUpstreamServerTiming(
-        NextResponse.json(parseError, { status }),
-        res
+      response = NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    } else {
+      const sendsBody = body !== undefined;
+      const res = await timings.measureAsync("next_upstream", () =>
+        fetch(getBackendUrl(path), {
+          method,
+          cache: "no-store",
+          signal,
+          headers: backendFetchHeaders(
+            request,
+            sendsBody
+              ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
+              : getAuthHeaders(token)
+          ),
+          body: sendsBody ? JSON.stringify(body) : undefined,
+        })
       );
-    }
-    if (!res.ok) {
-      return attachUpstreamServerTiming(
-        NextResponse.json(backendErrorPayload(data, "Upstream error"), {
+      upstream = res;
+      if (stream) {
+        response = new NextResponse(res.body, {
           status: res.status,
-        }),
-        res
-      );
+          headers: {
+            "Content-Type":
+              res.headers.get("content-type") ?? "application/json",
+          },
+        });
+      } else {
+        const { data, parseError, status } = await timings.measureAsync(
+          "next_json",
+          () => readBackendJson(res, "Upstream error")
+        );
+        response = parseError
+          ? NextResponse.json(parseError, { status })
+          : !res.ok
+            ? NextResponse.json(backendErrorPayload(data, "Upstream error"), {
+                status: res.status,
+              })
+            : data === null
+              ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
+              : NextResponse.json(data, { status: res.status });
+      }
     }
-    return attachUpstreamServerTiming(
-      data === null
-        ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
-        : NextResponse.json(data, { status: res.status }),
-      res
-    );
   } catch (error) {
-    return NextResponse.json(
+    response = NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 503 }
     );
   }
+  timings.add("next_total", performance.now() - started);
+  response.headers.set("Cache-Control", "no-store");
+  response.headers.set(
+    "Server-Timing",
+    joinServerTimingHeaders(
+      timings.toHeader(),
+      upstream?.headers.get("server-timing")
+    )!
+  );
+  return response;
 }
 
 export async function proxyPublicBackendJson({
