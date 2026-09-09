@@ -428,6 +428,13 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// GET /api/tasks/browse?count_only=true — how many tasks match the active
+// filters across every page. Fetched separately from the grid and cached per
+// filter set, so paging never re-runs the count.
+export interface TaskBrowseCountResponse {
+  total: number;
+}
+
 // The backend response also carries a deprecated `experiments` field that is
 // always [] (options come from /api/tasks/browse/experiment-options instead);
 // it is deliberately absent here so nothing new codes against it.
@@ -1136,40 +1143,6 @@ export interface QueueHealthResponse {
   dispatcher: QueueRuntimeComponentStatus | null;
   reconciler: QueueRuntimeComponentStatus | null;
   timestamp: string;
-}
-
-export interface ModelEndpointCheckResponse {
-  ok: boolean;
-  model: string;
-  resolved_model: string;
-  provider: string;
-  route: string;
-  credential: string | null;
-  transport: "litellm_completion";
-  failure_kind: "provider" | "configuration" | null;
-  status_code: number | null;
-  latency_ms: number;
-  response: string | null;
-  error: string | null;
-  request_id: string | null;
-}
-
-export interface ModelEndpointSummary {
-  model: string;
-  provider: string;
-  route: string;
-  credential: string | null;
-  testable: boolean;
-  source: "provider_catalog" | "deployment" | "previously_used";
-  credential_configured: boolean | null;
-}
-
-export interface ModelEndpointAccessResponse {
-  allowed: boolean;
-}
-
-export interface ModelEndpointCatalogResponse extends ModelEndpointAccessResponse {
-  models: ModelEndpointSummary[];
 }
 
 export interface CostModelBreakdown {

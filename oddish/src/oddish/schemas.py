@@ -1702,6 +1702,19 @@ class TaskBrowseResponse(BaseModel):
     has_more: bool
 
 
+class TaskBrowseCountResponse(BaseModel):
+    """Tasks matching a filter set across every page.
+
+    Served by ``GET /tasks/browse?count_only=true`` on both the hosted and
+    self-hosted routes -- the dashboard reaches it through its own
+    ``/api/tasks/browse/count`` proxy. Kept separate from the page because the
+    count is the same for every page of one filter set, so pairing the two
+    would re-run the (expensive) filtered count on each pager click.
+    """
+
+    total: int
+
+
 class AgentModelFacet(BaseModel):
     """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
     rows with no recorded model."""
