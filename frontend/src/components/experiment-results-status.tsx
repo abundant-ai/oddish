@@ -9,6 +9,7 @@ export function ExperimentResultsStatus({
   complete,
   isLoading,
   hasError,
+  fatalError,
   onRetry,
 }: {
   summary?: ExperimentPageSummary | null;
@@ -17,6 +18,7 @@ export function ExperimentResultsStatus({
   complete: boolean;
   isLoading: boolean;
   hasError: boolean;
+  fatalError?: { title: string; description: string };
   onRetry: () => void;
 }) {
   const counts = summary ? (
@@ -31,13 +33,20 @@ export function ExperimentResultsStatus({
     return (
       <Alert variant="destructive">
         <AlertTitle>
-          {complete
-            ? "Could not refresh results"
-            : "Results download incomplete"}
+          {fatalError?.title ??
+            (complete
+              ? "Could not refresh results"
+              : "Results download incomplete")}
         </AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-2">
-          {complete && <span>Showing the last complete results.</span>}
-          {counts}
+          {fatalError ? (
+            <span>{fatalError.description}</span>
+          ) : (
+            <>
+              {complete && <span>Showing the last complete results.</span>}
+              {counts}
+            </>
+          )}
           <Button
             type="button"
             variant="secondary"

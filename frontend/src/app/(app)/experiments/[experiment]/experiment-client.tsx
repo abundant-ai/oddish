@@ -436,6 +436,14 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                 complete={pagesComplete}
                 isLoading={isLoadingTrials}
                 hasError={Boolean(openError)}
+                fatalError={
+                  hasFatalTaskLoadError
+                    ? {
+                        title: "Failed to load experiment",
+                        description: "Check the API connection and try again.",
+                      }
+                    : undefined
+                }
                 onRetry={() => void refreshResults()}
               />
             )

@@ -58,6 +58,15 @@ export default function PublicDatasetPage() {
               complete={pagesComplete}
               isLoading={isLoadingTrials}
               hasError={Boolean(openError)}
+              fatalError={
+                hasFatalError
+                  ? {
+                      title: "Failed to load dataset",
+                      description:
+                        "The dataset token may be invalid, or this experiment is not public.",
+                    }
+                  : undefined
+              }
               onRetry={() => void refreshResults()}
             />
           }

@@ -74,6 +74,15 @@ export default function PublicExperimentPage() {
                 complete={pagesComplete}
                 isLoading={isLoadingTrials}
                 hasError={Boolean(openError)}
+                fatalError={
+                  hasFatalError
+                    ? {
+                        title: "Failed to load experiment",
+                        description:
+                          "The share link may be invalid or no longer public.",
+                      }
+                    : undefined
+                }
                 onRetry={() => void refreshResults()}
               />
             }
