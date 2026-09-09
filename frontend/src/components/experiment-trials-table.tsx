@@ -172,7 +172,12 @@ type ExperimentTrialsTableProps = {
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number }
+    context: {
+      orderedTasks: Task[];
+      taskIndex: number;
+      /** Rejected review keeps next/prev on rejected rows as pages stream. */
+      taskNavScope?: "experiment" | "rejected";
+    }
   ) => void;
 };
 
@@ -1973,6 +1978,7 @@ export function ExperimentTrialsTable({
                     onTaskSelect?.(reviewTasks[0], {
                       orderedTasks: reviewTasks,
                       taskIndex: 0,
+                      taskNavScope: "rejected",
                     });
                   }
                 }

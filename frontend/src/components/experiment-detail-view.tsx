@@ -60,7 +60,10 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { taskHasActiveVerdict } from "@/lib/job-status";
+import {
+  taskHasActiveVerdict,
+  taskHasRejectedVerdict,
+} from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -102,12 +105,17 @@ function DrawerContentLoading({ label }: { label: string }) {
   );
 }
 
+/** Which tasks next/prev may grow into as /open pages stream in. */
+type TaskNavScope = "experiment" | "rejected";
+
 type DrawerState = {
   isOpen: boolean;
   mode: DrawerMode;
   task: Task;
   taskIndex: number;
   orderedTasks: Task[];
+  /** `rejected` keeps review next/prev on rejected rows only. */
+  taskNavScope: TaskNavScope;
   trial: Trial | null;
   trialIndex: number | null;
   orderedTrials: Trial[];
@@ -1371,6 +1379,7 @@ export function ExperimentDetailView({
             task: host,
             taskIndex: tasksForExperiment.indexOf(host),
             orderedTasks: tasksForExperiment,
+            taskNavScope: "experiment",
             trial,
             trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
             orderedTrials,
@@ -1399,6 +1408,7 @@ export function ExperimentDetailView({
       task,
       taskIndex,
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1418,11 +1428,32 @@ export function ExperimentDetailView({
       (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
+    // Preserve open order, then append newly streamed tasks in scope so
+    // next/prev grows with /open pages. Rejected review stays rejected-only.
+    const liveById = new Map(
+      tasksForExperiment.map((task) => [task.id, task] as const)
+    );
+    const preservedOrderedTasks = drawerState.orderedTasks
+      .map((task) => liveById.get(task.id))
+      .filter((task): task is Task => task != null);
+    const seen = new Set(preservedOrderedTasks.map((task) => task.id));
+    const growthPool =
+      drawerState.taskNavScope === "rejected"
+        ? tasksForExperiment.filter(taskHasRejectedVerdict)
+        : tasksForExperiment;
+    const orderedTasks = [
+      ...preservedOrderedTasks,
+      ...growthPool.filter((task) => !seen.has(task.id)),
+    ];
+    const orderedChanged =
+      orderedTasks.length !== drawerState.orderedTasks.length ||
+      orderedTasks.some((task, index) => task !== drawerState.orderedTasks[index]);
     const liveTrialCount = liveTask.trials?.length ?? 0;
     const snapshotTrialCount = drawerState.task.trials?.length ?? 0;
     if (
       liveTask === drawerState.task &&
-      liveTrialCount === snapshotTrialCount
+      liveTrialCount === snapshotTrialCount &&
+      !orderedChanged
     ) {
       return;
     }
@@ -1435,18 +1466,6 @@ export function ExperimentDetailView({
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
         : drawerState.trial;
-    // Keep a caller-supplied subset (e.g. rejected-only review order) instead
-    // of replacing it with the full experiment list when trials stream in.
-    const liveById = new Map(
-      tasksForExperiment.map((task) => [task.id, task] as const)
-    );
-    const preservedOrderedTasks = drawerState.orderedTasks
-      .map((task) => liveById.get(task.id))
-      .filter((task): task is Task => task != null);
-    const orderedTasks =
-      preservedOrderedTasks.length > 0
-        ? preservedOrderedTasks
-        : tasksForExperiment;
     const resolvedTaskIndex = orderedTasks.findIndex(
       (task) => task.id === liveTask.id
     );
@@ -1455,7 +1474,8 @@ export function ExperimentDetailView({
       task: liveTask,
       taskIndex:
         resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
-      orderedTasks,
+      orderedTasks:
+        orderedTasks.length > 0 ? orderedTasks : tasksForExperiment,
       trial: resolvedTrial,
       trialIndex: resolvedTrialIndex,
       orderedTrials,
@@ -1518,6 +1538,7 @@ export function ExperimentDetailView({
         task: host,
         taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
         orderedTasks: tasksForExperiment,
+        taskNavScope: "experiment",
         trial: index >= 0 ? orderedTrials[index] : trial,
         trialIndex: index >= 0 ? index : null,
         orderedTrials,
@@ -1604,6 +1625,7 @@ export function ExperimentDetailView({
       task: host,
       taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1906,6 +1928,7 @@ export function ExperimentDetailView({
                     task,
                     taskIndex: taskIndex >= 0 ? taskIndex : 0,
                     orderedTasks: tasksForExperiment,
+                    taskNavScope: "experiment",
                     trial,
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
@@ -1929,6 +1952,7 @@ export function ExperimentDetailView({
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
+                    taskNavScope: context.taskNavScope ?? "experiment",
                     trial: null,
                     trialIndex: null,
                     orderedTrials,
