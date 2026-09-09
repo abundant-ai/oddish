@@ -73,6 +73,11 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
+  EXPERIMENT_COLUMNS_STORAGE_KEY,
+  readHiddenAgents,
+  writeHiddenAgents,
+} from "@/lib/experiment-columns";
+import {
   isActivePipelineStatus,
   isActiveTrialStatus,
   taskHasActiveAnalysis,
@@ -665,6 +670,47 @@ export function ExperimentTrialsTable({
     taskSearch: "",
   });
   const isFirstFilterSync = useRef(true);
+  const didHydrateHiddenAgents = useRef(false);
+
+  // Restore the saved column layout when the URL does not carry one. `?hide=`
+  // survives a refresh but not a departure: coming back from the Experiments
+  // list follows a plain link with no query, so without this the hidden
+  // columns reappear. A link that does carry `?hide=` still wins -- the effect
+  // above owns that case and this one stands down.
+  //
+  // Read in an effect rather than during render: this table renders on the
+  // server, and touching localStorage while rendering would break hydration
+  // (same reason as the comment in tasks-client.tsx).
+  useEffect(() => {
+    if (didHydrateHiddenAgents.current) return;
+    if (!experimentId || searchParams.get("hide")) return;
+
+    const stored = readHiddenAgents(
+      window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
+      experimentId
+    );
+    if (stored.length > 0) setHiddenAgents(new Set(stored));
+  }, [experimentId, searchParams]);
+
+  // Persist afterwards. The first pass is skipped so the seed above (or the
+  // URL) is never mistaken for the user clearing every column, which would
+  // erase the entry before it was ever read.
+  useEffect(() => {
+    if (!experimentId) return;
+    if (!didHydrateHiddenAgents.current) {
+      didHydrateHiddenAgents.current = true;
+      return;
+    }
+
+    window.localStorage.setItem(
+      EXPERIMENT_COLUMNS_STORAGE_KEY,
+      writeHiddenAgents(
+        window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
+        experimentId,
+        Array.from(hiddenAgents)
+      )
+    );
+  }, [experimentId, hiddenAgents]);
 
   useEffect(() => {
     const urlHide = searchParams.get("hide") || "";
