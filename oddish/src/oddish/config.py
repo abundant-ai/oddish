@@ -1627,6 +1627,13 @@ class Settings(BaseSettings):
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
 
+    # Per-process cache for the admin cost-exclusion lists (excluded LLM keys,
+    # models and experiments), which every task, trial and experiment read
+    # consults. The admin routers invalidate locally on each edit; this bounds
+    # how long other containers keep labelling spend with the old lists. 0
+    # disables the cache (three statements per request again).
+    cost_exclusions_cache_seconds: float = 60.0
+
     # OpenAI-family routing. Azure is the enterprise default; public OpenAI
     # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.
     openai_provider: str = OPENAI_PROVIDER_AZURE
@@ -1642,6 +1649,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    fireworks_api_key: str | None = Field(default=None, alias="FIREWORKS_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")

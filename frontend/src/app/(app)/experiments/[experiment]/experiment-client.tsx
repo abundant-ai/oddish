@@ -23,7 +23,7 @@ import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
 import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { isOrgAdminRole } from "@/lib/org-roles";
@@ -246,7 +246,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   };
 
   const handleDeleteTrial = async (trial: Trial, _task: Task | null) => {
-    const res = await fetch(`/api/trials/${encodeURIComponent(trial.id)}`, {
+    const res = await apiFetch(`/api/trials/${encodeURIComponent(trial.id)}`, {
       method: "DELETE",
     });
 

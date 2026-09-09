@@ -259,9 +259,7 @@ _THUNDER_SECRET_NAME = (
     or "oddish-thunder"
 )
 _NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
-_NUMINOUS_SECRET_NAME = os.environ.get(
-    "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
-)
+_NUMINOUS_SECRET_NAME = os.environ.get("ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous")
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
 _EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
 _EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
@@ -746,8 +744,7 @@ def assert_gke_cluster_exists() -> None:
         )
     except subprocess.TimeoutExpired:
         print(
-            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
-            "continuing"
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; continuing"
         )
         return
     if result.returncode == 0:
@@ -880,6 +877,8 @@ ENV_VARS = {
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
+    "ODDISH_MODAL_MAX_WORKERS_PER_POLL": str(MAX_WORKERS_PER_POLL),
+    "ODDISH_MODAL_WORKER_MAX_CONTAINERS": str(WORKER_MAX_CONTAINERS),
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
@@ -949,6 +948,26 @@ ENV_VARS = {
     ),
     _THUNDER_SECRET_NAME_ENV: _THUNDER_SECRET_NAME,
 }
+
+
+# Named provider secrets can also carry old concurrency settings and override
+# image ENV. Capture the deploy's limits last so container imports and the
+# dispatcher use the same values as the deployed Modal function definitions.
+# Always append: Modal requires identical dependency counts on container import.
+runtime_secrets.append(
+    modal.Secret.from_dict(
+        {
+            name: ENV_VARS[name]
+            for name in (
+                "ODDISH_MODAL_MAX_WORKERS_PER_POLL",
+                "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
+                "ODDISH_DEFAULT_MODEL_CONCURRENCY",
+                "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+                "ODDISH_NOP_ORACLE_CONCURRENCY",
+            )
+        }
+    )
+)
 
 
 def _lookup_env(name: str) -> str | None:

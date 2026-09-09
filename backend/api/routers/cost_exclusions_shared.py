@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.cost_exclusions import invalidate_cost_exclusions
 from oddish.db import utcnow
 from pg_errors import is_undefined_table_error
 
@@ -28,3 +29,4 @@ async def soft_delete(
         raise HTTPException(status_code=404, detail=not_found_detail)
     row.deleted_at = utcnow()
     await session.commit()
+    invalidate_cost_exclusions()

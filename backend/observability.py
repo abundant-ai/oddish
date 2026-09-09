@@ -60,6 +60,18 @@ def _extra_resource_attributes() -> dict[str, str]:
     if modal_env:
         attrs["oddish.modal_environment"] = modal_env
 
+    # Where Modal placed this container. Unpinned API containers land
+    # anywhere from 4 ms to 220 ms from the database, and that distance
+    # multiplied by the statements per request was the dominant term in
+    # dashboard latency in 2026-09; keeping it as a column makes the
+    # per-region round trip a query instead of a probe.
+    modal_region = os.environ.get("MODAL_REGION")
+    if modal_region:
+        attrs["oddish.modal_region"] = modal_region
+    modal_cloud = os.environ.get("MODAL_CLOUD_PROVIDER")
+    if modal_cloud:
+        attrs["oddish.modal_cloud"] = modal_cloud
+
     sha = os.environ.get("ODDISH_RELEASE") or os.environ.get("GIT_COMMIT_SHA")
     if sha:
         attrs["oddish.git_sha"] = sha

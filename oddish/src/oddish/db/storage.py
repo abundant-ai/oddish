@@ -5,6 +5,7 @@ import codecs
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import gzip
 import io
@@ -20,8 +21,45 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
+from oddish.timing import current_request_timing, timed_phase
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def storage_operation(operation: str, key: str, *, batch_size: int | None = None):
+    """Measure SDK requests and retain safe provider diagnostics on failure."""
+    timing = current_request_timing()
+    if timing is not None:
+        timing.storage_request_count += 1
+    with timed_phase(
+        f"storage_{operation}", **{"storage.key": key, "storage.batch_size": batch_size}
+    ):
+        try:
+            yield
+        except ClientError as exc:
+            metadata = exc.response.get("ResponseMetadata", {})
+            error = exc.response.get("Error", {})
+            if str(error.get("Code")) not in {"404", "NoSuchKey", "NotFound"}:
+                logger.warning(
+                    "S3 %s failed: status=%s code=%s request_id=%s retries=%s batch_size=%s message=%s",
+                    operation,
+                    metadata.get("HTTPStatusCode"),
+                    error.get("Code"),
+                    metadata.get("RequestId"),
+                    metadata.get("RetryAttempts"),
+                    batch_size,
+                    str(error.get("Message", ""))[:500],
+                )
+            raise
+
+
+def record_file_source(source: str, size: int | None = None) -> None:
+    timing = current_request_timing()
+    if timing is not None:
+        timing.file_source = source
+        timing.file_bytes = size
+
 
 WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
 WORKER_TASK_KEY_PREFIX = "tasks/"
@@ -323,30 +361,13 @@ class StorageClient:
             _, evicted = cls._archive_cache.popitem(last=False)
             cls._archive_cache_bytes -= cls._archive_cache_entry_size(evicted)
 
-    async def _head_archive_cache_key(self, archive_key: str) -> tuple[str, str] | None:
-        """Build a stable cache key for an archive object.
-
-        Uses the ETag when the backend returns one (AWS S3, MinIO). Falls back
-        to ``(ContentLength, LastModified)`` so S3-compatible backends that
-        drop the ETag still get a working cache. Returns ``None`` for any
-        backend / fake that doesn't expose ``head_object`` (e.g. test
-        doubles), which disables caching for that call without breaking
-        the read path.
-        """
-        await self._ensure_client()
-        head_fn = getattr(self._s3, "head_object", None)
-        if head_fn is None:
-            return None
-        try:
-            head = await head_fn(Bucket=settings.s3_bucket, Key=archive_key)
-        except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code")
-            if error_code in {"404", "NoSuchKey", "NotFound"}:
-                return None
-            raise
-        except Exception:
-            # A fake client or transient error shouldn't poison the
-            # primary read path; fall through to the uncached download.
+    async def _head_archive_cache_key(
+        self, archive_key: str, head: dict | None = None
+    ) -> tuple[str, str] | None:
+        """Reuse known metadata or fetch it once to validate the archive cache."""
+        if head is None:
+            head = await self.head_object(archive_key)
+        if head is None:
             return None
 
         etag = head.get("ETag")
@@ -421,7 +442,7 @@ class StorageClient:
         return _merge_inline_contents(files, contents)
 
     async def _load_task_archive(
-        self, archive_key: str
+        self, archive_key: str, *, head: dict | None = None
     ) -> tuple[bytes, list[dict[str, object]], dict[str, str]]:
         """Fetch and parse a task archive, preferring the in-process cache.
 
@@ -432,15 +453,24 @@ class StorageClient:
         fallback) is stashed so a subsequent ``_head_archive_etag`` call
         doesn't re-issue HEAD.
         """
-        cache_key = await self._head_archive_cache_key(archive_key)
+        cache_key = await self._head_archive_cache_key(archive_key, head)
+        timing = current_request_timing()
+        if timing is not None:
+            timing.archive_cache_hit = False
         if cache_key is not None:
             self._remember_archive_etag(archive_key, cache_key[1])
             cached = self._archive_cache_get(cache_key)
             if cached is not None:
+                if timing is not None:
+                    timing.archive_cache_hit = True
+                    timing.archive_bytes = len(cached[0])
                 return cached
 
         archive_bytes = await self.download_bytes(archive_key)
-        members, texts = _parse_task_archive(archive_bytes)
+        if timing is not None:
+            timing.archive_bytes = len(archive_bytes)
+        with timed_phase("archive_parse"):
+            members, texts = _parse_task_archive(archive_bytes)
         value = (archive_bytes, members, texts)
         if cache_key is not None:
             self._archive_cache_put(cache_key, value)
@@ -571,6 +601,26 @@ class StorageClient:
             return vroot, varchive
 
         return f"tasks/{task_id}/", self._task_archive_key(task_id)
+
+    @staticmethod
+    def _published_expansion_prefix(
+        task_id: str, version: int | None, manifest_key: str | None
+    ) -> str | None:
+        """Only immutable, database-selected directories may bypass legacy checks."""
+        if version is None or manifest_key is None:
+            return None
+        root = f"tasks/{task_id}/v{version}-expanded/"
+        if not manifest_key.startswith(root):
+            return None
+        revision, separator, name = manifest_key[len(root) :].partition("/")
+        if (
+            revision
+            and separator
+            and name == StorageClient._EXPANDED_MANIFEST_OBJECT_NAME
+            and revision not in {".", ".."}
+        ):
+            return manifest_key.rsplit("/", 1)[0] + "/"
+        return None
 
     async def _expanded_manifest_matches_archive(
         self, manifest_key: str, archive_key: str
@@ -874,9 +924,9 @@ class StorageClient:
                     # replacement characters just like the local reader does.
                     if not is_log_file:
                         continue
-                    content = (
-                        await self.download_bytes(s3_key)
-                    ).decode("utf-8", errors="replace")
+                    content = (await self.download_bytes(s3_key)).decode(
+                        "utf-8", errors="replace"
+                    )
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""
@@ -894,6 +944,8 @@ class StorageClient:
         version: int | None = None,
         task_s3_prefix: str | None = None,
         inline: bool = True,
+        expanded: bool | None = None,
+        expanded_manifest_key: str | None = None,
     ) -> dict:
         """List files in a task's S3 directory.
 
@@ -905,17 +957,42 @@ class StorageClient:
         With ``inline=True`` (default), recursive listings attach small text
         file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
         to return the bare tree fast and stream the bodies separately.
+
+        ``expanded=False`` skips the extracted tree. A positive database hint
+        still requires manifest validation: an overwrite can replace the tree
+        after the caller selects its archive.
         """
+        published_prefix = self._published_expansion_prefix(
+            task_id, version, expanded_manifest_key
+        )
+        if published_prefix is not None and expanded is not False:
+            record_file_source("expanded")
+            return await self._list_expanded_task_files(
+                task_id=task_id,
+                expanded_prefix=published_prefix,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                presign_expiration=presign_expiration,
+                inline=inline,
+            )
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_exists = await self.object_exists(archive_key)
+        archive_head = await self.head_object(archive_key)
+        archive_exists = archive_head is not None
 
         # Prefer the per-file expanded layout when it was built from the
         # database-selected archive. An overwrite switches that archive key
         # atomically; a stale manifest is ignored even if cleanup later fails.
-        if version is not None:
-            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
+        if version is not None and expanded is not False:
+            expanded_prefix = (
+                expanded_manifest_key.rsplit("/", 1)[0] + "/"
+                if expanded_manifest_key
+                else f"tasks/{task_id}/v{version}-files/"
+            )
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key) and (
                 not archive_exists
@@ -923,6 +1000,7 @@ class StorageClient:
                     manifest_key, archive_key
                 )
             ):
+                record_file_source("expanded")
                 return await self._list_expanded_task_files(
                     task_id=task_id,
                     expanded_prefix=expanded_prefix,
@@ -936,8 +1014,9 @@ class StorageClient:
                 )
 
         if archive_exists:
+            record_file_source("archive")
             _bytes, archive_files, archive_texts = await self._load_task_archive(
-                archive_key
+                archive_key, head=archive_head
             )
             relative_prefix = normalize_s3_relative_path(prefix)
             if relative_prefix and not relative_prefix.endswith("/"):
@@ -1241,6 +1320,7 @@ class StorageClient:
         full_prefix = f"{root_prefix}{relative_prefix}"
 
         if recursive:
+            # CLI downloads consume this complete inventory without pagination.
             objects = await self.list_objects_all(full_prefix)
             files = []
             for obj in objects:
@@ -1335,6 +1415,8 @@ class StorageClient:
         presign_expiration: int = 900,
         version: int | None = None,
         task_s3_prefix: str | None = None,
+        expanded: bool | None = None,
+        expanded_manifest_key: str | None = None,
     ) -> AsyncIterator[dict]:
         """Stream a task file listing: the tree first, then file contents.
 
@@ -1354,6 +1436,8 @@ class StorageClient:
             version=version,
             task_s3_prefix=task_s3_prefix,
             inline=False,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
         )
         yield {"type": "listing", **listing}
 
@@ -1380,6 +1464,8 @@ class StorageClient:
         version: int | None = None,
         task_s3_prefix: str | None = None,
         max_bytes: int | None = None,
+        expanded: bool | None = None,
+        expanded_manifest_key: str | None = None,
     ) -> dict:
         """Get content of a specific task file from S3.
 
@@ -1391,19 +1477,61 @@ class StorageClient:
         the expanded layout. When an archive is the source we additionally
         return ``archive_etag`` so HTTP layers can emit revalidating
         ``ETag`` / ``Cache-Control`` headers.
+
+        ``expanded=False`` skips the extracted tree. A positive database hint
+        still requires manifest validation: an overwrite can replace the tree
+        after the caller selects its archive.
         """
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
+        published_prefix = self._published_expansion_prefix(
+            task_id, version, expanded_manifest_key
+        )
+        if published_prefix is not None and expanded is not False:
+            published_key = f"{published_prefix}{normalized_path}"
+            try:
+                # Presigning cannot detect missing/skipped members without HEAD.
+                if not presign or await self.object_exists(published_key):
+                    result = await self._read_task_file_object(
+                        published_key,
+                        normalized_path,
+                        presign,
+                        presign_expiration,
+                        max_bytes,
+                    )
+                    record_file_source(
+                        "expanded",
+                        (
+                            len(result["content"].encode("utf-8"))
+                            if "content" in result and not result["is_truncated"]
+                            else None
+                        ),
+                    )
+                    return result
+            except ClientError as exc:
+                if str(exc.response.get("Error", {}).get("Code")) not in {
+                    "404",
+                    "NoSuchKey",
+                    "NotFound",
+                }:
+                    raise
+            # Oversize/skipped/deleted members retain the archive fallback.
+            expanded = False
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_exists = await self.object_exists(archive_key)
+        archive_head = await self.head_object(archive_key)
+        archive_exists = archive_head is not None
 
         s3_key: str | None = None
-        if version is not None:
-            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
+        if version is not None and expanded is not False:
+            expanded_prefix = (
+                expanded_manifest_key.rsplit("/", 1)[0] + "/"
+                if expanded_manifest_key
+                else f"tasks/{task_id}/v{version}-files/"
+            )
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key) and (
                 not archive_exists
@@ -1420,11 +1548,12 @@ class StorageClient:
                 # working.
                 if await self.object_exists(expanded_key):
                     s3_key = expanded_key
+                    record_file_source("expanded")
 
         if s3_key is None:
             if archive_exists:
                 archive_bytes, members, texts = await self._load_task_archive(
-                    archive_key
+                    archive_key, head=archive_head
                 )
                 # Small text members were extracted during the (cached) parse;
                 # only oversize members pay a tar read here.
@@ -1435,9 +1564,11 @@ class StorageClient:
                 size = int(member["size"]) if member else 0
                 is_truncated = max_bytes is not None and size > max_bytes
                 if content is None or is_truncated:
-                    content, size, is_truncated = _read_task_archive_text(
-                        archive_bytes, normalized_path, max_bytes
-                    )
+                    with timed_phase("archive_parse"):
+                        content, size, is_truncated = _read_task_archive_text(
+                            archive_bytes, normalized_path, max_bytes
+                        )
+                record_file_source("archive", size)
                 archive_etag = await self._head_archive_etag(archive_key)
                 return {
                     "path": normalized_path,
@@ -1449,17 +1580,30 @@ class StorageClient:
                     "archive_etag": archive_etag,
                 }
             s3_key = f"{root_prefix}{normalized_path}"
+            record_file_source("loose")
 
+        return await self._read_task_file_object(
+            s3_key, normalized_path, presign, presign_expiration, max_bytes
+        )
+
+    async def _read_task_file_object(
+        self,
+        s3_key: str,
+        file_path: str,
+        presign: bool,
+        presign_expiration: int,
+        max_bytes: int | None,
+    ) -> dict:
         if presign:
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
-            return {"path": normalized_path, "key": s3_key, "url": url}
+            return {"path": file_path, "key": s3_key, "url": url}
         if max_bytes is None:
             content = await self.download_text(s3_key)
             is_truncated = False
         else:
             content, is_truncated = await self.download_text_prefix(s3_key, max_bytes)
         return {
-            "path": normalized_path,
+            "path": file_path,
             "content": content,
             "is_truncated": is_truncated,
             "key": s3_key,
@@ -1530,14 +1674,17 @@ class StorageClient:
         """Download binary content from S3."""
         await self._ensure_client()
         options = {"Range": f"bytes=0-{max_bytes - 1}"} if max_bytes else {}
-        response = await self._s3.get_object(
-            Bucket=settings.s3_bucket,
-            Key=s3_key,
-            **options,
-        )
-        async with response["Body"] as stream:
-            content: bytes = await stream.read()
-            return content
+        with storage_operation("get", s3_key):
+            response = await self._s3.get_object(
+                Bucket=settings.s3_bucket, Key=s3_key, **options
+            )
+        with timed_phase("storage_read"):
+            async with response["Body"] as stream:
+                content: bytes = await stream.read()
+        timing = current_request_timing()
+        if timing is not None:
+            timing.storage_bytes += len(content)
+        return content
 
     async def download_text(self, s3_key: str) -> str:
         """Download text content from S3."""
@@ -1564,17 +1711,23 @@ class StorageClient:
             result: dict = json.loads(content.decode("utf-8"))
             return result
 
-    async def object_exists(self, s3_key: str) -> bool:
-        """Return whether an exact object key exists."""
+    async def head_object(self, s3_key: str) -> dict | None:
+        """Read object metadata, treating only a missing object as absent."""
         await self._ensure_client()
         try:
-            await self._s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
-            return True
+            with storage_operation("head", s3_key):
+                return await self._s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code")
-            if error_code in {"404", "NoSuchKey", "NotFound"}:
-                return False
+            if str(exc.response.get("Error", {}).get("Code")) in {
+                "404",
+                "NoSuchKey",
+                "NotFound",
+            }:
+                return None
             raise
+
+    async def object_exists(self, s3_key: str) -> bool:
+        return await self.head_object(s3_key) is not None
 
     async def list_keys(self, prefix: str) -> list[str]:
         """List all keys with a given prefix."""
@@ -1596,13 +1749,14 @@ class StorageClient:
         deleted = 0
         for start in range(0, len(keys), 1000):
             batch = keys[start : start + 1000]
-            response = await self._s3.delete_objects(
-                Bucket=settings.s3_bucket,
-                Delete={
-                    "Objects": [{"Key": key} for key in batch],
-                    "Quiet": True,
-                },
-            )
+            with storage_operation("delete", prefix, batch_size=len(batch)):
+                response = await self._s3.delete_objects(
+                    Bucket=settings.s3_bucket,
+                    Delete={
+                        "Objects": [{"Key": key} for key in batch],
+                        "Quiet": True,
+                    },
+                )
             errors = response.get("Errors", [])
             if errors:
                 first_error = errors[0]
@@ -1686,15 +1840,21 @@ class StorageClient:
         await self._ensure_client()
         objects = []
         paginator = self._s3.get_paginator("list_objects_v2")
-        async for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                objects.append(
-                    {
-                        "key": obj.get("Key"),
-                        "size": obj.get("Size"),
-                        "last_modified": obj.get("LastModified"),
-                    }
-                )
+        with timed_phase("storage_list", **{"storage.prefix": prefix}):
+            async for page in paginator.paginate(
+                Bucket=settings.s3_bucket, Prefix=prefix
+            ):
+                timing = current_request_timing()
+                if timing is not None:
+                    timing.storage_request_count += 1
+                for obj in page.get("Contents", []):
+                    objects.append(
+                        {
+                            "key": obj.get("Key"),
+                            "size": obj.get("Size"),
+                            "last_modified": obj.get("LastModified"),
+                        }
+                    )
         return objects
 
     async def _download_and_extract_task_archive(
@@ -1724,7 +1884,8 @@ class StorageClient:
         if continuation_token:
             params["ContinuationToken"] = continuation_token
 
-        response = await self._s3.list_objects_v2(**params)
+        with storage_operation("list", prefix):
+            response = await self._s3.list_objects_v2(**params)
         contents = response.get("Contents", [])
         common_prefixes = response.get("CommonPrefixes", [])
         return {

@@ -80,6 +80,9 @@ def operator_org(monkeypatch):
 async def test_get_returns_defaults_when_no_override_row(monkeypatch):
     session = _Session(row=None)
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     response = await _call(_app(), "GET")
 
@@ -103,6 +106,9 @@ async def test_put_writes_the_override_and_echoes_it_back(monkeypatch):
     )
     session = _Session(row=row)
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     response = await _call(_app(), "PUT", json=VALID)
 
@@ -116,6 +122,9 @@ async def test_put_writes_the_override_and_echoes_it_back(monkeypatch):
 async def test_delete_drops_the_override_and_returns_defaults(monkeypatch):
     session = _Session()
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     response = await _call(_app(), "DELETE")
 
@@ -138,6 +147,9 @@ async def test_delete_drops_the_override_and_returns_defaults(monkeypatch):
 async def test_put_rejects_nonsense(monkeypatch, field, value):
     session = _Session()
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
+    monkeypatch.setattr(
+        admin_router, "get_read_session", lambda: _fake_session(session)
+    )
 
     response = await _call(_app(), "PUT", json={**VALID, field: value})
 
@@ -151,7 +163,7 @@ async def test_reads_survive_an_incomplete_schema(monkeypatch, error_type):
     """Deploy-before-migrate: a 503 beats a 500 while the schema catches up."""
     monkeypatch.setattr(
         admin_router,
-        "get_session",
+        "get_read_session",
         lambda: _fake_session(_IncompleteSchemaSession(error_type)),
     )
 

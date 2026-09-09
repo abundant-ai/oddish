@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
 from oddish.timing import RequestTimedAsyncClient
@@ -354,6 +355,7 @@ async def get_org_from_clerk_id(
 ) -> OrganizationModel | None:
     org_result = await session.execute(
         select(OrganizationModel)
+        .options(raiseload("*"))
         .where(OrganizationModel.clerk_org_id == clerk_org_id)
         .where(OrganizationModel.is_active == True)  # noqa: E712
     )
@@ -366,6 +368,7 @@ async def get_or_create_personal_org(
     org_slug = f"personal-{clerk_user_id}"
     slug_conflict = await session.execute(
         select(OrganizationModel)
+        .options(raiseload("*"))
         .where(OrganizationModel.slug == org_slug)
         .where(OrganizationModel.is_active == True)  # noqa: E712
     )
@@ -403,6 +406,7 @@ async def get_or_create_user_in_org(
 ) -> UserModel:
     result = await session.execute(
         select(UserModel)
+        .options(raiseload("*"))
         .where(UserModel.clerk_user_id == clerk_user_id)
         .where(UserModel.org_id == org.id)
         .where(UserModel.is_active == True)  # noqa: E712
@@ -418,6 +422,7 @@ async def get_or_create_user_in_org(
     if email:
         existing_email = await session.execute(
             select(UserModel)
+            .options(raiseload("*"))
             .where(UserModel.org_id == org.id)
             .where(UserModel.email == email)
             .where(UserModel.is_active == True)  # noqa: E712
@@ -450,6 +455,7 @@ async def get_or_create_user_in_org(
     except IntegrityError:
         result = await session.execute(
             select(UserModel)
+            .options(raiseload("*"))
             .where(UserModel.clerk_user_id == clerk_user_id)
             .where(UserModel.org_id == org.id)
             .where(UserModel.is_active == True)  # noqa: E712
@@ -458,6 +464,7 @@ async def get_or_create_user_in_org(
         if user is None:
             result = await session.execute(
                 select(UserModel)
+                .options(raiseload("*"))
                 .where(UserModel.org_id == org.id)
                 .where(UserModel.email == provisioning_email)
                 .where(UserModel.is_active == True)  # noqa: E712
@@ -508,6 +515,7 @@ async def get_or_create_user_from_clerk(
         # ambiguous here and is refused, even though their tenant is unique.
         existing_email = await session.execute(
             select(UserModel, OrganizationModel)
+            .options(raiseload("*"))
             .join(OrganizationModel, OrganizationModel.id == UserModel.org_id)
             .where(UserModel.email == email)
             .where(UserModel.is_active == True)  # noqa: E712
@@ -534,6 +542,7 @@ async def get_or_create_user_from_clerk(
         if org_ids:
             org_result = await session.execute(
                 select(OrganizationModel)
+                .options(raiseload("*"))
                 .where(OrganizationModel.clerk_org_id.in_(org_ids))
                 .where(OrganizationModel.is_active == True)  # noqa: E712
             )
