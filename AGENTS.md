@@ -843,6 +843,10 @@ scoped deletion, and default-version selection. Advanced aggregate filters,
 comparisons, and non-default aggregate sorts intentionally retain their
 on-demand trial aggregation path.
 
+The pre-trial audit enqueue claims `pre_trial_status IS NULL` with one conditional
+UPDATE, in the same transaction as audit creation. It must not upgrade the version
+to `FOR UPDATE` after trial inserts have taken foreign-key `KEY SHARE` locks.
+
 Refreshes serialize per version with sorted transaction-scoped PostgreSQL
 advisory locks; do not replace those locks with `FOR UPDATE` on
 `task_versions`, because concurrent trial inserts already hold foreign-key
@@ -1542,12 +1546,18 @@ one result artifact by filename suffix within that authoritative attempt prefix.
 
 The normal ATIF reader downloads the attempt manifest and selected
 `agent/trajectory.json` without preliminary existence checks: two GETs on
-a cache miss. Only storage missing-object errors activate missing-file
-behavior; permission and service errors propagate. Finished trajectories
-remain cached for 120 seconds in each process, keyed by trial, attempt, and
+a cache miss. `is_missing_object` in `db/storage.py` owns missing-object
+classification for both readers and storage diagnostics: a known missing code,
+or HTTP 404 with an absent/empty code, activates missing-file behavior. Explicit
+non-404 statuses and bucket, permission, and service errors propagate. Finished
+trajectories remain cached for 120 seconds in each process, keyed by trial, attempt, and
 artifact prefix. Request traces expose `storage.trajectory_cache.hit`,
 `storage_client_init.duration_ms`, and `trajectory_cache_wait.duration_ms`
 alongside storage request counts and download timings.
+
+Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
+within the existing 64-character column; high-volume ledger inserts must not
+truncate UUIDs to the eight-character IDs used by some other entities.
 
 ### Worker Runtime Invariants & Pitfalls
 
