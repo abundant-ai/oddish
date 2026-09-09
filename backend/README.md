@@ -283,7 +283,7 @@ these non-secret deploy values in `backend/.env` or the deploy environment:
 ```bash
 ODDISH_THUNDER_ENABLED=true
 ODDISH_THUNDER_SECRET_NAME=oddish-thunder
-ODDISH_THUNDER_MAX_CAPACITY=16
+ODDISH_THUNDER_MAX_CAPACITY=128
 ```
 
 Create `oddish-thunder` in the same Modal environment as the app with exactly

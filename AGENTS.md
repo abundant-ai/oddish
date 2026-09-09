@@ -1002,7 +1002,7 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
 - Thunder is an explicit, opt-in GPU backend. `ODDISH_THUNDER_ENABLED=true`
-  registers it; `ODDISH_THUNDER_MAX_CAPACITY` (default 16) is a provider-wide
+  registers it; `ODDISH_THUNDER_MAX_CAPACITY` (default 128) is a provider-wide
   limit enforced by durable leases across every organization, model, queue key,
   and Harbor variant. The `oddish-thunder` Modal secret contains only
   `TNR_API_URL` and `TNR_API_TOKEN` and is attached only to dedicated Thunder

@@ -11,11 +11,11 @@ from pydantic import ValidationError
 from oddish.config import Settings
 
 
-def test_thunder_defaults_disabled_with_capacity_sixteen() -> None:
+def test_thunder_defaults_disabled_with_capacity_128() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.thunder_enabled is False
-    assert settings.thunder_max_capacity == 16
+    assert settings.thunder_max_capacity == 128
     assert settings.thunder_capacity_fallback is False
     assert settings.thunder_fallback_provider == "modal"
 

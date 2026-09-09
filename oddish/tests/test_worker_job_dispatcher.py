@@ -265,7 +265,7 @@ def test_lane_capacity_is_shared_across_queues_and_orgs():
     assert plan[0][2] == "ec2_trial"
 
 
-def test_thunder_capacity_sixteen_is_global_across_models_and_queues():
+def test_thunder_capacity_128_is_global_across_models_and_queues():
     queued_by_org_queue = {
         ("org-a", "model-a", _D, "thunder_trial", False): 100,
         ("org-b", "model-b", _D, "thunder_trial", False): 100,
@@ -276,11 +276,11 @@ def test_thunder_capacity_sixteen_is_global_across_models_and_queues():
         "running_by_queue": {},
         "concurrency_limits": _limits_for(queued_by_org_queue),
         "max_workers": 100,
-        "capacity_limits_by_lane": {"thunder_trial": 16},
+        "capacity_limits_by_lane": {"thunder_trial": 128},
     }
 
-    one_slot = build_spawn_plan(**common, held_by_lane={"thunder_trial": 15})
-    exhausted = build_spawn_plan(**common, held_by_lane={"thunder_trial": 16})
+    one_slot = build_spawn_plan(**common, held_by_lane={"thunder_trial": 127})
+    exhausted = build_spawn_plan(**common, held_by_lane={"thunder_trial": 128})
 
     assert len(one_slot) == 1
     assert one_slot[0][2] == "thunder_trial"

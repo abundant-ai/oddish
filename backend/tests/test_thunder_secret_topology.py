@@ -54,18 +54,19 @@ print(json.dumps({
     "fallback_provider": modal_app.ENV_VARS["ODDISH_THUNDER_FALLBACK_PROVIDER"],
 }))
 """
+    env = {
+        **os.environ,
+        "ODDISH_THUNDER_ENABLED": "true",
+        "ODDISH_THUNDER_SECRET_NAME": "test-thunder",
+        "ODDISH_THUNDER_CAPACITY_FALLBACK": "T",
+        "ODDISH_THUNDER_FALLBACK_PROVIDER": "modal",
+        "ODDISH_SAURON_AWS_SECRET_NAME": "",
+    }
+    env.pop("ODDISH_THUNDER_MAX_CAPACITY", None)
     result = subprocess.run(
         [sys.executable, "-c", code],
         cwd=Path(modal_app.__file__).parent,
-        env={
-            **os.environ,
-            "ODDISH_THUNDER_ENABLED": "true",
-            "ODDISH_THUNDER_SECRET_NAME": "test-thunder",
-            "ODDISH_THUNDER_MAX_CAPACITY": "16",
-            "ODDISH_THUNDER_CAPACITY_FALLBACK": "T",
-            "ODDISH_THUNDER_FALLBACK_PROVIDER": "modal",
-            "ODDISH_SAURON_AWS_SECRET_NAME": "",
-        },
+        env=env,
         capture_output=True,
         text=True,
         check=True,
@@ -77,7 +78,7 @@ print(json.dumps({
         "base_overlap": False,
         "thunder_lane_has_secret": True,
         "generic_has_secret": False,
-        "capacity": "16",
+        "capacity": "128",
         "capacity_fallback": "true",
         "fallback_provider": "modal",
     }
