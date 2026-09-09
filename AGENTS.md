@@ -683,8 +683,19 @@ selected-version trial preview remains capped at 20 rows. The handler uses at
 most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
-remains the compatibility bundle for CLI and drawer consumers during the soak;
+remains the compatibility bundle for CLI and explicit full-history operations;
 do not point the task route back at it.
+
+`GET /tasks/{task_id}/panel?version=N` supplies task-panel audit metadata,
+selected-version content hash, verdict, and action availability in two SQL
+statements. Omitted version selects the task's default; missing or deleted
+explicit versions return 404. Hosted readers use the verified organization ID.
+The file panel uses this resource instead of polling `/detail` and basic task
+state independently. Files load independently, overview trial evidence loads
+on tab intent, and full retry targets load only on click; experiment-scoped
+retries retain their host trial set. Unknown audit metadata keeps reruns disabled.
+The normal 30-second panel poll detects in-place file revisions; active QA/audits
+poll every five seconds.
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
@@ -1278,6 +1289,13 @@ request issues is its latency budget. Three rules keep that number down:
   the task, trial, detail, browse and experiment-page reads. Raise a budget only
   with a reason in the diff.
 
+Pooled SQLAlchemy connections are idle in driver `AUTOCOMMIT` mode so the
+asyncpg connection health check sends only its test command, without a
+`BEGIN`/`ROLLBACK` pair. The exported engine is a `READ COMMITTED` view of
+that same pool: `engine.begin()`, ordinary sessions, and writes retain their
+transactions. Read sessions override the view for their checkout. The pool
+size is unchanged; NullPool workers retain their existing configuration.
+
 Two per-process caches take the remaining fixed costs off the request path:
 `load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
 per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
@@ -1516,6 +1534,15 @@ The file LISTING and file CONTENT endpoints both root at
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
 
+The normal ATIF reader downloads the attempt manifest and selected
+`agent/trajectory.json` without preliminary existence checks: two GETs on
+a cache miss. Only storage missing-object errors activate missing-file
+behavior; permission and service errors propagate. Finished trajectories
+remain cached for 120 seconds in each process, keyed by trial, attempt, and
+artifact prefix. Request traces expose `storage.trajectory_cache.hit`,
+`storage_client_init.duration_ms`, and `trajectory_cache_wait.duration_ms`
+alongside storage request counts and download timings.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively
@@ -1627,6 +1654,38 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+The shared Modal image must copy `org_access` through `add_local_python_source`
+in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
+installs dependencies without installing the backend project itself.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. Cleanup builds candidate task IDs from active trials and task/trial jobs
+before looking up tasks; do not restore per-task correlated job-history scans.
+Worker-job diagnostics compare the native status enum so PostgreSQL can use
+status indexes. The GitHub identity backfill preserves users on Clerk HTTP
+errors. An entirely failed batch of at least 10 users backs off for 15 minutes
+in the warm reconciler process (a restart resets the cooldown); failed/deferred
+lookups remain visible in the reconciler heartbeat rather than reporting health.
+Cleanup heartbeat errors include the exception class, including bare timeouts.
+See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash
@@ -1678,9 +1737,9 @@ with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
 
 PR preview deploys and manual preview resets set
-`ODDISH_MODAL_WORKER_MAX_CONTAINERS=300` and
-`ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` so up to 300 trial workers can run
-and be launched in one dispatcher pass. Previews also set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=2`, limiting each worker function to two
+concurrent Modal containers. `ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` remains
+the dispatcher launch limit; it does not raise the container cap. Previews also set
 `ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
 `ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
 limits do not prevent one model from filling that pool. Saved admin overrides
@@ -1832,6 +1891,11 @@ responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
 
+The shared authenticated proxy adds `next_auth`, `next_token`, `next_upstream`,
+`next_json` (buffered responses only), and `next_total` durations alongside
+backend timing, including errors. Task open/detail/panel use its streaming
+option. Streaming totals end at response construction, not the last body byte.
+
 **Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
 browser call the backend itself instead of going through those `/api/*`
 handlers: one fewer hop (Vercel edge, Vercel function, then Modal) and one
@@ -1874,6 +1938,13 @@ On an experiment page, removing a task always calls the scoped
 experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
+
+The experiment drawer canonicalizes task/trial deep links with native browser
+history updates, without triggering a route navigation. Opening a visible task
+pane starts its file listing even while Overview is selected; switching between
+Overview and Files preserves the listing request, selection, and expanded
+folders. Keep the task navigation and overview mounted while the listing loads.
+Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
 `filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and

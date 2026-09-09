@@ -1805,6 +1805,17 @@ class TaskStatusResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskPanelResponse(BaseModel):
+    task: TaskStatusResponse
+    version: TaskVersionSummary | None = None
+    can_retry: bool
+    cancel: Literal["task", "qa"] | None = None
+    active_trials: int = 0
+    qa_active: bool = False
+    can_run_qa: bool = False
+    has_analysis: bool = False
+
+
 class PublicTaskStatusResponse(BaseModel):
     """Anonymous task payload with only fields required by public task pages."""
 

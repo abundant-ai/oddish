@@ -273,7 +273,7 @@ test.describe("tasks page network shape", () => {
     expect(countSince(log, 0, LEADERBOARD_RE)).toBeLessThanOrEqual(1);
   });
 
-  test("task-card paint seeds open, cold navigation stays non-blocking, and files intent loads detail", async ({
+  test("task-card paint seeds open, cold navigation stays non-blocking, and files intent loads panel metadata", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -310,6 +310,7 @@ test.describe("tasks page network shape", () => {
 
     let openCount = 0;
     let detailCount = 0;
+    let panelCount = 0;
     const releaseOpen: { current: (() => void) | null } = { current: null };
     let holdOpen = true;
     await page.route(
@@ -329,6 +330,16 @@ test.describe("tasks page network shape", () => {
       async (route) => {
         detailCount += 1;
         await route.fulfill({
+          status: 500,
+          json: { error: "Unexpected detail request" },
+        });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/panel(?:\\?|$)`),
+      async (route) => {
+        panelCount += 1;
+        await route.fulfill({
           json: {
             task: {
               ...readerOpenResponse().task,
@@ -338,10 +349,14 @@ test.describe("tasks page network shape", () => {
               total: 25,
               completed: 25,
               failed: 0,
-              trials: [],
             },
-            versions: [readerOpenResponse().selected_version],
-            totals: readerOpenResponse().totals,
+            version: readerOpenResponse().selected_version,
+            can_retry: true,
+            cancel: null,
+            active_trials: 0,
+            qa_active: false,
+            can_run_qa: true,
+            has_analysis: false,
           },
         });
       }
@@ -354,22 +369,29 @@ test.describe("tasks page network shape", () => {
     ).toBeVisible();
     expect(openCount).toBe(1);
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
     (releaseOpen.current as (() => void) | null)?.();
     holdOpen = false;
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
 
     holdOpen = true;
     releaseOpen.current = null;
     await page.goto(`/tasks/${READER_TASK_ID}`);
     await expect(page.locator(".animate-pulse").first()).toBeVisible();
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
     (releaseOpen.current as (() => void) | null)?.();
     holdOpen = false;
     await expect(
       page.getByRole("button", { name: "View task files" })
     ).toBeVisible();
     await page.getByRole("button", { name: "View task files" }).click();
-    await expect.poll(() => detailCount).toBe(1);
+    await expect.poll(() => panelCount).toBe(1);
+    await expect(
+      page.getByRole("button", { name: "Overview", exact: true })
+    ).toBeVisible();
+    expect(detailCount).toBe(0);
   });
 });
