@@ -461,6 +461,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     }
     assert "Private QA finding" not in response.model_dump_json()
     assert "primary_issue" not in payload["tasks"][0]["verdict"]
+    assert "must_fix" not in payload["tasks"][0]["verdict"]
     assert "private-owner" not in response.model_dump_json()
     assert "private/repository" not in response.model_dump_json()
     task_query_sql = _sql(session.calls[1])

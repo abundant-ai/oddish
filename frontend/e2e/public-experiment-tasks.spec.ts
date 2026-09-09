@@ -421,7 +421,8 @@ test("retryable focus errors preserve the streamed-trial deep-link fallback", as
     (window as typeof window & { finishResults: () => void }).finishResults()
   );
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-  await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
+  await expect(page).toHaveURL(/task=task-1/);
+  await expect(page).toHaveURL(/trial=task-1-2/);
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {

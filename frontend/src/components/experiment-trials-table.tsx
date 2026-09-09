@@ -78,6 +78,7 @@ import {
   isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
+  rejectedMustFixLabel,
   taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
@@ -124,6 +125,21 @@ const PassAtOneLeaderboard = dynamic(
   }
 );
 
+function sortVisibleTasks(
+  rows: Task[],
+  taskSort: "default" | "name-asc" | "name-desc"
+): Task[] {
+  if (taskSort === "default") return rows;
+  const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
+  const sorted = [...rows].sort((a, b) =>
+    nameOf(a).localeCompare(nameOf(b), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    })
+  );
+  return taskSort === "name-desc" ? sorted.reverse() : sorted;
+}
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -153,12 +169,27 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
+      orderedTasks: Task[];
+      taskIndex: number;
+      taskNavScope?: "experiment" | "rejected";
     }
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number }
+    context: {
+      orderedTasks: Task[];
+      taskIndex: number;
+      /** Rejected review keeps next/prev on rejected rows as pages stream. */
+      taskNavScope?: "experiment" | "rejected";
+    }
   ) => void;
+  /** Widen/narrow an already-open drawer's next/prev set without reopening. */
+  onTaskNavChange?: (context: {
+    orderedTasks: Task[];
+    taskNavScope: "experiment" | "rejected";
+  }) => void;
+  rejectedOnly?: boolean;
+  onRejectedOnlyChange?: (next: boolean) => void;
 };
 
 const EMPTY_TRIALS: Trial[] = [];
@@ -585,6 +616,9 @@ export function ExperimentTrialsTable({
   showAnalysis = true,
   onTrialSelect,
   onTaskSelect,
+  onTaskNavChange,
+  rejectedOnly: rejectedOnlyProp,
+  onRejectedOnlyChange,
 }: ExperimentTrialsTableProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -592,12 +626,40 @@ export function ExperimentTrialsTable({
   const AGENT_COLUMN_MIN = 140;
   const DEFAULT_AGENT_WIDTH = 180;
   const DEFAULT_TASK_WIDTH = 320;
-  const [rejectedOnly, setRejectedOnly] = useState(false);
+  const [rejectedOnlyState, setRejectedOnlyState] = useState(false);
+  const rejectedOnly = rejectedOnlyProp ?? rejectedOnlyState;
+  const setRejectedOnly = onRejectedOnlyChange ?? setRejectedOnlyState;
   const rejectedTasks = useMemo(
     () => tasks.filter(taskHasRejectedVerdict),
     [tasks]
   );
   const rejectedCount = rejectedTasks.length;
+  const mustFixTotal = useMemo(
+    () =>
+      rejectedTasks.reduce(
+        (total, task) => total + (task.must_fix_count ?? 0),
+        0
+      ),
+    [rejectedTasks]
+  );
+  const openTaskInDrawer = useCallback(
+    (
+      task: Task,
+      context: {
+        orderedTasks: Task[];
+        taskIndex: number;
+        taskNavScope?: "experiment" | "rejected";
+      }
+    ) => {
+      onTaskSelect?.(task, {
+        ...context,
+        taskNavScope:
+          context.taskNavScope ??
+          (rejectedOnly ? "rejected" : "experiment"),
+      });
+    },
+    [onTaskSelect, rejectedOnly]
+  );
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -962,15 +1024,7 @@ export function ExperimentTrialsTable({
             return true;
           });
 
-    if (taskSort === "default") return rowFiltered;
-    const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
-    const sorted = [...rowFiltered].sort((a, b) =>
-      nameOf(a).localeCompare(nameOf(b), undefined, {
-        numeric: true,
-        sensitivity: "base",
-      })
-    );
-    return taskSort === "name-desc" ? sorted.reverse() : sorted;
+    return sortVisibleTasks(rowFiltered, taskSort);
   }, [
     tasks,
     deferredTaskSearch,
@@ -1947,12 +2001,18 @@ export function ExperimentTrialsTable({
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
             <div>
               <p className="text-base font-semibold text-red-700 dark:text-red-300">
-                {rejectedCount} loaded {rejectedCount === 1 ? "task" : "tasks"}{" "}
-                rejected by QA
+                {mustFixTotal > 0
+                  ? `${mustFixTotal} Must Fix`
+                  : `${rejectedCount} loaded ${
+                      rejectedCount === 1 ? "task" : "tasks"
+                    } rejected by QA`}
               </p>
               <p className="mt-1 text-sm">
-                Review the rejection reasons before including these tasks in a
-                delivery.
+                {mustFixTotal > 0
+                  ? `${rejectedCount} loaded ${
+                      rejectedCount === 1 ? "task" : "tasks"
+                    } rejected by QA. Review the required fixes before including these tasks in a delivery.`
+                  : "Review the rejection reasons before including these tasks in a delivery."}
               </p>
             </div>
             <Button
@@ -1960,10 +2020,27 @@ export function ExperimentTrialsTable({
               variant="outline"
               aria-pressed={rejectedOnly}
               onClick={() => {
-                setRejectedOnly(!rejectedOnly);
+                const next = !rejectedOnly;
+                setRejectedOnly(next);
                 setTaskSearch("");
                 setRowFilterMode("none");
                 clearSelection();
+                if (next) {
+                  const reviewTasks = sortVisibleTasks(rejectedTasks, taskSort);
+                  if (reviewTasks[0]) {
+                    openTaskInDrawer(reviewTasks[0], {
+                      orderedTasks: reviewTasks,
+                      taskIndex: 0,
+                      taskNavScope: "rejected",
+                    });
+                  }
+                } else {
+                  // Widen next/prev on the open drawer; do not reopen or jump.
+                  onTaskNavChange?.({
+                    orderedTasks: sortVisibleTasks(tasks, taskSort),
+                    taskNavScope: "experiment",
+                  });
+                }
               }}
             >
               {rejectedOnly ? "Show all tasks" : "Review rejected tasks"}
@@ -2463,7 +2540,7 @@ export function ExperimentTrialsTable({
                                     type="button"
                                     variant="ghost"
                                     onClick={() =>
-                                      onTaskSelect?.(task, {
+                                      openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
                                         taskIndex: index,
                                       })
@@ -2533,7 +2610,7 @@ export function ExperimentTrialsTable({
                                   onOpen={
                                     onTaskSelect
                                       ? () =>
-                                          onTaskSelect(task, {
+                                          openTaskInDrawer(task, {
                                             orderedTasks: filteredTasks,
                                             taskIndex: index,
                                           })
@@ -2542,27 +2619,37 @@ export function ExperimentTrialsTable({
                                 />
                               )}
                               {showAnalysis && taskHasRejectedVerdict(task) && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  onClick={() =>
-                                    onTaskSelect?.(task, {
-                                      orderedTasks: filteredTasks,
-                                      taskIndex: index,
-                                    })
-                                  }
-                                  className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
-                                  title={
-                                    task.verdict?.primary_issue ||
-                                    "Open findings"
-                                  }
-                                  aria-label={`Open findings for ${task.name}`}
-                                >
-                                  {task.must_fix_count != null &&
-                                  task.must_fix_count > 0
-                                    ? `${task.must_fix_count} must-fix`
-                                    : "View findings"}
-                                </Button>
+                                <div className="min-w-0">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      openTaskInDrawer(task, {
+                                        orderedTasks: filteredTasks,
+                                        taskIndex: index,
+                                      })
+                                    }
+                                    className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
+                                    title={
+                                      rejectedOnly
+                                        ? task.verdict?.primary_issue ||
+                                          task.verdict?.reasoning ||
+                                          "QA rejected this task"
+                                        : rejectedMustFixLabel(task)
+                                    }
+                                    aria-label={`Open findings for ${task.name}`}
+                                  >
+                                    {rejectedMustFixLabel(task)}
+                                  </Button>
+                                  {rejectedOnly &&
+                                  (task.verdict?.primary_issue ||
+                                    task.verdict?.reasoning) ? (
+                                    <p className="mt-1 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
+                                      {task.verdict?.primary_issue ||
+                                        task.verdict?.reasoning}
+                                    </p>
+                                  ) : null}
+                                </div>
                               )}
                               {(() => {
                                 const showVersion =
@@ -2731,6 +2818,11 @@ export function ExperimentTrialsTable({
                                             orderedTrials,
                                             trialIndex: trialIndexInGroup,
                                             trialGroups,
+                                            orderedTasks: filteredTasks,
+                                            taskIndex: index,
+                                            taskNavScope: rejectedOnly
+                                              ? "rejected"
+                                              : "experiment",
                                           });
                                         }}
                                         className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}

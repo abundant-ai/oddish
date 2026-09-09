@@ -991,9 +991,10 @@ cited step anchor. They must never point signed-out readers at authenticated
 
 Authenticated experiment task rows include `verdict.primary_issue`, a preview
 limited to 240 characters in the task query, falling back to verdict reasoning
-when the primary issue is empty or absent. The full report stays in task detail;
-public experiment rows retain the verdict label, acceptance flag, and confidence
-without the prose preview.
+when the primary issue is empty or absent, plus nullable top-level
+`must_fix_count` from the current version's completed source audit. The full
+report stays in task detail; public experiment rows retain the verdict label,
+acceptance flag, and confidence without the prose preview or must-fix count.
 
 Experiment pages use one `/experiments/{id}/results` NDJSON response (or the
 public token-scoped equivalent). It contains experiment metadata, individual task
