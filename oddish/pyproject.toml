@@ -89,6 +89,9 @@ worker = [
     # which require the SDK API shipped in 0.192.0 and newer.
     "daytona>=0.192.0",
     "archil==0.12.0",
+    # Hosted workers orchestrate Thunder sandboxes directly. Keep this aligned
+    # with Harbor's thunder extra so cancellation can recover a sandbox by id.
+    "thunder-sandbox==0.6.1",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
@@ -118,7 +121,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f8f7378d26e44d1eadff3d3d62125839a177df8d" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "a13206024d26d8582bf8ed52a127ef7a4853113e" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

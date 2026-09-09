@@ -41,6 +41,9 @@ def write_trial_selection_manifest(
     return True
 
 
+THUNDER_CAPACITY_UNAVAILABLE_CODE = "sandbox_capacity_unavailable"
+
+
 @dataclass(frozen=True)
 class HarborTrajectoryMetrics:
     has_trajectory: bool = False
@@ -60,6 +63,7 @@ class HarborTrialExtraction:
     reward: float | None
     error: str | None
     exception_type: str | None
+    provider_error_code: str | None
     input_tokens: int | None
     cache_tokens: int | None
     output_tokens: int | None
@@ -429,7 +433,10 @@ def _extract_reward(trial_result: Any) -> float | None:
 
 def _extract_error(
     trial_result: Any,
+    *,
+    provider: str | None = None,
 ) -> tuple[
+    str | None,
     str | None,
     str | None,
     int | None,
@@ -439,20 +446,39 @@ def _extract_error(
 ]:
     exc = getattr(trial_result, "exception_info", None)
     if exc is None:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     exception_type = getattr(exc, "exception_type", None)
+    provider_error_code = getattr(exc, "provider_error_code", None) or getattr(
+        exc, "code", None
+    )
+    # Harbor 0.20 serializes an exception's type but does not yet have a field
+    # for provider-specific error codes. Thunder's typed CapacityError is an
+    # exact, stable SDK signal, so restore the canonical code at this boundary
+    # without inspecting the exception message.
+    if provider_error_code is None and provider == "thunder":
+        from thunder_sandbox import CapacityError
+
+        if exception_type == CapacityError.__name__:
+            provider_error_code = THUNDER_CAPACITY_UNAVAILABLE_CODE
     message = (
         getattr(exc, "exception_message", None)
         or exception_type
         or "Harbor execution error"
     )
+    http_status = getattr(exc, "http_status", None)
+    if http_status is None:
+        http_status = getattr(exc, "status", None)
+    retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+    if retry_after_seconds is None:
+        retry_after_seconds = getattr(exc, "retry_after", None)
     return (
         str(message) if message else None,
         str(exception_type) if exception_type else None,
-        getattr(exc, "http_status", None),
+        str(provider_error_code) if provider_error_code else None,
+        http_status,
         getattr(exc, "request_id", None),
         getattr(exc, "session_id", None),
-        getattr(exc, "retry_after_seconds", None),
+        retry_after_seconds,
     )
 
 
@@ -481,17 +507,19 @@ def _extract_token_cost_totals(
 def extract_trial_result_fields(
     trial_result: Any,
     *,
+    provider: str | None = None,
     trajectory: HarborTrajectoryMetrics | None = None,
 ) -> HarborTrialExtraction:
     """Flatten a Harbor TrialResult-like object into Oddish persistence fields."""
     (
         error,
         exception_type,
+        provider_error_code,
         http_status,
         request_id,
         session_id,
         retry_after_seconds,
-    ) = _extract_error(trial_result)
+    ) = _extract_error(trial_result, provider=provider)
     input_tokens, cache_tokens, output_tokens, cost_usd = _extract_token_cost_totals(
         trial_result
     )
@@ -510,6 +538,7 @@ def extract_trial_result_fields(
         reward=_extract_reward(trial_result),
         error=error,
         exception_type=exception_type,
+        provider_error_code=provider_error_code,
         input_tokens=input_tokens,
         cache_tokens=cache_tokens,
         output_tokens=output_tokens,

@@ -24,6 +24,7 @@ from oddish.workers.jobs import (  # noqa: E402
     JobFailure,
     JobHandler,
     JobOutcome,
+    JobReroute,
     JobSuccess,
     NoHandlerRegisteredError,
     clear_handlers,
@@ -75,6 +76,25 @@ def test_job_outcome_fail_sets_failure_only():
     assert outcome.failure.retry_after_seconds == 12.5
 
 
+def test_job_outcome_reroute_sets_reroute_only():
+    outcome = JobOutcome.reroute_to(
+        target_environment="modal",
+        target_execution_lane="default",
+        reason="sandbox_capacity_unavailable",
+        retry_after_seconds=20.0,
+        subject_attempt=4,
+    )
+
+    assert outcome.success is None
+    assert outcome.failure is None
+    assert isinstance(outcome.reroute, JobReroute)
+    assert outcome.reroute.target_environment == "modal"
+    assert outcome.reroute.target_execution_lane == "default"
+    assert outcome.reroute.reason == "sandbox_capacity_unavailable"
+    assert outcome.reroute.retry_after_seconds == 20.0
+    assert outcome.reroute.subject_attempt == 4
+
+
 def test_job_outcome_rejects_both_unset():
     with pytest.raises(ValueError, match="exactly one"):
         JobOutcome()
@@ -83,6 +103,14 @@ def test_job_outcome_rejects_both_unset():
 def test_job_outcome_rejects_both_set():
     with pytest.raises(ValueError, match="exactly one"):
         JobOutcome(success=JobSuccess(), failure=JobFailure("no"))
+
+
+def test_job_outcome_rejects_multiple_dispositions():
+    with pytest.raises(ValueError, match="exactly one"):
+        JobOutcome(
+            failure=JobFailure("no"),
+            reroute=JobReroute("modal", "default", "capacity"),
+        )
 
 
 def test_job_failure_default_is_retryable():

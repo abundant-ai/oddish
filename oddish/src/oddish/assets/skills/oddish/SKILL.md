@@ -66,6 +66,18 @@ not authorize a later mutation.
    the output; the `experiment` field is the experiment name, not a guaranteed
    identifier.
 
+   Use `--env thunder` only when the target deployment has explicitly enabled
+   its Thunder GPU backend. For a deployment smoke test, keep the execution
+   deterministic and bounded:
+
+   ```bash
+   oddish run ./smoke_test_thunder/task --env thunder -a nop \
+     --n-trials 1 --max-trial-attempts 1 --json
+   ```
+
+   Never request, print, or persist the operator's `TNR_API_URL` or
+   `TNR_API_TOKEN`; those belong to the worker-only deployment secret.
+
 3. Inspect a task, experiment, or individual trial:
 
    ```bash

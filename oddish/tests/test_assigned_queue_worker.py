@@ -161,6 +161,61 @@ def test_assigned_ec2_worker_claims_exact_lane_and_releases_capacity(
     ]
 
 
+def test_assigned_thunder_worker_enforces_global_capacity(monkeypatch) -> None:
+    from oddish.config import settings
+
+    acquired: dict = {}
+    drained: dict = {}
+    released: dict = {}
+
+    async def _acquire_capacity(**kwargs):
+        acquired.update(kwargs)
+        return 9
+
+    async def _release_capacity(**kwargs):
+        released.update(kwargs)
+
+    async def _acquire_slot(**kwargs):
+        return 2
+
+    async def _release_slot(**kwargs):
+        return None
+
+    async def _drain(queue_key, **kwargs):
+        drained.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(settings, "thunder_enabled", True)
+    monkeypatch.setattr(settings, "thunder_max_capacity", 16)
+    monkeypatch.setattr(
+        queue_manager, "acquire_sandbox_capacity_lease", _acquire_capacity
+    )
+    monkeypatch.setattr(
+        queue_manager, "release_sandbox_capacity_lease", _release_capacity
+    )
+    monkeypatch.setattr(queue_manager, "acquire_queue_slot", _acquire_slot)
+    monkeypatch.setattr(queue_manager, "release_queue_slot", _release_slot)
+    monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
+    monkeypatch.setattr(
+        queue_manager, "load_effective_model_concurrency_limit", _limit(3)
+    )
+
+    processed = asyncio.run(
+        queue_manager.run_assigned_queue_worker(
+            "zai/glm-5.2",
+            worker_id="worker-1",
+            execution_lane="thunder_trial",
+        )
+    )
+
+    assert processed == 1
+    assert acquired["provider"] == "thunder"
+    assert acquired["limit"] == 16
+    assert drained["capacity_provider"] == "thunder"
+    assert drained["capacity_slot"] == 9
+    assert released["provider"] == "thunder"
+
+
 def test_assigned_ec2_worker_cancellation_preserves_capacity(monkeypatch) -> None:
     events: list[str] = []
 

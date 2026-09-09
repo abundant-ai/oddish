@@ -18,6 +18,7 @@ from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
 from oddish.runtime.backends.gke import GkeBackend
 from oddish.runtime.backends.modal import ModalBackend
+from oddish.runtime.backends.thunder import ThunderBackend
 
 # Real backends are added to this list as they are implemented.
 CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
@@ -26,6 +27,7 @@ CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
     DaytonaBackend(),
     ArchilBackend(),
     GkeBackend(),
+    ThunderBackend(),
 ]
 
 _COLD_START = {"instant", "seconds", "minutes"}
