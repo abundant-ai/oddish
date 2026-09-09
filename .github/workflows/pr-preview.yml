@@ -194,10 +194,12 @@ jobs:
       ODDISH_NUMINOUS_GPU_ENABLED: "1"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      # Raised for the Numinous load campaign on this preview: hundreds of
+      # concurrent trials against the numinous environment (2026-09-09).
+      ODDISH_MODAL_API_MAX_CONTAINERS: "8"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "300"
       ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
       run:
