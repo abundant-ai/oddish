@@ -87,6 +87,8 @@ py-modules = [
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
+    "endpoint_health",
+    "endpoint_health_worker",
     "idempotency_store",
     "modal_app",
     "models",
