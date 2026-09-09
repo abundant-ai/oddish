@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
@@ -145,10 +145,10 @@ export function SeverityGroups({
   return (
     <div className={cn("flex flex-col gap-2", className)}>
       {groups.map((group) => (
-        <details
+        <TierDetails
           key={group.tier}
           className="group border-border bg-background/40 rounded-lg border"
-          defaultOpen={group.tier === "must_fix"}
+          initiallyOpen={group.tier === "must_fix"}
         >
           <summary className="hover:bg-foreground/5 flex cursor-pointer list-none flex-wrap items-center gap-2.5 px-3 py-2 transition-colors select-none">
             <span
@@ -201,8 +201,29 @@ export function SeverityGroups({
               );
             })}
           </ul>
-        </details>
+        </TierDetails>
       ))}
     </div>
+  );
+}
+
+function TierDetails({
+  initiallyOpen,
+  className,
+  children,
+}: {
+  initiallyOpen?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(Boolean(initiallyOpen));
+  return (
+    <details
+      className={className}
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      {children}
+    </details>
   );
 }

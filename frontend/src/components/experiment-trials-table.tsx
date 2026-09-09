@@ -125,6 +125,21 @@ const PassAtOneLeaderboard = dynamic(
   }
 );
 
+function sortVisibleTasks(
+  rows: Task[],
+  taskSort: "default" | "name-asc" | "name-desc"
+): Task[] {
+  if (taskSort === "default") return rows;
+  const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
+  const sorted = [...rows].sort((a, b) =>
+    nameOf(a).localeCompare(nameOf(b), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    })
+  );
+  return taskSort === "name-desc" ? sorted.reverse() : sorted;
+}
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -952,15 +967,7 @@ export function ExperimentTrialsTable({
             return true;
           });
 
-    if (taskSort === "default") return rowFiltered;
-    const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
-    const sorted = [...rowFiltered].sort((a, b) =>
-      nameOf(a).localeCompare(nameOf(b), undefined, {
-        numeric: true,
-        sensitivity: "base",
-      })
-    );
-    return taskSort === "name-desc" ? sorted.reverse() : sorted;
+    return sortVisibleTasks(rowFiltered, taskSort);
   }, [
     tasks,
     deferredTaskSearch,
@@ -1961,11 +1968,14 @@ export function ExperimentTrialsTable({
                 setTaskSearch("");
                 setRowFilterMode("none");
                 clearSelection();
-                if (next && rejectedTasks[0]) {
-                  onTaskSelect?.(rejectedTasks[0], {
-                    orderedTasks: rejectedTasks,
-                    taskIndex: 0,
-                  });
+                if (next) {
+                  const reviewTasks = sortVisibleTasks(rejectedTasks, taskSort);
+                  if (reviewTasks[0]) {
+                    onTaskSelect?.(reviewTasks[0], {
+                      orderedTasks: reviewTasks,
+                      taskIndex: 0,
+                    });
+                  }
                 }
               }}
             >
