@@ -168,6 +168,9 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
+      orderedTasks: Task[];
+      taskIndex: number;
+      taskNavScope?: "experiment" | "rejected";
     }
   ) => void;
   onTaskSelect?: (
@@ -184,6 +187,8 @@ type ExperimentTrialsTableProps = {
     orderedTasks: Task[];
     taskNavScope: "experiment" | "rejected";
   }) => void;
+  rejectedOnly?: boolean;
+  onRejectedOnlyChange?: (next: boolean) => void;
 };
 
 const EMPTY_TRIALS: Trial[] = [];
@@ -611,6 +616,8 @@ export function ExperimentTrialsTable({
   onTrialSelect,
   onTaskSelect,
   onTaskNavChange,
+  rejectedOnly: rejectedOnlyProp,
+  onRejectedOnlyChange,
 }: ExperimentTrialsTableProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -618,7 +625,9 @@ export function ExperimentTrialsTable({
   const AGENT_COLUMN_MIN = 140;
   const DEFAULT_AGENT_WIDTH = 180;
   const DEFAULT_TASK_WIDTH = 320;
-  const [rejectedOnly, setRejectedOnly] = useState(false);
+  const [rejectedOnlyState, setRejectedOnlyState] = useState(false);
+  const rejectedOnly = rejectedOnlyProp ?? rejectedOnlyState;
+  const setRejectedOnly = onRejectedOnlyChange ?? setRejectedOnlyState;
   const rejectedTasks = useMemo(
     () => tasks.filter(taskHasRejectedVerdict),
     [tasks]
@@ -2789,6 +2798,11 @@ export function ExperimentTrialsTable({
                                             orderedTrials,
                                             trialIndex: trialIndexInGroup,
                                             trialGroups,
+                                            orderedTasks: filteredTasks,
+                                            taskIndex: index,
+                                            taskNavScope: rejectedOnly
+                                              ? "rejected"
+                                              : "experiment",
                                           });
                                         }}
                                         className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}

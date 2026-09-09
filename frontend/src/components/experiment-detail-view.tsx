@@ -1060,6 +1060,7 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  const [rejectedOnly, setRejectedOnly] = useState(false);
   // Task-definition pane addressing. The drawer can show the task's file
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
@@ -1313,6 +1314,8 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
+      } else {
+        next.delete("trial");
       }
       if (activeTaskPane === "overview") {
         next.delete("taskPane");
@@ -1429,35 +1432,73 @@ export function ExperimentDetailView({
     );
     if (!liveTask) return;
     // Preserve open order, then append newly streamed tasks in scope so
-    // next/prev grows with /open pages. Rejected review stays rejected-only.
+    // next/prev grows with /open pages. Rejected review stays rejected-only,
+    // including dropping rows that are no longer rejected after a refresh.
     const liveById = new Map(
       tasksForExperiment.map((task) => [task.id, task] as const)
     );
-    const preservedOrderedTasks = drawerState.orderedTasks
+    const remappedOrderedTasks = drawerState.orderedTasks
       .map((task) => liveById.get(task.id))
       .filter((task): task is Task => task != null);
+    const preservedOrderedTasks =
+      drawerState.taskNavScope === "rejected"
+        ? remappedOrderedTasks.filter(taskHasRejectedVerdict)
+        : remappedOrderedTasks;
     const seen = new Set(preservedOrderedTasks.map((task) => task.id));
     const growthPool =
       drawerState.taskNavScope === "rejected"
         ? tasksForExperiment.filter(taskHasRejectedVerdict)
         : tasksForExperiment;
-    const orderedTasks = [
+    const scopedOrderedTasks = [
       ...preservedOrderedTasks,
       ...growthPool.filter((task) => !seen.has(task.id)),
     ];
+    // Empty rejected nav must leave review scope; falling back to the full
+    // experiment list while still marked rejected oscillates forever.
+    const leaveRejectedNav =
+      drawerState.taskNavScope === "rejected" &&
+      scopedOrderedTasks.length === 0;
+    const orderedTasks = leaveRejectedNav
+      ? tasksForExperiment
+      : scopedOrderedTasks.length > 0
+        ? scopedOrderedTasks
+        : tasksForExperiment;
+    const taskNavScope = leaveRejectedNav
+      ? "experiment"
+      : drawerState.taskNavScope;
+    let nextTask = liveTask;
+    let resolvedTaskIndex = orderedTasks.findIndex(
+      (task) => task.id === liveTask.id
+    );
+    if (resolvedTaskIndex < 0 && orderedTasks.length > 0) {
+      // Open task left the nav set (e.g. no longer rejected); snap so
+      // taskIndex and the visible task stay aligned for next/prev.
+      resolvedTaskIndex = Math.min(
+        drawerState.taskIndex,
+        orderedTasks.length - 1
+      );
+      nextTask = orderedTasks[resolvedTaskIndex]!;
+    } else if (resolvedTaskIndex < 0) {
+      resolvedTaskIndex = 0;
+    }
     const orderedChanged =
       orderedTasks.length !== drawerState.orderedTasks.length ||
-      orderedTasks.some((task, index) => task !== drawerState.orderedTasks[index]);
+      taskNavScope !== drawerState.taskNavScope ||
+      nextTask.id !== drawerState.task.id ||
+      orderedTasks.some(
+        (task, index) => task !== drawerState.orderedTasks[index]
+      );
     const liveTrialCount = liveTask.trials?.length ?? 0;
     const snapshotTrialCount = drawerState.task.trials?.length ?? 0;
     if (
       liveTask === drawerState.task &&
+      nextTask.id === drawerState.task.id &&
       liveTrialCount === snapshotTrialCount &&
       !orderedChanged
     ) {
       return;
     }
-    const { trialGroups, orderedTrials } = buildTrialGroups(liveTask);
+    const { trialGroups, orderedTrials } = buildTrialGroups(nextTask);
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
@@ -1465,23 +1506,32 @@ export function ExperimentDetailView({
     const resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
-        : drawerState.trial;
-    const resolvedTaskIndex = orderedTasks.findIndex(
-      (task) => task.id === liveTask.id
-    );
+        : nextTask.id === drawerState.task.id
+          ? drawerState.trial
+          : null;
+    const snappedAway = nextTask.id !== drawerState.task.id;
+    if (leaveRejectedNav && rejectedOnly) {
+      setRejectedOnly(false);
+    }
     setDrawerState({
       ...drawerState,
-      task: liveTask,
-      taskIndex:
-        resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
-      orderedTasks:
-        orderedTasks.length > 0 ? orderedTasks : tasksForExperiment,
+      mode:
+        snappedAway && resolvedTrial == null ? "task" : drawerState.mode,
+      task: nextTask,
+      taskIndex: resolvedTaskIndex,
+      orderedTasks,
+      taskNavScope,
       trial: resolvedTrial,
       trialIndex: resolvedTrialIndex,
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+  }, [
+    tasksForExperiment,
+    drawerState,
+    buildTrialGroups,
+    rejectedOnly,
+  ]);
 
   const clearPendingDeepLink = useCallback(() => {
     setPendingUrlTaskSelector(null);
@@ -1917,18 +1967,17 @@ export function ExperimentDetailView({
                 allowRerun={allowRetry}
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
+                rejectedOnly={rejectedOnly}
+                onRejectedOnlyChange={setRejectedOnly}
                 onTrialSelect={(trial, task, context) => {
                   cancelPendingDeepLink();
-                  const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id
-                  );
                   setDrawerState({
                     isOpen: true,
                     mode: "trial",
                     task,
-                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                    orderedTasks: tasksForExperiment,
-                    taskNavScope: "experiment",
+                    taskIndex: context.taskIndex,
+                    orderedTasks: context.orderedTasks,
+                    taskNavScope: context.taskNavScope ?? "experiment",
                     trial,
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
