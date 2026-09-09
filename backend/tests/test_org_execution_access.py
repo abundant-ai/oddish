@@ -183,7 +183,7 @@ async def test_first_request_syncs_before_webhook_without_approving(monkeypatch)
     try:
         async with get_session() as session:
             user, org = await provisioning.get_or_create_user_from_clerk(
-                session, "user_new", clerk_id, "new@example.test", "org:admin"
+                "user_new", clerk_id, "new@example.test", "org:admin"
             )
             org_id = org.id
             assert org.execution_enabled is False
@@ -495,7 +495,7 @@ async def test_clerk_membership_payload_updates_then_deletes_the_member(
     monkeypatch.setattr(provisioning, "_refresh_user_github_identity", AsyncMock())
     async with get_session() as session:
         user, _ = await provisioning.get_or_create_user_from_clerk(
-            session, "user_nested", org_id, initial_email, "org:member"
+            "user_nested", org_id, initial_email, "org:member"
         )
         original_user_id = user.id
         assert user.email == (initial_email or "user_nested@clerk.user")
