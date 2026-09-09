@@ -1627,6 +1627,27 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash

@@ -37,6 +37,7 @@ from oddish.observability import record_worker_job_transition
 from oddish.workers.jobs.registry import (
     HANDLERS,
     JobOutcome,
+    JobHandler,
     NoHandlerRegisteredError,
     get_handler,
 )
@@ -51,6 +52,35 @@ logger = logging.getLogger(__name__)
 # GitHub notifications (trial / analysis / verdict) without pushing
 # backend-specific concerns into this module.
 PostSuccessHooks = dict[WorkerJobKind, Callable[[str], Awaitable[None]]]
+
+
+class JobAccessDenied(Exception):
+    """A host revoked authorization; this job must not retry."""
+
+
+async def run_authorized_handler(
+    job: ClaimedWorkerJob,
+    handler: JobHandler,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None,
+    *,
+    poll_seconds: float = 15.0,
+) -> JobOutcome:
+    """Check host policy before execution and stop work if authorization is lost."""
+    if authorize_job is None:
+        return await handler.run(job)
+    await authorize_job(job)
+    execution = asyncio.create_task(handler.run(job))
+    try:
+        while True:
+            done, _ = await asyncio.wait({execution}, timeout=poll_seconds)
+            if done:
+                return await execution
+            await authorize_job(job)
+    finally:
+        if not execution.done():
+            execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+
 
 TRIAL_RETRY_BASE_DELAY_SECONDS = 30.0
 TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS = 300.0
@@ -630,6 +660,7 @@ async def run_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
     priority_class: bool | None = None,
@@ -698,7 +729,9 @@ async def run_single_worker_job(
         try:
             # Handlers receive the claimed projection; they can hydrate a
             # full ORM row if they need more columns.
-            outcome = await handler.run(job)  # type: ignore[arg-type]
+            outcome = await run_authorized_handler(job, handler, authorize_job)
+        except JobAccessDenied as exc:
+            outcome = JobOutcome.fail(str(exc), retryable=False)
         except asyncio.CancelledError:
             console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
             # This attempt's compute is over; close its worker span at cancel time
@@ -782,6 +815,7 @@ async def drain_worker_jobs(
     budget_seconds: float,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
     priority_class: bool | None = None,
@@ -823,6 +857,8 @@ async def drain_worker_jobs(
             "harbor_variant_id": harbor_variant_id,
             "worker_billing_spec": worker_billing_spec,
         }
+        if authorize_job is not None:
+            run_kwargs["authorize_job"] = authorize_job
         if execution_lane != "default" or capacity_provider is not None:
             run_kwargs.update(
                 execution_lane=execution_lane,

@@ -558,28 +558,29 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("error_name", "exception_attribute"),
-    [
-        ("APIError", "LiteLLMAPIError"),
-        ("Timeout", "LiteLLMTimeout"),
-        ("APIConnectionError", "LiteLLMAPIConnectionError"),
-    ],
+    ("error_name", "status_code"),
+    [("APIError", 502), ("Timeout", 408), ("APIConnectionError", 500)],
 )
-async def test_model_endpoint_surfaces_litellm_failures(
-    monkeypatch, error_name, exception_attribute
+async def test_model_endpoint_surfaces_transport_failures(
+    monkeypatch, error_name, status_code
 ):
-    error_type = type(error_name, (Exception,), {})
-    monkeypatch.setattr(model_endpoints_router, exception_attribute, error_type)
+    import litellm
+
+    # Exercise the pinned SDK classes, not stand-ins inheriting OpenAIError.
+    # LiteLLM 1.83.14 maps all three to OpenAI's exception hierarchy.
+    kwargs = {
+        "message": "secret-provider-detail",
+        "model": "test-model",
+        "llm_provider": "xai",
+    }
+    if error_name == "APIError":
+        kwargs["status_code"] = status_code
+    failure = getattr(litellm, error_name)(**kwargs)
 
     async def completion(**_kwargs):
-        raise error_type("The provider did not respond")
+        raise failure
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=completion),
-    )
-
+    monkeypatch.setattr(litellm, "acompletion", completion)
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -591,8 +592,8 @@ async def test_model_endpoint_surfaces_litellm_failures(
     payload = response.json()
     assert payload["ok"] is False
     assert payload["failure_kind"] == "provider"
-    assert payload["status_code"] is None
-    assert payload["error"] == f"Provider request failed ({error_name})"
+    assert payload["status_code"] == status_code
+    assert "secret-provider-detail" not in response.text
 
 
 @pytest.mark.asyncio
