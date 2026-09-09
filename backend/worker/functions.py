@@ -207,6 +207,11 @@ ensure_builtin_handlers_registered()
 # the core package importing backend. Inert until a user has a key and the gate
 # is on; otherwise trials run on the platform keys as before.
 from .byok_resolver import install_byok_resolver
+from .org_access import (
+    authorize_worker_job,
+    approved_worker_job_counts,
+    cancel_unapproved_runs,
+)
 
 install_byok_resolver()
 
@@ -376,6 +381,7 @@ async def _run_one_job(
                     queue_slot=lock_slot,
                     modal_function_call_id=fc_id,
                     post_success_hooks=_POST_SUCCESS_HOOKS,
+                    authorize_job=authorize_worker_job,
                     harbor_variant_id=harbor_variant_id,
                     execution_lane=execution_lane,
                     capacity_provider=capacity_provider,
@@ -394,6 +400,7 @@ async def _run_one_job(
                 budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
                 modal_function_call_id=fc_id,
                 post_success_hooks=_POST_SUCCESS_HOOKS,
+                authorize_job=authorize_worker_job,
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
                 worker_billing_spec=worker_billing_spec,
@@ -671,6 +678,12 @@ async def reconcile_queue_state():
     try:
         console.print("[cyan]Queue reconciler starting...[/cyan]")
         await configure_storage_paths()
+
+        try:
+            summary["unapproved_tasks_cancelled"] = await cancel_unapproved_runs()
+        except Exception as e:
+            phase_errors.append(f"unapproved_org_cleanup: {e}")
+            log_exception("reconcile phase failed", phase="unapproved_org_cleanup")
 
         try:
             stale_cleared = await cleanup_stale_queue_slots()
@@ -1070,6 +1083,7 @@ async def poll_queue():
             plan, reservations = await reserve_queue_launches(
                 partial(
                     build_dispatch_plan,
+                    _counts=approved_worker_job_counts,
                     max_workers=MAX_WORKERS_PER_POLL,
                     concurrency_limits_for=_effective_model_concurrency_limits,
                     capacity_limits_by_lane=capacity_limits_by_lane,

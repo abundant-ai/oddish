@@ -56,3 +56,37 @@ async def test_p2_run_submits_queued_trial(live_server, seeded):
         )
     assert trial_count == 1
     assert queued == 1
+
+
+async def test_run_rejects_unapproved_org_without_queueing_work(live_server, seeded):
+    from models import OrganizationModel
+    from oddish.db import TrialModel, WorkerJobModel, get_session
+
+    async with get_session() as session:
+        org = await session.get(OrganizationModel, seeded["org_id"])
+        org.execution_enabled = False
+
+    proc = cli(
+        live_server,
+        seeded["api_key"],
+        "run",
+        "--task",
+        seeded["task_id"],
+        "--agent",
+        "nop",
+        "--n-trials",
+        "1",
+        "--background",
+        "--json",
+    )
+    assert proc.returncode != 0
+    assert "This organization needs Abundant approval" in proc.stderr
+    async with get_session() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(TrialModel)
+            .where(TrialModel.task_id == seeded["task_id"])
+        ) == 0
+        assert await session.scalar(
+            select(func.count()).select_from(WorkerJobModel)
+            .where(WorkerJobModel.org_id == seeded["org_id"])
+        ) == 0

@@ -252,6 +252,11 @@ async def verify_clerk_jwt(token: str) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # Clerk session-token v2 stores the active organization in `o`.
+        org_claim = claims.get("o")
+        if isinstance(org_claim, dict) and not claims.get("org_id"):
+            claims["org_id"] = org_claim.get("id")
+            claims["org_role"] = org_claim.get("rol")
         return claims
 
     except JWTError as e:

@@ -16,7 +16,6 @@ from auth import require_auth
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserRole
 
-
 # Synthetic model IDs retain only the prefixes needed to exercise provider routing.
 _TEST_MODELS = {
     "anthropic-hdo/test-model-01",
@@ -54,6 +53,11 @@ def _app(auth: AuthContext | None = None):
 @pytest.fixture(autouse=True)
 def operator_org(monkeypatch):
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
+    monkeypatch.setattr(model_endpoints_router, "provider_models", lambda: set())
+    monkeypatch.setattr(
+        model_endpoints_router, "credential_configured", lambda _route: False
+    )
+    monkeypatch.setattr(model_endpoints_router.settings, "model_catalog", [])
     settings_type = type(model_endpoints_router.settings)
     monkeypatch.setattr(
         settings_type, "get_known_queue_keys", lambda _self: _TEST_MODELS
@@ -129,7 +133,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
         "allowed": True,
         "models": [
             {
-                "is_configured": True,
+                "source": "deployment",
+                "credential_configured": False,
                 "credential": "AWS_BEARER_TOKEN_BEDROCK",
                 "model": "global.anthropic.test-model-05",
                 "provider": "bedrock",
@@ -137,7 +142,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "CURSOR_API_KEY",
                 "model": "cursor/test-model-02",
                 "provider": "cursor",
@@ -145,7 +151,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": False,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "DEEPSEEK_API_KEY",
                 "model": "deepseek/deepseek-test-model-03",
                 "provider": "deepseek",
@@ -153,7 +160,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "GEMINI_API_KEY",
                 "model": "google/test-model-08",
                 "provider": "gemini",
@@ -161,7 +169,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": True,
+                "source": "deployment",
+                "credential_configured": False,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-10",
                 "provider": "openai",
@@ -169,7 +178,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "OPENAI_API_KEY",
                 "model": "openai/test-model-11",
                 "provider": "openai",
@@ -177,7 +187,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "VERTEXAI_PROJECT",
                 "model": "vertex_ai/test-model-12",
                 "provider": "gemini",
@@ -185,7 +196,8 @@ async def test_model_catalog_unions_configured_and_previously_used_models(monkey
                 "testable": True,
             },
             {
-                "is_configured": False,
+                "source": "previously_used",
+                "credential_configured": False,
                 "credential": "XAI_API_KEY",
                 "model": "xai/test-model-14",
                 "provider": "xai",
@@ -545,28 +557,30 @@ async def test_model_endpoint_surfaces_upstream_http_status(monkeypatch, status_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_name", ["Timeout", "APIConnectionError"])
-async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_name):
-    class Timeout(OpenAIError):
-        pass
+@pytest.mark.parametrize(
+    ("error_name", "status_code"),
+    [("APIError", 502), ("Timeout", 408), ("APIConnectionError", 500)],
+)
+async def test_model_endpoint_surfaces_transport_failures(
+    monkeypatch, error_name, status_code
+):
+    import litellm
 
-    class APIConnectionError(OpenAIError):
-        pass
-
-    error_type = {
-        "Timeout": Timeout,
-        "APIConnectionError": APIConnectionError,
-    }[error_name]
+    # Exercise the pinned SDK classes, not stand-ins inheriting OpenAIError.
+    # LiteLLM 1.83.14 maps all three to OpenAI's exception hierarchy.
+    kwargs = {
+        "message": "secret-provider-detail",
+        "model": "test-model",
+        "llm_provider": "xai",
+    }
+    if error_name == "APIError":
+        kwargs["status_code"] = status_code
+    failure = getattr(litellm, error_name)(**kwargs)
 
     async def completion(**_kwargs):
-        raise error_type("The provider did not respond")
+        raise failure
 
-    monkeypatch.setitem(
-        sys.modules,
-        "litellm",
-        SimpleNamespace(acompletion=completion),
-    )
-
+    monkeypatch.setattr(litellm, "acompletion", completion)
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -578,8 +592,8 @@ async def test_model_endpoint_surfaces_transport_failures(monkeypatch, error_nam
     payload = response.json()
     assert payload["ok"] is False
     assert payload["failure_kind"] == "provider"
-    assert payload["status_code"] is None
-    assert payload["error"] == f"Provider request failed ({error_name})"
+    assert payload["status_code"] == status_code
+    assert "secret-provider-detail" not in response.text
 
 
 @pytest.mark.asyncio
@@ -976,11 +990,11 @@ async def test_catalog_distinguishes_legacy_names_from_configured_runtime_models
         model_endpoints_router, "browse_task_facets_core", historical_facets
     )
     catalog = await model_endpoints_router._model_endpoint_catalog("org-1")
-    configured = [entry for entry in catalog if entry.is_configured]
+    configured = [entry for entry in catalog if entry.source == "deployment"]
     assert len(configured) == 1
     assert configured[0].model == "global.anthropic.claude-sonnet-4-6"
     assert configured[0].route == "bedrock"
-    assert {entry.model for entry in catalog if not entry.is_configured} == {
+    assert {entry.model for entry in catalog if entry.source == "previously_used"} == {
         "anthropic/claude-sonnet-4-6-20250514",
         "anthropic/opus-5",
     }
@@ -1007,3 +1021,197 @@ def test_provider_failure_explanations_do_not_copy_exception_text(
     assert expected in message
     assert str(status_code) in message
     assert "secret-that-must-not-be-shown" not in message
+
+
+@pytest.mark.asyncio
+async def test_catalog_adds_provider_models_and_private_entries_without_limits(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        type(model_endpoints_router.settings),
+        "get_known_queue_keys",
+        lambda _self: set(),
+    )
+    monkeypatch.setattr(
+        model_endpoints_router,
+        "provider_models",
+        lambda: {
+            ("minimax/MiniMax-Test", "minimax", "minimax"),
+            ("openai/gpt-test", "openai", "openai"),
+            ("azure/MyDeployment", "azure", "azure"),
+        },
+    )
+    monkeypatch.setattr(
+        model_endpoints_router.settings, "model_catalog", ["moonshot/PrivateModel"]
+    )
+
+    async def facets(_session, *, org_id):
+        return SimpleNamespace(models=["minimax/minimax-test", "xai/old-model"])
+
+    monkeypatch.setattr(model_endpoints_router, "browse_task_facets_core", facets)
+    catalog = await model_endpoints_router._model_endpoint_catalog("org-1")
+    assert {entry.model for entry in catalog} == {
+        "minimax/MiniMax-Test",
+        "openai/gpt-test",
+        "azure/MyDeployment",
+        "moonshot/PrivateModel",
+        "xai/old-model",
+    }
+    assert (
+        next(entry for entry in catalog if entry.model == "minimax/MiniMax-Test").source
+        == "provider_catalog"
+    )
+    assert (
+        next(entry for entry in catalog if entry.model == "xai/old-model").source
+        == "previously_used"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,provider,route,resolved",
+    [
+        ("minimax/MiniMax-Test", "minimax", "minimax", "minimax/MiniMax-Test"),
+        ("anthropic/claude-test", "anthropic", "anthropic", "anthropic/claude-test"),
+        ("amazon.test", "bedrock", "bedrock", "bedrock/amazon.test"),
+        ("azure/MyDeployment", "azure", "azure", "azure/MyDeployment"),
+        ("openai/gpt-test", "openai", "openai", "openai/gpt-test"),
+    ],
+)
+async def test_discovered_model_uses_catalog_case_and_route(
+    monkeypatch, model, provider, route, resolved
+):
+    monkeypatch.setattr(
+        model_endpoints_router, "provider_models", lambda: {(model, provider, route)}
+    )
+    monkeypatch.setattr(model_endpoints_router.settings, "openai_provider", "azure")
+    monkeypatch.setattr(
+        type(model_endpoints_router.settings),
+        "require_azure_openai_config",
+        lambda _self: {
+            "api_key": "azure-test-key",
+            "endpoint": "https://example.invalid",
+            "api_version": "test",
+        },
+    )
+
+    async def completion(**kwargs):
+        assert kwargs["model"] == resolved
+        if route == "openai":
+            assert "api_base" not in kwargs
+        return SimpleNamespace(
+            id="request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": model, "route": route}
+        )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["model"] == model
+    assert response.json()["resolved_model"] == resolved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_bedrock", [False, True])
+@pytest.mark.parametrize("route", [None, "anthropic"])
+async def test_claude_case_fallback_preserves_anthropic_route(
+    monkeypatch, include_bedrock, route
+):
+    model = "anthropic/claude-sonnet-4-6"
+    entries = {(model, "anthropic", "anthropic")}
+    if include_bedrock:
+        entries.add(("global.anthropic.claude-sonnet-4-6", "bedrock", "bedrock"))
+    monkeypatch.setattr(model_endpoints_router, "provider_models", lambda: entries)
+
+    async def completion(**kwargs):
+        assert kwargs["model"] == model
+        return SimpleNamespace(
+            id="anthropic-request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/models/check", json={"model": model.upper(), "route": route}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["model"] == model
+    assert payload["resolved_model"] == model
+    assert payload["provider"] == "anthropic"
+    assert payload["route"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_alternate_xai_credentials_are_selected_and_cached_separately(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        model_endpoints_router,
+        "provider_models",
+        lambda: {
+            ("xai/grok-test", "xai", "xai"),
+            ("xai/grok-test", "xai", "xai-swem"),
+        },
+    )
+    monkeypatch.setenv("XAI_SWEM_API_KEY", "alternate-secret")
+    calls = []
+
+    async def completion(**kwargs):
+        assert kwargs["model"] == "xai/grok-test"
+        calls.append(kwargs.get("api_key"))
+        return SimpleNamespace(
+            id="request",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Hello"))],
+        )
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=completion))
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        for route in ["xai-swem", "xai", "xai-swem"]:
+            response = await client.post(
+                "/models/check", json={"model": "xai/grok-test", "route": route}
+            )
+            assert response.status_code == 200
+            assert response.json()["route"] == route
+            assert "alternate-secret" not in response.text
+        assert response.json()["credential"] == "XAI_SWEM_API_KEY"
+    assert calls == ["alternate-secret", None]
+
+
+@pytest.mark.asyncio
+async def test_explicit_models_select_connections_independently_of_job_route(
+    monkeypatch,
+):
+    monkeypatch.setattr(model_endpoints_router.settings, "openai_provider", "azure")
+    monkeypatch.setattr(
+        model_endpoints_router.settings,
+        "model_catalog",
+        [
+            "openai/PrivateModel",
+            "xai-swem/PrivateGrok",
+        ],
+    )
+    catalog = await model_endpoints_router._model_endpoint_catalog("org-1")
+    assert any(
+        entry.model == "openai/PrivateModel" and entry.route == "openai"
+        for entry in catalog
+    )
+    assert any(
+        entry.model == "xai/PrivateGrok"
+        and entry.route == "xai-swem"
+        and entry.credential == "XAI_SWEM_API_KEY"
+        for entry in catalog
+    )

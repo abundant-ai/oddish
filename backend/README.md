@@ -108,11 +108,70 @@ curl -H "Authorization: Bearer ok_abc123..." "$API_URL/tasks"
 1. Read token from accepted header.
 2. If token starts with `ok_`, validate API key and scope.
 3. Otherwise validate Clerk JWT and resolve org/user.
-4. Return auth context (`org_id`, `user_id`, `scope`) to route handlers.
+4. Read the organization's `execution_enabled` approval from the database on
+   every authenticated request, including cached identities and existing keys.
+   Missing approval returns HTTP 403 before the route runs. This same read
+   supplies current organization data to `/org` and invitation routes, so a
+   cached identity never means missing or stale organization details.
 
-If a Clerk JWT arrives without an `org_id`, the backend will try to resolve a
-single existing org membership and, if none exists, provision a personal org for
-that user.
+Clerk tokens must select an organization (`org_id`, or `o.id` in v2 tokens).
+Missing selection returns HTTP 403; it never creates a Personal organization or
+chooses membership by email. If a selected organization has not arrived through
+Clerk's webhook yet, the backend fetches it from Clerk and creates the local
+record. A failed Clerk request returns HTTP 503 so the client can retry.
+Membership callbacks read Clerk's `public_user_data.user_id` field and update
+the same user record created by login. Supplied emails replace provisioning
+placeholders; partial callbacks without an email preserve the stored address.
+Organization synchronization serializes conflicting callbacks and preserves
+approval and deletion state. Creation and membership events cannot grant access.
+
+### Approving hosted organizations
+
+`organizations.execution_enabled` defaults to false. Migration
+`org_execution_001` approves only these active, non-deleted Clerk IDs:
+
+| Workspace verified in Clerk | Clerk organization ID |
+| --- | --- |
+| Abundant (original workspace) | `org_39ufkEqie8rLlVhoK4YMm4IMx0L` |
+| Abundant CyberMasters | `org_3H67wVrUZObfjW9JnxGq5pUZQvN` |
+| Oddish-onsite | `org_3IVmVHXFyfF4ltX8bfQMQTHrH1y` |
+
+Other existing organizations, Personal organizations, and future organizations
+remain blocked. Names do not confer approval. Preview/dev Clerk IDs differ and
+must be provisioned explicitly. Run the core migrations, then backend migrations,
+before deploying the API and workers. Audit any additional legitimate workspaces
+and provision their exact Clerk IDs before switching traffic.
+
+An operator creates the organization and invitations in Clerk, then runs this
+command from `backend/` with the intended deployment's `ODDISH_DATABASE_URL` and
+matching `CLERK_SECRET_KEY`:
+
+```bash
+uv run python -m provision_org --clerk-org-id org_EXACT_ID --approve --monthly-limit-usd 100
+uv run python -m provision_org --clerk-org-id org_EXACT_ID --revoke
+```
+
+The approval command synchronizes the organization and sets a positive monthly
+budget in the same transaction as approval. Only someone with deployment database
+access can grant approval; there is no tenant-admin approval endpoint. Budgets
+retain the existing quota rules and administrator controls; approval is a separate
+mandatory check, including when quota enforcement is disabled. This change does
+not introduce a hard global spending ceiling for approved organizations.
+
+Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
+check approval before each job and every 15 seconds during execution; losing
+approval or failing to read it cancels the handler. The reconciler also cancels
+queued/running task work for unapproved organizations using the existing remote
+worker teardown path, including work launched by older code. The revoke command
+runs that cleanup immediately. Remote cancellation failures are surfaced as errors;
+15 seconds is a polling interval, not a guarantee of instantaneous provider shutdown.
+Self-hosted core runners have no approval policy unless their host supplies one.
+
+In Clerk production, disable **Create first organization automatically** and
+**Allow user-created organizations** under organization settings, while leaving
+membership required. These dashboard controls reduce unwanted organization
+creation; backend approval also protects against existing users' organization
+creation permissions. The PR does not itself change live Clerk settings.
 
 ## Multi-tenancy
 
