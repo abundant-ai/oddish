@@ -155,9 +155,11 @@ export async function proxyBackendJson({
 export async function proxyPublicBackendJson({
   request,
   path,
+  stream = false,
 }: {
   request: Request;
   path: string;
+  stream?: boolean;
 }): Promise<NextResponse> {
   try {
     const res = await fetch(getBackendUrl(path), {
@@ -165,6 +167,19 @@ export async function proxyPublicBackendJson({
       signal: request.signal,
       headers: backendFetchHeaders(request),
     });
+    if (stream) {
+      return attachUpstreamServerTiming(
+        new NextResponse(res.body, {
+          status: res.status,
+          headers: {
+            "Content-Type":
+              res.headers.get("content-type") ?? "application/json",
+            "Cache-Control": "no-store",
+          },
+        }),
+        res
+      );
+    }
     const { data, parseError, status } = await readBackendJson(
       res,
       "Upstream error"

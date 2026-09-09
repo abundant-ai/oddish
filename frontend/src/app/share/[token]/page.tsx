@@ -8,7 +8,7 @@ import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert
 import { ShareNav } from "@/components/share-nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentResults } from "@/lib/use-experiment-results";
 import { useExperimentCostTotals } from "@/lib/use-experiment-cost-totals";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
@@ -27,20 +27,15 @@ export default function PublicExperimentPage() {
   const {
     experiment,
     tasks: tasksForExperiment,
-    openError,
+    error: openError,
     isLoading,
     isLoadingTrials,
-    retryTrials,
     trialsLoaded,
     totalTrials,
-    trialsStalled,
-    isValidatingTrials,
-    isValidatingOpen,
-    mutateOpen,
     pagesComplete,
-  } = useExperimentPages({
-    openUrl: publicBase ? `${publicBase}/open` : null,
-    trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
+    refreshResults,
+  } = useExperimentResults({
+    url: publicBase ? `${publicBase}/results` : null,
     publicView: true,
   });
   const { resource: costTotals, refresh: refreshCostTotals } =
@@ -73,21 +68,13 @@ export default function PublicExperimentPage() {
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
             inlineAlert={
-              trialsStalled ? (
+              openError ? (
                 <ExperimentPageLoadAlert
                   resource="trials"
                   loaded={trialsLoaded}
                   total={totalTrials}
-                  isRetrying={isValidatingTrials}
-                  onRetry={retryTrials}
-                />
-              ) : openError && experiment ? (
-                <ExperimentPageLoadAlert
-                  resource="tasks"
-                  loaded={tasksForExperiment.length}
-                  total={experiment.summary?.task_count ?? 0}
-                  isRetrying={isValidatingOpen}
-                  onRetry={() => void mutateOpen()}
+                  isRetrying={isLoadingTrials}
+                  onRetry={() => void refreshResults()}
                 />
               ) : null
             }
