@@ -1166,12 +1166,7 @@ export function TaskFilesPanel({
   // one-directory archive wrapper is resolved first, then its task-root
   // children determine which semantic directories need pages.
   useEffect(() => {
-    if (
-      !isOpen ||
-      activePane !== "file" ||
-      !loadsTaskTreeByDirectory ||
-      fileRouteServesBytes
-    ) {
+    if (!isOpen || !loadsTaskTreeByDirectory || fileRouteServesBytes) {
       return;
     }
 
@@ -1185,7 +1180,6 @@ export function TaskFilesPanel({
       }
     }
   }, [
-    activePane,
     directoryListings,
     fileRouteServesBytes,
     isOpen,
@@ -1196,9 +1190,10 @@ export function TaskFilesPanel({
     taskSectionDirectoryPaths,
   ]);
 
-  // Fetch root file list when panel opens
+  // Opening the task pane expresses intent to browse its files. Load while
+  // the overview is visible too, and keep the request/tree across tab changes.
   useEffect(() => {
-    if (!isOpen || activePane !== "file" || (!taskId && !filesUrl)) {
+    if (!isOpen || (!taskId && !filesUrl)) {
       return;
     }
 
@@ -1314,7 +1309,6 @@ export function TaskFilesPanel({
     };
   }, [
     isOpen,
-    activePane,
     taskId,
     filesUrl,
     resolvedFilesUrl,
@@ -1845,7 +1839,7 @@ export function TaskFilesPanel({
 
   const fileTreeContent = (
     <div className="@container/file-browser flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {isListingLoading ? (
+      {isListingLoading && !taskPaneExists ? (
         listingSkeleton
       ) : listingError && !taskPaneExists ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
@@ -1928,7 +1922,14 @@ export function TaskFilesPanel({
                   Files
                 </div>
               ) : null}
-              {listingError ? (
+              {isListingLoading ? (
+                <p
+                  role="status"
+                  className="text-muted-foreground px-2 py-2 text-xs"
+                >
+                  Loading files…
+                </p>
+              ) : listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
                 </p>
