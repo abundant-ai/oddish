@@ -542,7 +542,8 @@ test("retryable focus errors preserve the trial-page deep-link fallback", async 
 
   await expect.poll(() => focusRequests).toBe(1);
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-  await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
+  await expect(page).toHaveURL(/task=task-1/);
+  await expect(page).toHaveURL(/trial=task-1-2/);
 });
 
 test("public experiment resources and loaded pages refresh while active", async ({

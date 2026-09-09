@@ -1314,7 +1314,8 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
-      } else {
+      } else if (!pendingUrlTrialId) {
+        // Keep ?trial= while a deep link is still resolving from task mode.
         next.delete("trial");
       }
       if (activeTaskPane === "overview") {
@@ -1343,6 +1344,7 @@ export function ExperimentDetailView({
     activeTaskPane,
     drawerState,
     hasPendingUrlFocus,
+    pendingUrlTrialId,
     taskPaneFile,
     taskPaneLines,
   ]);
