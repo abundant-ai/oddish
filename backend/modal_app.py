@@ -1075,6 +1075,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "modal_runtime",
             "models",
             "observability",
+            "org_access",
             "pg_errors",
             "slack_alert_settings",
             "slack_notifications",

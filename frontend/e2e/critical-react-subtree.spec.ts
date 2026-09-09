@@ -335,6 +335,7 @@ test.describe("critical task and trial subtree", () => {
 
     const taskOpenGate = deferred();
     const taskPanelGate = deferred();
+    const taskFilesGate = deferred();
     const trialDetailGate = deferred();
     const analysisRerunGate = deferred();
     let holdAnalysisRerun = false;
@@ -427,6 +428,7 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/files(?:\\?|$)`),
       async (route) => {
+        await taskFilesGate.pending;
         await route.fulfill({ json: { files: [] } });
       }
     );
@@ -671,8 +673,37 @@ test.describe("critical task and trial subtree", () => {
     expect(requestCount(requests, taskPanelPattern)).toBe(1);
     expect(requestCount(requests, taskDetailPattern)).toBe(0);
     await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
-    expect(requestCount(requests, taskFilesPattern)).toBe(0);
+    await expect.poll(() => requestCount(requests, taskFilesPattern)).toBe(1);
+    // The tree is already loading while Overview is selected. Its pending
+    // response must not replace the task navigation or the trial summary.
+    const taskFilesButton = page.getByRole("button", {
+      name: "Files",
+      exact: true,
+    });
+    await expect(taskFilesButton).toBeVisible();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Loading files…" })
+    ).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     taskPanelGate.release();
+    taskFilesGate.release();
+    await expect(
+      page.getByRole("button", { name: "Overview", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("No files found", { exact: true })
+    ).toBeVisible();
+    const fileRequestsBeforeTabs = requestCount(requests, taskFilesPattern);
+    await taskFilesButton.click();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await taskFilesButton.click();
+    await expect(
+      page.getByText("No files found", { exact: true })
+    ).toBeVisible();
+    expect(requestCount(requests, taskFilesPattern)).toBe(
+      fileRequestsBeforeTabs
+    );
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
 
     const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();
