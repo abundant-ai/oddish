@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from math import ceil
 from time import monotonic
 from typing import Annotated, Literal
@@ -19,10 +20,14 @@ from oddish.config import (
     to_anthropic_api_model_id,
 )
 from oddish.core.endpoints import browse_task_facets_core
-from oddish.core.llm_key_fingerprint import provider_key_var
 from oddish.db import get_session
 from pydantic import BaseModel, Field, field_validator
 
+from api.services.model_catalog import (
+    credential_configured,
+    credential_variable,
+    provider_models,
+)
 from auth import AuthContext, AuthMethod, require_auth
 from auth.permissions import is_operator_org, require_operator_org
 from models import APIKeyScope
@@ -35,13 +40,17 @@ _MODEL_CHECK_RESULT_TTL_SECONDS = 5.0
 _MODEL_CHECK_IN_FLIGHT_TTL_SECONDS = 20.0
 
 
+ModelSource = Literal["provider_catalog", "deployment", "previously_used"]
+
+
 class ModelEndpointSummary(BaseModel):
     model: str
     provider: str
     route: str
     credential: str | None
     testable: bool
-    is_configured: bool
+    source: ModelSource
+    credential_configured: bool | None
 
 
 class ModelEndpointAccessResponse(BaseModel):
@@ -64,7 +73,7 @@ class ModelEndpointCheckRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("value must not be blank")
-        return value.lower()
+        return value
 
 
 class ModelEndpointCheckResponse(BaseModel):
@@ -115,6 +124,8 @@ async def _model_endpoint_catalog(org_id: str) -> tuple[ModelEndpointSummary, ..
     async with get_session() as session:
         facets = await browse_task_facets_core(session, org_id=org_id)
 
+    # Scheduling limits are one source of model names, never an availability
+    # filter. Explicit catalog entries let deployments name private/new models.
     configured_models = {
         _direct_completion_model(settings.normalize_queue_key(model))
         for model in settings.get_known_queue_keys()
@@ -123,21 +134,53 @@ async def _model_endpoint_catalog(org_id: str) -> tuple[ModelEndpointSummary, ..
         _direct_completion_model(settings.normalize_queue_key(model))
         for model in facets.models
     }
-    models: list[ModelEndpointSummary] = []
+    candidates: list[tuple[str, str, str, ModelSource]] = []
     for model in model_ids:
         provider = infer_model_provider_prefix(model)
         if provider:
-            route = _provider_route(provider, model)
-            models.append(
-                ModelEndpointSummary(
-                    model=model,
-                    provider=provider,
-                    route=route,
-                    credential=provider_key_var(route),
-                    testable=route != "cursor",
-                    is_configured=model in configured_models,
+            candidates.append(
+                (
+                    model,
+                    provider,
+                    _provider_route(provider, model),
+                    "deployment" if model in configured_models else "previously_used",
                 )
             )
+    for model, provider, route in provider_models():
+        candidates.append(
+            (
+                model,
+                provider,
+                route,
+                "deployment" if route == "azure" else "provider_catalog",
+            )
+        )
+    for model in settings.model_catalog:
+        model = model.strip()
+        provider = infer_model_provider_prefix(model)
+        if provider:
+            # Explicit catalog prefixes select a connection independently of
+            # the default OpenAI job route, just like the provider registry.
+            route = "vertex_ai" if model.startswith("vertex_ai/") else provider
+            if route == "xai-swem":
+                model = f"xai/{model.split('/', 1)[1]}"
+                provider = "xai"
+            candidates.append((model, provider, route, "deployment"))
+    # Registry/explicit entries supersede old lowercased task names without
+    # merging separate provider connections for the same model.
+    entries = {
+        (route, model.casefold()): ModelEndpointSummary(
+            model=model,
+            provider=provider,
+            route=route,
+            credential=credential_variable(route),
+            testable=route != "cursor",
+            source=source,
+            credential_configured=credential_configured(route),
+        )
+        for model, provider, route, source in candidates
+    }
+    models = list(entries.values())
     models.sort(key=lambda endpoint: (endpoint.route, endpoint.model))
     result = tuple(models)
     _model_catalog_cache[org_id] = (now, result)
@@ -269,16 +312,34 @@ async def check_model_endpoint(
 ) -> ModelEndpointCheckResponse:
     """Send one small provider request without creating a trial or worker job."""
     org_id, identity = _require_interactive_operator(auth)
-    model = settings.normalize_queue_key(request.model)
     catalog = await _model_endpoint_catalog(org_id)
-    endpoint = next((entry for entry in catalog if entry.model == model), None)
+    route_requested = request.route.lower() if request.route else None
+    # Prefer the catalog spelling. Queue normalization lowercases identifiers
+    # and redirects bare Claude names to Bedrock, which is wrong for direct APIs.
+    candidates = [entry for entry in catalog if entry.model == request.model]
+    if not candidates:
+        normalized = settings.normalize_queue_key(request.model)
+        candidates = [
+            entry for entry in catalog if entry.model.casefold() == normalized
+        ]
+    if route_requested is None and len(candidates) > 1:
+        route_requested = _provider_route(candidates[0].provider, candidates[0].model)
+    endpoint = next(
+        (
+            entry
+            for entry in candidates
+            if route_requested is None or entry.route == route_requested
+        ),
+        candidates[0] if candidates else None,
+    )
     if endpoint is None:
         raise HTTPException(
             status_code=422,
             detail="Model route is not available in the operator catalog",
         )
+    model = endpoint.model
     provider, route, credential = endpoint.provider, endpoint.route, endpoint.credential
-    if request.route is not None and request.route != route:
+    if route_requested is not None and route_requested != route:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -319,8 +380,13 @@ async def check_model_endpoint(
                 if route in {OPENAI_PROVIDER_AZURE, "openai"}
                 else {"max_tokens": 1024}
             )
+            if route == "xai-swem":
+                api_key = (os.environ.get("XAI_SWEM_API_KEY") or "").strip()
+                if not api_key:
+                    raise RuntimeError("XAI_SWEM_API_KEY is missing")
+                kwargs["api_key"] = api_key
             if provider == "bedrock":
-                resolved_model = f"bedrock/{model}"
+                resolved_model = f"bedrock/{model.removeprefix('bedrock/')}"
             elif provider == "anthropic-hdo":
                 bare_model = anthropic_hdo_bare_model_id(model)
                 api_model = to_anthropic_api_model_id(bare_model) or bare_model

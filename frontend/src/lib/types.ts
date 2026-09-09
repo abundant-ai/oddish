@@ -1142,7 +1142,8 @@ export interface ModelEndpointSummary {
   route: string;
   credential: string | null;
   testable: boolean;
-  is_configured: boolean;
+  source: "provider_catalog" | "deployment" | "previously_used";
+  credential_configured: boolean | null;
 }
 
 export interface ModelEndpointAccessResponse {

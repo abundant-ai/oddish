@@ -15,7 +15,8 @@ const models: ModelEndpointSummary[] = [
     route: "anthropic",
     credential: null,
     testable: true,
-    is_configured: true,
+    source: "deployment",
+    credential_configured: true,
   },
   {
     model: "anthropic/claude-3.7-sonnet",
@@ -23,7 +24,8 @@ const models: ModelEndpointSummary[] = [
     route: "anthropic",
     credential: null,
     testable: true,
-    is_configured: true,
+    source: "deployment",
+    credential_configured: true,
   },
   {
     model: "openai/gpt-10",
@@ -31,7 +33,8 @@ const models: ModelEndpointSummary[] = [
     route: "azure",
     credential: null,
     testable: true,
-    is_configured: true,
+    source: "deployment",
+    credential_configured: true,
   },
   {
     model: "openai/gpt-2",
@@ -39,7 +42,8 @@ const models: ModelEndpointSummary[] = [
     route: "openai",
     credential: null,
     testable: true,
-    is_configured: true,
+    source: "deployment",
+    credential_configured: true,
   },
   {
     model: "cursor/auto",
@@ -47,7 +51,8 @@ const models: ModelEndpointSummary[] = [
     route: "cursor",
     credential: null,
     testable: false,
-    is_configured: true,
+    source: "deployment",
+    credential_configured: true,
   },
 ];
 const byName: ModelSort = { field: "name", direction: "asc" };
@@ -209,26 +214,42 @@ test("sorts model numbers naturally without mutating the catalog or losing route
   assert.deepEqual(models, original);
 });
 
-test("previously used names are opt-in and do not enter the default batch", () => {
-  const historical = { ...models[0], is_configured: false };
-  const catalog = [historical, models[2]];
+test("provider and historical models remain visible without concurrency settings", () => {
+  const historical = { ...models[0], source: "previously_used" as const };
+  const discovered = { ...models[3], source: "provider_catalog" as const };
+  const catalog = [historical, discovered, models[2]];
+  assert.equal(
+    modelCatalogRows(catalog, {}, "", "all", "all", byName).length,
+    3
+  );
+  assert.equal(
+    modelCatalogRows(catalog, {}, "sonnet", "all", "all", byName)[0].endpoint,
+    historical
+  );
+});
+
+test("alternate credentials are searchable and retain distinct checks", () => {
+  const primary = {
+    ...models[3],
+    model: "xai/grok-test",
+    route: "xai",
+    credential: "XAI_API_KEY",
+  };
+  const alternate = {
+    ...primary,
+    route: "xai-swem",
+    credential: "XAI_SWEM_API_KEY",
+  };
+  const catalog = [primary, alternate];
+  assert.notEqual(endpointKey(primary), endpointKey(alternate));
   assert.deepEqual(
-    modelCatalogRows(catalog, {}, "", "all", "all", byName).map(
+    modelCatalogRows(catalog, {}, "XAI_SWEM_API_KEY", "all", "all", byName).map(
       ({ endpoint }) => endpoint
     ),
-    [models[2]]
+    [alternate]
   );
   assert.equal(
-    modelCatalogRows(catalog, {}, "", "all", "all", byName, true).length,
-    2
-  );
-  assert.equal(
-    modelCatalogRows(catalog, {}, "sonnet", "all", "all", byName).length,
-    0
-  );
-  assert.equal(
-    modelCatalogRows(catalog, {}, "sonnet", "all", "all", byName, true)[0]
-      .endpoint,
-    historical
+    modelCatalogRows(catalog, {}, "", "xai", "all", byName).length,
+    1
   );
 });
