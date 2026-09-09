@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import type { TaskPane } from "@/components/task-files-panel";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -1050,7 +1050,6 @@ export function ExperimentDetailView({
   onRerun,
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
@@ -1524,16 +1523,16 @@ export function ExperimentDetailView({
       const next = new URLSearchParams(window.location.search);
       next.set("task", host.id);
       next.set("trial", trial.id);
-      router.replace(urlWithSearch(next.toString()), { scroll: false });
+      // This only canonicalizes drawer state in the URL. A route navigation
+      // can suspend the whole experiment and reset its loaded table.
+      window.history.replaceState(
+        window.history.state,
+        "",
+        urlWithSearch(next.toString())
+      );
       clearPendingDeepLink();
     },
-    [
-      drawerState,
-      tasksForExperiment,
-      buildTrialGroups,
-      router,
-      clearPendingDeepLink,
-    ]
+    [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
   );
 
   // The trial page can satisfy a pending URL before the focused read returns.
