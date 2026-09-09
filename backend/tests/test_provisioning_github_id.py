@@ -718,7 +718,7 @@ async def test_existing_identity_reads_only_user_and_org(monkeypatch, org_id):
     try:
         async with get_session() as session:
             user, org = await prov.get_or_create_user_from_clerk(
-                session, clerk_user_id, clerk_org_id, None, "member"
+                clerk_user_id, clerk_org_id, None, "member"
             )
             assert user.org_id == org.id == org_id
             assert user.role == UserRole.MEMBER

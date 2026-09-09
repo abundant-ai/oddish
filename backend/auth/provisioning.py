@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import raiseload
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
+from oddish.db import get_session
 from oddish.timing import RequestTimedAsyncClient
 
 logger = logging.getLogger(__name__)
@@ -267,22 +268,34 @@ async def _refresh_user_github_identity(
 ) -> None:
     if not user.clerk_user_id:
         return
-    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    github_id_known = bool(user.github_id) or _marker_is_fresh(
-        user.github_id_checked_at
-    )
-    if github_id_known:
-        if user.github_username:
-            if not isinstance(raw.get("refreshed_at"), str):
-                _seed_attribution_cache_from_github(
-                    user,
-                    github_username=user.github_username,
-                    github_email=None,
-                )
-            return
-        if not user.github_id:
-            return
+    if not _needs_github_identity_fetch(user):
+        _seed_cached_github_identity(user)
+        return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
+    await _apply_user_github_identity(user, session, identity)
+
+
+def _seed_cached_github_identity(user: UserModel) -> None:
+    if user.github_username:
+        raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+        if not isinstance(raw.get("refreshed_at"), str):
+            _seed_attribution_cache_from_github(
+                user, github_username=user.github_username, github_email=None
+            )
+
+
+def _needs_github_identity_fetch(user: UserModel) -> bool:
+    if not user.clerk_user_id:
+        return False
+    known = bool(user.github_id) or _marker_is_fresh(user.github_id_checked_at)
+    return not known or (bool(user.github_id) and not user.github_username)
+
+
+async def _apply_user_github_identity(
+    user: UserModel,
+    session: AsyncSession | None,
+    identity: ClerkGithubIdentity | None,
+) -> None:
     if identity is None:
         return
     if identity.username and not user.github_username:
@@ -338,14 +351,12 @@ def resolve_role(org_role: str | None, default_role: UserRole) -> UserRole:
     return default_role
 
 
-async def get_or_create_user_in_org(
+async def _find_user_in_org(
     session: AsyncSession,
     clerk_user_id: str,
     org: OrganizationModel,
     email: str | None,
-    org_role: str | None,
-    default_role: UserRole,
-) -> UserModel:
+) -> UserModel | None:
     result = await session.execute(
         select(UserModel)
         .options(raiseload("*"))
@@ -363,6 +374,21 @@ async def get_or_create_user_in_org(
             .where(UserModel.is_active.is_(True))
         )
         user = result.scalar_one_or_none()
+
+    return user
+
+
+async def get_or_create_user_in_org(
+    session: AsyncSession,
+    clerk_user_id: str,
+    org: OrganizationModel,
+    email: str | None,
+    org_role: str | None,
+    default_role: UserRole,
+    *,
+    refresh_github_identity: bool = True,
+) -> UserModel:
+    user = await _find_user_in_org(session, clerk_user_id, org, email)
 
     if user is None:
         provisioning_email = email or f"{clerk_user_id}@clerk.user"
@@ -400,14 +426,24 @@ async def get_or_create_user_in_org(
             if user is None:
                 raise
 
+    _update_user_from_clerk(user, clerk_user_id, email, org_role)
+    if refresh_github_identity:
+        await _refresh_user_github_identity(user, session)
+    return user
+
+
+def _update_user_from_clerk(
+    user: UserModel,
+    clerk_user_id: str,
+    email: str | None,
+    org_role: str | None,
+) -> None:
     # Login and membership callbacks share one identity update path. A missing
     # email must never replace a real address with a provisioning placeholder.
     user.clerk_user_id = clerk_user_id
     if email:
         user.email = email
     user.role = resolve_role(org_role, user.role)
-    await _refresh_user_github_identity(user, session)
-    return user
 
 
 async def sync_clerk_org(
@@ -465,9 +501,7 @@ async def sync_clerk_org(
     return org
 
 
-async def fetch_and_sync_clerk_org(
-    session: AsyncSession, clerk_org_id: str
-) -> OrganizationModel:
+async def _fetch_clerk_org(clerk_org_id: str) -> dict:
     if not CLERK_SECRET_KEY:
         raise HTTPException(
             status_code=503,
@@ -491,29 +525,69 @@ async def fetch_and_sync_clerk_org(
             status_code=503,
             detail="Organization provisioning is temporarily unavailable. Please retry.",
         ) from exc
+    return data
+
+
+async def fetch_and_sync_clerk_org(
+    session: AsyncSession, clerk_org_id: str
+) -> OrganizationModel:
+    data = await _fetch_clerk_org(clerk_org_id)
     return await sync_clerk_org(
         session, clerk_org_id, data.get("name"), data.get("slug")
     )
 
 
 async def get_or_create_user_from_clerk(
-    session: AsyncSession,
     clerk_user_id: str,
     clerk_org_id: str | None,
     email: str | None,
     org_role: str | None,
 ) -> tuple[UserModel, OrganizationModel] | None:
+    """Fetch remote login data with no database connection or write lock held."""
     if not clerk_org_id:
         raise HTTPException(
             status_code=403,
             detail="Select an organization. If you have no organization, ask Abundant for access.",
         )
-    org = await get_org_from_clerk_id(session, clerk_org_id)
-    if org is None:
-        org = await fetch_and_sync_clerk_org(session, clerk_org_id)
-    if not org.is_active or org.deleted_at is not None:
-        return None
-    user = await get_or_create_user_in_org(
-        session, clerk_user_id, org, email, org_role, _DEFAULT_JIT_ROLE
-    )
-    return user, org
+    async with get_session() as session:
+        org = await get_org_from_clerk_id(session, clerk_org_id)
+        user = (
+            await _find_user_in_org(session, clerk_user_id, org, email)
+            if org is not None
+            else None
+        )
+        needs_identity = (
+            user is None or not user.clerk_user_id or _needs_github_identity_fetch(user)
+        )
+        if org is not None and user is not None and not needs_identity:
+            _update_user_from_clerk(user, clerk_user_id, email, org_role)
+            _seed_cached_github_identity(user)
+            return user, org
+
+    org_data = await _fetch_clerk_org(clerk_org_id) if org is None else None
+    identity = await fetch_github_identity_from_clerk(clerk_user_id)
+    async with get_session() as session:
+        # Re-read after HTTP: a webhook or another login may have changed these rows.
+        org = await get_org_from_clerk_id(session, clerk_org_id)
+        if org is None:
+            if org_data is None:
+                return None  # The previously active organization was removed.
+            org = await sync_clerk_org(
+                session, clerk_org_id, org_data.get("name"), org_data.get("slug")
+            )
+        if not org.is_active or org.deleted_at is not None:
+            return None
+        user = await get_or_create_user_in_org(
+            session,
+            clerk_user_id,
+            org,
+            email,
+            org_role,
+            _DEFAULT_JIT_ROLE,
+            refresh_github_identity=False,
+        )
+        if _needs_github_identity_fetch(user):
+            await _apply_user_github_identity(user, session, identity)
+        else:
+            _seed_cached_github_identity(user)
+        return user, org
