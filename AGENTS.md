@@ -1729,9 +1729,9 @@ with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
 
 PR preview deploys and manual preview resets set
-`ODDISH_MODAL_WORKER_MAX_CONTAINERS=300` and
-`ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` so up to 300 trial workers can run
-and be launched in one dispatcher pass. Previews also set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=2`, limiting each worker function to two
+concurrent Modal containers. `ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` remains
+the dispatcher launch limit; it does not raise the container cap. Previews also set
 `ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
 `ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
 limits do not prevent one model from filling that pool. Saved admin overrides
