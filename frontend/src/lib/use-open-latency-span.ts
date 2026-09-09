@@ -16,9 +16,13 @@ import { SpanStatusCode, trace, type Span } from "@opentelemetry/api";
  * registered tracer provider the OpenTelemetry API hands back a no-op tracer,
  * so every call here stays cheap and side-effect free in that case.
  *
- * Because fetch auto-instrumentation propagates ``traceparent``, the resulting
- * span is the PARENT of the API spans it triggered: one slow open expands into
- * its own request waterfall rather than being an unattributable number.
+ * These spans do NOT parent the API spans underneath them. The span opens in an
+ * effect, which React runs after render, by which time SWR has already started
+ * fetching; and ``startSpan`` does not install an active context the way
+ * ``startActiveSpan`` would. Making a stopwatch that outlives its own callback
+ * into the ambient parent of fetches begun elsewhere is not something the
+ * browser context manager can do. Correlate instead on the recorded
+ * ``oddish.task_id`` / ``oddish.trial_id`` and the span's time bounds.
  */
 
 const TRACER_NAME = "oddish-frontend";
@@ -42,6 +46,10 @@ export type ResolveStartTimeInput = {
   navigationType: string | null;
   /** Whether this is the first measured open since the document loaded. */
   firstOpenOnPage: boolean;
+  /** Path the document itself was served for, captured at module load. */
+  initialPath: string | null;
+  /** Path this open is happening on. */
+  currentPath: string | null;
   maxAttributableMs?: number;
 };
 
@@ -57,11 +65,18 @@ export type ResolvedStartTime = {
  * A hard navigation (address bar, refresh, deep link) spends real time in DNS,
  * TLS, the document request, and hydration before React mounts anything. Timing
  * from mount would silently discard all of it and flatter exactly the slow path
- * we care about, so the first open after such a navigation is backdated to
- * ``performance.timeOrigin``.
+ * we care about, so the landing open is backdated to ``performance.timeOrigin``.
  *
  * A client-side route change has no such prologue: mount is the interaction, so
- * subsequent opens use the current clock.
+ * those opens use the current clock.
+ *
+ * Telling the two apart needs the path, not just the navigation type.
+ * ``PerformanceNavigationTiming.type`` describes the DOCUMENT and stays
+ * ``navigate`` for the entire single-page session, so it cannot distinguish
+ * "landed here" from "clicked here twenty seconds later". Comparing against the
+ * path the document was served for can: only an open on that same route can
+ * legitimately claim the document's load time. Someone who lands on the task
+ * list, browses, then opens a task is measured from the click.
  *
  * Pure and exported for tests — the React wrapper below owns only the effect
  * bookkeeping.
@@ -71,6 +86,8 @@ export function resolveStartTime({
   timeOrigin,
   navigationType,
   firstOpenOnPage,
+  initialPath,
+  currentPath,
   maxAttributableMs = MAX_PAGE_LOAD_ATTRIBUTION_MS,
 }: ResolveStartTimeInput): ResolvedStartTime {
   const hardNavigation =
@@ -79,6 +96,12 @@ export function resolveStartTime({
     navigationType === "back_forward";
 
   if (!firstOpenOnPage || !hardNavigation) {
+    return { startTime: now, source: "interaction" };
+  }
+  if (initialPath === null || currentPath === null) {
+    return { startTime: now, source: "interaction" };
+  }
+  if (initialPath !== currentPath) {
     return { startTime: now, source: "interaction" };
   }
   if (!Number.isFinite(timeOrigin) || timeOrigin <= 0 || timeOrigin > now) {
@@ -123,9 +146,21 @@ type PendingOpen = {
 /** One module-level latch: only the first open on a page can claim load time. */
 let pageLoadClaimed = false;
 
+/**
+ * The route the document was served for. Read once at module evaluation, which
+ * happens during the initial load and never again for the life of the tab, so
+ * it stays the landing path across every client-side navigation afterwards.
+ */
+const INITIAL_PATH =
+  typeof window === "undefined" ? null : window.location.pathname;
+
 /** Test seam — resets the page-load latch. */
 export function resetPageLoadAttribution(): void {
   pageLoadClaimed = false;
+}
+
+function currentPath(): string | null {
+  return typeof window === "undefined" ? null : window.location.pathname;
 }
 
 function navigationType(): string | null {
@@ -212,6 +247,8 @@ export function useOpenLatencySpan({
         typeof performance === "undefined" ? 0 : performance.timeOrigin,
       navigationType: navigationType(),
       firstOpenOnPage,
+      initialPath: INITIAL_PATH,
+      currentPath: currentPath(),
     });
 
     pending.current = {
@@ -225,6 +262,12 @@ export function useOpenLatencySpan({
   }, [name, subject, settle]);
 
   // Finish once the content is painted, or immediately on failure.
+  //
+  // ``subject`` is a dependency even though it is unused in the body: a switch
+  // to something already loaded (a cached file, a task whose data SWR is still
+  // holding under `keepPreviousData`) leaves `ready` true throughout, so
+  // without it this effect would not re-run and the fresh span would sit open
+  // until unmount and record `abandoned` — losing precisely the fast opens.
   useEffect(() => {
     if (!pending.current || pending.current.settled) return;
     if (failed) {
@@ -233,7 +276,7 @@ export function useOpenLatencySpan({
     }
     if (!ready) return;
     return afterPaint(() => settle("ready"));
-  }, [ready, failed, settle]);
+  }, [ready, failed, subject, settle]);
 
   // A person who navigates away before the content lands is the signal we most
   // need; dropping those opens would quietly improve every percentile.

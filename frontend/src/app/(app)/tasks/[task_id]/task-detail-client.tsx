@@ -692,13 +692,17 @@ export function TaskDetailClient({
     versions,
   } = useTaskOpenReader(taskId, initialVersionId);
 
-  // "Usable" is the trial matrix being readable, not the shell painting: the
-  // header renders off cached browse data long before the results people came
-  // for arrive.
+  // "Usable" is the trial matrix being readable, not the shell painting, and
+  // two caches will happily claim otherwise. A click from the task list seeds a
+  // browse snapshot into the `/open` key, and the reader runs SWR with
+  // `keepPreviousData`, so `isLoading` is false and `task` is non-null while
+  // the real results are still in flight -- with the previous task's data, on a
+  // switch. Requiring a non-snapshot payload whose id matches the route rejects
+  // both, so the span ends on the data people actually came for.
   useOpenLatencySpan({
     name: "ui.task.open",
     subject: taskId,
-    ready: !isLoading && task != null,
+    ready: !isLoading && !isBrowseSnapshot && task?.id === taskId,
     failed: error != null,
     attributes: {
       "oddish.task_id": taskId,

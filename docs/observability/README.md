@@ -209,8 +209,12 @@ client-side open timed from mount. Compare the two only deliberately —
 
 These are spans, not metrics, so the dimension rules above do not apply:
 each is an individual record and may carry task, trial, and file identifiers.
-Because fetch instrumentation propagates `traceparent`, one slow open expands
-into the API and database spans it caused.
+
+An open span is not the parent of the requests underneath it. It is started
+from a React effect, which runs after the render that already told SWR to
+fetch, so the requests are under way before there is a span to hang them from.
+Join on the recorded `oddish.task_id` / `oddish.trial_id` and the span's time
+bounds when a slow open needs breaking down.
 
 Weekly trend, for a dashboard panel:
 
