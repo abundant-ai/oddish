@@ -72,11 +72,7 @@ import {
   PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
-import {
-  EXPERIMENT_COLUMNS_STORAGE_KEY,
-  readHiddenAgents,
-  writeHiddenAgents,
-} from "@/lib/experiment-columns";
+import { loadHiddenAgents, saveHiddenAgents } from "@/lib/experiment-columns";
 import {
   isActivePipelineStatus,
   isActiveTrialStatus,
@@ -676,10 +672,7 @@ export function ExperimentTrialsTable({
     if (didHydrateHiddenAgents.current) return;
     if (!experimentId || searchParams.get("hide")) return;
 
-    const stored = readHiddenAgents(
-      window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
-      experimentId
-    );
+    const stored = loadHiddenAgents(experimentId);
     if (stored.length > 0) setHiddenAgents(new Set(stored));
   }, [experimentId, searchParams]);
 
@@ -690,14 +683,7 @@ export function ExperimentTrialsTable({
       return;
     }
 
-    window.localStorage.setItem(
-      EXPERIMENT_COLUMNS_STORAGE_KEY,
-      writeHiddenAgents(
-        window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
-        experimentId,
-        Array.from(hiddenAgents)
-      )
-    );
+    saveHiddenAgents(experimentId, Array.from(hiddenAgents));
   }, [experimentId, hiddenAgents]);
 
   useEffect(() => {

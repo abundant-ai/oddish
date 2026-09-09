@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_REMEMBERED_EXPERIMENTS,
+  loadHiddenAgents,
   readHiddenAgents,
+  saveHiddenAgents,
   writeHiddenAgents,
 } from "../src/lib/experiment-columns.ts";
 
@@ -63,4 +65,81 @@ test("revisiting an experiment refreshes it rather than duplicating it", () => {
   assert.equal(JSON.parse(stored).length, 2);
   assert.deepEqual(readHiddenAgents(stored, "exp_1"), ["oracle"]);
   assert.deepEqual(readHiddenAgents(stored, "exp_2"), ["nop"]);
+});
+
+function withStorage(storage: unknown, run: () => void): void {
+  const previous = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = { localStorage: storage };
+  try {
+    run();
+  } finally {
+    if (previous === undefined)
+      delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window?: unknown }).window = previous;
+  }
+}
+
+const throwingStorage = {
+  getItem() {
+    throw new DOMException("denied", "SecurityError");
+  },
+  setItem() {
+    throw new DOMException("denied", "SecurityError");
+  },
+};
+
+function memoryStorage(seed: string | null = null) {
+  let value = seed;
+  return {
+    getItem: () => value,
+    setItem: (_key: string, next: string) => {
+      value = next;
+    },
+    get value() {
+      return value;
+    },
+  };
+}
+
+test("blocked storage hides nothing instead of throwing", () => {
+  withStorage(throwingStorage, () => {
+    assert.deepEqual(loadHiddenAgents("exp_1"), []);
+  });
+});
+
+test("a full or blocked store drops the write instead of throwing", () => {
+  withStorage(throwingStorage, () => {
+    assert.doesNotThrow(() => saveHiddenAgents("exp_1", ["codex"]));
+  });
+
+  const quotaBound = {
+    getItem: () => "[]",
+    setItem() {
+      throw new DOMException("full", "QuotaExceededError");
+    },
+  };
+  withStorage(quotaBound, () => {
+    assert.doesNotThrow(() => saveHiddenAgents("exp_1", ["codex"]));
+  });
+});
+
+test("working storage still round-trips through the guards", () => {
+  const store = memoryStorage();
+  withStorage(store, () => {
+    saveHiddenAgents("exp_1", ["codex"]);
+    assert.deepEqual(loadHiddenAgents("exp_1"), ["codex"]);
+    assert.deepEqual(loadHiddenAgents("exp_2"), []);
+  });
+});
+
+test("server rendering reads nothing and writes nothing", () => {
+  const previous = (globalThis as { window?: unknown }).window;
+  delete (globalThis as { window?: unknown }).window;
+  try {
+    assert.deepEqual(loadHiddenAgents("exp_1"), []);
+    assert.doesNotThrow(() => saveHiddenAgents("exp_1", ["codex"]));
+  } finally {
+    if (previous !== undefined)
+      (globalThis as { window?: unknown }).window = previous;
+  }
 });

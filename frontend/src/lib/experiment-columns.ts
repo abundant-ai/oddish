@@ -85,3 +85,51 @@ export function writeHiddenAgents(
 
   return JSON.stringify(next.slice(0, MAX_REMEMBERED_EXPERIMENTS));
 }
+
+/**
+ * The stored hidden columns for one experiment, or `[]` when unavailable.
+ *
+ * Storage is a convenience, never a dependency: reading it throws outright when
+ * the browser blocks it (private mode, an embedded context, cookies disabled),
+ * and touching `window.localStorage` at all is enough to raise. A caller that
+ * gets `[]` shows every column, which is the same as having saved nothing.
+ */
+export function loadHiddenAgents(experimentId: string): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return readHiddenAgents(
+      window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
+      experimentId
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Persist one experiment's hidden columns, discarding the write if storage
+ * refuses it.
+ *
+ * A blocked store raises on read or write, and a full one raises on write with
+ * `QuotaExceededError`. Neither is worth failing the render over: the selection
+ * already lives in component state and the `?hide=` param, so the table keeps
+ * working and only the memory across visits is lost.
+ */
+export function saveHiddenAgents(
+  experimentId: string,
+  hidden: readonly string[]
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      EXPERIMENT_COLUMNS_STORAGE_KEY,
+      writeHiddenAgents(
+        window.localStorage.getItem(EXPERIMENT_COLUMNS_STORAGE_KEY),
+        experimentId,
+        hidden
+      )
+    );
+  } catch {
+    return;
+  }
+}
