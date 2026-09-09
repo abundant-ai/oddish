@@ -1,7 +1,7 @@
-"""Persist provider reroute provenance and teardown gating.
+"""Add the Thunder execution lane and fallback state.
 
 Revision ID: thunder_fallback_001
-Revises: thunder_lane_001, deliveries_002
+Revises: delivery_qa_work_001
 """
 
 from typing import Sequence, Union
@@ -11,10 +11,7 @@ from alembic import op
 
 
 revision: str = "thunder_fallback_001"
-down_revision: Union[str, Sequence[str], None] = (
-    "thunder_lane_001",
-    "deliveries_002",
-)
+down_revision: Union[str, Sequence[str], None] = "delivery_qa_work_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -24,6 +21,15 @@ def _columns(bind: sa.engine.Connection, table: str) -> set[str]:
 
 
 def upgrade() -> None:
+    op.execute(
+        "ALTER TABLE worker_jobs DROP CONSTRAINT IF EXISTS "
+        "ck_worker_jobs_execution_lane"
+    )
+    op.execute(
+        "ALTER TABLE worker_jobs ADD CONSTRAINT ck_worker_jobs_execution_lane "
+        "CHECK (execution_lane IN ('default', 'ec2_trial', 'thunder_trial'))"
+    )
+
     # ``000_initial`` builds from current ORM metadata on a fresh database, so
     # these columns already exist when CI subsequently replays this revision.
     # Deployed databases lack them. Guard each addition so both paths converge,
@@ -59,3 +65,18 @@ def downgrade() -> None:
         op.drop_column("worker_jobs", "reroute_reason")
     if "reroute_from_environment" in columns:
         op.drop_column("worker_jobs", "reroute_from_environment")
+    op.execute(
+        """
+        UPDATE worker_jobs
+        SET execution_lane = 'default'
+        WHERE execution_lane = 'thunder_trial'
+        """
+    )
+    op.execute(
+        "ALTER TABLE worker_jobs DROP CONSTRAINT IF EXISTS "
+        "ck_worker_jobs_execution_lane"
+    )
+    op.execute(
+        "ALTER TABLE worker_jobs ADD CONSTRAINT ck_worker_jobs_execution_lane "
+        "CHECK (execution_lane IN ('default', 'ec2_trial'))"
+    )

@@ -27,9 +27,15 @@ _COLUMNS = {
 }
 
 
+def test_migration_is_linear_from_current_upstream_head():
+    assert _MIGRATION.down_revision == "delivery_qa_work_001"
+
+
 def test_upgrade_is_noop_when_initial_schema_already_has_columns(monkeypatch):
+    statements: list[str] = []
     monkeypatch.setattr(_MIGRATION.op, "get_bind", lambda: object())
     monkeypatch.setattr(_MIGRATION, "_columns", lambda _bind, _table: _COLUMNS)
+    monkeypatch.setattr(_MIGRATION.op, "execute", statements.append)
     monkeypatch.setattr(
         _MIGRATION.op,
         "add_column",
@@ -38,10 +44,15 @@ def test_upgrade_is_noop_when_initial_schema_already_has_columns(monkeypatch):
 
     _MIGRATION.upgrade()
 
+    assert len(statements) == 2
+    assert "DROP CONSTRAINT IF EXISTS ck_worker_jobs_execution_lane" in statements[0]
+    assert "'thunder_trial'" in statements[1]
+
 
 def test_upgrade_adds_only_missing_columns(monkeypatch):
     added: list[str] = []
     monkeypatch.setattr(_MIGRATION.op, "get_bind", lambda: object())
+    monkeypatch.setattr(_MIGRATION.op, "execute", lambda _statement: None)
     monkeypatch.setattr(
         _MIGRATION,
         "_columns",
@@ -60,7 +71,9 @@ def test_upgrade_adds_only_missing_columns(monkeypatch):
 
 def test_downgrade_drops_only_existing_columns(monkeypatch):
     dropped: list[str] = []
+    statements: list[str] = []
     monkeypatch.setattr(_MIGRATION.op, "get_bind", lambda: object())
+    monkeypatch.setattr(_MIGRATION.op, "execute", statements.append)
     monkeypatch.setattr(
         _MIGRATION,
         "_columns",
@@ -78,3 +91,7 @@ def test_downgrade_drops_only_existing_columns(monkeypatch):
     _MIGRATION.downgrade()
 
     assert dropped == ["reroute_pending_teardown", "reroute_from_environment"]
+    assert len(statements) == 3
+    assert "WHERE execution_lane = 'thunder_trial'" in statements[0]
+    assert "DROP CONSTRAINT IF EXISTS ck_worker_jobs_execution_lane" in statements[1]
+    assert "'thunder_trial'" not in statements[2]
