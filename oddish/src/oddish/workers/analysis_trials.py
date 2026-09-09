@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from importlib import resources
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.analyze import Classification, TrialClassification
@@ -771,11 +771,20 @@ async def maybe_enqueue_audit_trial(
     version_id = task_version_id or task.current_version_id
     if version_id is None:
         return False
-    version = await session.get(TaskVersionModel, version_id, with_for_update=True)
-    if version is None or version.pre_trial_status is not None:
+    # Trial inserts hold foreign-key KEY SHARE locks on this version. Updating
+    # only audit state is compatible with those locks; FOR UPDATE would upgrade
+    # them and can deadlock concurrent submissions. The predicate admits one audit.
+    claimed = await session.scalar(
+        update(TaskVersionModel)
+        .where(
+            TaskVersionModel.id == version_id,
+            TaskVersionModel.pre_trial_status.is_(None),
+        )
+        .values(pre_trial_status=VerdictStatus.QUEUED, pre_trial_started_at=utcnow())
+        .returning(TaskVersionModel.id)
+    )
+    if claimed is None:
         return False
-    version.pre_trial_status = VerdictStatus.QUEUED
-    version.pre_trial_started_at = utcnow()
     await create_analysis_trial(
         session,
         task=task,
