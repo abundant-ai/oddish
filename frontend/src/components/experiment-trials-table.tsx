@@ -626,6 +626,26 @@ export function ExperimentTrialsTable({
       ),
     [rejectedTasks]
   );
+  const selectedNavTaskIdRef = useRef<string | null>(null);
+  const openTaskInDrawer = useCallback(
+    (
+      task: Task,
+      context: {
+        orderedTasks: Task[];
+        taskIndex: number;
+        taskNavScope?: "experiment" | "rejected";
+      }
+    ) => {
+      selectedNavTaskIdRef.current = task.id;
+      onTaskSelect?.(task, {
+        ...context,
+        taskNavScope:
+          context.taskNavScope ??
+          (rejectedOnly ? "rejected" : "experiment"),
+      });
+    },
+    [onTaskSelect, rejectedOnly]
+  );
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -1975,10 +1995,28 @@ export function ExperimentTrialsTable({
                 if (next) {
                   const reviewTasks = sortVisibleTasks(rejectedTasks, taskSort);
                   if (reviewTasks[0]) {
-                    onTaskSelect?.(reviewTasks[0], {
+                    openTaskInDrawer(reviewTasks[0], {
                       orderedTasks: reviewTasks,
                       taskIndex: 0,
                       taskNavScope: "rejected",
+                    });
+                  }
+                } else {
+                  // Widen drawer next/prev back to the full visible set.
+                  const allVisible = sortVisibleTasks(tasks, taskSort);
+                  const currentId = selectedNavTaskIdRef.current;
+                  const currentIndex = currentId
+                    ? allVisible.findIndex((task) => task.id === currentId)
+                    : -1;
+                  const task =
+                    currentIndex >= 0
+                      ? allVisible[currentIndex]
+                      : allVisible[0];
+                  if (task) {
+                    openTaskInDrawer(task, {
+                      orderedTasks: allVisible,
+                      taskIndex: currentIndex >= 0 ? currentIndex : 0,
+                      taskNavScope: "experiment",
                     });
                   }
                 }
@@ -2481,7 +2519,7 @@ export function ExperimentTrialsTable({
                                     type="button"
                                     variant="ghost"
                                     onClick={() =>
-                                      onTaskSelect?.(task, {
+                                      openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
                                         taskIndex: index,
                                       })
@@ -2551,7 +2589,7 @@ export function ExperimentTrialsTable({
                                   onOpen={
                                     onTaskSelect
                                       ? () =>
-                                          onTaskSelect(task, {
+                                          openTaskInDrawer(task, {
                                             orderedTasks: filteredTasks,
                                             taskIndex: index,
                                           })
@@ -2565,7 +2603,7 @@ export function ExperimentTrialsTable({
                                     type="button"
                                     variant="ghost"
                                     onClick={() =>
-                                      onTaskSelect?.(task, {
+                                      openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
                                         taskIndex: index,
                                       })
