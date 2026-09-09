@@ -300,3 +300,35 @@ async def test_reconcile_does_not_bill_stale_attempt_through_later_finished_at()
         assert row.basis == "reconciled"
     finally:
         await _remove(ids)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_spans_keep_full_uuid_when_prefixes_collide(monkeypatch):
+    from oddish.db import init_db
+    from oddish.db import models
+    from oddish.costs.modal_cost import build_span_row
+
+    await init_db()
+    ids = [
+        uuid.UUID("4806cb75-1111-4111-8111-111111111111"),
+        uuid.UUID("4806cb75-2222-4222-8222-222222222222"),
+    ]
+    generated = iter(ids)
+    monkeypatch.setattr(models, "uuid4", lambda: next(generated))
+    # Roll back so deterministic IDs do not persist across repeated runs.
+    async with get_session() as session:
+        rows = [
+            build_span_row(
+                component_role="worker_function",
+                provider="modal",
+                started_at=datetime.now(timezone.utc),
+                basis="hooks",
+                resources=_sandbox_resources(),
+            )
+            for _ in ids
+        ]
+        session.add_all(rows)
+        await session.flush()
+        assert [row.id for row in rows] == [value.hex for value in ids]
+        await session.rollback()

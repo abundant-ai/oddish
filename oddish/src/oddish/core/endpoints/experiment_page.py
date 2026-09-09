@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -269,7 +270,23 @@ def _experiment_task_rows(
         stats.c.average_score,
     ]
     if include_user:
-        columns.append(TaskModel.user)
+        columns.extend(
+            [
+                TaskModel.user,
+                case(
+                    (
+                        current_version.pre_trial_status == VerdictStatus.SUCCESS,
+                        func.jsonb_array_length(
+                            func.jsonb_path_query_array(
+                                current_version.pre_trial,
+                                cast('$.items[*] ? (@.tier == "must_fix")', JSONPATH),
+                            )
+                        ),
+                    ),
+                    else_=None,
+                ).label("must_fix_count"),
+            ]
+        )
     return (
         select(*columns)
         .select_from(TaskModel)
