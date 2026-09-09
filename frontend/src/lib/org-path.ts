@@ -25,7 +25,6 @@ export const APP_ROOT_SEGMENTS = [
   "tasks",
   "experiments",
   "deliveries",
-  "models",
   "qa",
   "leaderboard",
   "settings",

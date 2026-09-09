@@ -698,7 +698,10 @@ function ExperimentSummaryBar({
           )}
         </span>
       </KpiTile>
-      <KpiTile label="Completion">
+      <KpiTile
+        label="Trials finished"
+        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+      >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {doneTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">

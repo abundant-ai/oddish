@@ -1,6 +1,10 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { TasksPageNumber, TasksToolbar } from "./tasks-client";
+import {
+  TasksMatchCount,
+  TasksPageNumber,
+  TasksToolbar,
+} from "./tasks-client";
 import { TasksFilterSidebar } from "./tasks-filter-sidebar";
 import { SelectionProvider } from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
@@ -22,6 +26,7 @@ export default function TasksPage() {
                   <div className="space-y-1">
                     <CardTitle className="text-base">Recent Tasks</CardTitle>
                     <div className="text-muted-foreground text-[11px]">
+                      <TasksMatchCount />
                       <TasksPageNumber />
                     </div>
                   </div>

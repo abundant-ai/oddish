@@ -1030,8 +1030,13 @@ async def browse_tasks_core(
     # --- Phase 2.2 OR-groups ("Match any of…"), no migration ---
     or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
-) -> TaskBrowseResponse:
+    count_only: bool = False,
+) -> TaskBrowseResponse | int:
     """List latest-version task summaries for the task browser.
+
+    With ``count_only`` the same filters are applied and the matching total is
+    returned as an ``int`` instead of a page -- see ``browse_tasks_count_core``,
+    which is the typed entry point callers should use for that.
 
     Beyond the free-text / tag / author filters, the browser supports a set of
     "Phase 1.1.1" direct filters that require no schema change:
@@ -1120,6 +1125,8 @@ async def browse_tasks_core(
             session, org_id=org_id, ast=ast
         )
         if unknown_tokens & ({*ast.all} | {*ast.any_}):
+            if count_only:
+                return 0
             return TaskBrowseResponse(
                 items=[], limit=limit, offset=offset, has_more=False
             )
@@ -1731,6 +1738,27 @@ async def browse_tasks_core(
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
+    # Count-only mode stops here: every filter above has been applied, and the
+    # page query below (ordering, the summary join, and the per-row hydration
+    # that follows it) is pure waste when the caller only wants the total.
+    # ``name_rank == 1`` is the page query's own predicate -- one row per task
+    # name -- so the count and the listing de-duplicate identically.
+    if count_only:
+        count_started_at = now()
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(ranked_tasks_subquery)
+            .where(ranked_tasks_subquery.c.name_rank == 1)
+        )
+        total = int(count_result.scalar() or 0)
+        if record_timing is not None:
+            record_timing(
+                "browse_count",
+                elapsed_ms(count_started_at),
+                "Browse tasks count query",
+            )
+        return total
+
     # Join one precomputed row for the selected default version. Page selection
     # now scales with task/version summaries, never with organization trial
     # history. The migration backfills every existing version; a brand-new
@@ -2179,6 +2207,26 @@ async def browse_tasks_core(
             "Build browse response",
         )
     return response
+
+
+async def browse_tasks_count_core(
+    session: AsyncSession, **filters: Any
+) -> int:
+    """Tasks matching ``filters`` across every page.
+
+    Typed wrapper over ``browse_tasks_core(count_only=True)``. It forwards the
+    filter keywords rather than restating them so the two can never drift: a
+    filter the page honours and the count ignores would put a number on screen
+    that the listing contradicts.
+
+    ``limit``/``offset`` are accepted and ignored -- callers hand over the same
+    parameters they would send to the page.
+    """
+    filters.pop("limit", None)
+    filters.pop("offset", None)
+    total = await browse_tasks_core(session, count_only=True, **filters)
+    assert isinstance(total, int)  # count_only always returns the total
+    return total
 
 
 async def browse_task_facets_core(

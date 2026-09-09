@@ -684,14 +684,9 @@ class _StreamRows:
         self.rows = rows
         self.closed = False
 
-    def mappings(self):
-        return self
-
-    def __iter__(self):
-        return iter(self.rows)
-
-    def close(self):
-        self.closed = True
+    def fetch(self, limit):
+        rows, self.rows = self.rows[:limit], self.rows[limit:]
+        return _Result(rows)
 
 
 class _StreamSession(_Session):
@@ -709,13 +704,27 @@ class _StreamSession(_Session):
         self.isolation = None
 
     async def execute(self, query):
-        if str(query).startswith("SET TRANSACTION"):
-            self.isolation = str(query)
+        from oddish.core.endpoints.experiment_page import _DeclareResultsCursor
+
+        sql = str(query)
+        if sql.startswith("SET TRANSACTION"):
+            self.isolation = sql
             return None
-        if self.results:
-            return await super().execute(query)
-        self.stream_queries.append(query)
-        return self.cursors[len(self.stream_queries) - 1]
+        if isinstance(query, _DeclareResultsCursor):
+            self.stream_queries.append(query.query)
+            return None
+        if sql.startswith("FETCH"):
+            assert sql in (
+                "FETCH FORWARD 500 FROM experiment_result_tasks",
+                "FETCH FORWARD 500 FROM public_experiment_result_tasks",
+                "FETCH FORWARD 500 FROM experiment_result_trials",
+            )
+            assert query.compile().params == {}
+            return self.cursors[len(self.stream_queries) - 1].fetch(500)
+        if sql.startswith("CLOSE"):
+            self.cursors[len(self.stream_queries) - 1].closed = True
+            return None
+        return await super().execute(query)
 
 
 def _install_stream_session(monkeypatch, session):
@@ -728,6 +737,9 @@ def _install_stream_session(monkeypatch, session):
             yield session
         finally:
             session.closed = True
+            # Commit/rollback closes any SQL cursors still owned by the transaction.
+            for cursor in session.cursors[: len(session.stream_queries)]:
+                cursor.closed = True
 
     async def exclusions(_session):
         return CostExclusions()
@@ -767,7 +779,10 @@ def test_results_stream_exceeds_both_page_limits_without_cursor_requests(monkeyp
         assert "org-1" in _sql(query)
 
 
-def test_results_stream_disconnect_releases_cursor_and_transaction(monkeypatch):
+@pytest.mark.parametrize("during_trials", [False, True])
+def test_results_stream_disconnect_releases_cursor_and_transaction(
+    monkeypatch, during_trials
+):
     session = _StreamSession()
     module = _install_stream_session(monkeypatch, session)
 
@@ -777,12 +792,15 @@ def test_results_stream_disconnect_releases_cursor_and_transaction(monkeypatch):
         )
         assert response.media_type == "application/x-ndjson"
         await anext(response.body_iterator)
-        await anext(response.body_iterator)
+        for _ in range(102 if during_trials else 1):
+            await anext(response.body_iterator)
         await response.body_iterator.aclose()
 
     asyncio.run(disconnect())
     assert session.closed and session.cursors[0].closed
-    assert len(session.stream_queries) == 1
+    assert len(session.stream_queries) == (2 if during_trials else 1)
+    if during_trials:
+        assert session.cursors[1].closed
 
 
 def test_results_stream_checks_access_before_starting_http_response(monkeypatch):
@@ -843,3 +861,30 @@ def test_public_results_stream_uses_public_projection_and_model_aliases(monkeypa
     assert records[2]["trial"]["model"] == "Shared model"
     assert records[-1] == {"type": "complete"}
     assert "must_fix_count" not in _sql(session.stream_queries[0])
+
+
+@pytest.mark.parametrize("collection", [0, 1])
+def test_results_stream_read_failure_closes_cursor_without_completing(
+    monkeypatch, collection
+):
+    import json
+
+    class FailingRows(_StreamRows):
+        def fetch(self, limit):
+            raise RuntimeError("database cursor interrupted")
+
+    session = _StreamSession(task_count=1, trial_count=1)
+    session.cursors[collection] = FailingRows(session.cursors[collection].rows)
+    module = _install_stream_session(monkeypatch, session)
+    records = []
+
+    async def consume():
+        async for record in module.stream_experiment_results(
+            experiment_id="experiment-1", org_id="org-1"
+        ):
+            records.append(json.loads(record))
+
+    with pytest.raises(RuntimeError, match="database cursor interrupted"):
+        asyncio.run(consume())
+    assert session.closed and session.cursors[collection].closed
+    assert not any(record["type"] == "complete" for record in records)
