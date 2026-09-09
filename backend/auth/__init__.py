@@ -9,6 +9,7 @@ from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
+from org_access import require_execution_org
 from oddish.timing import (
     begin_auth_timing,
     finish_auth_timing,
@@ -309,6 +310,7 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     await authorize_bound_analysis_request(request, auth)
+    await require_execution_org(auth.org_id)
     return auth
 
 
