@@ -428,6 +428,13 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// GET /api/tasks/browse?count_only=true — how many tasks match the active
+// filters across every page. Fetched separately from the grid and cached per
+// filter set, so paging never re-runs the count.
+export interface TaskBrowseCountResponse {
+  total: number;
+}
+
 // The backend response also carries a deprecated `experiments` field that is
 // always [] (options come from /api/tasks/browse/experiment-options instead);
 // it is deliberately absent here so nothing new codes against it.
