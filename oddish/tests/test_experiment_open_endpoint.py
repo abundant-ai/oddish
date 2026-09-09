@@ -123,6 +123,7 @@ def _task(index: int, **overrides):
         "verdict_is_good": "true",
         "verdict_confidence": "high",
         "verdict_primary_issue": None,
+        "verdict_must_fix": 0,
         "verdict_error": None,
         "created_at": NOW - timedelta(seconds=index),
         "updated_at": NOW,
@@ -280,13 +281,31 @@ def test_experiment_open_includes_rejection_preview_without_full_report():
         "is_good": False,
         "confidence": "high",
         "primary_issue": reason,
+        "must_fix": 0,
     }
     sql = _sql(session.calls[2])
     assert (
         "left(coalesce(nullif(tasks.verdict ->> 'primary_issue', ''), tasks.verdict ->> 'reasoning'), 240) AS verdict_primary_issue"
         in sql
     )
+    assert "jsonb_path_query_array" in sql
+    assert "must_fix" in sql
     assert len(session.calls) == 4
+
+
+def test_experiment_open_includes_must_fix_count():
+    session, response = _open(
+        _task(
+            1,
+            verdict_label="reject",
+            verdict_is_good="false",
+            verdict_primary_issue="The source audit reported 2 must-fix findings.",
+            verdict_must_fix=2,
+        )
+    )
+    assert response.tasks[0].verdict is not None
+    assert response.tasks[0].verdict.must_fix == 2
+    assert "jsonb_path_query_array" in _sql(session.calls[2])
 
 
 def test_experiment_open_caps_rows_and_returns_a_stable_boundary():
@@ -445,6 +464,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     }
     assert "Private QA finding" not in response.model_dump_json()
     assert "primary_issue" not in payload["tasks"][0]["verdict"]
+    assert "must_fix" not in payload["tasks"][0]["verdict"]
     assert "private-owner" not in response.model_dump_json()
     assert "private/repository" not in response.model_dump_json()
     task_query_sql = _sql(session.calls[1])

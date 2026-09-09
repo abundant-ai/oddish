@@ -77,6 +77,7 @@ import {
   isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
+  rejectedMustFixLabel,
   taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
@@ -598,6 +599,14 @@ export function ExperimentTrialsTable({
     [tasks]
   );
   const rejectedCount = rejectedTasks.length;
+  const mustFixTotal = useMemo(
+    () =>
+      rejectedTasks.reduce(
+        (total, task) => total + (task.verdict?.must_fix ?? 0),
+        0
+      ),
+    [rejectedTasks]
+  );
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -891,10 +900,7 @@ export function ExperimentTrialsTable({
   }, [visibleAgents]);
 
   const filteredTasks = useMemo(() => {
-    const reviewTasks =
-      showAnalysis && rejectedOnly
-        ? rejectedTasks
-        : tasks;
+    const reviewTasks = showAnalysis && rejectedOnly ? rejectedTasks : tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
     const searchFiltered = query
       ? reviewTasks.filter((task) => {
@@ -1931,12 +1937,18 @@ export function ExperimentTrialsTable({
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
             <div>
               <p className="text-base font-semibold text-red-700 dark:text-red-300">
-                {rejectedCount} loaded {rejectedCount === 1 ? "task" : "tasks"}{" "}
-                rejected by QA
+                {mustFixTotal > 0
+                  ? `${mustFixTotal} Must Fix`
+                  : `${rejectedCount} loaded ${
+                      rejectedCount === 1 ? "task" : "tasks"
+                    } rejected by QA`}
               </p>
               <p className="mt-1 text-sm">
-                Review the rejection reasons before including these tasks in a
-                delivery.
+                {mustFixTotal > 0
+                  ? `${rejectedCount} loaded ${
+                      rejectedCount === 1 ? "task" : "tasks"
+                    } rejected by QA. Review the required fixes before including these tasks in a delivery.`
+                  : "Review the rejection reasons before including these tasks in a delivery."}
               </p>
             </div>
             <Button
@@ -1944,10 +1956,17 @@ export function ExperimentTrialsTable({
               variant="outline"
               aria-pressed={rejectedOnly}
               onClick={() => {
-                setRejectedOnly(!rejectedOnly);
+                const next = !rejectedOnly;
+                setRejectedOnly(next);
                 setTaskSearch("");
                 setRowFilterMode("none");
                 clearSelection();
+                if (next && rejectedTasks[0]) {
+                  onTaskSelect?.(rejectedTasks[0], {
+                    orderedTasks: rejectedTasks,
+                    taskIndex: 0,
+                  });
+                }
               }}
             >
               {rejectedOnly ? "Show all tasks" : "Review rejected tasks"}
@@ -2597,25 +2616,35 @@ export function ExperimentTrialsTable({
                           </div>
                         </div>
                         {showAnalysis && taskHasRejectedVerdict(task) && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onTaskSelect?.(task, {
-                                orderedTasks: filteredTasks,
-                                taskIndex: index,
-                              })
-                            }
-                            className="mt-1 block w-full truncate text-left text-xs text-red-700 hover:underline dark:text-red-300"
-                            title={
-                              task.verdict?.primary_issue ||
-                              task.verdict?.reasoning ||
-                              "QA rejected this task"
-                            }
-                          >
-                            {task.verdict?.primary_issue ||
-                              task.verdict?.reasoning ||
-                              "QA rejected this task. Open findings for details."}
-                          </button>
+                          <div className="mt-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onTaskSelect?.(task, {
+                                  orderedTasks: filteredTasks,
+                                  taskIndex: index,
+                                })
+                              }
+                              className="block w-full text-left text-xs text-red-700 hover:underline dark:text-red-300"
+                              title={
+                                rejectedOnly
+                                  ? task.verdict?.primary_issue ||
+                                    task.verdict?.reasoning ||
+                                    "QA rejected this task"
+                                  : rejectedMustFixLabel(task)
+                              }
+                            >
+                              {rejectedMustFixLabel(task)}
+                            </button>
+                            {rejectedOnly &&
+                            (task.verdict?.primary_issue ||
+                              task.verdict?.reasoning) ? (
+                              <p className="mt-1 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
+                                {task.verdict?.primary_issue ||
+                                  task.verdict?.reasoning}
+                              </p>
+                            ) : null}
+                          </div>
                         )}
                       </TableCell>
                       {renderedAgents.map((agent) => {

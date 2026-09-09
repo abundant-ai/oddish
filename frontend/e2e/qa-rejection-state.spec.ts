@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { taskHasRejectedVerdict } from "../src/lib/job-status";
+import {
+  rejectedMustFixLabel,
+  taskHasRejectedVerdict,
+} from "../src/lib/job-status";
 import type { Task } from "../src/lib/types";
 
 const rejected = {
@@ -45,6 +48,22 @@ for (const status of ["queued", "running"] as const) {
     ).toBe(false);
   });
 }
+
+test("rejected experiment copy uses the must-fix count", () => {
+  expect(rejectedMustFixLabel(rejected)).toBe("Rejected");
+  expect(
+    rejectedMustFixLabel({
+      ...rejected,
+      verdict: { ...rejected.verdict, must_fix: 1 },
+    })
+  ).toBe("1 Must Fix");
+  expect(
+    rejectedMustFixLabel({
+      ...rejected,
+      verdict: { ...rejected.verdict, must_fix: 3 },
+    })
+  ).toBe("3 Must Fix");
+});
 
 test("a failing solver run alone does not reject a task", () => {
   expect(

@@ -118,6 +118,7 @@ export function TaskVerdictBadge({
   isRunning,
   isCancelling,
   error,
+  detail,
 }: {
   task: Task;
   variant: "card" | "inline" | "summary";
@@ -127,6 +128,8 @@ export function TaskVerdictBadge({
   isRunning?: boolean;
   isCancelling?: boolean;
   error?: string | null;
+  /** Replaces the verdict prose — used when findings already carry the fix. */
+  detail?: string | null;
 }) {
   const hasAny =
     Boolean(task.run_analysis) ||
@@ -136,6 +139,7 @@ export function TaskVerdictBadge({
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize);
+  const shownDetail = detail !== undefined ? detail : p.detail;
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
@@ -176,7 +180,7 @@ export function TaskVerdictBadge({
               </span>
             ) : null}
           </div>
-          {p.detail ? (
+          {shownDetail ? (
             <p
               className={
                 variant === "summary"
@@ -184,7 +188,7 @@ export function TaskVerdictBadge({
                   : "mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]"
               }
             >
-              {p.detail}
+              {shownDetail}
             </p>
           ) : null}
           {/* A rejected task's fixes are the actionable half of the verdict.
@@ -276,9 +280,9 @@ export function TaskVerdictBadge({
                 </span>
               ) : null}
             </div>
-            {p.detail ? (
+            {shownDetail ? (
               <AnalysisProse
-                text={p.detail}
+                text={shownDetail}
                 className="text-muted-foreground mt-1"
               />
             ) : null}

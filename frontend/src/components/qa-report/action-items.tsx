@@ -148,6 +148,7 @@ export function SeverityGroups({
         <details
           key={group.tier}
           className="group border-border bg-background/40 rounded-lg border"
+          defaultOpen={group.tier === "must_fix"}
         >
           <summary className="hover:bg-foreground/5 flex cursor-pointer list-none flex-wrap items-center gap-2.5 px-3 py-2 transition-colors select-none">
             <span
@@ -162,10 +163,7 @@ export function SeverityGroups({
                 TIER_BADGE[group.tier]
               )}
             >
-              {group.meta.label}
-            </span>
-            <span className="text-muted-foreground font-mono text-[10px]">
-              {group.items.length} item{group.items.length === 1 ? "" : "s"}
+              {group.items.length} {group.meta.label}
             </span>
             {/* Collapsed, the line is worth more as the items themselves than
                 as the tier's effect, which the badge already implies. Open,
@@ -181,7 +179,7 @@ export function SeverityGroups({
             <span
               className={cn(
                 "text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty",
-                group.previews.length > 0 && "hidden group-open:block",
+                group.previews.length > 0 && "hidden group-open:block"
               )}
             >
               {tierEffects?.[group.tier] ?? group.meta.labelEffect}

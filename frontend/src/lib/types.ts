@@ -229,6 +229,7 @@ export interface TaskVerdict {
   is_good: boolean | null;
   confidence: "high" | "medium" | "low" | string | null;
   primary_issue?: string | null;
+  must_fix?: number;
   reasoning?: string | null;
   recommendations?: string[];
   task_problem_count?: number;
