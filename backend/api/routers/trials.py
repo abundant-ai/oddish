@@ -36,6 +36,7 @@ from oddish.core.sharing.helpers import (
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth.permissions import require_approved_spend_org
 from oddish.db import (
     TrialModel,
     get_read_session,
@@ -199,6 +200,7 @@ async def retry_trial(
 ) -> dict:
     """Re-queue a failed or completed trial for another attempt."""
     auth.require_scope(APIKeyScope.TASKS)
+    require_approved_spend_org(auth)
 
     async with get_session() as session:
         result = await retry_trial_core(

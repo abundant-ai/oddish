@@ -34,6 +34,78 @@ def is_operator_org(auth: AuthContext) -> bool:
     return getattr(auth, "org_id", None) == configured
 
 
+def _truthy_env(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if not normalized:
+        return False
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def _configured_spend_orgs() -> list[str]:
+    raw = os.environ.get("ODDISH_APPROVED_SPEND_ORGS", "")
+    return [part.strip() for part in raw.replace("\n", ",").split(",") if part.strip()]
+
+
+def _org_ref_matches(auth: AuthContext, ref: str) -> bool:
+    """Match an approved spend org reference against the active auth org.
+
+    Bare values are internal org ids only. Use ``slug:<slug>`` when operators
+    want to approve by human-readable slug; this mirrors ``ODDISH_OPERATOR_ORG_ID``
+    and avoids letting a user-created slug impersonate a server-issued org id.
+    """
+    normalized = ref.strip()
+    if not normalized:
+        return False
+    if normalized.lower().startswith("slug:"):
+        want = normalized[len("slug:") :].strip().lower()
+        got = (auth.org_slug or "").strip().lower()
+        return bool(want) and got == want
+    if normalized.lower().startswith("id:"):
+        normalized = normalized[len("id:") :].strip()
+    return bool(normalized) and auth.org_id == normalized
+
+
+def spend_org_approval_required() -> bool:
+    """Whether paid-spend entrypoints require an approved org.
+
+    Explicit ``ODDISH_REQUIRE_APPROVED_SPEND_ORG`` wins. Otherwise the gate
+    turns on automatically once the deployment has an operator org or any
+    approved spend orgs configured. Local/self-hosted runs with neither remain
+    open by default.
+    """
+    explicit = _truthy_env("ODDISH_REQUIRE_APPROVED_SPEND_ORG")
+    if explicit is not None:
+        return explicit
+    return bool(
+        os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
+        or _configured_spend_orgs()
+    )
+
+
+def is_approved_spend_org(auth: AuthContext) -> bool:
+    """Return whether the active org may initiate platform-funded spend."""
+    if not spend_org_approval_required():
+        return True
+    if is_operator_org(auth):
+        return True
+    return any(_org_ref_matches(auth, ref) for ref in _configured_spend_orgs())
+
+
+def require_approved_spend_org(auth: AuthContext) -> None:
+    if not is_approved_spend_org(auth):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This organization is not approved to create platform-funded "
+                "runs. Ask an operator to approve the org or use an approved "
+                "workspace."
+            ),
+        )
+
+
 def require_operator_org(auth: AuthContext) -> None:
     if not is_operator_org(auth):
         raise HTTPException(status_code=403, detail="Operator access required")
@@ -58,11 +130,12 @@ def assert_org_access(row: object, auth: AuthContext, *, detail: str) -> None:
 def can_create_api_keys(auth: AuthContext) -> bool:
     """Return whether this user may create organization API keys.
 
-    Any org ADMIN or MEMBER qualifies (self-service for every org, gated on the
-    caller's role in their current org). API key auth never qualifies so one key
-    cannot mint another.
+    Any ADMIN or MEMBER in an approved spend org qualifies. API key auth never
+    qualifies so one key cannot mint another.
     """
     if auth.method != AuthMethod.CLERK_JWT:
+        return False
+    if not is_approved_spend_org(auth):
         return False
 
     role = auth.user.role if auth.user else auth.user_role

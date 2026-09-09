@@ -82,6 +82,7 @@ from oddish.core.idempotency import (
     compute_request_hash,
     probe_completed_replay,
 )
+from auth.permissions import require_approved_spend_org
 from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
@@ -331,6 +332,7 @@ async def create_task_sweep(
     into immutable replacement trials.
     """
     auth.require_scope(APIKeyScope.TASKS)
+    require_approved_spend_org(auth)
 
     from oddish.core.sweeps import validate_sweep_submission
 
@@ -463,6 +465,7 @@ async def create_task_sweep_batch(
     idempotency is separate in-flight work and will layer on top of this path.
     """
     auth.require_scope(APIKeyScope.TASKS)
+    require_approved_spend_org(auth)
 
     if not payload.submissions:
         raise HTTPException(

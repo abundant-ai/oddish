@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header
 
 from auth import APIKeyScope, AuthContext, require_auth
+from auth.permissions import require_approved_spend_org
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
 from oddish.core.endpoints.qa_eval import create_qa_eval_core
@@ -25,6 +26,7 @@ async def create_qa_eval(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> QAEvalCreateResponse:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    require_approved_spend_org(auth)
     async with get_session() as session:
         try:
             result = await create_qa_eval_core(

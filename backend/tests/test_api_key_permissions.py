@@ -1,6 +1,12 @@
 from fastapi import HTTPException
 
-from auth.permissions import allowed_api_key_scopes, can_create_api_keys
+from auth.permissions import (
+    allowed_api_key_scopes,
+    can_create_api_keys,
+    is_approved_spend_org,
+    require_approved_spend_org,
+    spend_org_approval_required,
+)
 from api.routers.task_submission import (
     _should_auto_publish,
     require_experiment_publish_scope,
@@ -14,12 +20,12 @@ def _clerk_auth(
     *,
     role: UserRole,
     org_slug: str = "customer",
-    clerk_org_id: str | None = None,
+    org_id: str = "org_1",
     email: str = "member@example.com",
 ) -> AuthContext:
     return AuthContext(
         method=AuthMethod.CLERK_JWT,
-        org_id="org_1",
+        org_id=org_id,
         org_slug=org_slug,
         user_id="user_1",
         user_email=email,
@@ -46,10 +52,77 @@ def test_org_admin_can_create_full_api_keys():
 
 
 def test_api_key_creation_is_org_agnostic():
-    # No org-slug allowlist: members of any org qualify, not just Abundant.
+    # Local/self-hosted default: no operator org or spend allowlist means no
+    # approval gate, so existing installs stay self-service.
     for org_slug in ("abundant", "customer", "acme-labs"):
         auth = _clerk_auth(role=UserRole.MEMBER, org_slug=org_slug)
         assert can_create_api_keys(auth) is True
+
+
+def test_spend_org_approval_turns_on_when_operator_org_is_configured(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_abundant")
+    monkeypatch.delenv("ODDISH_REQUIRE_APPROVED_SPEND_ORG", raising=False)
+    monkeypatch.delenv("ODDISH_APPROVED_SPEND_ORGS", raising=False)
+
+    assert spend_org_approval_required() is True
+    assert (
+        is_approved_spend_org(
+            _clerk_auth(role=UserRole.ADMIN, org_id="org_abundant", org_slug="abundant")
+        )
+        is True
+    )
+    assert can_create_api_keys(_clerk_auth(role=UserRole.ADMIN)) is False
+    assert allowed_api_key_scopes(_clerk_auth(role=UserRole.MEMBER)) == []
+
+
+def test_spend_org_allowlist_accepts_ids_and_slugs(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_abundant")
+    monkeypatch.setenv(
+        "ODDISH_APPROVED_SPEND_ORGS",
+        "id:org_sre, slug:abundant-cybermasters, org_plain",
+    )
+
+    assert can_create_api_keys(
+        _clerk_auth(role=UserRole.MEMBER, org_id="org_sre", org_slug="sre-world")
+    )
+    assert can_create_api_keys(
+        _clerk_auth(
+            role=UserRole.MEMBER,
+            org_id="org_cyber",
+            org_slug="Abundant-CyberMasters",
+        )
+    )
+    assert can_create_api_keys(
+        _clerk_auth(role=UserRole.MEMBER, org_id="org_plain", org_slug="anything")
+    )
+    assert not can_create_api_keys(
+        _clerk_auth(role=UserRole.MEMBER, org_id="org_unknown", org_slug="unknown")
+    )
+
+
+def test_require_approved_spend_org_rejects_unapproved_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_abundant")
+    monkeypatch.delenv("ODDISH_APPROVED_SPEND_ORGS", raising=False)
+
+    try:
+        require_approved_spend_org(
+            _clerk_auth(role=UserRole.ADMIN, org_id="org_unknown", org_slug="unknown")
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 403
+        assert "not approved" in exc.detail
+    else:
+        raise AssertionError("unapproved org should be rejected")
+
+
+def test_spend_org_approval_can_be_explicitly_disabled(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_abundant")
+    monkeypatch.setenv("ODDISH_REQUIRE_APPROVED_SPEND_ORG", "0")
+
+    assert spend_org_approval_required() is False
+    assert can_create_api_keys(
+        _clerk_auth(role=UserRole.MEMBER, org_id="org_unknown", org_slug="unknown")
+    )
 
 
 def test_api_key_auth_cannot_create_more_api_keys():
