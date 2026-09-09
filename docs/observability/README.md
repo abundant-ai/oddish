@@ -195,14 +195,24 @@ OpenTelemetry API returns a no-op tracer and nothing is recorded.
 Every span carries an `outcome` attribute:
 
 - `ready`: the content painted. This is the population to measure.
-- `error`: the load failed and the content will never arrive.
+- `error`: the view went away while a failure was still current.
 - `abandoned`: the person navigated away, switched files, or closed the view
-  first. Excluding these from a latency percentile is correct; ignoring the
-  rate itself is not, because a slow screen shows up as abandonment before it
-  shows up as a slow `ready`. `open.abandon_reason` separates `unmount` (moved
-  within the app) from `page-hidden` (tab closed, refreshed, backgrounded, or
-  sent elsewhere) — the second is how someone giving up on a slow load usually
-  leaves, so treat a rise in it as a latency signal.
+  before the content arrived. Excluding these from a latency percentile is
+  correct; ignoring the rate itself is not, because a slow screen shows up as
+  abandonment before it shows up as a slow `ready`. `open.abandon_reason`
+  separates `unmount` (moved within the app) from `page-hidden` (tab closed,
+  refreshed, backgrounded, or sent elsewhere) — the second is how someone
+  giving up on a slow load usually leaves, so treat a rise in it as a latency
+  signal.
+
+A failure does not end an open. SWR retries, and the task reader recovers a
+stale version 404, so a first-attempt error is frequently followed by a normal
+successful paint; ending the span there would file the recovered open under
+`error` and drop the slowest genuine waits out of the `ready` population.
+The clock keeps running instead, and `open.saw_error` marks the opens that hit
+a failure on the way. An `error` outcome therefore means the failure was still
+unresolved when the person left, and its duration includes any time they spent
+looking at the error state — read `error` as a count, not as a latency.
 
 `open.start_source` records which clock the span used. `page-load` means the
 first open after a hard navigation, backdated to `performance.timeOrigin` so

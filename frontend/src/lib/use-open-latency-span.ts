@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { SpanStatusCode, trace, type Span } from "@opentelemetry/api";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 /**
  * User-perceived "time until I can use this" spans.
@@ -138,9 +138,16 @@ export type UseOpenLatencySpanOptions = {
 };
 
 type PendingOpen = {
-  span: Span;
+  name: string;
   subject: string;
+  /** Epoch ms the wait began; the span is not created until it ends. */
+  startTime: number;
+  startSource: OpenLatencyStartSource;
   settled: boolean;
+  /** Whether the caller is reporting a failure right now. */
+  failing: boolean;
+  /** Whether any failure was seen during this open, recovered or not. */
+  sawError: boolean;
   readAttributes: () => OpenLatencyAttributes | undefined;
 };
 
@@ -212,23 +219,58 @@ const openSpans = new Set<PendingOpen>();
 
 type AbandonReason = "unmount" | "page-hidden";
 
+/**
+ * End an open, creating its span now and backdating the start.
+ *
+ * The span is deliberately not created when the wait begins. ``Logfire`` is
+ * configured from a non-blocking dynamic ``import()`` in
+ * ``instrumentation-client.ts``, so on a hard navigation a component can mount
+ * and ask for a tracer before that heavy SDK has finished loading — and the
+ * OpenTelemetry API answers with a no-op tracer whose spans go nowhere. That
+ * dropped precisely the landing open, the cold measurement worth the most, and
+ * consumed the one-shot page-load latch on the way out so no later open could
+ * claim it either.
+ *
+ * Creating the span at the END instead removes the race: by then the SDK has
+ * had the whole load to arrive, and an explicit ``startTime`` makes the
+ * recorded duration identical to what a span opened at mount would have shown.
+ * The only thing given up is watching an open in flight, which nothing needs.
+ */
 function settleOpen(
   open: PendingOpen,
   outcome: "ready" | "error" | "abandoned",
-  options: { error?: boolean; reason?: AbandonReason } = {}
+  options: { reason?: AbandonReason } = {}
 ): void {
   if (open.settled) return;
   open.settled = true;
   openSpans.delete(open);
-  open.span.setAttribute("outcome", outcome);
-  if (options.reason) open.span.setAttribute("open.abandon_reason", options.reason);
-  for (const [key, value] of Object.entries(open.readAttributes() ?? {})) {
-    open.span.setAttribute(key, value);
-  }
-  open.span.setStatus({
-    code: options.error ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+
+  const span = trace.getTracer(TRACER_NAME).startSpan(open.name, {
+    startTime: open.startTime,
+    attributes: {
+      "open.subject": open.subject,
+      "open.start_source": open.startSource,
+      outcome,
+      "open.saw_error": open.sawError,
+    },
   });
-  open.span.end();
+  if (options.reason) span.setAttribute("open.abandon_reason", options.reason);
+  for (const [key, value] of Object.entries(open.readAttributes() ?? {})) {
+    span.setAttribute(key, value);
+  }
+  span.setStatus({
+    code: outcome === "error" ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+  });
+  span.end();
+}
+
+/**
+ * How an open that never reached ``ready`` should be recorded. A failure that
+ * is still current when the view goes away is a failure; anything else is
+ * someone who stopped waiting.
+ */
+function unfinishedOutcome(open: PendingOpen): "error" | "abandoned" {
+  return open.failing ? "error" : "abandoned";
 }
 
 let unloadHandlerInstalled = false;
@@ -261,7 +303,7 @@ function ensureUnloadHandler(): void {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "hidden") return;
     for (const open of [...openSpans]) {
-      settleOpen(open, "abandoned", { reason: "page-hidden" });
+      settleOpen(open, unfinishedOutcome(open), { reason: "page-hidden" });
     }
   });
 }
@@ -281,7 +323,7 @@ export function useOpenLatencySpan({
   const settle = useRef(
     (
       outcome: "ready" | "error" | "abandoned",
-      options: { error?: boolean; reason?: AbandonReason } = {}
+      options: { reason?: AbandonReason } = {}
     ) => {
       const open = pending.current;
       if (open) settleOpen(open, outcome, options);
@@ -291,14 +333,18 @@ export function useOpenLatencySpan({
   // Start/restart. Keyed on the subject so a switch closes the old open.
   useEffect(() => {
     if (subject === null) {
-      settle("abandoned", { reason: "unmount" });
+      if (pending.current) {
+        settle(unfinishedOutcome(pending.current), { reason: "unmount" });
+      }
       pending.current = null;
       return;
     }
     if (pending.current?.subject === subject && !pending.current.settled) {
       return;
     }
-    settle("abandoned", { reason: "unmount" });
+    if (pending.current) {
+      settle(unfinishedOutcome(pending.current), { reason: "unmount" });
+    }
     ensureUnloadHandler();
 
     const firstOpenOnPage = !pageLoadClaimed;
@@ -315,31 +361,39 @@ export function useOpenLatencySpan({
     });
 
     const open: PendingOpen = {
+      name,
       subject,
+      startTime,
+      startSource: source,
       settled: false,
+      failing: false,
+      sawError: false,
       readAttributes: () => latestAttributes.current,
-      span: trace.getTracer(TRACER_NAME).startSpan(name, {
-        startTime,
-        attributes: { "open.subject": subject, "open.start_source": source },
-      }),
     };
     pending.current = open;
     openSpans.add(open);
   }, [name, subject, settle]);
 
-  // Finish once the content is painted, or immediately on failure.
+  // Finish once the content is painted. A failure is recorded but is NOT
+  // terminal: SWR retries (`errorRetryCount: 2` in `app/providers.tsx`) and the
+  // task reader recovers a stale version 404, so ending the span on the first
+  // error would settle `outcome=error` and leave the eventual successful paint
+  // unmeasured -- and since `subject` has not changed, no new span would start.
+  // The slow-but-recovered opens are exactly the ones worth seeing, so the
+  // stopwatch keeps running and `open.saw_error` records that it was a bumpy
+  // one. An error that is still current when the view goes away settles as
+  // `error` through `unfinishedOutcome`.
   //
   // ``subject`` is a dependency even though it is unused in the body: a switch
   // to something already loaded (a cached file, a task whose data SWR is still
   // holding under `keepPreviousData`) leaves `ready` true throughout, so
   // without it this effect would not re-run and the fresh span would sit open
-  // until unmount and record `abandoned` — losing precisely the fast opens.
+  // until unmount and record `abandoned` -- losing precisely the fast opens.
   useEffect(() => {
-    if (!pending.current || pending.current.settled) return;
-    if (failed) {
-      settle("error", { error: true });
-      return;
-    }
+    const open = pending.current;
+    if (!open || open.settled) return;
+    open.failing = failed;
+    if (failed) open.sawError = true;
     if (!ready) return;
     return afterPaint(() => settle("ready"));
   }, [ready, failed, subject, settle]);
@@ -349,7 +403,10 @@ export function useOpenLatencySpan({
   // closes and refreshes are caught by the visibility handler above instead,
   // because this cleanup does not run for them.
   useEffect(
-    () => () => settle("abandoned", { reason: "unmount" }),
-    [settle]
+    () => () => {
+      const open = pending.current;
+      if (open) settleOpen(open, unfinishedOutcome(open), { reason: "unmount" });
+    },
+    []
   );
 }
