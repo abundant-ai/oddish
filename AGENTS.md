@@ -166,7 +166,7 @@ High-level flow:
    audit trials and stored results can omit the hash.
    QA rerun and pre-trial audit endpoints accept an optional `environment`
    (`modal` or `daytona`); omitted/null retains the worker default. The task
-   panel and bulk Run QA toolbar expose this choice. Explicit selections are
+   panel and bulk Run QA toolbar use the worker default. Explicit API selections are
    stored on the new trial and survive retries; they do not change the global
    default or the environment of automatically enqueued follow-up QA.
    Replacement QA requests preflight every eligible source through the same

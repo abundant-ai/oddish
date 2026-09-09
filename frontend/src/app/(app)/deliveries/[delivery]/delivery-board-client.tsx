@@ -1543,21 +1543,6 @@ export function DeliveryBoardClient({
                     <SelectItem value="owner">Group by owner</SelectItem>
                   </SelectContent>
                 </Select>
-                {!frozen && data.qa_viewer_user_id && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={
-                      busy ||
-                      !filteredTasks.some(
-                        (row) => row.version_id && !row.qa_work.owner_user_id
-                      )
-                    }
-                    onClick={() => claimWork(filteredTasks, 25)}
-                  >
-                    Claim next 25
-                  </Button>
-                )}
               </div>
               {notice && (
                 <p role="status" className="text-muted-foreground mb-3 text-sm">

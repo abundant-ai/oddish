@@ -568,7 +568,6 @@ export function TaskFilesPanel({
   // Trajectory analysis is a single task-level QA job (classify every trial,
   // then synthesize the verdict), surfaced as one Run QA action.
   const [isRunningQA, setIsRunningQA] = useState(false);
-  const [qaEnvironment, setQAEnvironment] = useState("");
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [directoryListings, setDirectoryListings] = useState<
@@ -1028,8 +1027,6 @@ export function TaskFilesPanel({
       // the task verdict.
       const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment: qaEnvironment || null }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -1082,8 +1079,6 @@ export function TaskFilesPanel({
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ environment: qaEnvironment || null }),
         }
       );
       if (!res.ok) {
@@ -1104,7 +1099,6 @@ export function TaskFilesPanel({
     panel,
     checksRerunning,
     mutateChecks,
-    qaEnvironment,
   ]);
 
   const loadDirectoryPage = useCallback(
@@ -2256,37 +2250,24 @@ export function TaskFilesPanel({
                   </Button>
                 )}
                 {showAnalysis && task && (
-                  <>
-                    <select
-                      aria-label="QA sandbox provider"
-                      value={qaEnvironment}
-                      onChange={(event) => setQAEnvironment(event.target.value)}
-                      disabled={isRunningQA || checksRerunning}
-                      className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
-                    >
-                      <option value="">QA: Worker default</option>
-                      <option value="modal">QA: Modal</option>
-                      <option value="daytona">QA: Daytona</option>
-                    </select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRunQA}
-                      disabled={!canRunQA || isRunningQA}
-                      title={
-                        actionsReady ? undefined : "Loading latest task state."
-                      }
-                      className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                    >
-                      {isRunningQA ? (
-                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Microscope className="mr-1 h-3.5 w-3.5" />
-                      )}
-                      {isRunningQA ? "Queueing..." : qaActionLabel}
-                    </Button>
-                  </>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRunQA}
+                    disabled={!canRunQA || isRunningQA}
+                    title={
+                      actionsReady ? undefined : "Loading latest task state."
+                    }
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                  >
+                    {isRunningQA ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Microscope className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    {isRunningQA ? "Queueing..." : qaActionLabel}
+                  </Button>
                 )}
               </div>
             </div>

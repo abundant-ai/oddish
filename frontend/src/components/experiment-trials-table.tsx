@@ -694,7 +694,6 @@ export function ExperimentTrialsTable({
   // then synthesize the verdict), so the toolbar exposes one Run QA / Cancel
   // QA action rather than separate analysis + verdict controls.
   const [isRunningQA, setIsRunningQA] = useState(false);
-  const [qaEnvironment, setQAEnvironment] = useState("");
   const [isCancellingQA, setIsCancellingQA] = useState(false);
   const [qaError, setQAError] = useState<string | null>(null);
   const [tagBulkOpen, setTagBulkOpen] = useState(false);
@@ -1478,8 +1477,6 @@ export function ExperimentTrialsTable({
           // the task verdict.
           const res = await apiFetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ environment: qaEnvironment || null }),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
@@ -2172,34 +2169,19 @@ export function ExperimentTrialsTable({
                       </InlineBtn>
                     )}
                     {canRerun && (
-                      <>
-                        <select
-                          aria-label="QA sandbox provider"
-                          value={qaEnvironment}
-                          onChange={(event) =>
-                            setQAEnvironment(event.target.value)
-                          }
-                          disabled={isRunningQA}
-                          className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
-                        >
-                          <option value="">QA: Worker default</option>
-                          <option value="modal">QA: Modal</option>
-                          <option value="daytona">QA: Daytona</option>
-                        </select>
-                        <InlineBtn
-                          onClick={handleRunQAForSelectedTasks}
-                          disabled={
-                            isRunningQA ||
-                            isCancellingQA ||
-                            selectedQARunnableTasks.length === 0
-                          }
-                        >
-                          {isRunningQA ? "Queueing" : "Run QA"}
-                          <InlineCount>
-                            {selectedQARunnableTasks.length}
-                          </InlineCount>
-                        </InlineBtn>
-                      </>
+                      <InlineBtn
+                        onClick={handleRunQAForSelectedTasks}
+                        disabled={
+                          isRunningQA ||
+                          isCancellingQA ||
+                          selectedQARunnableTasks.length === 0
+                        }
+                      >
+                        {isRunningQA ? "Queueing" : "Run QA"}
+                        <InlineCount>
+                          {selectedQARunnableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
                     )}
                     {canUnlinkTasks && (
                       <>
