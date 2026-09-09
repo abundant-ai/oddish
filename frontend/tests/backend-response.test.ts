@@ -13,6 +13,23 @@ const code = ts.transpileModule(
   { compilerOptions: { module: ts.ModuleKind.CommonJS } }
 ).outputText;
 
+// Use the production URL builder: a raw concatenation mock hid doubled slashes.
+const backendConfig: Record<string, unknown> = {};
+runInNewContext(
+  ts.transpileModule(
+    readFileSync(
+      new URL("../src/lib/backend-config.ts", import.meta.url),
+      "utf8"
+    ),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS } }
+  ).outputText,
+  {
+    exports: backendConfig,
+    process: { env: { NEXT_PUBLIC_API_URL: "https://backend.example" } },
+    URLSearchParams,
+  }
+);
+
 function proxy(
   fetch: typeof globalThis.fetch,
   token: string | null = "test-token"
@@ -25,9 +42,7 @@ function proxy(
       auth: async () => ({ getToken: async () => token }),
     },
     "./backend-config": {
-      getClerkToken: (getToken: () => Promise<string | null>) => getToken(),
-      getBackendUrl: (path: string) => `https://backend.example${path}`,
-      getAuthHeaders: (value: string) => ({ Authorization: `Bearer ${value}` }),
+      ...backendConfig,
     },
     "./proxy-headers": {
       backendFetchHeaders: (request: Request, headers: HeadersInit) => {
@@ -87,7 +102,7 @@ for (const status of [200, 403, 503]) {
     });
     const response = await run({
       request,
-      path: "/tasks/t/open?version_id=t-v2",
+      path: "tasks/t/open?version_id=t-v2",
       stream: true,
       signal: request.signal,
     });
@@ -111,7 +126,7 @@ test("buffered experiment responses measure JSON reading and retain backend erro
   );
   const response = await run({
     request: new Request("https://app.example/api/experiments/e/open"),
-    path: "/experiments/e/open",
+    path: "experiments/e/open",
   });
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { detail: "not found" });
@@ -124,7 +139,7 @@ test("missing tokens never reach the backend and still report auth timing", asyn
   }, null);
   const response = await run({
     request: new Request("https://app.example/api/tasks/t/open"),
-    path: "/tasks/t/open",
+    path: "tasks/t/open",
   });
   assert.equal(response.status, 401);
   assertTiming(response, ["next_auth", "next_token", "next_total"]);
@@ -136,8 +151,58 @@ test("transport errors keep the failed upstream duration", async () => {
   });
   const response = await run({
     request: new Request("https://app.example/api/tasks/t/open"),
-    path: "/tasks/t/open",
+    path: "tasks/t/open",
   });
   assert.equal(response.status, 503);
   assertTiming(response, ["next_upstream", "next_total"]);
 });
+
+for (const endpoint of ["open", "detail", "panel"]) {
+  test(`${endpoint} route builds the real backend URL and preserves query parameters`, async () => {
+    const taskId = "task/with space";
+    const search = "?version=2&version_id=task-v2";
+    const request = Object.assign(
+      new Request(`https://app.example/api/tasks/t/${endpoint}${search}`),
+      { nextUrl: { search } }
+    );
+    const run = proxy(async (url, init) => {
+      assert.equal(
+        url,
+        `https://backend.example/tasks/task%2Fwith%20space/${endpoint}${search}`
+      );
+      assert.equal(init?.signal, request.signal);
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        "Bearer test-token"
+      );
+      return Response.json({ endpoint });
+    });
+    const exports: {
+      GET?: (request: Request, context: object) => Promise<Response>;
+    } = {};
+    runInNewContext(
+      ts.transpileModule(
+        readFileSync(
+          new URL(
+            `../src/app/api/tasks/[task_id]/${endpoint}/route.ts`,
+            import.meta.url
+          ),
+          "utf8"
+        ),
+        { compilerOptions: { module: ts.ModuleKind.CommonJS } }
+      ).outputText,
+      {
+        exports,
+        require: (name: string) => {
+          assert.equal(name, "@/lib/backend-response");
+          return { proxyBackendJson: run };
+        },
+      }
+    );
+    const response = await exports.GET!(request, {
+      params: Promise.resolve({ task_id: taskId }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { endpoint });
+  });
+}

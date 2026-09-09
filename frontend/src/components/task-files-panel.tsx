@@ -528,7 +528,9 @@ export function TaskFilesPanel({
   const task = cancelExperimentId
     ? taskSnapshot
     : (panel?.task ?? taskSnapshot);
-  const actionsReady = panel !== undefined && !overviewTrialsLoading;
+  // Overview pages can still be loading after panel metadata and the
+  // experiment snapshot are ready to drive actions.
+  const actionsReady = panel !== undefined;
   const checksVersion = panel?.version;
   const overviewVersion =
     taskVersion !== undefined
