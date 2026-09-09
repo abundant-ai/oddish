@@ -3,10 +3,8 @@
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
-import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
+import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
 import { Nav } from "@/components/nav";
-import { Button } from "@/components/ui/button";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
@@ -29,16 +27,13 @@ export default function PublicDatasetPage() {
     tasks,
     openError,
     isLoading,
-    hasMoreTasks,
-    hasMoreTrials,
-    canLoadTrials,
-    loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded,
     totalTrials,
     trialsStalled,
     isValidatingTrials,
+    isValidatingOpen,
+    mutateOpen,
   } = useExperimentPages({
     openUrl: publicBase ? `${publicBase}/open` : null,
     trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
@@ -61,31 +56,23 @@ export default function PublicDatasetPage() {
           hasError={hasFatalError}
           inlineAlert={
             trialsStalled ? (
-              <ExperimentTrialLoadAlert
+              <ExperimentPageLoadAlert
+                resource="trials"
                 loaded={trialsLoaded}
                 total={totalTrials}
                 isRetrying={isValidatingTrials}
                 onRetry={retryTrials}
               />
+            ) : openError && experiment ? (
+              <ExperimentPageLoadAlert
+                resource="tasks"
+                loaded={tasks.length}
+                total={experiment.summary?.task_count ?? 0}
+                isRetrying={isValidatingOpen}
+                onRetry={() => void mutateOpen()}
+              />
             ) : null
           }
-        />
-        {hasMoreTrials && (
-          <div className="flex justify-center py-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={loadNextTrials}
-              disabled={!canLoadTrials}
-            >
-              Load next 250 trial results
-            </Button>
-          </div>
-        )}
-        <ExperimentPaginationSentinel
-          hasMoreTasks={hasMoreTasks}
-          loadNextTasks={loadNextTasks}
         />
       </main>
     </>

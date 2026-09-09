@@ -26,6 +26,17 @@ from oddish.timing import current_request_timing, timed_phase
 logger = logging.getLogger(__name__)
 
 
+def is_missing_object(exc: ClientError) -> bool:
+    """Recognize absent objects across S3-compatible error response formats."""
+    code = str(exc.response.get("Error", {}).get("Code") or "")
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    if status is not None and status != 404:
+        return False
+    # Some providers return an HTTP 404 without an S3 Error.Code. An empty
+    # code alone is not evidence of absence; bucket/auth/service errors escape.
+    return code in {"404", "NoSuchKey", "NotFound"} or (not code and status == 404)
+
+
 @contextmanager
 def storage_operation(operation: str, key: str, *, batch_size: int | None = None):
     """Measure SDK requests and retain safe provider diagnostics on failure."""
@@ -40,7 +51,7 @@ def storage_operation(operation: str, key: str, *, batch_size: int | None = None
         except ClientError as exc:
             metadata = exc.response.get("ResponseMetadata", {})
             error = exc.response.get("Error", {})
-            if str(error.get("Code")) not in {"404", "NoSuchKey", "NotFound"}:
+            if not is_missing_object(exc):
                 logger.warning(
                     "S3 %s failed: status=%s code=%s request_id=%s retries=%s batch_size=%s message=%s",
                     operation,
@@ -1512,11 +1523,7 @@ class StorageClient:
                     )
                     return result
             except ClientError as exc:
-                if str(exc.response.get("Error", {}).get("Code")) not in {
-                    "404",
-                    "NoSuchKey",
-                    "NotFound",
-                }:
+                if not is_missing_object(exc):
                     raise
             # Oversize/skipped/deleted members retain the archive fallback.
             expanded = False
@@ -1719,11 +1726,7 @@ class StorageClient:
             with storage_operation("head", s3_key):
                 return await self._s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
         except ClientError as exc:
-            if str(exc.response.get("Error", {}).get("Code")) in {
-                "404",
-                "NoSuchKey",
-                "NotFound",
-            }:
+            if is_missing_object(exc):
                 return None
             raise
 

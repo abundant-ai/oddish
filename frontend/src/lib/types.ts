@@ -266,6 +266,8 @@ export interface Task {
   run_probe?: boolean;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
+  /** Must-fix findings in the completed source audit of the current version. */
+  must_fix_count?: number | null;
   verdict_error?: string | null;
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
@@ -288,7 +290,12 @@ export type ExperimentOpenTask = Omit<
 
 export type PublicExperimentOpenTask = Omit<
   ExperimentOpenTask,
-  "user" | "github_username" | "link" | "experiment_owner" | "experiment_link"
+  | "user"
+  | "github_username"
+  | "link"
+  | "experiment_owner"
+  | "experiment_link"
+  | "must_fix_count"
 >;
 
 export interface ExperimentPageSummary {

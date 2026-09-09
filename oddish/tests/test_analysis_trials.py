@@ -2424,7 +2424,7 @@ async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
     from oddish.workers import analysis_trials
 
     class UnavailableStorage:
-        async def object_exists(self, _key):
+        async def download_text(self, _key):
             raise TimeoutError("storage timed out")
 
     monkeypatch.setattr(
