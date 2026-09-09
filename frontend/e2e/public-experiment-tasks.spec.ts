@@ -266,7 +266,7 @@ test("public experiment keeps task rows visible when trial pagination fails", as
   await expect(page.getByText("Task one")).toBeVisible();
 });
 
-test("later trial-page failure waits for an explicit retry", async ({ page }) => {
+test("a failed trial page pauses the stream until retry", async ({ page }) => {
   const token = "public-later-trial-page-retry";
   const publicTask = task({ trials: undefined });
   let trialPageRequests = 0;
@@ -338,15 +338,13 @@ test("later trial-page failure waits for an explicit retry", async ({ page }) =>
   );
 
   await page.goto(`/share/${token}`);
-  await expect.poll(() => trialPageRequests).toBe(1);
-  await page.waitForTimeout(750);
-  expect(trialPageRequests).toBe(1);
-
-  await page.getByRole("button", { name: "Load next 250 trial results" }).click();
+  // The cursor on the first page pulls the next page in on its own — the
+  // stream needs no click.
   await expect.poll(() => trialPageRequests).toBe(2);
   await expect(
     page.getByRole("heading", { name: "Some trial results failed to load" })
   ).toBeVisible();
+  // A failed page stops the stream instead of retrying in a loop.
   await page.waitForTimeout(750);
   expect(trialPageRequests).toBe(2);
 
@@ -612,11 +610,8 @@ test("public experiment resources and loaded pages refresh while active", async 
   await page.goto(`/share/${token}`);
   await expect.poll(() => costRequests).toBe(1);
   await expect.poll(() => openRequests).toBe(1);
-  await expect.poll(() => trialPageRequests).toBe(1);
+  await expect.poll(() => trialPageRequests).toBe(2);
   await expect(page.getByText("$1.00", { exact: true })).toBeVisible();
-  await page
-    .getByRole("button", { name: "Load next 250 trial results" })
-    .click();
   await expect.poll(() => laterPageCursors).toEqual(["trial-old-boundary"]);
 
   await page.clock.runFor(30_100);

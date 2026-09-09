@@ -32,9 +32,7 @@ export default function PublicExperimentPage() {
     isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
-    canLoadTrials,
     loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded,
     totalTrials,
@@ -73,9 +71,9 @@ export default function PublicExperimentPage() {
             trialPagesComplete={trialPagesComplete}
             hasMoreTasks={hasMoreTasks}
             hasMoreTrials={hasMoreTrials}
-            canLoadTrials={canLoadTrials}
+            trialsLoaded={trialsLoaded}
+            totalTrials={totalTrials}
             loadNextTasks={loadNextTasks}
-            loadNextTrials={loadNextTrials}
             focusUrl={publicBase ? `${publicBase}/focus` : undefined}
             hasError={hasFatalError}
             errorTitle="Failed to load experiment"

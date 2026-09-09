@@ -74,9 +74,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
     isLoadingTrials,
     hasMoreTasks,
     hasMoreTrials,
-    canLoadTrials,
     loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded: trialsLoadedCount,
     totalTrials: totalTrialCount,
@@ -301,9 +299,9 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
           trialPagesComplete={trialPagesComplete}
           hasMoreTasks={hasMoreTasks}
           hasMoreTrials={hasMoreTrials}
-          canLoadTrials={canLoadTrials}
+          trialsLoaded={trialsLoadedCount}
+          totalTrials={totalTrialCount}
           loadNextTasks={loadNextTasks}
-          loadNextTrials={loadNextTrials}
           focusUrl={
             encodedId ? `/api/experiments/${encodedId}/focus` : undefined
           }

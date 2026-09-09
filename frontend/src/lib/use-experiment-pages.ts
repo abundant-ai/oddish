@@ -72,11 +72,6 @@ export function useExperimentPages({
   const hasMoreTasks = Boolean(lastOpenPage?.next_task_id);
   const hasMoreTrials = Boolean(lastTrialPage?.next_trial_id);
   const canLoadTasks = hasMoreTasks && !open.isLoading && !open.isValidating;
-  const canLoadTrials =
-    hasMoreTrials &&
-    !trials.error &&
-    !trials.isLoading &&
-    !trials.isValidating;
   const {
     error: openError,
     isLoading: isLoadingOpen,
@@ -118,13 +113,26 @@ export function useExperimentPages({
     openError,
     setOpenSize,
   ]);
-  const loadNextTrials = useCallback(() => {
-    if (trialError || isLoadingTrials || isValidatingTrials) return;
-    if (hasMoreTrials) void setTrialSize((size) => size + 1);
+  // Stream the trial pages in on their own. Each page that lands renders
+  // immediately and, if it reports another cursor, queues the next request,
+  // so results keep filling in instead of stopping at a "load more" click.
+  // Requests stay strictly sequential: the size only grows once every page
+  // already asked for has arrived.
+  const loadedTrialPages = trials.data?.length ?? 0;
+  const requestedTrialPages = trials.size;
+  useEffect(() => {
+    if (!hasMoreTrials || trialError) return;
+    if (isLoadingTrials || isValidatingTrials) return;
+    // A requested page is still in flight; advancing here would fan out
+    // several pages at once.
+    if (loadedTrialPages !== requestedTrialPages) return;
+    void setTrialSize((size) => size + 1);
   }, [
     hasMoreTrials,
     isLoadingTrials,
     isValidatingTrials,
+    loadedTrialPages,
+    requestedTrialPages,
     setTrialSize,
     trialError,
   ]);
@@ -159,9 +167,7 @@ export function useExperimentPages({
     hasMoreTasks,
     hasMoreTrials,
     canLoadTasks,
-    canLoadTrials,
     loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded,
     totalTrials,

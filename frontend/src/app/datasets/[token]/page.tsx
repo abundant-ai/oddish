@@ -5,8 +5,8 @@ import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
 import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
+import { ExperimentTrialLoadProgress } from "@/components/experiment-trial-load-progress";
 import { Nav } from "@/components/nav";
-import { Button } from "@/components/ui/button";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { useExperimentPages } from "@/lib/use-experiment-pages";
@@ -31,9 +31,7 @@ export default function PublicDatasetPage() {
     isLoading,
     hasMoreTasks,
     hasMoreTrials,
-    canLoadTrials,
     loadNextTasks,
-    loadNextTrials,
     retryTrials,
     trialsLoaded,
     totalTrials,
@@ -71,17 +69,10 @@ export default function PublicDatasetPage() {
           }
         />
         {hasMoreTrials && (
-          <div className="flex justify-center py-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={loadNextTrials}
-              disabled={!canLoadTrials}
-            >
-              Load next 250 trial results
-            </Button>
-          </div>
+          <ExperimentTrialLoadProgress
+            loaded={trialsLoaded}
+            total={totalTrials}
+          />
         )}
         <ExperimentPaginationSentinel
           hasMoreTasks={hasMoreTasks}

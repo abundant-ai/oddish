@@ -16,6 +16,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
+import { ExperimentTrialLoadProgress } from "@/components/experiment-trial-load-progress";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
@@ -132,9 +133,9 @@ interface ExperimentDetailViewProps {
   trialPagesComplete?: boolean;
   hasMoreTasks?: boolean;
   hasMoreTrials?: boolean;
-  canLoadTrials?: boolean;
+  trialsLoaded?: number;
+  totalTrials?: number;
   loadNextTasks?: () => void;
-  loadNextTrials?: () => void;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -1029,9 +1030,9 @@ export function ExperimentDetailView({
   trialPagesComplete = true,
   hasMoreTasks = false,
   hasMoreTrials = false,
-  canLoadTrials = false,
+  trialsLoaded = 0,
+  totalTrials = 0,
   loadNextTasks = () => {},
-  loadNextTrials = () => {},
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1934,17 +1935,10 @@ export function ExperimentDetailView({
                 }}
               />
               {hasMoreTrials && (
-                <div className="flex justify-center">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={loadNextTrials}
-                    disabled={!canLoadTrials}
-                  >
-                    Load next 250 trial results
-                  </Button>
-                </div>
+                <ExperimentTrialLoadProgress
+                  loaded={trialsLoaded}
+                  total={totalTrials}
+                />
               )}
               <ExperimentPaginationSentinel
                 hasMoreTasks={hasMoreTasks}
