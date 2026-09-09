@@ -52,6 +52,7 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
+import { markOpenIntent } from "@/lib/open-intent";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
@@ -783,6 +784,10 @@ export function TaskDetailClient({
     : -1;
 
   const handleSelectTrial = useCallback((trial: Trial) => {
+    // TrajectoryViewer is a dynamic import, so opening a trial downloads its
+    // chunk before the viewer can mount and start its own clock. Stamp the
+    // click or that download is missing from every first trajectory open.
+    markOpenIntent("ui.trajectory.open", trial.id);
     // The user (or hydration) is driving the drawer now; any unresolved
     // deep-link trial param no longer needs preserving.
     unresolvedTrialParamRef.current = false;
@@ -809,6 +814,7 @@ export function TaskDetailClient({
   }, []);
 
   const handleNavigateToTrial = useCallback((trial: Trial) => {
+    markOpenIntent("ui.trajectory.open", trial.id);
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 

@@ -229,6 +229,13 @@ client-side open timed from mount. Compare the two only deliberately —
 `page-load` is a cold measurement and will always be slower, so a shift in the
 mix moves a combined percentile without anything having got slower.
 
+Opens that begin in a hidden tab are not measured at all. A cmd-clicked or
+middle-clicked tab is nobody's wait: `visibilitychange` never fires there
+because the tab was born hidden rather than changing, and
+`requestAnimationFrame` is frozen, so such an open would either surface minutes
+later with all that idle time recorded as latency or vanish when the tab is
+closed unlooked-at.
+
 `open.clock` says which moment the timer actually started from: `page-load`
 (the document request), `click` (a recorded navigation intent), or `mount`
 (the destination component appearing, used when no click was recorded).

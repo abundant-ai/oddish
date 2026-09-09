@@ -187,6 +187,23 @@ export function resetPageLoadAttribution(): void {
   pageLoadClaimed = false;
 }
 
+/**
+ * Whether the page is hidden right now.
+ *
+ * An open that BEGINS hidden -- the tab a cmd-click or middle-click put in the
+ * background -- cannot be measured. Nobody is waiting on it, so its duration is
+ * however long until someone happens to look; ``visibilitychange`` never fires
+ * because nothing changed, the tab was born hidden; and ``requestAnimationFrame``
+ * is frozen there, so ``afterPaint`` never runs to settle it. The open would
+ * either surface minutes later with all that idle time recorded as latency, or
+ * be dropped when the tab is closed unlooked-at. Both pollute the ``ready``
+ * percentiles, and opening several tabs at once is a normal way to work.
+ */
+function documentHidden(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.visibilityState === "hidden";
+}
+
 function currentPath(): string | null {
   return typeof window === "undefined" ? null : window.location.pathname;
 }
@@ -402,6 +419,16 @@ export function useOpenLatencySpan({
       settle(unfinishedOutcome(pending.current), { reason: "unmount" });
     }
     ensureUnloadHandler();
+
+    // Started in a background tab: not a wait anybody is having (see
+    // documentHidden). Consume the click stamp so it cannot be picked up by a
+    // later open, but leave the page-load latch alone -- nothing was measured,
+    // so a real landing open may still claim it.
+    if (documentHidden()) {
+      takeOpenIntent(name, subject);
+      pending.current = null;
+      return;
+    }
 
     const firstOpenOnPage = claimsPageLoad && !pageLoadClaimed;
     if (claimsPageLoad) pageLoadClaimed = true;
