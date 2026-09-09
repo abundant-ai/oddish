@@ -412,9 +412,17 @@ export function ModelsClient() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map(({ endpoint, name }) => {
+                  {rows.map((row) => {
+                    const {
+                      endpoint,
+                      key,
+                      name,
+                      provider,
+                      status,
+                      latency,
+                      testedAt,
+                    } = row;
                     const { credential, model, route, testable } = endpoint;
-                    const key = endpointKey(endpoint);
                     const check = checks[key];
                     const result =
                       check?.status === "complete" ? check.result : null;
@@ -425,10 +433,6 @@ export function ModelsClient() {
                         : check?.status === "error"
                           ? JSON.stringify({ error: check.message }, null, 2)
                           : "";
-                    const testedAt =
-                      check?.status === "complete" || check?.status === "error"
-                        ? new Date(check.testedAt).toLocaleTimeString()
-                        : "—";
 
                     return (
                       <Fragment key={key}>
@@ -471,55 +475,50 @@ export function ModelsClient() {
                                   )}
                                 </div>
                                 <div className="text-muted-foreground mt-0.5 hidden text-xs sm:block lg:hidden">
-                                  {ROUTE_LABELS[route] ?? route}
+                                  {provider}
                                 </div>
                               </div>
                             </div>
                           </TableCell>
                           <TableCell className="hidden lg:table-cell">
                             <div className="text-sm font-medium">
-                              {ROUTE_LABELS[route] ?? route}
+                              {provider}
                             </div>
                           </TableCell>
                           <TableCell>
-                            {check?.status === "running" ? (
+                            {status === "Testing" ? (
                               <Badge variant="running">
                                 <RefreshCw className="mr-1 hidden h-3 w-3 animate-spin sm:inline" />
                                 Testing
                               </Badge>
-                            ) : result ? (
-                              <Badge variant={result.ok ? "success" : "failed"}>
-                                {result.ok ? (
+                            ) : status === "Passed" || status === "Failed" ? (
+                              <Badge
+                                variant={
+                                  status === "Passed" ? "success" : "failed"
+                                }
+                              >
+                                {status === "Passed" ? (
                                   <CheckCircle2 className="mr-1 hidden h-3 w-3 sm:inline" />
                                 ) : (
                                   <XCircle className="mr-1 hidden h-3 w-3 sm:inline" />
                                 )}
-                                {result.ok
-                                  ? "Passed"
-                                  : result.status_code
-                                    ? `HTTP ${result.status_code}`
-                                    : "Failed"}
+                                {status === "Failed" && result?.status_code
+                                  ? `HTTP ${result.status_code}`
+                                  : status}
                               </Badge>
-                            ) : check?.status === "error" ? (
-                              <Badge variant="failed">
-                                <XCircle className="mr-1 hidden h-3 w-3 sm:inline" />
-                                Failed
-                              </Badge>
-                            ) : !testable ? (
-                              <span className="text-muted-foreground text-xs">
-                                CLI only
-                              </span>
                             ) : (
                               <span className="text-muted-foreground text-xs">
-                                Not tested
+                                {status}
                               </span>
                             )}
                           </TableCell>
                           <TableCell className="hidden font-mono text-xs md:table-cell">
-                            {result ? `${result.latency_ms}ms` : "—"}
+                            {latency !== null ? `${latency}ms` : "—"}
                           </TableCell>
                           <TableCell className="text-muted-foreground hidden text-xs md:table-cell">
-                            {testedAt}
+                            {testedAt !== null
+                              ? new Date(testedAt).toLocaleTimeString()
+                              : "—"}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-1">
@@ -552,7 +551,7 @@ export function ModelsClient() {
                                 disabled={hasRunningCheck || !testable}
                                 onClick={() => void testModel(endpoint, true)}
                               >
-                                {check?.status === "running" ? (
+                                {status === "Testing" ? (
                                   <RefreshCw className="h-4 w-4 animate-spin" />
                                 ) : (
                                   <Play className="h-4 w-4" />
@@ -578,14 +577,14 @@ export function ModelsClient() {
                                     Output
                                   </span>
                                   <span className="text-muted-foreground font-mono text-xs">
-                                    {check?.status === "running"
+                                    {status === "Testing"
                                       ? "Request in progress"
                                       : result
-                                        ? `${result.status_code ? `HTTP ${result.status_code} · ` : ""}${result.latency_ms}ms`
+                                        ? `${result.status_code ? `HTTP ${result.status_code} · ` : ""}${latency}ms`
                                         : "Request failed"}
                                   </span>
                                 </div>
-                                {check?.status === "running" ? (
+                                {status === "Testing" ? (
                                   <div className="text-muted-foreground flex items-center gap-2 py-2 text-sm">
                                     <RefreshCw className="h-4 w-4 animate-spin" />
                                     Waiting for response...
@@ -607,7 +606,7 @@ export function ModelsClient() {
                                         Response details
                                       </summary>
                                       <p className="text-muted-foreground my-2 text-xs break-words">
-                                        {ROUTE_LABELS[route] ?? route} ·{" "}
+                                        {provider} ·{" "}
                                         {credential ??
                                           "Provider-managed credential"}
                                       </p>
