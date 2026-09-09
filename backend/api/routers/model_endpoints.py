@@ -318,7 +318,7 @@ async def check_model_endpoint(
     # and redirects bare Claude names to Bedrock, which is wrong for direct APIs.
     candidates = [entry for entry in catalog if entry.model == request.model]
     if not candidates:
-        normalized = settings.normalize_queue_key(request.model)
+        normalized = request.model.casefold()
         candidates = [
             entry for entry in catalog if entry.model.casefold() == normalized
         ]
