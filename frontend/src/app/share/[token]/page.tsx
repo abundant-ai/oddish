@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
+import { ExperimentResultsStatus } from "@/components/experiment-results-status";
 import { ShareNav } from "@/components/share-nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
@@ -31,7 +31,6 @@ export default function PublicExperimentPage() {
     isLoading,
     isLoadingTrials,
     trialsLoaded,
-    totalTrials,
     pagesComplete,
     refreshResults,
   } = useExperimentResults({
@@ -68,22 +67,24 @@ export default function PublicExperimentPage() {
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
             inlineAlert={
-              openError ? (
-                <ExperimentPageLoadAlert
-                  resource="trials"
-                  loaded={trialsLoaded}
-                  total={totalTrials}
-                  isRetrying={isLoadingTrials}
-                  onRetry={() => void refreshResults()}
-                />
-              ) : null
-            }
-            headerStatus={
-              isLoadingTrials ? (
-                <span role="status" className="text-muted-foreground text-xs">
-                  Loading trials {trialsLoaded}/{totalTrials}…
-                </span>
-              ) : null
+              <ExperimentResultsStatus
+                summary={experiment?.summary}
+                tasksLoaded={tasksForExperiment.length}
+                trialsLoaded={trialsLoaded}
+                complete={pagesComplete}
+                isLoading={isLoadingTrials}
+                hasError={Boolean(openError)}
+                fatalError={
+                  hasFatalError
+                    ? {
+                        title: "Failed to load experiment",
+                        description:
+                          "The share link may be invalid or no longer public.",
+                      }
+                    : undefined
+                }
+                onRetry={() => void refreshResults()}
+              />
             }
             headerLeft={
               <h1 className="truncate pb-1 font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">

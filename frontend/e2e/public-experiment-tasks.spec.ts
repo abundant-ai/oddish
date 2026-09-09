@@ -421,7 +421,8 @@ test("retryable focus errors preserve the streamed-trial deep-link fallback", as
     (window as typeof window & { finishResults: () => void }).finishResults()
   );
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-  await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
+  await expect(page).toHaveURL(/task=task-1/);
+  await expect(page).toHaveURL(/trial=task-1-2/);
 });
 
 test("public trial drawers defer trajectory work", async ({ page }) => {
@@ -577,11 +578,26 @@ test("one continuous response shows 101 tasks and 505 trials, then enables graph
     "Graphs will appear once all task and trial results have loaded."
   );
   await expect(waiting).toBeVisible();
+  const download = page
+    .getByRole("status")
+    .filter({ hasText: "Downloading results" });
+  await expect(download).toContainText(
+    "101 of 101 tasks loaded · 250 of 505 trial results loaded"
+  );
+  await expect(
+    page.getByText("All results loaded.", { exact: true })
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Trials finished", { exact: true })
+  ).toBeVisible();
   await expect(page.getByText("49.5%", { exact: true })).toHaveCount(0);
   await page.evaluate(() =>
     (window as typeof window & { finishResults: () => void }).finishResults()
   );
   await expect(waiting).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "All results loaded." })
+  ).toContainText("101 of 101 tasks loaded · 505 of 505 trial results loaded");
   await expect(page.getByText("49.5%", { exact: true })).toBeVisible({
     timeout: 15000,
   });
@@ -614,13 +630,13 @@ test("an interrupted stream keeps loaded rows, hides graphs, and retries the ful
     page.getByRole("button", { name: "Task one", exact: true })
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Some trial results failed to load" })
+    page.getByRole("heading", { name: "Results download incomplete" })
   ).toBeVisible();
   await page.waitForTimeout(750);
   expect(requests).toBe(1);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Some trial results failed to load" })
+    page.getByRole("heading", { name: "Results download incomplete" })
   ).toHaveCount(0);
   expect(requests).toBe(2);
 });
@@ -655,7 +671,7 @@ test("active experiments refresh one complete response and cost totals", async (
     page.getByRole("button", { name: "Task one", exact: true })
   ).toBeVisible();
   await expect(
-    page.getByRole("status").filter({ hasText: "Loading trials" })
+    page.getByRole("status").filter({ hasText: "Downloading results" })
   ).toHaveCount(0);
   expect(requests).toBe(1);
   await page.clock.runFor(30_100);
@@ -706,12 +722,15 @@ for (const failure of ["HTTP error", "interrupted stream"] as const) {
     const graph = page.getByRole("heading", { name: "Pass/k", exact: true });
     const row = page.getByRole("button", { name: "Task one", exact: true });
     const error = page.getByRole("heading", {
-      name: "Some trial results failed to load",
+      name: "Could not refresh results",
     });
     await expect(graph).toBeVisible();
     await expect(row).toBeVisible();
     await page.clock.runFor(30_100);
     await expect(error).toBeVisible();
+    await expect(
+      page.getByText("Showing the last complete results.", { exact: true })
+    ).toBeVisible();
     expect(requests).toBe(2);
     await expect(graph).toBeVisible();
     await expect(row).toBeVisible();
@@ -782,3 +801,144 @@ test("initial results request failure offers Retry before any rows arrive", asyn
   ).toBeVisible();
   expect(requests).toBe(2);
 });
+
+for (const route of ["share", "datasets"] as const) {
+  test(`${route} missing token shows a fatal error without trial counts`, async ({
+    page,
+  }) => {
+    const token = `missing-${route}`;
+    await mockInfo(page, token);
+    await page.route(`**/api/public/experiments/${token}/results`, (request) =>
+      request.fulfill({ status: 404, json: { detail: "Experiment not found" } })
+    );
+    await page.goto(`/${route}/${token}`, { waitUntil: "domcontentloaded" });
+    await expect(
+      page.getByRole("heading", {
+        name:
+          route === "share"
+            ? "Failed to load experiment"
+            : "Failed to load dataset",
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        route === "share"
+          ? "The share link may be invalid or no longer public."
+          : "The dataset token may be invalid, or this experiment is not public."
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText("Loaded 0/0 trials.", { exact: true })
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Results download incomplete" })
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Retry", exact: true })
+    ).toBeVisible();
+  });
+}
+
+test("retry keeps partial rows visible until the replacement stream completes", async ({
+  page,
+}) => {
+  const token = "partial-retry-preserves-rows";
+  await mockInfo(page, token);
+  const initial = resultRecords([task({})], []);
+  const replacement = resultRecords([task({ name: "Replacement task" })], []);
+  await page.addInitScript(
+    ({ token, initial, header, remaining }) => {
+      const originalFetch = window.fetch.bind(window);
+      let requests = 0;
+      window.fetch = async (input, init) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (!url.endsWith(`/experiments/${token}/results`))
+          return originalFetch(input, init);
+        if (++requests === 1) return new Response(initial);
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(header));
+              (
+                window as typeof window & { finishResults: () => void }
+              ).finishResults = () => {
+                controller.enqueue(new TextEncoder().encode(remaining));
+                controller.close();
+              };
+            },
+          })
+        );
+      };
+    },
+    {
+      token,
+      initial: streamBody(initial.slice(0, -1)),
+      header: streamBody(replacement.slice(0, 1)),
+      remaining: streamBody(replacement.slice(1)),
+    }
+  );
+  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+  const row = page.getByRole("button", { name: "Task one", exact: true });
+  await expect(row).toBeVisible();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      typeof (window as typeof window & { finishResults?: () => void })
+        .finishResults === "function"
+  );
+  // Let the replacement header's animation-frame update reach React.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      )
+  );
+  await expect(row).toBeVisible();
+  await page.evaluate(() =>
+    (window as typeof window & { finishResults: () => void }).finishResults()
+  );
+  await expect(
+    page.getByRole("button", { name: "Replacement task", exact: true })
+  ).toBeVisible();
+  await expect(row).toHaveCount(0);
+});
+for (const view of ["share", "datasets"]) {
+  test(`${view} shows task download progress before trials and keeps exact totals after completion`, async ({
+    page,
+  }) => {
+    const token = `task-progress-${view}`;
+    const tasks = Array.from({ length: 30 }, (_, i) =>
+      task({ id: `task-${i}`, name: `Task ${i}`, total: 0, completed: 0 })
+    );
+    const records = resultRecords(tasks, []);
+    await mockInfo(page, token);
+    await mockContinuousResults(
+      page,
+      token,
+      records.slice(0, 26),
+      records.slice(26)
+    );
+    await page.goto(`/${view}/${token}`, { waitUntil: "domcontentloaded" });
+    const status = page
+      .getByRole("status")
+      .filter({ hasText: "Downloading results" });
+    await expect(status).toContainText(
+      "25 of 30 tasks loaded · 0 of 0 trial results loaded"
+    );
+    await expect(
+      page.getByText("All results loaded.", { exact: true })
+    ).toHaveCount(0);
+    await page.evaluate(() =>
+      (window as typeof window & { finishResults: () => void }).finishResults()
+    );
+    await expect(
+      page.getByRole("status").filter({ hasText: "All results loaded." })
+    ).toContainText("30 of 30 tasks loaded · 0 of 0 trial results loaded");
+  });
+}

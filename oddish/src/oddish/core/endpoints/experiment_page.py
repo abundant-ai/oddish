@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping, Sequence
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, cast, func, or_, select
+from sqlalchemy import and_, case, cast, column, func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql import ClauseElement, Executable
 from sqlalchemy.orm import aliased
 
 from oddish.config import settings
@@ -56,6 +58,7 @@ from oddish.schemas import (
 OPEN_MAX_TASKS = 100
 OPEN_MAX_BYTES = 50_000
 TRIAL_PAGE_MAX_TRIALS = 250
+RESULTS_FETCH_BATCH_SIZE = 500
 _ACTIVE_VERDICT_STATUSES = (
     VerdictStatus.PENDING,
     VerdictStatus.QUEUED,
@@ -872,6 +875,52 @@ async def get_public_experiment_trial_page_core(
     return response
 
 
+class _DeclareResultsCursor(Executable, ClauseElement):
+    inherit_cache = False
+
+    def __init__(self, query, name):
+        self.query = query
+        self.name = name
+
+
+@compiles(_DeclareResultsCursor)
+def _compile_results_cursor(element, compiler, **kwargs):
+    # Compile through SQLAlchemy so bind values keep their types and escaping.
+    name = compiler.preparer.quote(element.name)
+    return f"DECLARE {name} NO SCROLL CURSOR FOR " + compiler.process(
+        element.query, **kwargs
+    )
+
+
+async def _stream_result_rows(
+    session: AsyncSession,
+    query,
+    name: Literal[
+        "experiment_result_tasks",
+        "public_experiment_result_tasks",
+        "experiment_result_trials",
+    ],
+) -> AsyncIterator[Mapping[str, Any]]:
+    # SQL cursors stay within this response's transaction. AsyncSession.stream
+    # uses asyncpg PreparedStatement.cursor(), which cannot re-parse unnamed
+    # statements after type introspection with statement_cache_size=0.
+    await session.execute(_DeclareResultsCursor(query, name))
+    # FETCH's SQL text must differ for public tasks, member tasks and trials:
+    # asyncpg caches result-column metadata by statement, not by cursor contents.
+    fetch = text(f"FETCH FORWARD {RESULTS_FETCH_BATCH_SIZE} FROM {name}").columns(
+        *(column(col.key, col.type) for col in query.selected_columns)
+    )
+    while True:
+        rows = (await session.execute(fetch)).mappings().all()
+        for row in rows:
+            yield row
+        if len(rows) < RESULTS_FETCH_BATCH_SIZE:
+            break
+    await session.execute(text(f"CLOSE {name}"))
+    # On an exception/disconnect the enclosing get_session rolls back, closing
+    # the cursor even if the transaction is already aborted and CLOSE would fail.
+
+
 async def stream_experiment_results(
     *,
     experiment_id: str | None = None,
@@ -881,13 +930,12 @@ async def stream_experiment_results(
     """One response, no page limits or repeated cursor queries.
 
     The transaction closes when the client disconnects. Each collection uses one
-    query; records are serialized individually without HTTP page boundaries.
+    server-side cursor with bounded fetch batches; records are serialized
+    individually without HTTP page boundaries.
     A completion record distinguishes a full snapshot from an interrupted body.
     """
     async with get_session() as session:
         # Task versions and totals must come from the same database snapshot.
-        from sqlalchemy import text
-
         await session.execute(
             text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         )
@@ -932,27 +980,31 @@ async def stream_experiment_results(
         task_query = _experiment_task_rows(
             experiment_id=experiment_id, org_id=org_id, include_user=not public
         )
-        task_rows = await session.execute(
-            task_query.order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
+        task_rows = _stream_result_rows(
+            session,
+            task_query.order_by(TaskModel.created_at.desc(), TaskModel.id.desc()),
+            "public_experiment_result_tasks" if public else "experiment_result_tasks",
         )
         try:
-            for row in task_rows.mappings():
+            async for row in task_rows:
                 task = _public_task_row(row) if public else _task_row(row)
                 yield (
                     json.dumps({"type": "task", "task": task.model_dump(mode="json")})
                     + "\n"
                 )
         finally:
-            task_rows.close()
+            await task_rows.aclose()
         exclusions = None if public else await load_cost_exclusions(session)
         query, trials = _experiment_trial_rows_query(
             experiment_id=experiment_id, org_id=org_id
         )
-        trial_rows = await session.execute(
-            query.order_by(trials.created_at.desc(), trials.id.desc())
+        trial_rows = _stream_result_rows(
+            session,
+            query.order_by(trials.created_at.desc(), trials.id.desc()),
+            "experiment_result_trials",
         )
         try:
-            for row in trial_rows.mappings():
+            async for row in trial_rows:
                 trial = build_experiment_trial_cell(row, exclusions=exclusions)
                 if public:
                     apply_model_display_names([trial], display_names)
@@ -963,7 +1015,7 @@ async def stream_experiment_results(
                     + "\n"
                 )
         finally:
-            trial_rows.close()
+            await trial_rows.aclose()
     yield '{"type":"complete"}\n'
 
 

@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
-import { ExperimentPageLoadAlert } from "@/components/experiment-page-load-alert";
+import { ExperimentResultsStatus } from "@/components/experiment-results-status";
 import { Nav } from "@/components/nav";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
@@ -30,7 +30,7 @@ export default function PublicDatasetPage() {
     isLoadingTrials,
     refreshResults,
     trialsLoaded,
-    totalTrials,
+    pagesComplete,
   } = useExperimentResults({
     url: publicBase ? `${publicBase}/results` : null,
     publicView: true,
@@ -51,15 +51,24 @@ export default function PublicDatasetPage() {
           isLoading={isLoading}
           hasError={hasFatalError}
           inlineAlert={
-            openError ? (
-              <ExperimentPageLoadAlert
-                resource="trials"
-                loaded={trialsLoaded}
-                total={totalTrials}
-                isRetrying={isLoadingTrials}
-                onRetry={() => void refreshResults()}
-              />
-            ) : null
+            <ExperimentResultsStatus
+              summary={experiment?.summary}
+              tasksLoaded={tasks.length}
+              trialsLoaded={trialsLoaded}
+              complete={pagesComplete}
+              isLoading={isLoadingTrials}
+              hasError={Boolean(openError)}
+              fatalError={
+                hasFatalError
+                  ? {
+                      title: "Failed to load dataset",
+                      description:
+                        "The dataset token may be invalid, or this experiment is not public.",
+                    }
+                  : undefined
+              }
+              onRetry={() => void refreshResults()}
+            />
           }
         />
       </main>
