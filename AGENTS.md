@@ -1783,6 +1783,25 @@ Required fields and where they come from:
 Migration: GKE tasks written before this contract (no mode, no zones) stop
 scheduling and fail with the requiredness error until updated.
 
+### Preview organization approval
+
+`backend/preview_org_approvals.py` owns copying production operator decisions
+into previews. `prepare_preview_database.sh` invokes it after migrations,
+seeding, and preserved-row restoration on every preparation, including reused
+branches, overlapping credential publication and awaiting both before deploy.
+It adds approved organization identities absent from the task sample,
+matches by Clerk ID (original database ID for legacy Personal organizations),
+revokes unknown/denied identities, and validates expected access in one
+transaction. Production's approval column must exist first. Abundant,
+SRE-World, and CyberMasters are required successful-access fixtures; their IDs
+are assertions about production approval, never an approval grant.
+
+Both paths in `preview_seed.py` must exclude `execution_enabled` from inserts
+and updates, allowing the column default on new rows. Budgets and credentials
+are not copied by approval sync. Keep the final sync outside migration/seed
+conditionals, and keep fleet maintenance out of per-PR CI. Revocation reaches
+existing previews only when their next preparation or operator sync runs.
+
 ### Preview Branch Preserved Rows
 
 Each preview branch database holds a schema named `preview_preserved` with one
