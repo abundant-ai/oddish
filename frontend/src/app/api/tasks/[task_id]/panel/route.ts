@@ -8,7 +8,7 @@ export async function GET(
   const { task_id } = await params;
   return proxyBackendJson({
     request,
-    path: `/tasks/${encodeURIComponent(task_id)}/detail${request.nextUrl.search}`,
+    path: `/tasks/${encodeURIComponent(task_id)}/panel${request.nextUrl.search}`,
     signal: request.signal,
     stream: true,
   });

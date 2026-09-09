@@ -45,7 +45,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { fetcher } from "@/lib/api";
+import { apiFetch as fetch, fetcher } from "@/lib/api";
 import { formatFileSize } from "@/lib/format";
 import {
   buildTaskFileSections,
@@ -60,25 +60,15 @@ import {
 import type {
   Task,
   TaskDetailResponse,
-  TaskVersionSummary,
+  TaskPanelResponse,
   Trial,
 } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
-import {
-  isBrowseTaskDetail,
-  taskDetailKey,
-  taskDetailValue,
-  type TaskDetailResource,
-} from "@/lib/task-detail-resource";
 import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
-  taskHasActiveAnalysis,
-  taskHasActiveTrials,
-  taskHasActiveVerdict,
   taskHasCancellableWork,
-  taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
 
 interface TaskFile {
@@ -214,8 +204,6 @@ interface TaskFilesPanelProps {
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
-  /** Detail already owned by the host page; avoids re-fetching the same key. */
-  taskDetail?: TaskDetailResource | null;
   /**
    * Open a trial from the overview's aggregated QA in the caller's own
    * context (drawer / panel). Return false when the trial isn't addressable
@@ -249,23 +237,6 @@ export type TaskPane = "overview" | "file";
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
-}
-
-/** The version whose static checks the pane shows: the pinned version when
- *  the pane is scoped to one (the experiment drawer), else current, else
- *  newest. /detail orders versions newest-first, so the fallback is
- *  versions[0]. */
-function pickChecksVersion(
-  detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null
-): TaskVersionSummary | null {
-  const versions = detail?.versions;
-  if (!versions || versions.length === 0) return null;
-  if (pinnedVersion != null) {
-    const pinned = versions.find((v) => v.version === pinnedVersion);
-    if (pinned) return pinned;
-  }
-  return versions.find((v) => v.is_current) ?? versions[0];
 }
 
 // Truncate files larger than 100KB initially
@@ -526,7 +497,6 @@ export function TaskFilesPanel({
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
-  taskDetail,
   onOpenTrial,
   overviewTrialsLoading,
   selectedLines,
@@ -537,76 +507,45 @@ export function TaskFilesPanel({
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
-  // The pre_trial_* fields live on the version summaries of /detail, not on
-  // the plain task endpoint. Task cards seed this key from their browse rows;
-  // SWR replaces that snapshot with the full response when this pane mounts.
   const checksKey =
-    effectiveChecksTaskId && showAnalysis !== false
-      ? taskDetailKey(effectiveChecksTaskId, baseUrl)
+    isOpen && effectiveChecksTaskId && showAnalysis
+      ? `${baseUrl}/tasks/${encodeURIComponent(effectiveChecksTaskId)}/panel${
+          taskVersion != null ? `?version=${taskVersion}` : ""
+        }`
       : null;
   const {
-    data: checksResource,
+    data: panel,
     error: checksLoadError,
     mutate: mutateChecks,
-  } = useSWR<TaskDetailResource>(checksKey, fetcher, {
-    fallbackData: taskDetail ?? undefined,
-    revalidateOnMount: taskDetail == null,
-    // Poll quickly while checks or task QA run. Keep a slower poll while the
-    // panel is open even after both are terminal: a CLI in-place overwrite can
-    // replace this version without changing its number, and the refreshed
-    // content hash is what invalidates the file listing and preview caches.
-    refreshInterval: (data) => {
-      const detail = taskDetailValue(data);
-      const checksLive =
-        pickChecksVersion(detail, taskVersion)?.pre_trial_status ===
-          "running" ||
-        pickChecksVersion(detail, taskVersion)?.pre_trial_status === "queued";
-      if (checksLive || taskHasActiveVerdict(detail?.task)) return 5000;
-      return isOpen ? 30000 : 0;
-    },
+  } = useSWR<TaskPanelResponse>(checksKey, fetcher, {
+    refreshInterval: (data) =>
+      data?.qa_active || isActivePipelineStatus(data?.version?.pre_trial_status)
+        ? 5000
+        : isOpen
+          ? 30000
+          : 0,
   });
-  const checksDetail = taskDetailValue(checksResource);
   const task = cancelExperimentId
     ? taskSnapshot
-    : (checksDetail?.task ?? taskSnapshot);
-  const actionsReady =
-    checksResource !== undefined && !isBrowseTaskDetail(checksResource);
-  // Scoped panes (the experiment drawer) pin the version whose files are on
-  // screen; the checks must describe that same source.
-  const checksVersion = pickChecksVersion(checksDetail, taskVersion);
-  // The pinned version wins outright — falling back to the /detail-resolved
-  // version while it loads would briefly widen the trial aggregation to every
-  // version. Without a pin, undefined keeps the aggregation waiting until the
-  // version resolves; only a loaded task with no versions is genuinely
-  // unscoped.
+    : (panel?.task ?? taskSnapshot);
+  const actionsReady = panel !== undefined && !overviewTrialsLoading;
+  const checksVersion = panel?.version;
   const overviewVersion =
     taskVersion !== undefined
       ? taskVersion
-      : checksVersion
-        ? checksVersion.version
-        : checksDetail !== undefined
-          ? null
-          : undefined;
-  const overviewAvailable =
-    effectiveChecksTaskId !== null && showAnalysis !== false;
+      : panel
+        ? (checksVersion?.version ?? null)
+        : undefined;
+  const overviewAvailable = effectiveChecksTaskId !== null && showAnalysis;
   const taskPaneExists = overviewAvailable;
-  // Until /detail answers, the checks state is unknown, not "unaudited":
-  // an enabled Run button on the misread queues an audit that wipes findings.
-  // Never on public shares: `checksKey` is null there, so /detail is not
-  // fetched and this would otherwise latch on "loading" forever.
-  const checksLoading =
-    overviewAvailable &&
-    (isBrowseTaskDetail(checksResource) ||
-      (checksDetail === undefined && !checksLoadError));
-  // A failed revalidation with data already in hand is not "unavailable":
-  // SWR keeps the stale data, and hiding live findings behind an error flash
-  // on one bad poll is worse than showing them.
+  // Missing metadata is unknown; never enable an audit rerun while it loads.
+  const checksLoading = overviewAvailable && !panel && !checksLoadError;
   const checksLoadFailure =
-    checksLoadError && checksDetail === undefined
+    checksLoadError && !panel
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const taskQaActive = taskHasActiveVerdict(checksDetail?.task);
+  const taskQaActive = panel?.qa_active ?? false;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a
   // JSON envelope ({path, content, key}, or {url} when presigning). Read that
@@ -651,20 +590,10 @@ export function TaskFilesPanel({
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
   const listingGenerationRef = useRef(0);
   const activeDirectoryRequestsRef = useRef<Set<string>>(new Set());
-  const verdictTaskKey =
-    isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
-  const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
-    refreshInterval: (data) => {
-      if (!data) return 10000;
-      const done = data.status === "completed" || data.status === "failed";
-      return done ? 0 : 15000;
-    },
-    revalidateOnFocus: false,
-  });
   const currentVersion =
     taskVersion !== undefined
       ? taskVersion
-      : ((verdictTask ?? task)?.current_version ?? null);
+      : (panel?.task.current_version ?? task?.current_version ?? null);
   const currentContentHash = checksVersion?.content_hash ?? null;
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
   const fileListIdentity = JSON.stringify([
@@ -887,7 +816,7 @@ export function TaskFilesPanel({
   );
   const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
 
-  const verdictSource = verdictTask ?? task;
+  const verdictSource = panel?.task ?? task;
   // Task drawers request one directory page at a time. File-only and trial
   // panes retain the recursive/streaming contract because those callers may
   // depend on eager bodies and automatic first-file selection.
@@ -946,10 +875,19 @@ export function TaskFilesPanel({
     );
   }, [task]);
 
-  const canRetryTask = actionsReady && allowRetry && retryableTrials.length > 0;
+  const canRetryTask =
+    actionsReady &&
+    allowRetry &&
+    (cancelExperimentId ? retryableTrials.length > 0 : panel?.can_retry);
   const canCancelTask =
-    actionsReady && allowRetry && taskHasCancellableWork(task);
-  const cancelActionLabel = getCancelActionLabel(task);
+    actionsReady &&
+    allowRetry &&
+    (cancelExperimentId ? taskHasCancellableWork(task) : panel?.cancel != null);
+  const cancelActionLabel = cancelExperimentId
+    ? getCancelActionLabel(task)
+    : panel?.active_trials
+      ? `Cancel (${panel.active_trials})`
+      : "Cancel QA";
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
@@ -965,11 +903,15 @@ export function TaskFilesPanel({
   const canRunQA =
     actionsReady &&
     allowRetry &&
-    Boolean(task) &&
-    allTrialsTerminal &&
-    !hasAnalysisInFlight &&
-    !verdictInFlight;
+    (cancelExperimentId
+      ? Boolean(task) &&
+        allTrialsTerminal &&
+        !hasAnalysisInFlight &&
+        !verdictInFlight &&
+        !panel?.qa_active
+      : panel?.can_run_qa);
   const qaActionLabel =
+    panel?.has_analysis ||
     verdictSource?.verdict_status ||
     verdictSource?.verdict ||
     (task?.trials ?? []).some(
@@ -994,8 +936,23 @@ export function TaskFilesPanel({
     setRerunError(null);
 
     try {
+      // Resolve the complete task's retry targets only when requested. An
+      // experiment retains its own trial set, including gathered runs.
+      const targets = cancelExperimentId
+        ? retryableTrials
+        : (
+            (
+              await fetcher<TaskDetailResponse>(
+                `${baseUrl}/tasks/${task!.id}/detail`
+              )
+            ).task.trials ?? []
+          ).filter(
+            (trial) =>
+              isAgentTrial(trial) &&
+              (trial.status === "failed" || trial.status === "success")
+          );
       const results = await Promise.allSettled(
-        retryableTrials.map(async (trial: Trial) => {
+        targets.map(async (trial: Trial) => {
           const res = await fetch(`${baseUrl}/trials/${trial.id}/retry`, {
             method: "POST",
           });
@@ -1014,6 +971,10 @@ export function TaskFilesPanel({
         setRerunError(null);
       }
       onRetryComplete?.(task?.id ? [task.id] : taskId ? [taskId] : undefined);
+    } catch (err) {
+      setRerunError(
+        err instanceof Error ? err.message : "Failed to load retry targets"
+      );
     } finally {
       setIsRerunning(false);
     }
@@ -1031,18 +992,7 @@ export function TaskFilesPanel({
         task_ids: id ? [id] : [],
         ...(cancelExperimentId ? { experiment_id: cancelExperimentId } : {}),
       });
-      // No active trials but analysis in flight (QA or the source audit --
-      // qa/cancel covers both kinds) -> cancel just the task QA job.
-      // Experiment-scoped cancel leaves shared QA alone unless the caller is
-      // on the dedicated cancel-QA path.
-      if (
-        id &&
-        !cancelExperimentId &&
-        !taskHasActiveTrials(task) &&
-        (taskHasActiveVerdict(task) ||
-          taskHasActiveAnalysis(task) ||
-          taskHasLiveAnalysisTrial(task))
-      ) {
+      if (id && !cancelExperimentId && panel?.cancel === "qa") {
         path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
       }
@@ -1122,7 +1072,7 @@ export function TaskFilesPanel({
     setChecksRerunning(false);
   }, [effectiveChecksTaskId]);
   const handleRerunChecks = useCallback(async () => {
-    if (!effectiveChecksTaskId || checksRerunning) return;
+    if (!effectiveChecksTaskId || checksRerunning || !panel) return;
     setChecksRerunning(true);
     setChecksQueueError(null);
     try {
@@ -1149,6 +1099,7 @@ export function TaskFilesPanel({
   }, [
     baseUrl,
     effectiveChecksTaskId,
+    panel,
     checksRerunning,
     mutateChecks,
     qaEnvironment,
@@ -1818,24 +1769,12 @@ export function TaskFilesPanel({
     };
   }, []);
 
-  const { rewardSuccess, rewardTotal, averageRewardPct } = useMemo(() => {
-    const trials = task?.trials ?? [];
-    const versionTrials =
-      currentVersion != null
-        ? trials.filter((t) => t.task_version === currentVersion)
-        : trials;
-    const rewardSum = versionTrials.reduce(
-      (sum, trial) => sum + (trial.reward ?? 0),
-      0
-    );
-    const total = versionTrials.filter((t) => t.reward != null).length;
-    return {
-      rewardSuccess: total > 0 ? rewardSum : null,
-      rewardTotal: total > 0 ? total : null,
-      averageRewardPct:
-        total > 0 ? Math.round((rewardSum / total) * 100) : null,
-    };
-  }, [task?.trials, currentVersion]);
+  const rewardSuccess = task?.reward_sum ?? null;
+  const rewardTotal = task?.reward_total ?? null;
+  const averageRewardPct =
+    rewardTotal && rewardSuccess != null
+      ? Math.round((100 * rewardSuccess) / rewardTotal)
+      : null;
 
   if (!taskId && !filesUrl) {
     return null;
@@ -2139,18 +2078,16 @@ export function TaskFilesPanel({
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
                   version={overviewVersion}
-                  // The host's rows are the authoritative set: an experiment
-                  // drawer aggregates only its own trials. A task prop with
-                  // no trials yet still scopes (empty + overviewTrialsLoading
-                  // renders as loading).
-                  scopeTrials={task ? (task.trials ?? []) : null}
+                  // Only experiments distinguish their runs from other runs
+                  // of this task. The task page's 20-row preview is not a scope.
+                  scopeTrials={
+                    cancelExperimentId ? (taskSnapshot?.trials ?? []) : null
+                  }
                   scopeLoading={overviewTrialsLoading}
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.
-                  verdictTask={
-                    checksDetail?.task ?? verdictTask ?? task ?? null
-                  }
+                  verdictTask={verdictSource ?? null}
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
