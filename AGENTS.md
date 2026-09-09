@@ -2064,3 +2064,27 @@ never replay a partially streamed request or log provider keys/prompts.
 
 See `docs/qa-model-routing.md` for configuration, accounting conservatism,
 protocol scope, operator metrics, tests, and staging rollout prerequisites.
+
+### Mandatory task-defect delivery policy
+
+New source and execution findings use only `must_fix`; the shared
+`analysis_check_payload`/`check_analysis_result` contract enforces this at
+submission, verification, and import. `ActionTier` retains historical enum
+values for reading existing reports. Severity does not establish execution
+causation: unrelated findings leave `GOOD_FAILURE` unchanged.
+
+`oddish.core.task_findings` owns collection and retention. All recorded tiers
+on a current task version require individual delivery acknowledgment, including
+findings from superseded/deleted executions. Before clearing or replacing
+review state, call `preserve_task_findings` under the existing mutation
+transaction; it retains original evidence in `task_versions.reported_findings`.
+Read paths never write this column or enqueue analysis. Newly published verdicts
+reject established task defects; historical stored verdicts are not rewritten.
+
+The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
+and exception requests require the reviewed `task_version_id` and the actor
+from authentication. Delivery manual-check uniqueness includes version, and
+history exposes each retained version decision. New versions inherit neither
+findings nor decisions. Finalized delivery snapshots are never recomputed.
+Apply `task_defects_001` before deploying this code. See
+`docs/delivery-design.md` for compatibility and forward-only migration policy.

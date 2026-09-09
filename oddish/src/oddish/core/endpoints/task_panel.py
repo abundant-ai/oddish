@@ -22,7 +22,7 @@ async def get_task_panel_core(
           t.verdict_error, t.run_analysis, t.current_version_id, t.created_at, t.updated_at,
           dv.version AS current_version, v.id AS version_id, v.version,
           v.content_hash, v.created_at AS version_created_at,
-          v.pre_trial, lower(v.pre_trial_status::text) AS pre_trial_status,
+          v.pre_trial, v.reported_findings, lower(v.pre_trial_status::text) AS pre_trial_status,
           v.pre_trial_error
         FROM tasks t
         LEFT JOIN task_versions dv ON dv.id = t.current_version_id
@@ -126,6 +126,7 @@ async def get_task_panel_core(
             created_at=row["version_created_at"],
             is_current=row["version_id"] == row["current_version_id"],
             pre_trial_findings=(row["pre_trial"] or {}).get("items") or [],
+            retained_findings=[report["finding"] for report in row["reported_findings"] or []],
             pre_trial_status=row["pre_trial_status"],
             pre_trial_error=row["pre_trial_error"],
         )

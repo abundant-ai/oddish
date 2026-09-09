@@ -465,8 +465,9 @@ function QAHistoryVersionRow({
             rollouts: {version.rollout_count} ({version.rollout_agents} agents)
           </span>
           <span>
-            defects: {version.must_fix} must-fix, {version.pre_trial_should_fix}{" "}
-            should-fix
+            defects: {version.must_fix} requiring resolution or acknowledgment
+            {version.pre_trial_should_fix > 0 &&
+              ` (${version.pre_trial_should_fix} recorded should_fix in source audit)`}
           </span>
           <span>
             QA runs:{" "}
@@ -556,10 +557,26 @@ function QAHistoryVersionRow({
               ))}
             </ul>
           )}
+          {(version.decisions?.length ?? 0) > 0 && (
+            <ul className="space-y-1">
+              {version.decisions?.map((decision) => (
+                <li key={decision.id}>
+                  {decision.check_key} · by{" "}
+                  {decision.checked_by_user_id ?? "unknown person"} for v
+                  {version.version} ·{" "}
+                  {new Date(decision.checked_at).toLocaleString()}
+                  {decision.note && (
+                    <p className="text-muted-foreground">{decision.note}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
           {!version.pre_trial_error &&
             !version.qa_runs.some((run) => run.error) &&
             verdict == null &&
-            version.findings.length === 0 && (
+            version.findings.length === 0 &&
+            !version.decisions?.length && (
               <p className="text-muted-foreground">
                 No QA details recorded for this version yet.
               </p>
@@ -879,14 +896,44 @@ function TaskRow({
                       <span className="text-muted-foreground font-mono text-xs">
                         {defect.id}
                       </span>
-                      <span className="min-w-0 flex-1 truncate">
-                        {defect.title}
-                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p>{defect.title}</p>
+                        {defect.recorded_tier && (
+                          <p className="text-muted-foreground text-xs">
+                            Recorded {defect.recorded_tier} ·{" "}
+                            {defect.source === "pre_trial"
+                              ? "source audit"
+                              : "execution review"}
+                            {defect.reporting_trial_id &&
+                              ` · execution ${defect.reporting_trial_id}`}
+                          </p>
+                        )}
+                        {defect.finding && (
+                          <details className="mt-1 text-xs">
+                            <summary className="cursor-pointer">
+                              Review evidence
+                            </summary>
+                            <p className="font-mono">
+                              {defect.finding.file}:{defect.finding.line_start}–
+                              {defect.finding.line_end}
+                            </p>
+                            <p>{defect.finding.detail}</p>
+                            <p>{defect.finding.recommendation}</p>
+                          </details>
+                        )}
+                        {!frozen && (
+                          <p className="text-muted-foreground text-xs">
+                            Requires resolution or acknowledgment for v
+                            {row.version}.
+                          </p>
+                        )}
+                      </div>
                       {defect.acknowledged ? (
                         <span className="text-muted-foreground text-xs">
                           acknowledged by{" "}
                           {defect.acknowledged_by_name ??
-                            defect.acknowledged_by_user_id}
+                            defect.acknowledged_by_user_id}{" "}
+                          for v{row.version}; finding retained
                         </span>
                       ) : (
                         <Button
@@ -1039,7 +1086,10 @@ export function DeliveryBoardClient({
   const putCheck = (
     checkKey: string,
     deliveryTaskId: string | null,
-    checked: boolean
+    checked: boolean,
+    versionId = data?.tasks.find(
+      (row) => row.delivery_task_id === deliveryTaskId
+    )?.version_id
   ) =>
     postJson(
       `/api/deliveries/${encodeURIComponent(deliveryId)}/checks`,
@@ -1047,6 +1097,7 @@ export function DeliveryBoardClient({
       {
         check_key: checkKey,
         delivery_task_id: deliveryTaskId,
+        task_version_id: versionId,
         checked,
       }
     );
@@ -1076,12 +1127,22 @@ export function DeliveryBoardClient({
     setSignoffConfirm(null);
     void run(async () => {
       for (const check of checks) {
-        await putCheck(`waive:${check.key}`, row.delivery_task_id, true);
+        await putCheck(
+          `waive:${check.key}`,
+          row.delivery_task_id,
+          true,
+          row.version_id
+        );
       }
       for (const defect of defects) {
-        await putCheck(`ack:${defect.id}`, row.delivery_task_id, true);
+        await putCheck(
+          `ack:${defect.id}`,
+          row.delivery_task_id,
+          true,
+          row.version_id
+        );
       }
-      await putCheck("signoff", row.delivery_task_id, true);
+      await putCheck("signoff", row.delivery_task_id, true, row.version_id);
     });
   };
 
@@ -1288,7 +1349,7 @@ export function DeliveryBoardClient({
   const signOffSelected = () =>
     void run(async () => {
       for (const row of selectedClean) {
-        await putCheck("signoff", row.delivery_task_id, true);
+        await putCheck("signoff", row.delivery_task_id, true, row.version_id);
       }
       setSelected(new Set());
     });

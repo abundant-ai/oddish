@@ -1107,3 +1107,10 @@ drawer's summary. `results.summary` must carry all six counts (`tests`,
 a report missing any of them is dropped whole. Missing, malformed, or
 oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
+
+Delivery sign-off requires resolving or individually acknowledging every
+reported defect, including historical `should_fix` and `optional` findings.
+`oddish delivery check`, `ack`, and `signoff` send the task version shown by the
+board; a version change requires reviewing the board again. `oddish delivery
+history` retains original severity labels and shows the current shipment
+requirement. An acknowledgment permits an exception without deleting a finding.

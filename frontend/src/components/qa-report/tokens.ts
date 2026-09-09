@@ -1,9 +1,4 @@
-import {
-  CircleCheck,
-  ShieldAlert,
-  TriangleAlert,
-  Unplug,
-} from "lucide-react";
+import { CircleCheck, ShieldAlert, TriangleAlert, Unplug } from "lucide-react";
 
 // Colour carries good/bad, not success/failure: green = valid signal,
 // amber = task needs fixing, red = false positive, orange = infrastructure.
@@ -61,21 +56,21 @@ export const TIER_META: Record<string, { label: string; labelEffect: string }> =
     must_fix: {
       label: "MUST FIX",
       labelEffect:
-        "Blocks GOOD FAILURE — a failed run with a must_fix item is BAD FAILURE.",
+        "Requires a fix or an explicit delivery acknowledgment. Changes the execution label only if it affected that execution’s outcome.",
     },
     should_fix: {
-      label: "SHOULD FIX",
-      labelEffect: "Does not change the label.",
+      label: "RECORDED SHOULD FIX",
+      labelEffect:
+        "Historical severity retained. Requires a fix or individual acknowledgment in active deliveries.",
     },
     optional: {
-      label: "OPTIONAL",
-      labelEffect: "Does not change the label.",
+      label: "RECORDED OPTIONAL",
+      labelEffect:
+        "Historical severity retained. Requires a fix or individual acknowledgment in active deliveries.",
     },
   };
 
-// Severity is deliberately not hue-coded: only must_fix gets colour, because
-// only must_fix can change the label, so a severity badge can never be
-// mistaken for a verdict.
+// Preserve the recorded severity; the explanatory text states shipment policy.
 export const TIER_BADGE: Record<string, string> = {
   must_fix: "bg-destructive text-destructive-foreground",
   should_fix: "border-foreground/25 bg-foreground/10 text-foreground border",

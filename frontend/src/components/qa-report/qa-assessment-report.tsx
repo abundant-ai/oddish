@@ -40,7 +40,7 @@ export function QaAssessmentReport({
   const token = VERDICT_TOKENS[classification] ?? FALLBACK_TOKEN;
   const Icon = token.icon;
   const items = actionItems ?? [];
-  const mustFix = items.filter((i) => i.tier === "must_fix").length;
+  const mustFix = items.length;
 
   return (
     <article
@@ -75,7 +75,7 @@ export function QaAssessmentReport({
         <div className="text-muted-foreground ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px]">
           {mustFix > 0 ? (
             <span className="bg-destructive/15 text-destructive rounded-md px-1.5 py-0.5 font-semibold">
-              {mustFix} must_fix
+              {mustFix} task defects
             </span>
           ) : null}
           {duration ? <span>{duration}</span> : null}

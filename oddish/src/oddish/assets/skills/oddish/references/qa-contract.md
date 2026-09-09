@@ -153,3 +153,10 @@ experiment. The hosted route is `POST /experiments/{experiment_id}/feedback`
 (a `tasks`-scope key suffices; 404 when the named trial is not in that
 experiment). Votes never alter the stored verdict or classifications — they
 are review signal only, and there is no CLI command for them.
+
+All new task defects are `must_fix`, backed by actual task evidence. Do not
+report suggestions, speculation, or review execution failures as findings.
+Active deliveries require an individual acknowledgment for every historical
+reported defect as well. Acknowledgments and sign-off are bound to the reviewed
+version; unchanged-byte re-analysis cannot erase a defect. A task defect changes
+an execution classification only if it affected that execution's outcome.
