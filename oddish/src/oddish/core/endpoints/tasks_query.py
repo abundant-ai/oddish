@@ -2303,6 +2303,23 @@ async def browse_experiment_options_core(
     )
 
 
+async def _load_task_status_trials(
+    session: AsyncSession, task: TaskModel
+) -> list[TrialModel]:
+    """The trials a task status view shows: live, non-QA, current version."""
+    query = select(TrialModel).where(
+        TrialModel.task_id == task.id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        or_(TrialModel.kind.is_(None), TrialModel.kind != "qa_eval"),
+    )
+    if task.current_version_id is not None:
+        query = query.where(TrialModel.task_version_id == task.current_version_id)
+    result = await session.execute(
+        query.order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def get_task_status_core(
     session: AsyncSession,
     *,
@@ -2312,10 +2329,11 @@ async def get_task_status_core(
     org_id: str | None = None,
 ) -> TaskStatusResponse:
     """Get task status with optional org scoping."""
-    query = select(TaskModel).options(selectinload(TaskModel.experiments))
-    if include_trials:
-        query = query.options(selectinload(TaskModel.trials))
-    query = query.where(TaskModel.id == task_id)
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -2326,7 +2344,13 @@ async def get_task_status_core(
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
-        set_committed_value(task, "trials", get_task_status_trials(task))
+        # Same rows ``get_task_status_trials`` keeps, selected in SQL: a task
+        # that has been re-uploaded or retried many times otherwise ships every
+        # version's trials (each with its analysis payload) only to drop most
+        # of them in Python. Still one statement.
+        set_committed_value(
+            task, "trials", await _load_task_status_trials(session, task)
+        )
         jobs_by_subject = await fetch_visible_worker_jobs(
             session,
             task_ids=[task.id],

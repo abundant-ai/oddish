@@ -76,8 +76,8 @@ frontend/                       # Next.js App Router dashboard
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
-│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, experiments,
-│   │   │                       # qa, skills, documents, usage, settings, admin
+│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, deliveries,
+│   │   │                       # models, qa, skills, documents, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -564,19 +564,45 @@ alert settings, model endpoint smoke checks, and the global cost-exclusion
 lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
-that capability through `GET /admin/operator-access` and hides those controls
-for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+admin capabilities through `GET /admin/operator-access` and model-check access
+through `GET /models/access`, then hides those controls for other orgs.
+`GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
-`POST /admin/model-endpoints` sends one short `litellm_completion` request from
-the hosted API container using its platform provider credentials. It does not
-claim to exercise an agent's Responses, Messages, CLI, or sandbox path.
-Expected provider and configuration failures return a structured 200 response;
-unexpected integration/programming errors remain 500s. The request creates no
-task, trial, worker job, or persisted history. The operator-only frontend
-Diagnostics tab derives its model rows from `GET /admin/queue-health` capacity
-keys, runs "Test all" in batches of at most three, and keeps results only in
-browser state.
+`GET /models` lets any authenticated member discover whether their active org is
+the operator org and, when it is, returns known models for configured provider
+credentials, Azure deployment names, explicit `ODDISH_MODEL_CATALOG` entries,
+model queue settings, and models previously used by that organization.
+`GET /models/access` returns only the operator-access boolean without loading the catalog.
+`POST /models/check` requires an interactive Clerk user in the operator org and sends one
+short `litellm_completion` request from the hosted API container using its
+platform provider credentials. It does not claim to exercise an agent's
+Responses, Messages, CLI, or sandbox path. Expected provider and configuration
+failures return a structured 200 response; unexpected integration/programming
+errors remain 500s. The request creates no task, trial, worker job, or persisted
+history. Checks ask for "Hello from Oddish." with a 1,024-token output budget
+(shared with reasoning on reasoning models), and pass only with nonblank text
+in the completion message; empty text returns a provider failure. The operator-only
+catalog reads the installed LiteLLM package's bundled chat-model registry without
+provider discovery requests. It reports `source` (`provider_catalog`, `deployment`,
+or `previously_used`) and `credential_configured` (presence only; null for runtime
+SDK authentication). No credential values are returned. All entries are visible
+by default regardless of scheduling limits; names may be retired or inaccessible.
+Public OpenAI and explicit Azure deployments are independently testable regardless
+of the default job route. xAI SWEM uses a separate `xai-swem` route and
+`XAI_SWEM_API_KEY`; checks and cached results are keyed by model and route.
+Catalog model spelling is preserved for case-sensitive provider/deployment IDs.
+`ODDISH_MODEL_CATALOG` is a JSON list of extra/private provider-prefixed model IDs;
+its prefixes select provider connections independently of the default job route
+(including `xai-swem/<model>`). It does not change scheduling limits. Catalog
+coverage tracks the pinned LiteLLM release and does not claim to enumerate account
+entitlements. Fixed HTTP failure explanations distinguish missing
+models/access from credentials, limits, and server errors without returning
+provider exception text. The page searches and filters the catalog, sorts columns, and tests
+only the matching testable models captured at click time in batches of at most
+three. It keeps results only in browser state. Rows reopen stored results
+without another provider request; response text appears above expandable JSON
+details rendered by the shared CodeBlock component.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,
@@ -657,8 +683,19 @@ selected-version trial preview remains capped at 20 rows. The handler uses at
 most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
-remains the compatibility bundle for CLI and drawer consumers during the soak;
+remains the compatibility bundle for CLI and explicit full-history operations;
 do not point the task route back at it.
+
+`GET /tasks/{task_id}/panel?version=N` supplies task-panel audit metadata,
+selected-version content hash, verdict, and action availability in two SQL
+statements. Omitted version selects the task's default; missing or deleted
+explicit versions return 404. Hosted readers use the verified organization ID.
+The file panel uses this resource instead of polling `/detail` and basic task
+state independently. Files load independently, overview trial evidence loads
+on tab intent, and full retry targets load only on click; experiment-scoped
+retries retain their host trial set. Unknown audit metadata keeps reruns disabled.
+The normal 30-second panel poll detects in-place file revisions; active QA/audits
+poll every five seconds.
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
@@ -747,6 +784,39 @@ trials are the ones the grid pivots to and stay visible.
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
+
+### Task-file publication and read latency
+
+Task-file publication writes complete, immutable directories under
+`tasks/<id>/v<N>-expanded/<token>/`, then atomically sets the existing
+`task_versions.expanded_manifest_key` after checking the source hash and archive
+key under the version-row lock. Publication does not delete or copy the previous
+directory. Retain published directories for in-flight readers and presigned URLs;
+also retain a candidate when commit acknowledgement is uncertain. Failed uploads
+and positively identified stale candidates can be cleaned up separately. There is
+no new schema migration or automatic backfill in this change.
+
+`resolve_task_file_source` returns a `TaskFileSource` snapshot containing version,
+archive prefix, published manifest key, and content hash from one authorized query.
+All hosted, standalone, and public file routes pass that snapshot through. Only
+database-selected immutable directories bypass legacy manifest validation. Existing
+`v<N>-files/` layouts retain their checks; missing individual members still fall
+back to the archive. Listing responses (including the first NDJSON chunk) and file
+responses carry `source_hash` for the contents selected by the database.
+
+File-list request state records the requested and received content fingerprints.
+Late task details do not abort a pending listing just to add a previously unknown
+fingerprint; a differing fingerprint still invalidates the listing. The response
+fingerprint resolves the race whether details or the listing finish first. URL
+selection and line anchors retain their existing ownership.
+
+Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
+`backend.request.phases` includes storage operation counts, downloaded/archive bytes,
+archive-cache hit/miss, file source, and known file bytes. SDK failures log only
+selected provider diagnostics, never request headers or file contents. Existing
+identity provisioning suppresses automatic relationship loads in its own queries;
+organization isolation, role refresh, and new-user provisioning remain unchanged.
+See `docs/task-file-latency.md` for the staged verification checklist.
 
 ### Task Browser Summary
 
@@ -1095,7 +1165,18 @@ Storage defaults:
   in-place replacements use immutable
   `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
   by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
+- expanded per-file trees: the expand worker mirrors a bundle to
+  `tasks/<task_id>/v<N>-files/` plus a `.oddish-manifest.json` sentinel and
+  then stamps `task_versions.expanded_manifest_key` under the version row's
+  lock; an in-place overwrite clears the stamp in the transaction that switches
+  `task_s3_key`. `resolve_task_file_source` returns it as `expanded`.
+  `False` skips the extracted tree; `True` and `None` still validate the
+  manifest against the selected archive because an overwrite can replace
+  the tree after the database read. Missing members fall back to the bundle.
+- Recursive trial-file listings remain complete for CLI downloads; only
+  non-recursive listings use `limit` and continuation cursors.
 - Harbor job outputs: `/tmp/harbor-jobs`
+
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 
 EC2 canary procedure:
@@ -1182,7 +1263,49 @@ set** in each caller. The full builder has no `load_only`, so it will not catch
 an omission. Builder unit tests cannot catch it either because in-memory models
 have every attribute set; the bug lives in the query options, not the builder.
 
+### Read sessions, the write guard, and statement budgets
+
+Every statement is a network round trip to a pooler that sits a network hop
+away from the API containers (measured 2026-09: 4 ms to 220 ms per trip
+depending on where Modal placed the container), so the number of statements a
+request issues is its latency budget. Three rules keep that number down:
+
+- **GET handlers use `get_read_session()`** (`oddish/db/connection.py`). It
+  checks the connection out in driver autocommit, so a read pays no `BEGIN`,
+  `COMMIT`, or reset `ROLLBACK`. `get_session()` remains the write path. A
+  read session **refuses to flush**: any pending ORM change raises
+  `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
+  write fails in tests instead of autocommitting statement by statement. The
+  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
+  a default policy) stays on `get_session()`.
+- **Reads that tolerate a not-yet-migrated table go through
+  `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
+  `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
+  `SAVEPOINT` under autocommit), returns `None` only for a missing table, and
+  re-raises everything else. Do not hand-roll `begin_nested()` + `ProgrammingError`
+  for this case again; the three former copies (cost exclusions, quota bumps,
+  quota limits) all use the helper.
+- **`oddish/tests/test_statement_budgets.py` pins statements per core** for
+  the task, trial, detail, browse and experiment-page reads. Raise a budget only
+  with a reason in the diff.
+
+Pooled SQLAlchemy connections are idle in driver `AUTOCOMMIT` mode so the
+asyncpg connection health check sends only its test command, without a
+`BEGIN`/`ROLLBACK` pair. The exported engine is a `READ COMMITTED` view of
+that same pool: `engine.begin()`, ordinary sessions, and writes retain their
+transactions. Read sessions override the view for their checkout. The pool
+size is unchanged; NullPool workers retain their existing configuration.
+
+Two per-process caches take the remaining fixed costs off the request path:
+`load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
+per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
+`invalidate_cost_exclusions()` after every edit), and the backend auth cache
+keeps Clerk identities for `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900)
+while taking role and email from the freshly verified token on every hit. Both
+use `oddish.cache.TTLCache`; new per-process caches should too.
+
 ### Dashboard pipeline stats use reserved queue keys
+
 
 `get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
 bucket trial counts by each trial's own `queue_key`, and the
@@ -1411,6 +1534,15 @@ The file LISTING and file CONTENT endpoints both root at
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
 
+The normal ATIF reader downloads the attempt manifest and selected
+`agent/trajectory.json` without preliminary existence checks: two GETs on
+a cache miss. Only storage missing-object errors activate missing-file
+behavior; permission and service errors propagate. Finished trajectories
+remain cached for 120 seconds in each process, keyed by trial, attempt, and
+artifact prefix. Request traces expose `storage.trajectory_cache.hit`,
+`storage_client_init.duration_ms`, and `trajectory_cache_wait.duration_ms`
+alongside storage request counts and download timings.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Retry scheduling must commit the worker job and trial mirror in one transaction.
@@ -1538,6 +1670,38 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+The shared Modal image must copy `org_access` through `add_local_python_source`
+in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
+installs dependencies without installing the backend project itself.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. Cleanup builds candidate task IDs from active trials and task/trial jobs
+before looking up tasks; do not restore per-task correlated job-history scans.
+Worker-job diagnostics compare the native status enum so PostgreSQL can use
+status indexes. The GitHub identity backfill preserves users on Clerk HTTP
+errors. An entirely failed batch of at least 10 users backs off for 15 minutes
+in the warm reconciler process (a restart resets the cooldown); failed/deferred
+lookups remain visible in the reconciler heartbeat rather than reporting health.
+Cleanup heartbeat errors include the exception class, including bare timeouts.
+See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash
@@ -1546,7 +1710,10 @@ cp backend/.env.example backend/.env
 
 Minimum required: `ODDISH_DATABASE_URL` and `CLERK_DOMAIN`. Add
 `CLERK_SECRET_KEY` for Clerk-backed org management and `CLERK_WEBHOOK_SECRET`
-for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
+for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`
+(plus `CORS_ALLOWED_ORIGIN_REGEX` for Vercel preview origins when the dashboard
+calls the API directly),
+
 `CLERK_ISSUER`, `CLERK_JWT_AUDIENCE`, the `ODDISH_S3_*` set, provider keys
 (`AZURE_OPENAI_*`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, …),
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
@@ -1562,7 +1729,14 @@ is separate from the scheduled expense-notification webhook.
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
-poolers such as Supavisor / PgBouncer.
+poolers such as Supavisor / PgBouncer. Two request-path caches are tunable:
+`ODDISH_AUTH_IDENTITY_TTL_SECONDS` (Clerk identity entries in the auth cache,
+default 900; API-key entries stay at 60 s) and
+`ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables). Every span
+also carries `oddish.modal_region` / `oddish.modal_cloud` from the container's
+`MODAL_REGION` / `MODAL_CLOUD_PROVIDER`, so per-region database round trips
+are a Logfire query rather than a probe.
+
 
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
@@ -1577,6 +1751,19 @@ Preview deployment parses the unique `-api.modal.run` URL from Modal's output
 with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 `-api-qa-model.modal.run` URL is a separate endpoint and must never become the
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
+
+PR preview deploys and manual preview resets set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=2`, limiting each worker function to two
+concurrent Modal containers. `ODDISH_MODAL_MAX_WORKERS_PER_POLL=300` remains
+the dispatcher launch limit; it does not raise the container cap. Previews also set
+`ODDISH_DEFAULT_MODEL_CONCURRENCY=300` and
+`ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
+limits do not prevent one model from filling that pool. Saved admin overrides
+still take precedence. Worker/container limits and model queue limits are
+baked into the image and appended as the final runtime secret so older provider
+secrets cannot replace the deployment values during container import. These
+workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+apply independently.
 
 ### GKE Placement Contract
 
@@ -1702,8 +1889,16 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, `/api/public/*`, `/sign-in`, `/sign-up`, `/api/client-traces`,
-and — deliberately, for link-unfurl bots — `/experiments/*`; everything else
-is Clerk-protected.
+and — deliberately, for link-unfurl bots — `/experiments/*` plus
+`/orgs/{orgSlug}/experiments/*`; everything else is Clerk-protected.
+Authenticated app pages live under `/orgs/{orgSlug}/…` (for example
+`/orgs/acme/tasks`). Unprefixed `/tasks` and the short-lived
+`/{orgSlug}/tasks` shape redirect when signed in. `/share/*` and `/datasets/*`
+stay unprefixed. Selecting another organization opens its dashboard with no
+query string or fragment, so resource IDs from the previous organization are
+not carried into the destination workspace. `OrgSlugSync` uses the same
+dashboard destination when the active organization changes before navigation
+finishes, rather than restoring the previous resource URL.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value
@@ -1711,6 +1906,42 @@ onto the Next response on success, upstream error, and streamed passthrough
 responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
+
+The shared authenticated proxy adds `next_auth`, `next_token`, `next_upstream`,
+`next_json` (buffered responses only), and `next_total` durations alongside
+backend timing, including errors. Task open/detail/panel use its streaming
+option. Streaming totals end at response construction, not the last body byte.
+
+**Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
+browser call the backend itself instead of going through those `/api/*`
+handlers: one fewer hop (Vercel edge, Vercel function, then Modal) and one
+trace instead of two. `frontend/src/lib/api.ts` owns the mapping: every
+dashboard request keeps its `/api/...` string as its SWR key and as the URL
+it would send to the proxy; `resolveApiUrl` turns that into
+`${NEXT_PUBLIC_API_URL}/...` (identity for every proxy except the five
+`settings/*` and `admin/users/{id}/costs` rewrites listed there), `apiFetch`
+attaches the token minted by the Clerk client with
+`NEXT_PUBLIC_CLERK_JWT_TEMPLATE` (the same template the proxies use
+server-side), and `/api/public/*` reads go without a token. Experiment IDs lose
+the extra URL-encoding layer normally consumed by Next's route parser. Three proxy groups stay
+in the path because they do real work -- the Logfire relay
+(`/api/client-traces`), the zip import, and task browse (which translates the
+address-bar search/tag/date filters) -- and a request that cannot get a
+token yet (Clerk still loading) or runs during server rendering also keeps
+the proxy for that call. The backend side is `CORS_ALLOWED_ORIGIN_REGEX`
+(preview origins are unpredictable) and `backend/api/cache_headers.py`, which
+sets the `Cache-Control` values the proxies used to add, keyed on the matched
+route template; private responses also vary by `Authorization` so switching
+organizations cannot reuse another token's cached response. Each PR backend
+permits its own `https://pr-{number}.oddish.app` frontend origin. The combined
+`perf/request-path-combined` branch opts its Vercel preview into direct mode
+in `frontend/next.config.ts`; an explicit flag overrides this, and other
+deployments remain off by default. The public token-template name defaults to
+the existing server-side `CLERK_JWT_TEMPLATE` at build time.
+New mutation call sites must use `apiFetch`, never a bare
+`fetch("/api/...")`. The proxy files stay until direct mode has run in
+production for a while; delete them only in a dedicated change.
+
 
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
@@ -1723,6 +1954,13 @@ On an experiment page, removing a task always calls the scoped
 experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
+
+The experiment drawer canonicalizes task/trial deep links with native browser
+history updates, without triggering a route navigation. Opening a visible task
+pane starts its file listing even while Overview is selected; switching between
+Overview and Files preserves the listing request, selection, and expanded
+folders. Keep the task navigation and overview mounted while the listing loads.
+Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
 `filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and

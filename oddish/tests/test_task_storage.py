@@ -16,6 +16,13 @@ from oddish.config import settings
 from oddish.db import storage as storage_mod
 
 
+@pytest.fixture(autouse=True)
+def isolated_archive_cache():
+    storage_mod.StorageClient._archive_cache.clear()
+    storage_mod.StorageClient._archive_cache_bytes = 0
+    storage_mod.StorageClient._archive_etag_hints.clear()
+
+
 def _make_task_archive(files: dict[str, str]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -356,15 +363,15 @@ async def test_download_task_directory_extracts_archive_object(monkeypatch, tmp_
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
-        return True
+        return {"ETag": s3_key} if (True) else None
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     await storage.download_task_directory("tasks/task-123/", tmp_path)
@@ -428,8 +435,8 @@ async def test_download_task_directory_finds_versioned_archive(monkeypatch, tmp_
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return False
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return {"ETag": s3_key} if (False) else None
 
     download_bytes_calls: list[str] = []
 
@@ -444,7 +451,7 @@ async def test_download_task_directory_finds_versioned_archive(monkeypatch, tmp_
             ]
         }
     ]
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
     storage._client = _FakeS3Client(pages=fake_pages)
     monkeypatch.setattr(settings, "s3_bucket", "test-bucket")
@@ -467,15 +474,15 @@ async def test_list_task_files_reads_archive_members(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
-        return True
+        return {"ETag": s3_key} if (True) else None
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     listing = await storage.list_task_files(
@@ -507,13 +514,17 @@ async def test_list_task_files_inlines_small_text_contents(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/.oddish-task.tar.gz")
+            else None
+        )
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     listing = await storage.list_task_files(
@@ -539,8 +550,8 @@ async def test_list_task_files_ignores_expansion_from_previous_revision(monkeypa
     archive_key = f"{revision_prefix}.oddish-task.tar.gz"
     manifest_key = "tasks/task-123/v2-files/.oddish-manifest.json"
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key in {archive_key, manifest_key}
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return {"ETag": s3_key} if (s3_key in {archive_key, manifest_key}) else None
 
     async def fake_download_json(s3_key: str) -> dict:
         assert s3_key == manifest_key
@@ -550,7 +561,7 @@ async def test_list_task_files_ignores_expansion_from_previous_revision(monkeypa
         assert s3_key == archive_key
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_json", fake_download_json)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
@@ -610,13 +621,17 @@ async def test_stream_task_files_yields_listing_then_contents(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/.oddish-task.tar.gz")
+            else None
+        )
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     chunks = [
@@ -644,9 +659,9 @@ async def test_list_task_files_presign_returns_archive_url(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
-        return True
+        return {"ETag": s3_key} if (True) else None
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
@@ -657,7 +672,7 @@ async def test_list_task_files_presign_returns_archive_url(monkeypatch):
         assert expiration == 900
         return "https://example.com/task-archive"
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
     monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
 
@@ -681,15 +696,15 @@ async def test_get_task_file_content_reads_archive_member(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
-        return True
+        return {"ETag": s3_key} if (True) else None
 
     async def fake_download_bytes(s3_key: str) -> bytes:
         assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     payload = await storage.get_task_file_content(
@@ -707,13 +722,17 @@ async def test_get_task_file_content_caps_archive_member(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/.oddish-task.tar.gz")
+            else None
+        )
 
     async def fake_download_bytes(_s3_key: str) -> bytes:
         return archive_bytes
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
 
     payload = await storage.get_task_file_content(
@@ -819,9 +838,13 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
 
     expanded_prefix = "tasks/task-123/v2-files/"
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         # Only the manifest sentinel signals "expanded layout available".
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+        return (
+            {"ETag": s3_key}
+            if (s3_key == f"{expanded_prefix}.oddish-manifest.json")
+            else None
+        )
 
     async def fake_list_objects_all(prefix: str) -> list[dict]:
         assert prefix == expanded_prefix
@@ -837,7 +860,7 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
     async def fake_get_presigned_urls_batch(s3_keys, expiration):
         return {key: f"https://example.com/{key}" for key in s3_keys}
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
     monkeypatch.setattr(
         storage, "get_presigned_urls_batch", fake_get_presigned_urls_batch
@@ -874,8 +897,12 @@ async def test_expanded_tree_listing_skips_contents_and_urls(monkeypatch):
     storage._client = object()
     expanded_prefix = "tasks/task-123/v2-files/"
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == f"{expanded_prefix}.oddish-manifest.json")
+            else None
+        )
 
     async def fake_list_objects_all(prefix: str) -> list[dict]:
         assert prefix == expanded_prefix
@@ -890,7 +917,7 @@ async def test_expanded_tree_listing_skips_contents_and_urls(monkeypatch):
     async def unexpected_call(*_args, **_kwargs):
         raise AssertionError("tree-only listing must not fetch bodies or URLs")
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
     monkeypatch.setattr(storage, "download_bytes", unexpected_call)
     monkeypatch.setattr(storage, "get_presigned_urls_batch", unexpected_call)
@@ -918,8 +945,12 @@ async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
     storage._client = object()
     expanded_prefix = "tasks/task-123/v2-files/"
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == f"{expanded_prefix}.oddish-manifest.json")
+            else None
+        )
 
     list_objects = AsyncMock(
         return_value={
@@ -936,7 +967,7 @@ async def test_expanded_directory_page_is_bounded_and_keeps_cursor(monkeypatch):
         }
     )
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "list_objects", list_objects)
 
     listing = await storage.list_task_files(
@@ -982,15 +1013,19 @@ async def test_archive_directory_pages_apply_limit_and_cursor(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         if s3_key.endswith("/.oddish-manifest.json"):
-            return False
-        return s3_key == "tasks/task-123/v1/.oddish-task.tar.gz"
+            return {"ETag": s3_key} if (False) else None
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/v1/.oddish-task.tar.gz")
+            else None
+        )
 
-    async def fake_load_task_archive(s3_key: str):
+    async def fake_load_task_archive(s3_key: str, *, head=None):
         return (archive_bytes, *storage_mod._parse_task_archive(archive_bytes))
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
 
     first = await storage.list_task_files(
@@ -1044,8 +1079,12 @@ async def test_list_task_files_expanded_layout_inlines_small_contents(monkeypatc
         f"{expanded_prefix}environment/blob.bin": b"\x00\xff\xfe\x01",
     }
 
-    async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+    async def fake_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if (s3_key == f"{expanded_prefix}.oddish-manifest.json")
+            else None
+        )
 
     async def fake_list_objects_all(prefix: str) -> list[dict]:
         return _expanded_objects(
@@ -1063,7 +1102,7 @@ async def test_list_task_files_expanded_layout_inlines_small_contents(monkeypatc
     async def fake_download_bytes(s3_key: str) -> bytes:
         return bodies[s3_key]
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
     monkeypatch.setattr(
         storage, "get_presigned_urls_batch", fake_get_presigned_urls_batch
@@ -1095,20 +1134,24 @@ async def test_list_task_files_falls_back_to_archive_without_manifest(monkeypatc
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         # No manifest; archive lives at the versioned path.
         if s3_key.endswith("/.oddish-manifest.json"):
-            return False
-        return s3_key == "tasks/task-123/v2/.oddish-task.tar.gz"
+            return {"ETag": s3_key} if (False) else None
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/v2/.oddish-task.tar.gz")
+            else None
+        )
 
-    async def fake_load_task_archive(s3_key: str):
+    async def fake_load_task_archive(s3_key: str, *, head=None):
         assert s3_key == "tasks/task-123/v2/.oddish-task.tar.gz"
         return (
             archive_bytes,
             *storage_mod._parse_task_archive(archive_bytes),
         )
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
 
     listing = await storage.list_task_files(
@@ -1133,12 +1176,19 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
 
     expanded_prefix = "tasks/task-123/v3-files/"
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         # Manifest sentinel AND the per-file expanded object both exist.
-        return s3_key in {
-            f"{expanded_prefix}.oddish-manifest.json",
-            f"{expanded_prefix}task.toml",
-        }
+        return (
+            {"ETag": s3_key}
+            if (
+                s3_key
+                in {
+                    f"{expanded_prefix}.oddish-manifest.json",
+                    f"{expanded_prefix}task.toml",
+                }
+            )
+            else None
+        )
 
     async def fake_download_text(s3_key: str) -> str:
         assert s3_key == f"{expanded_prefix}task.toml"
@@ -1153,7 +1203,7 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
         assert max_bytes == 5
         return "name ", True
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "download_text", fake_download_text)
     monkeypatch.setattr(storage, "download_text_prefix", fake_download_text_prefix)
     monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
@@ -1236,19 +1286,19 @@ async def test_get_task_file_content_falls_back_to_archive_when_expanded_member_
 
     expanded_prefix = "tasks/task-123/v2-files/"
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         # Manifest exists and ``task.toml`` is materialized, but
         # ``big.bin`` was skipped (oversize member) so the per-file
         # object isn't there.
         if s3_key == f"{expanded_prefix}.oddish-manifest.json":
-            return True
+            return {"ETag": s3_key} if (True) else None
         if s3_key == f"{expanded_prefix}task.toml":
-            return True
+            return {"ETag": s3_key} if (True) else None
         if s3_key == "tasks/task-123/v2/.oddish-task.tar.gz":
-            return True
-        return False
+            return {"ETag": s3_key} if (True) else None
+        return {"ETag": s3_key} if (False) else None
 
-    async def fake_load_task_archive(s3_key: str):
+    async def fake_load_task_archive(s3_key: str, *, head=None):
         return (
             archive_bytes,
             *storage_mod._parse_task_archive(archive_bytes),
@@ -1257,7 +1307,7 @@ async def test_get_task_file_content_falls_back_to_archive_when_expanded_member_
     async def fake_head_archive_etag(s3_key: str) -> str | None:
         return None
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
     monkeypatch.setattr(storage, "_head_archive_etag", fake_head_archive_etag)
 
@@ -1278,12 +1328,16 @@ async def test_get_task_file_content_falls_back_to_archive(monkeypatch):
     storage = storage_mod.StorageClient()
     storage._client = object()
 
-    async def fake_object_exists(s3_key: str) -> bool:
+    async def fake_head_object(s3_key: str) -> dict | None:
         if s3_key.endswith("/.oddish-manifest.json"):
-            return False
-        return s3_key == "tasks/task-123/v1/.oddish-task.tar.gz"
+            return {"ETag": s3_key} if (False) else None
+        return (
+            {"ETag": s3_key}
+            if (s3_key == "tasks/task-123/v1/.oddish-task.tar.gz")
+            else None
+        )
 
-    async def fake_load_task_archive(s3_key: str):
+    async def fake_load_task_archive(s3_key: str, *, head=None):
         return (
             archive_bytes,
             *storage_mod._parse_task_archive(archive_bytes),
@@ -1292,7 +1346,7 @@ async def test_get_task_file_content_falls_back_to_archive(monkeypatch):
     async def fake_head_archive_etag(s3_key: str) -> str | None:
         return '"etag-abc"'
 
-    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "head_object", fake_head_object)
     monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
     monkeypatch.setattr(storage, "_head_archive_etag", fake_head_archive_etag)
 
@@ -1322,18 +1376,22 @@ async def test_expanded_and_archive_listings_agree_on_file_set(monkeypatch):
     storage_archive = storage_mod.StorageClient()
     storage_archive._client = object()
 
-    async def archive_object_exists(s3_key: str) -> bool:
+    async def archive_head_object(s3_key: str) -> dict | None:
         if s3_key.endswith("/.oddish-manifest.json"):
-            return False
-        return s3_key == "tasks/task-123/v1/.oddish-task.tar.gz"
+            return None
+        return (
+            {"ETag": s3_key}
+            if s3_key == "tasks/task-123/v1/.oddish-task.tar.gz"
+            else None
+        )
 
-    async def archive_load(s3_key: str):
+    async def archive_load(s3_key: str, *, head=None):
         return (
             archive_bytes,
             *storage_mod._parse_task_archive(archive_bytes),
         )
 
-    monkeypatch.setattr(storage_archive, "object_exists", archive_object_exists)
+    monkeypatch.setattr(storage_archive, "head_object", archive_head_object)
     monkeypatch.setattr(storage_archive, "_load_task_archive", archive_load)
 
     archive_listing = await storage_archive.list_task_files(
@@ -1351,8 +1409,12 @@ async def test_expanded_and_archive_listings_agree_on_file_set(monkeypatch):
 
     expanded_prefix = "tasks/task-123/v1-files/"
 
-    async def expanded_object_exists(s3_key: str) -> bool:
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+    async def expanded_head_object(s3_key: str) -> dict | None:
+        return (
+            {"ETag": s3_key}
+            if s3_key == f"{expanded_prefix}.oddish-manifest.json"
+            else None
+        )
 
     async def expanded_list_all(prefix: str) -> list[dict]:
         return _expanded_objects(
@@ -1364,7 +1426,7 @@ async def test_expanded_and_archive_listings_agree_on_file_set(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(storage_expanded, "object_exists", expanded_object_exists)
+    monkeypatch.setattr(storage_expanded, "head_object", expanded_head_object)
     monkeypatch.setattr(storage_expanded, "list_objects_all", expanded_list_all)
 
     expanded_listing = await storage_expanded.list_task_files(

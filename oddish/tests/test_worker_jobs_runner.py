@@ -733,3 +733,27 @@ def test_claimed_worker_job_fields_match_schema_expectations():
         "modal_function_call_id",
         "claimed_at",
     }
+
+
+@pytest.mark.asyncio
+async def test_host_denial_records_permanent_failure_without_running_handler(
+    monkeypatch,
+):
+    job = _make_claimed(kind=WorkerJobKind.TRIAL)
+    handler = _FakeHandler(job.kind)
+    register(handler)
+    _install_fake_claim(monkeypatch, job)
+    captured = _capture_record_outcome(monkeypatch)
+
+    async def deny(_job):
+        raise worker_job_single_job.JobAccessDenied("Organization approval revoked")
+
+    assert await worker_job_single_job.run_single_worker_job(
+        "default",
+        worker_id="w-1",
+        queue_slot=0,
+        authorize_job=deny,
+    )
+    assert handler.run_calls == []
+    assert captured[0]["outcome"].failure.retryable is False
+    assert "approval revoked" in captured[0]["outcome"].failure.error_message

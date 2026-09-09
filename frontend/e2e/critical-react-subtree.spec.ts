@@ -334,7 +334,8 @@ test.describe("critical task and trial subtree", () => {
     await clerk.signIn({ page, emailAddress: CLERK_EMAIL! });
 
     const taskOpenGate = deferred();
-    const taskDetailGate = deferred();
+    const taskPanelGate = deferred();
+    const taskFilesGate = deferred();
     const trialDetailGate = deferred();
     const analysisRerunGate = deferred();
     let holdAnalysisRerun = false;
@@ -403,13 +404,31 @@ test.describe("critical task and trial subtree", () => {
     await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/detail(?:\\?|$)`),
       async (route) => {
-        await taskDetailGate.pending;
         await route.fulfill({ json: taskDetail });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${TASK_ID}/panel(?:\\?|$)`),
+      async (route) => {
+        await taskPanelGate.pending;
+        await route.fulfill({
+          json: {
+            task: { ...taskDetail.task, trials: undefined },
+            version: taskDetail.versions[0],
+            can_retry: true,
+            cancel: null,
+            active_trials: 0,
+            qa_active: false,
+            can_run_qa: true,
+            has_analysis: true,
+          },
+        });
       }
     );
     await page.route(
       new RegExp(`/api/tasks/${TASK_ID}/files(?:\\?|$)`),
       async (route) => {
+        await taskFilesGate.pending;
         await route.fulfill({ json: { files: [] } });
       }
     );
@@ -647,13 +666,44 @@ test.describe("critical task and trial subtree", () => {
       page.getByRole("button", { name: "Re-run analysis" })
     ).toBeEnabled();
 
-    const taskDetailRequest = page.waitForRequest(taskDetailPattern);
+    const taskPanelPattern = new RegExp(`/api/tasks/${TASK_ID}/panel(?:\\?|$)`);
+    const taskPanelRequest = page.waitForRequest(taskPanelPattern);
     await page.getByRole("button", { name: "Show task" }).click();
-    await taskDetailRequest;
-    expect(requestCount(requests, taskDetailPattern)).toBe(1);
+    await taskPanelRequest;
+    expect(requestCount(requests, taskPanelPattern)).toBe(1);
+    expect(requestCount(requests, taskDetailPattern)).toBe(0);
     await expect.poll(() => requestCount(requests, taskTrialsPattern)).toBe(1);
-    expect(requestCount(requests, taskFilesPattern)).toBe(0);
-    taskDetailGate.release();
+    await expect.poll(() => requestCount(requests, taskFilesPattern)).toBe(1);
+    // The tree is already loading while Overview is selected. Its pending
+    // response must not replace the task navigation or the trial summary.
+    const taskFilesButton = page.getByRole("button", {
+      name: "Files",
+      exact: true,
+    });
+    await expect(taskFilesButton).toBeVisible();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Loading files…" })
+    ).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
+    taskPanelGate.release();
+    taskFilesGate.release();
+    await expect(
+      page.getByRole("button", { name: "Overview", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("No files found", { exact: true })
+    ).toBeVisible();
+    const fileRequestsBeforeTabs = requestCount(requests, taskFilesPattern);
+    await taskFilesButton.click();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await taskFilesButton.click();
+    await expect(
+      page.getByText("No files found", { exact: true })
+    ).toBeVisible();
+    expect(requestCount(requests, taskFilesPattern)).toBe(
+      fileRequestsBeforeTabs
+    );
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
 
     const trialFilesRequest = page.waitForRequest(trialFilesPattern);
     await page.getByRole("tab", { name: "Files" }).click();

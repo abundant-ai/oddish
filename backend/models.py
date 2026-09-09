@@ -80,6 +80,12 @@ class OrganizationModel(TimestampedMixin, Base):
     # Soft delete
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Only platform operators may grant hosted execution. Clerk membership,
+    # organization creation, names, and tenant-admin settings never grant it.
+    execution_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+
     # Relationships
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
         "UserModel", back_populates="organization", lazy="selectin"

@@ -605,7 +605,7 @@ async def get_worker_jobs_admin_core(
                        current_worker_id,
                        org_id
                 FROM   worker_jobs
-                WHERE  status::text = 'RUNNING'
+                WHERE  status = 'RUNNING'
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  (
                       heartbeat_at IS NULL
@@ -646,7 +646,7 @@ async def get_worker_jobs_admin_core(
                        current_worker_id,
                        org_id
                 FROM   worker_jobs
-                WHERE  status::text IN ('FAILED', 'CANCELLED')
+                WHERE  status IN ('FAILED', 'CANCELLED')
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 ORDER  BY finished_at DESC NULLS LAST
                 LIMIT  :sample_limit
@@ -699,7 +699,7 @@ async def get_worker_jobs_admin_core(
                            ORDER BY EXTRACT(EPOCH FROM (finished_at - claimed_at))
                        ) AS p95
                 FROM   worker_jobs
-                WHERE  status::text IN ('SUCCESS', 'FAILED')
+                WHERE  status IN ('SUCCESS', 'FAILED')
                   AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at IS NOT NULL
                   AND  finished_at IS NOT NULL

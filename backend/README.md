@@ -106,11 +106,70 @@ curl -H "Authorization: Bearer ok_abc123..." "$API_URL/tasks"
 1. Read token from accepted header.
 2. If token starts with `ok_`, validate API key and scope.
 3. Otherwise validate Clerk JWT and resolve org/user.
-4. Return auth context (`org_id`, `user_id`, `scope`) to route handlers.
+4. Read the organization's `execution_enabled` approval from the database on
+   every authenticated request, including cached identities and existing keys.
+   Missing approval returns HTTP 403 before the route runs. This same read
+   supplies current organization data to `/org` and invitation routes, so a
+   cached identity never means missing or stale organization details.
 
-If a Clerk JWT arrives without an `org_id`, the backend will try to resolve a
-single existing org membership and, if none exists, provision a personal org for
-that user.
+Clerk tokens must select an organization (`org_id`, or `o.id` in v2 tokens).
+Missing selection returns HTTP 403; it never creates a Personal organization or
+chooses membership by email. If a selected organization has not arrived through
+Clerk's webhook yet, the backend fetches it from Clerk and creates the local
+record. A failed Clerk request returns HTTP 503 so the client can retry.
+Membership callbacks read Clerk's `public_user_data.user_id` field and update
+the same user record created by login. Supplied emails replace provisioning
+placeholders; partial callbacks without an email preserve the stored address.
+Organization synchronization serializes conflicting callbacks and preserves
+approval and deletion state. Creation and membership events cannot grant access.
+
+### Approving hosted organizations
+
+`organizations.execution_enabled` defaults to false. Migration
+`org_execution_001` approves only these active, non-deleted Clerk IDs:
+
+| Workspace verified in Clerk | Clerk organization ID |
+| --- | --- |
+| Abundant (original workspace) | `org_39ufkEqie8rLlVhoK4YMm4IMx0L` |
+| Abundant CyberMasters | `org_3H67wVrUZObfjW9JnxGq5pUZQvN` |
+| Oddish-onsite | `org_3IVmVHXFyfF4ltX8bfQMQTHrH1y` |
+
+Other existing organizations, Personal organizations, and future organizations
+remain blocked. Names do not confer approval. Preview/dev Clerk IDs differ and
+must be provisioned explicitly. Run the core migrations, then backend migrations,
+before deploying the API and workers. Audit any additional legitimate workspaces
+and provision their exact Clerk IDs before switching traffic.
+
+An operator creates the organization and invitations in Clerk, then runs this
+command from `backend/` with the intended deployment's `ODDISH_DATABASE_URL` and
+matching `CLERK_SECRET_KEY`:
+
+```bash
+uv run python -m provision_org --clerk-org-id org_EXACT_ID --approve --monthly-limit-usd 100
+uv run python -m provision_org --clerk-org-id org_EXACT_ID --revoke
+```
+
+The approval command synchronizes the organization and sets a positive monthly
+budget in the same transaction as approval. Only someone with deployment database
+access can grant approval; there is no tenant-admin approval endpoint. Budgets
+retain the existing quota rules and administrator controls; approval is a separate
+mandatory check, including when quota enforcement is disabled. This change does
+not introduce a hard global spending ceiling for approved organizations.
+
+Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
+check approval before each job and every 15 seconds during execution; losing
+approval or failing to read it cancels the handler. The reconciler also cancels
+queued/running task work for unapproved organizations using the existing remote
+worker teardown path, including work launched by older code. The revoke command
+runs that cleanup immediately. Remote cancellation failures are surfaced as errors;
+15 seconds is a polling interval, not a guarantee of instantaneous provider shutdown.
+Self-hosted core runners have no approval policy unless their host supplies one.
+
+In Clerk production, disable **Create first organization automatically** and
+**Allow user-created organizations** under organization settings, while leaving
+membership required. These dashboard controls reduce unwanted organization
+creation; backend approval also protects against existing users' organization
+creation permissions. The PR does not itself change live Clerk settings.
 
 ## Multi-tenancy
 
@@ -189,8 +248,13 @@ endpoint are required; bucket defaults to `data` and region to `us-east-1`:
 Common optional settings:
 
 - `CORS_ALLOWED_ORIGINS`
+- `CORS_ALLOWED_ORIGIN_REGEX`: origin pattern (for example `^https://oddish-[a-z0-9-]+\.vercel\.app$`) admitted in addition to the list, so per-branch Vercel previews can call the API directly when the dashboard runs with `NEXT_PUBLIC_API_DIRECT=1`
+
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
+- `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900): how long a container keeps a verified Clerk user's internal ids cached. Role and email always come from the token, so this only bounds how often a container re-reads the user row; API-key entries stay at 60 s.
+- `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables): how long a container serves the admin cost-exclusion lists from memory. The container that handles an edit refreshes immediately; others within this window.
+
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`

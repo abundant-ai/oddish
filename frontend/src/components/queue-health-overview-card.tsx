@@ -26,7 +26,7 @@ import type {
   QueueHealthResponse,
   QueueRuntimeComponentStatus,
 } from "@/lib/types";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import {
   Activity,
@@ -344,7 +344,7 @@ function CapacityTable({
     const saved: string[] = [];
     for (const row of dirtyRows) {
       const limit = Number(drafts[row.queue_key]);
-      const response = await fetch("/api/admin/concurrency", {
+      const response = await apiFetch("/api/admin/concurrency", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         // Clearing the override back to the deploy default is expressed as null.
