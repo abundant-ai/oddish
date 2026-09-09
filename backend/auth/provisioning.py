@@ -564,6 +564,12 @@ async def get_or_create_user_from_clerk(
             _seed_cached_github_identity(user)
             return user, org
 
+    observed_user_id = user.id if user is not None else None
+    observed_github = (
+        (user.github_id, user.github_username, user.github_id_checked_at)
+        if user is not None
+        else (None, None, None)
+    )
     org_data = await _fetch_clerk_org(clerk_org_id) if org is None else None
     identity = await fetch_github_identity_from_clerk(clerk_user_id)
     async with get_session() as session:
@@ -577,6 +583,22 @@ async def get_or_create_user_from_clerk(
             )
         if not org.is_active or org.deleted_at is not None:
             return None
+        if observed_user_id is not None:
+            # Include tombstones so a membership removal during HTTP cannot
+            # become a new INSERT (or a second user under a changed email).
+            current_user = await session.scalar(
+                select(UserModel)
+                .options(raiseload("*"))
+                .where(UserModel.id == observed_user_id)
+                .execution_options(include_deleted=True)
+                .with_for_update()
+            )
+            if (
+                current_user is None
+                or not current_user.is_active
+                or current_user.deleted_at is not None
+            ):
+                return None
         user = await get_or_create_user_in_org(
             session,
             clerk_user_id,
@@ -586,7 +608,29 @@ async def get_or_create_user_from_clerk(
             _DEFAULT_JIT_ROLE,
             refresh_github_identity=False,
         )
-        if _needs_github_identity_fetch(user):
+        if observed_user_id is None:
+            # A concurrent first login may have supplied this row. Lock and
+            # reload identity fields before comparing with the absent snapshot.
+            await session.flush()
+            await session.refresh(
+                user,
+                attribute_names=[
+                    "github_id",
+                    "github_username",
+                    "github_id_checked_at",
+                    "is_active",
+                    "deleted_at",
+                ],
+                with_for_update=True,
+            )
+            if not user.is_active or user.deleted_at is not None:
+                return None
+        current_github = (
+            user.github_id,
+            user.github_username,
+            user.github_id_checked_at,
+        )
+        if current_github == observed_github and _needs_github_identity_fetch(user):
             await _apply_user_github_identity(user, session, identity)
         else:
             _seed_cached_github_identity(user)

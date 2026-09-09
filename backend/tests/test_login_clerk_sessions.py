@@ -20,7 +20,7 @@ def login(monkeypatch):
         state["sessions"] += 1
         state["opened"] += 1
         try:
-            yield AsyncMock()
+            yield AsyncMock(scalar=AsyncMock(return_value=user))
         finally:
             state["sessions"] -= 1
 
@@ -206,3 +206,82 @@ async def test_first_login_releases_real_postgres_connection(monkeypatch):
     assert again.email == "session@example.test"
     assert again.role == UserRole.MEMBER
     assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["deactivate", "soft_delete", "github_link"])
+@pytest.mark.parametrize("changed_email", [False, True])
+async def test_webhook_update_during_clerk_fetch_wins(
+    monkeypatch, change, changed_email
+):
+    import os
+    import uuid
+
+    if not os.environ.get("ODDISH_DATABASE_URL"):
+        pytest.skip("local PostgreSQL required")
+    from sqlalchemy import select
+    from oddish.db import get_session
+
+    suffix = uuid.uuid4().hex
+    org_id, user_id = f"org_{suffix}", f"user_{suffix}"
+    email = f"original-{suffix}@example.test"
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(
+                id=org_id, name="Race test", slug=org_id, clerk_org_id=org_id
+            )
+        )
+        await session.flush()
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                clerk_user_id=user_id,
+                email=email,
+                role=UserRole.MEMBER,
+            )
+        )
+
+    async def fetch_identity(_clerk_id):
+        # Model a membership/user webhook committing after the lookup session
+        # closed but before the login applies its older HTTP answer.
+        async with get_session() as session:
+            user = await session.get(UserModel, user_id)
+            if change == "deactivate":
+                user.is_active = False
+            elif change == "soft_delete":
+                user.deleted_at = datetime.now(timezone.utc)
+            else:
+                user.github_id = f"github_{suffix}"
+        return prov.ClerkGithubIdentity(None, None, None)
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", fetch_identity)
+    result = await prov.get_or_create_user_from_clerk(
+        user_id,
+        org_id,
+        f"changed-{suffix}@example.test" if changed_email else email,
+        "member",
+    )
+    async with get_session() as session:
+        rows = (
+            await session.scalars(
+                select(UserModel)
+                .where(UserModel.org_id == org_id)
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+        assert len(rows) == 1
+        stored = rows[0]
+        if change == "github_link":
+            assert result is not None
+            assert stored.github_id == f"github_{suffix}"
+            assert stored.github_username is None
+            assert stored.github_id_checked_at is None
+        else:
+            assert result is None
+            assert stored.email == email
+            assert (
+                not stored.is_active
+                if change == "deactivate"
+                else stored.deleted_at is not None
+            )
