@@ -1959,6 +1959,28 @@ export function ExperimentDetailView({
                     trialGroups,
                   });
                 }}
+                onTaskNavChange={({ orderedTasks, taskNavScope }) => {
+                  setDrawerState((prev) => {
+                    if (!prev) return prev;
+                    const liveById = new Map(
+                      orderedTasks.map((task) => [task.id, task] as const)
+                    );
+                    const task =
+                      liveById.get(prev.task.id) ??
+                      tasksForExperiment.find((t) => t.id === prev.task.id) ??
+                      prev.task;
+                    const taskIndex = orderedTasks.findIndex(
+                      (candidate) => candidate.id === task.id
+                    );
+                    return {
+                      ...prev,
+                      task,
+                      taskIndex: taskIndex >= 0 ? taskIndex : prev.taskIndex,
+                      orderedTasks,
+                      taskNavScope,
+                    };
+                  });
+                }}
               />
             </div>
           )}
