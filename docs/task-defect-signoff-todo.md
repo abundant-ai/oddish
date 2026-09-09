@@ -9,4 +9,4 @@
 - [x] Add backend regression coverage, including direct sign-off bypass attempts.
 - [x] Validate Task A v7 acknowledgment and v8 reset through the inline Codex browser.
 - [x] Review the final diff and run relevant checks (248 backend tests, 97 frontend tests, TypeScript, ESLint, focused Ruff checks).
-- [ ] Commit and open a draft PR against `staging`.
+- [x] Commit and open [draft PR #1569](https://github.com/abundant-ai/oddish/pull/1569) against `staging`.
