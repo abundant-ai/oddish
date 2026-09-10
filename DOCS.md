@@ -952,7 +952,9 @@ a dropdown of existing customers and a form for a new one. `POST
 
 The dashboard board can filter its task list: all tasks, blocked tasks
 (a failing check or an open defect), tasks awaiting sign-off (every
-check passes), or ready tasks. Use it to hide what is already approved. Each row also
+check passes), or ready tasks. Use it to hide what is already approved. The filter, the
+page, and the page size live in the URL (`?filter=`, `?page=`,
+`?per_page=`), so a filtered view can be shared or reloaded. Each row also
 has a selection checkbox (the header checkbox selects the whole filtered
 view): the bulk bar signs off every clean selected task or removes the
 selected tasks from the delivery in one action.

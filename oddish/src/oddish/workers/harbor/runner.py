@@ -266,6 +266,7 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
+    "geometric": ("GEOMETRIC_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
