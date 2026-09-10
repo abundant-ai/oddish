@@ -1938,7 +1938,7 @@ export function ExperimentTrialsTable({
   };
 
   const renderLegendBlock = () => (
-    <div className="flex max-w-full min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1">
+    <div className="flex max-w-full min-w-0 flex-wrap items-center gap-y-1 py-1">
       {renderLegendAnatomy()}
       <div className="flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 px-1">
         <Tooltip>
@@ -2065,8 +2065,8 @@ export function ExperimentTrialsTable({
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pt-3.5 pb-3">
+        <div className="max-w-full">
+          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-bg)] pb-3">
             <div className="flex flex-wrap items-stretch gap-3">
               {/* Fills the space left of the legend; stretches to its height. */}
               <div className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)] sm:w-auto sm:min-w-[280px] sm:flex-1">
@@ -2592,39 +2592,40 @@ export function ExperimentTrialsTable({
                                   }
                                 />
                               )}
-                              {showAnalysis && taskReviewStatus(task) === "needs_fixes" && (
-                                <div className="min-w-0">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={() =>
-                                      openTaskInDrawer(task, {
-                                        orderedTasks: filteredTasks,
-                                        taskIndex: index,
-                                      })
-                                    }
-                                    className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
-                                    title={
-                                      rejectedOnly
-                                        ? task.verdict?.primary_issue ||
-                                          task.verdict?.reasoning ||
-                                          "QA rejected this task"
-                                        : rejectedMustFixLabel(task)
-                                    }
-                                    aria-label={`Open findings for ${task.name}`}
-                                  >
-                                    {rejectedMustFixLabel(task)}
-                                  </Button>
-                                  {rejectedOnly &&
-                                  (task.verdict?.primary_issue ||
-                                    task.verdict?.reasoning) ? (
-                                    <p className="mt-1 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
-                                      {task.verdict?.primary_issue ||
-                                        task.verdict?.reasoning}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              )}
+                              {showAnalysis &&
+                                taskReviewStatus(task) === "needs_fixes" && (
+                                  <div className="min-w-0">
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      onClick={() =>
+                                        openTaskInDrawer(task, {
+                                          orderedTasks: filteredTasks,
+                                          taskIndex: index,
+                                        })
+                                      }
+                                      className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
+                                      title={
+                                        rejectedOnly
+                                          ? task.verdict?.primary_issue ||
+                                            task.verdict?.reasoning ||
+                                            "QA rejected this task"
+                                          : rejectedMustFixLabel(task)
+                                      }
+                                      aria-label={`Open findings for ${task.name}`}
+                                    >
+                                      {rejectedMustFixLabel(task)}
+                                    </Button>
+                                    {rejectedOnly &&
+                                    (task.verdict?.primary_issue ||
+                                      task.verdict?.reasoning) ? (
+                                      <p className="mt-1 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
+                                        {task.verdict?.primary_issue ||
+                                          task.verdict?.reasoning}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                )}
                               {(() => {
                                 const showVersion =
                                   showAnalysis && task.current_version != null;

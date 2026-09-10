@@ -22,14 +22,17 @@ export function ExperimentPageSkeleton() {
         <Skeleton className="h-4 w-40" />
       </div>
 
-      <Skeleton className="h-12 w-full rounded-[10px]" />
+      <div className="space-y-2">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
 
       <div className="space-y-3">
         <div className="flex items-center justify-end">
           <Skeleton className="h-8 w-28" />
         </div>
-        <div className="border-border bg-card max-w-full overflow-hidden rounded-lg border shadow-xs">
-          <div className="border-border bg-card/70 space-y-3 border-b px-3 py-3">
+        <div className="max-w-full overflow-hidden">
+          <div className="border-border space-y-3 border-b py-3">
             <div className="flex flex-wrap items-start gap-3">
               <Skeleton className="h-9 w-full sm:w-[320px]" />
               <div className="ml-auto flex flex-wrap items-center gap-2">

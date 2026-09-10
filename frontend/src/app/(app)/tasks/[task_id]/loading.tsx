@@ -2,7 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export default function TaskDetailLoading() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -18,10 +18,17 @@ export default function TaskDetailLoading() {
       </div>
       <div className="flex flex-wrap gap-3">
         {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-16 w-32" />
+          <Skeleton key={index} className="h-6 w-32" />
         ))}
       </div>
-      <Skeleton className="h-[440px] w-full" />
+      <div className="space-y-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={index} className="border-border space-y-3 border-t py-3">
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-5 w-64 max-w-full" />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

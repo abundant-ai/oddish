@@ -24,6 +24,8 @@ import { TagEditor } from "@/components/tag-editor";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
+import { SummaryStat } from "@/components/summary-stat";
+import { CostValue } from "@/components/cost-value";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
@@ -119,104 +121,28 @@ function DrawerContentLoading({ label }: { label: string }) {
   );
 }
 
-function CostBadge({
+function TaskCost({
   cost,
   trialCount,
   hasEstimated,
   hasNative,
-  size = "md",
 }: {
   cost: number;
   trialCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
-  size?: "sm" | "md" | "lg";
-}) {
-  const valueClass =
-    size === "lg"
-      ? "text-[26px]"
-      : size === "md"
-        ? "text-[20px]"
-        : "text-[13px]";
-  const prefixClass =
-    size === "lg"
-      ? "text-[16px]"
-      : size === "md"
-        ? "text-[13px]"
-        : "text-[10px]";
-  const titleText =
-    trialCount === 0
-      ? "No cost data reported yet"
-      : `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}${
-          hasEstimated && hasNative
-            ? ". Mixed native + estimated values; ~ marks estimates."
-            : hasEstimated
-              ? ". Estimated from token counts × static model pricing."
-              : ". Reported by the agent runtime."
-        }`;
-
-  // Sub-cent totals round to "$0.00", which reads as free; show the same dash
-  // as "no data" rather than a zero the ledger doesn't mean.
-  if (trialCount === 0 || !hasDisplayableCostUsd(cost)) {
-    return (
-      <span
-        className={`font-display ${valueClass} leading-none tracking-[-0.02em] text-[color:var(--paper-ink-3)]`}
-        title={titleText}
-      >
-        —
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`font-display flex items-baseline gap-1 ${valueClass} leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]`}
-      title={titleText}
-    >
-      {hasEstimated && !hasNative && (
-        <span
-          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
-        >
-          ~
-        </span>
-      )}
-      {formatCostUsd(cost)}
-      {hasEstimated && hasNative && (
-        <span
-          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
-        >
-          *
-        </span>
-      )}
-    </span>
-  );
-}
-
-function KpiTile({
-  label,
-  children,
-  hint,
-  className = "",
-}: {
-  label: string;
-  children: React.ReactNode;
-  hint?: React.ReactNode;
-  className?: string;
 }) {
   return (
-    <div
-      className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
-    >
-      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-        {label}
-      </span>
-      {children}
-      {hint ? (
-        <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-          {hint}
-        </span>
-      ) : null}
-    </div>
+    <CostValue
+      cost={trialCount > 0 && hasDisplayableCostUsd(cost) ? cost : null}
+      hasEstimated={hasEstimated}
+      hasNative={hasNative}
+      title={
+        trialCount === 0
+          ? "No cost data reported yet"
+          : `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}`
+      }
+    />
   );
 }
 
@@ -537,7 +463,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   );
 }
 
-function AgentCard({
+function AgentSection({
   agentLabel,
   summary,
   trials,
@@ -567,8 +493,8 @@ function AgentCard({
   });
 
   return (
-    <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--paper-line-2)] px-4 py-3">
+    <section className="border-t border-[color:var(--paper-line)] py-3 last:border-b">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="font-mono text-[14px] font-semibold text-[color:var(--paper-ink)]">
             {summary.agent}
@@ -601,12 +527,11 @@ function AgentCard({
           </span>
           <span>
             <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
-            <CostBadge
+            <TaskCost
               cost={summary.cost_usd}
               trialCount={summary.cost_trial_count}
               hasEstimated={summary.cost_has_estimated}
               hasNative={summary.cost_has_native}
-              size="sm"
             />
           </span>
           <span title="Mean cost per priced trial">
@@ -635,7 +560,7 @@ function AgentCard({
           ) : null}
         </div>
       </div>
-      <div className="px-4 py-3">
+      <div className="mt-3">
         <div className="flex flex-wrap gap-1.5">
           {sortedTrials.map((trial) => (
             <TrialChip
@@ -652,7 +577,7 @@ function AgentCard({
           </p>
         ) : null}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -1084,8 +1009,9 @@ export function TaskDetailClient({
     return (
       <div className="space-y-4">
         <Skeleton className="h-10 w-72" />
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-24 w-full" />
       </div>
     );
   }
@@ -1127,98 +1053,26 @@ export function TaskDetailClient({
           />
         ) : null}
 
-        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
-          <KpiTile
-            label="Total cost (all versions)"
-            hint={
-              isBrowseSnapshot
-                ? "loading all versions"
-                : totals && totals.cost_trial_count > 0
-                  ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
-                  : totals && totals.total_trials > 0
-                    ? `${totals.total_trials} trials, no cost data`
-                    : "no trials yet"
-            }
-          >
-            <span className="flex items-baseline gap-1.5">
-              <CostBadge
-                cost={totals?.cost_usd ?? 0}
-                trialCount={totals?.cost_trial_count ?? 0}
-                hasEstimated={totals?.cost_has_estimated ?? false}
-                hasNative={totals?.cost_has_native ?? false}
-                size="lg"
-              />
-              <QaCostSuffix
-                costUsd={totals?.qa_cost_usd}
-                size="tile"
-                title="QA/analysis spend for this task's trials. Not included in the cost figure."
-              />
-            </span>
-            {(totals?.token_trial_count ?? 0) > 0 ? (
-              <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                {formatTokenCount(totals?.token_count ?? 0)}
-              </span>
-            ) : null}
-          </KpiTile>
-          <KpiTile
-            label="Billed spend"
-            hint={
-              isBrowseSnapshot
-                ? "loading all versions"
-                : totals && totals.billed_trial_count > 0
-                  ? `${totals.billed_trial_count} billed trial${
-                      totals.billed_trial_count === 1 ? "" : "s"
-                    }`
-                  : "no billed trials"
-            }
-          >
-            <CostBadge
-              cost={totals?.billed_cost_usd ?? 0}
-              trialCount={totals?.billed_trial_count ?? 0}
-              hasEstimated={totals?.billed_has_estimated ?? false}
-              hasNative={totals?.billed_has_native ?? false}
-              size="lg"
-            />
-          </KpiTile>
-          <KpiTile
-            label={`Spent on ${versionLabel}`}
-            hint={
-              versionSummary.costTrialCount > 0
-                ? `${versionSummary.costTrialCount} trial${
-                    versionSummary.costTrialCount === 1 ? "" : "s"
-                  }`
-                : "no cost data"
-            }
-          >
-            <CostBadge
-              cost={versionSummary.costUsd}
-              trialCount={versionSummary.costTrialCount}
-              hasEstimated={versionSummary.costHasEstimated}
-              hasNative={versionSummary.costHasNative}
-              size="lg"
-            />
-          </KpiTile>
-          <KpiTile
-            label="Trials"
-            hint={`${versionSummary.completed} completed · ${versionSummary.failed} harness errors${
-              versionSummary.skipped > 0
-                ? ` · ${versionSummary.skipped} skipped`
-                : ""
-            }`}
-          >
-            <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+            <SummaryStat
+              label="Trials"
+              hint={`${versionSummary.completed} completed · ${versionSummary.failed} harness errors${
+                versionSummary.skipped > 0
+                  ? ` · ${versionSummary.skipped} skipped`
+                  : ""
+              }`}
+            >
               {versionSummary.trialCount}
-            </span>
-          </KpiTile>
-          <KpiTile
-            label="Avg score"
-            hint={
-              versionSummary.rewardTotal > 0
-                ? `${versionSummary.passCount} pass · ${versionSummary.partialCount} partial · ${versionSummary.failCount} fail`
-                : "no scored trials"
-            }
-          >
-            <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            </SummaryStat>
+            <SummaryStat
+              label="Avg score"
+              hint={
+                versionSummary.rewardTotal > 0
+                  ? `${versionSummary.passCount} pass · ${versionSummary.partialCount} partial · ${versionSummary.failCount} fail`
+                  : "no scored trials"
+              }
+            >
               {versionScopedScorePct != null
                 ? `${versionScopedScorePct.toFixed(1)}%`
                 : "—"}
@@ -1230,22 +1084,89 @@ export function TaskDetailClient({
                   {versionSummary.passCount}/{versionSummary.rewardTotal} pass
                 </span>
               ) : null}
-            </span>
-          </KpiTile>
-          <KpiTile
-            label="Last run"
-            hint={
-              versionSummary.lastRunAt
-                ? new Date(versionSummary.lastRunAt).toLocaleString()
-                : undefined
-            }
-          >
-            <span className="font-display flex items-baseline gap-2 text-[20px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            </SummaryStat>
+            <SummaryStat
+              label="Last run"
+              hint={
+                versionSummary.lastRunAt
+                  ? new Date(versionSummary.lastRunAt).toLocaleString()
+                  : undefined
+              }
+            >
               {versionSummary.lastRunAt
                 ? formatRelativeTime(versionSummary.lastRunAt)
                 : "—"}
-            </span>
-          </KpiTile>
+            </SummaryStat>
+          </div>
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+            <SummaryStat
+              label="Total cost (all versions)"
+              hint={
+                isBrowseSnapshot
+                  ? "loading all versions"
+                  : totals && totals.cost_trial_count > 0
+                    ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
+                    : totals && totals.total_trials > 0
+                      ? `${totals.total_trials} trials, no cost data`
+                      : "no trials yet"
+              }
+            >
+              <span className="flex items-baseline gap-1.5">
+                <TaskCost
+                  cost={totals?.cost_usd ?? 0}
+                  trialCount={totals?.cost_trial_count ?? 0}
+                  hasEstimated={totals?.cost_has_estimated ?? false}
+                  hasNative={totals?.cost_has_native ?? false}
+                />
+                <QaCostSuffix
+                  costUsd={totals?.qa_cost_usd}
+                  size="row"
+                  title="QA/analysis spend for this task's trials. Not included in the cost figure."
+                />
+              </span>
+              {(totals?.token_trial_count ?? 0) > 0 ? (
+                <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                  {formatTokenCount(totals?.token_count ?? 0)}
+                </span>
+              ) : null}
+            </SummaryStat>
+            <SummaryStat
+              label="Billed spend"
+              hint={
+                isBrowseSnapshot
+                  ? "loading all versions"
+                  : totals && totals.billed_trial_count > 0
+                    ? `${totals.billed_trial_count} billed trial${
+                        totals.billed_trial_count === 1 ? "" : "s"
+                      }`
+                    : "no billed trials"
+              }
+            >
+              <TaskCost
+                cost={totals?.billed_cost_usd ?? 0}
+                trialCount={totals?.billed_trial_count ?? 0}
+                hasEstimated={totals?.billed_has_estimated ?? false}
+                hasNative={totals?.billed_has_native ?? false}
+              />
+            </SummaryStat>
+            <SummaryStat
+              label={`Spent on ${versionLabel}`}
+              hint={
+                versionSummary.costTrialCount > 0
+                  ? `${versionSummary.costTrialCount} trial${
+                      versionSummary.costTrialCount === 1 ? "" : "s"
+                    }`
+                  : "no cost data"
+              }
+            >
+              <TaskCost
+                cost={versionSummary.costUsd}
+                trialCount={versionSummary.costTrialCount}
+                hasEstimated={versionSummary.costHasEstimated}
+                hasNative={versionSummary.costHasNative}
+              />
+            </SummaryStat>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -1327,14 +1248,14 @@ export function TaskDetailClient({
             </span>
           </div>
           {agentCards.length === 0 ? (
-            <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-10 text-center text-[12px] text-[color:var(--paper-ink-3)]">
+            <div className="border-y border-[color:var(--paper-line)] py-6 text-[12px] text-[color:var(--paper-ink-3)]">
               {isBrowseSnapshot
                 ? "Loading exact agent totals..."
                 : "No trials for this version yet."}
             </div>
           ) : (
             agentCards.map((card) => (
-              <AgentCard
+              <AgentSection
                 key={card.key}
                 agentLabel={card.label}
                 summary={card.summary}

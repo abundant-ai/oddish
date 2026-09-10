@@ -16,6 +16,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
+import { SummaryStat } from "@/components/summary-stat";
+import { CostValue } from "@/components/cost-value";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -45,13 +47,7 @@ import type {
 } from "@/lib/types";
 import { trialFromExperimentCell } from "@/lib/experiment-page-data";
 import type { ExperimentCostTotalsResource } from "@/lib/use-experiment-cost-totals";
-import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -565,44 +561,6 @@ function ExperimentMetaStrip({
   );
 }
 
-function KpiTile({
-  label,
-  labelInfo,
-  children,
-  className = "",
-}: {
-  label: string;
-  labelInfo?: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div
-      className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
-    >
-      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-        {label}
-        {labelInfo && (
-          <TooltipProvider delayDuration={150}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Info
-                  className="h-3 w-3 cursor-help text-[color:var(--paper-ink-3)]"
-                  aria-label={`How ${label} is calculated`}
-                />
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs normal-case">
-                {labelInfo}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
-      </span>
-      {children}
-    </div>
-  );
-}
-
 function ExperimentSummaryBar({
   taskCount,
   summary,
@@ -635,7 +593,7 @@ function ExperimentSummaryBar({
 }) {
   if (isInitialLoading) {
     return (
-      <div className="flex items-center gap-2 rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 text-xs text-[color:var(--paper-ink-3)]">
+      <div className="flex items-center gap-2 py-2 text-xs text-[color:var(--paper-ink-3)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         Loading experiment summary...
       </div>
@@ -660,187 +618,93 @@ function ExperimentSummaryBar({
     summary.failCount +
     summary.harnessErrorCount +
     summary.skippedTrials;
-  const passPct = outcomeTotal ? (summary.passCount / outcomeTotal) * 100 : 0;
-  const partialPct = outcomeTotal
-    ? (summary.partialCount / outcomeTotal) * 100
-    : 0;
-  const failPct = outcomeTotal ? (summary.failCount / outcomeTotal) * 100 : 0;
-  const errPct = outcomeTotal
-    ? (summary.harnessErrorCount / outcomeTotal) * 100
-    : 0;
-  const skippedPct = outcomeTotal
-    ? (summary.skippedTrials / outcomeTotal) * 100
-    : 0;
+  const outcomes = [
+    ["pass", summary.passCount, "var(--paper-pass)"],
+    ["partial", summary.partialCount, "var(--paper-partial)"],
+    ["fail", summary.failCount, "var(--paper-fail)"],
+    ["error", summary.harnessErrorCount, "var(--paper-error)"],
+    ["skipped", summary.skippedTrials, "var(--paper-ink-3)"],
+  ] as const;
   const costIsSpend = costStatus === "ready";
   const costPending = costStatus === "idle" || costStatus === "loading";
   const costUnavailable = costStatus === "error";
 
   return (
-    <div
-      className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
-        qa
-          ? showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-          : showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
-      }`}
-    >
-      <KpiTile
-        label="Avg score"
-        labelInfo="Average of per-task average reward, nop/oracle excluded"
-      >
-        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+        <SummaryStat
+          label="Avg score"
+          description="Average of per-task average reward, nop/oracle excluded"
+        >
           {isLoadingTrials ? (
-            // The score is computed from streamed trial pages; rendering an
-            // intermediate value would show a number that jumps once the
-            // remaining pages land.
-            <Loader2 className="h-5 w-5 animate-spin text-[color:var(--paper-ink-3)]" />
+            <Loader2 className="h-4 w-4 animate-spin" />
           ) : scorePct != null ? (
             `${scorePct.toFixed(1)}%`
           ) : (
             "—"
           )}
-        </span>
-      </KpiTile>
-      <KpiTile
-        label="Trials finished"
-        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
-      >
-        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {doneTrials}
-          <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
-            / {summary.totalTrials} trials
-          </span>
-        </span>
-        <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-          {completionPct.toFixed(0)}%
-          {summary.skippedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-ink-3)]">
-              · {summary.skippedTrials} skipped
-            </span>
-          )}
-          {summary.failedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-fail)]">
-              · {summary.failedTrials} failing
-            </span>
-          )}
-        </span>
-      </KpiTile>
-      <KpiTile label="Tasks">
-        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {taskCount}
-          <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
-            tasks
-          </span>
-        </span>
-      </KpiTile>
-      {qa && (
-        <KpiTile
-          label="Task review"
-          labelInfo="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
-        >
-          <div className="flex flex-wrap gap-1.5 text-xs">
-            {(
-              [
-                ["accepted", qa.accepted, REVIEW_LABELS.accepted],
-                ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
-                ["running", qa.running, "Review queued / running"],
-                ["failed", qa.failed, REVIEW_LABELS.error],
-                ["unreviewed", qa.unreviewed, "No current review"],
-              ] as const
-            ).map(([value, count, label]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={reviewFilter === value}
-                className={`rounded border px-1.5 py-1 text-left ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
-                onClick={() =>
-                  onReviewFilter(reviewFilter === value ? "all" : value)
-                }
-              >
-                {count} {label}
-              </button>
-            ))}
-            {reviewFilter !== "all" && (
-              <button
-                className="underline"
-                onClick={() => onReviewFilter("all")}
-              >
-                Show all tasks
-              </button>
-            )}
-          </div>
-        </KpiTile>
-      )}
-      <KpiTile
-        label="Cost"
-        labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
-      >
-        <span
-          className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
-          title={
-            costUnavailable
-              ? "Experiment spend is unavailable"
-              : costPending
-                ? "Calculating experiment spend…"
-                : summary.costTrialCount > 0
-                  ? `Summed across ${summary.costTrialCount} trial${
-                      summary.costTrialCount === 1 ? "" : "s"
-                    } shown in this experiment${
-                      // Gathered/shared-task spend is deliberately included: it
-                      // prices the work on this page. Warn that those dollars
-                      // are also reported on their home experiments so nobody
-                      // sums Cost tiles across pages.
-                      summary.costTrialCount > summary.ownedTrialCount
-                        ? ", including trials gathered from other experiments (their spend is also reported there)"
-                        : ""
-                    }${
-                      // Spend covers every trial that ran; the table is filtered to
-                      // each task's current version. Say so, or the tile reads as
-                      // "wrong" whenever a task was re-uploaded or a trial retried.
-                      costIsSpend
-                        ? ". The table shows only current-version trials"
-                        : ""
-                    }${
-                      summary.costHasEstimated && summary.costHasNative
-                        ? ". Mixed native + estimated values; ~ marks estimates."
-                        : summary.costHasEstimated
-                          ? ". Estimated from token counts × static model pricing."
-                          : ". Reported by the agent runtime."
-                    }`
-                  : "No cost data reported yet"
-          }
-        >
-          {costUnavailable ? (
-            <span className="font-mono text-xs text-[color:var(--paper-fail)]">
-              Unavailable
-            </span>
-          ) : costPending ? (
-            <span className="text-[color:var(--paper-ink-3)]">—</span>
-          ) : summary.costTrialCount > 0 &&
-            hasDisplayableCostUsd(summary.costUsd) ? (
+        </SummaryStat>
+        <SummaryStat
+          label="Trials finished"
+          description="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+          hint={
             <>
-              {summary.costHasEstimated && !summary.costHasNative && (
-                <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
-                  ~
-                </span>
+              {completionPct.toFixed(0)}%
+              {summary.skippedTrials > 0 && (
+                <> · {summary.skippedTrials} skipped</>
               )}
-              {formatCostUsd(summary.costUsd)}
-              {summary.costHasEstimated && summary.costHasNative && (
-                <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
-                  *
+              {summary.failedTrials > 0 && (
+                <span className="text-[color:var(--paper-fail)]">
+                  {" "}
+                  · {summary.failedTrials} failing
                 </span>
               )}
             </>
+          }
+        >
+          {doneTrials} / {summary.totalTrials}
+        </SummaryStat>
+        <SummaryStat label="Tasks">{taskCount}</SummaryStat>
+        <SummaryStat
+          label="Cost"
+          description="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
+          hint={
+            !costPending && !costUnavailable && summary.tokenTrialCount > 0
+              ? formatTokenCount(summary.tokenCount)
+              : undefined
+          }
+        >
+          {costUnavailable ? (
+            <span className="text-xs text-[color:var(--paper-fail)]">
+              Unavailable
+            </span>
           ) : (
-            <span className="text-[color:var(--paper-ink-3)]">—</span>
+            <CostValue
+              cost={
+                !costPending &&
+                summary.costTrialCount > 0 &&
+                hasDisplayableCostUsd(summary.costUsd)
+                  ? summary.costUsd
+                  : null
+              }
+              hasEstimated={summary.costHasEstimated}
+              hasNative={summary.costHasNative}
+              title={
+                costPending
+                  ? "Calculating experiment spend…"
+                  : summary.costTrialCount > 0
+                    ? `Summed across ${summary.costTrialCount} trial${summary.costTrialCount === 1 ? "" : "s"} shown in this experiment${
+                        summary.costTrialCount > summary.ownedTrialCount
+                          ? ", including trials gathered from other experiments (their spend is also reported there)"
+                          : ""
+                      }${costIsSpend ? ". The table shows only current-version trials" : ""}`
+                    : "No cost data reported yet"
+              }
+            />
           )}
           {!costPending && !costUnavailable && (
             <QaCostSuffix
               costUsd={summary.qaCostUsd}
-              size="tile"
               title={
                 summary.qaHasEstimated
                   ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
@@ -848,164 +712,139 @@ function ExperimentSummaryBar({
               }
             />
           )}
-        </span>
-        {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
-          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-            {formatTokenCount(summary.tokenCount)}
-          </span>
-        )}
-      </KpiTile>
-      {showNewSpend && (
-        <KpiTile
-          label="New spend"
-          labelInfo="Spend from trials this experiment ran itself — excludes trials gathered from other experiments."
-        >
-          <span
-            className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
-            title={
-              costUnavailable
-                ? "New spend is unavailable"
-                : costPending
-                  ? "Calculating new spend…"
-                  : summary.ownedTrialCount > 0
-                    ? `Summed across ${summary.ownedTrialCount} trial${
-                        summary.ownedTrialCount === 1 ? "" : "s"
-                      } this experiment ran itself${
-                        // Billing attribution is a property of who pays, not of
-                        // what the experiment did; surface it here rather than
-                        // in the headline.
-                        summary.billedTrialCount > 0
-                          ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
-                          : ". None of it was billed to a user quota"
-                      }${
-                        costIsSpend
-                          ? ". The table shows only current-version trials"
-                          : ""
-                      }${
-                        summary.ownedHasEstimated && summary.ownedHasNative
-                          ? ". Mixed native + estimated values; ~ marks estimates."
-                          : summary.ownedHasEstimated
-                            ? ". Estimated from token counts × static model pricing."
-                            : ". Reported by the agent runtime."
-                      }`
-                    : // Owned usage first: an experiment whose own trials
-                      // reported tokens but no priced cost DID run work — it
-                      // must not read as a pure collection.
-                      summary.ownedTokenTrialCount > 0
-                      ? "No cost data reported yet for this experiment's own trials"
-                      : summary.costTrialCount > 0
-                        ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
-                        : "No spend from this experiment yet"
+        </SummaryStat>
+        {showNewSpend && (
+          <SummaryStat
+            label="New spend"
+            description="Spend from trials this experiment ran itself — excludes trials gathered from other experiments."
+            hint={
+              !costPending &&
+              !costUnavailable &&
+              summary.ownedTokenTrialCount > 0
+                ? formatTokenCount(summary.ownedTokenCount)
+                : undefined
             }
           >
             {costUnavailable ? (
-              <span className="font-mono text-xs text-[color:var(--paper-fail)]">
+              <span className="text-xs text-[color:var(--paper-fail)]">
                 Unavailable
               </span>
-            ) : costPending ? (
-              <span className="text-[color:var(--paper-ink-3)]">—</span>
-            ) : summary.ownedTrialCount > 0 ? (
-              <>
-                {summary.ownedHasEstimated && !summary.ownedHasNative && (
-                  <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
-                    ~
-                  </span>
-                )}
-                {formatCostUsd(summary.ownedCostUsd)}
-                {summary.ownedHasEstimated && summary.ownedHasNative && (
-                  <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
-                    *
-                  </span>
-                )}
-              </>
-            ) : summary.ownedTokenTrialCount === 0 &&
-              summary.costTrialCount > 0 ? (
-              // Priced work exists and this experiment's own trials reported
-              // nothing at all: an explicit zero ("nothing new was spent")
-              // reads honestly where a dash would read as "unknown". With
-              // owned usage awaiting pricing, the dash is the honest one.
-              <>{formatCostUsd(0)}</>
             ) : (
-              <span className="text-[color:var(--paper-ink-3)]">—</span>
+              <CostValue
+                cost={
+                  costPending
+                    ? null
+                    : summary.ownedTrialCount > 0
+                      ? summary.ownedCostUsd
+                      : summary.ownedTokenTrialCount === 0 &&
+                          summary.costTrialCount > 0
+                        ? 0
+                        : null
+                }
+                hasEstimated={
+                  summary.ownedTrialCount > 0 && summary.ownedHasEstimated
+                }
+                hasNative={summary.ownedHasNative}
+                title={
+                  costPending
+                    ? "Calculating new spend…"
+                    : summary.ownedTrialCount > 0
+                      ? `Summed across ${summary.ownedTrialCount} trial${summary.ownedTrialCount === 1 ? "" : "s"} this experiment ran itself${
+                          summary.billedTrialCount > 0
+                            ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
+                            : ". None of it was billed to a user quota"
+                        }${costIsSpend ? ". The table shows only current-version trials" : ""}`
+                      : summary.ownedTokenTrialCount > 0
+                        ? "No cost data reported yet for this experiment's own trials"
+                        : summary.costTrialCount > 0
+                          ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
+                          : "No spend from this experiment yet"
+                }
+              />
             )}
             {!costPending && !costUnavailable && (
               <QaCostSuffix
                 costUsd={summary.ownedQaCostUsd}
-                size="tile"
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
               />
             )}
-          </span>
-          {!costPending &&
-            !costUnavailable &&
-            summary.ownedTokenTrialCount > 0 && (
-              <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                {formatTokenCount(summary.ownedTokenCount)}
-              </span>
-            )}
-        </KpiTile>
+          </SummaryStat>
+        )}
+      </div>
+      {qa && (
+        <div className="border-t border-[color:var(--paper-line)] pt-2">
+          <SummaryStat
+            label="Task review"
+            description="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
+          >
+            <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-sans text-xs font-normal">
+              {(
+                [
+                  ["accepted", qa.accepted, REVIEW_LABELS.accepted],
+                  ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
+                  ["running", qa.running, "Review queued / running"],
+                  ["failed", qa.failed, REVIEW_LABELS.error],
+                  ["unreviewed", qa.unreviewed, "No current review"],
+                ] as const
+              ).map(([value, count, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={reviewFilter === value}
+                  className={`rounded px-1 py-0.5 text-left ${reviewFilter === value ? "bg-muted text-foreground" : "hover:bg-muted text-[color:var(--paper-ink-2)]"}`}
+                  onClick={() =>
+                    onReviewFilter(reviewFilter === value ? "all" : value)
+                  }
+                >
+                  {count} {label}
+                </button>
+              ))}
+              {reviewFilter !== "all" && (
+                <button
+                  className="underline"
+                  onClick={() => onReviewFilter("all")}
+                >
+                  Show all tasks
+                </button>
+              )}
+            </span>
+          </SummaryStat>
+        </div>
       )}
-      <KpiTile
-        label="Outcome distribution"
-        className="col-span-2 md:col-span-1"
+      <div
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]"
+        aria-label="Outcome distribution"
       >
-        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
-          <span
-            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
-          />
-          <span
-            style={{
-              width: `${partialPct}%`,
-              background: "var(--paper-partial)",
-            }}
-          />
-          <span
-            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
-          />
-          <span
-            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
-          />
-          <span
-            style={{
-              width: `${skippedPct}%`,
-              background: "var(--paper-ink-3)",
-            }}
-          />
+        <div
+          className="flex h-1.5 w-28 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]"
+          aria-hidden="true"
+        >
+          {outcomes.map(([label, count, color]) => (
+            <span
+              key={label}
+              style={{
+                width: `${outcomeTotal ? (count / outcomeTotal) * 100 : 0}%`,
+                background: color,
+              }}
+            />
+          ))}
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
-            {summary.passCount}
-            <span className="text-[color:var(--paper-ink-3)]">pass</span>
-          </span>
-          {summary.partialCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
-              {summary.partialCount}
-              <span className="text-[color:var(--paper-ink-3)]">partial</span>
+        {outcomes
+          .filter(
+            ([label, count]) =>
+              count > 0 || label === "pass" || label === "fail"
+          )
+          .map(([label, count, color]) => (
+            <span key={label} className="inline-flex items-center gap-1.5">
+              <i
+                className="inline-block h-2 w-2 rounded-[2px]"
+                style={{ background: color }}
+              />
+              {count}{" "}
+              <span className="text-[color:var(--paper-ink-3)]">{label}</span>
             </span>
-          )}
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
-            {summary.failCount}
-            <span className="text-[color:var(--paper-ink-3)]">fail</span>
-          </span>
-          {summary.harnessErrorCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
-              {summary.harnessErrorCount}
-              <span className="text-[color:var(--paper-ink-3)]">error</span>
-            </span>
-          )}
-          {summary.skippedTrials > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
-              {summary.skippedTrials}
-              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
-            </span>
-          )}
-        </div>
-      </KpiTile>
+          ))}
+      </div>
     </div>
   );
 }
