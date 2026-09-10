@@ -183,16 +183,22 @@ its content has been painted:
 | Span | Ends when |
 |---|---|
 | `ui.task.open` | The task page's trial matrix is readable. |
-| `ui.files.open` | The selected file's contents are on screen. Text previews only — see below. |
 | `ui.trajectory.open` | The selected trial's trajectory steps are on screen. |
 
-`ui.files.open` deliberately skips binary previews (spreadsheets, documents,
-images). Their fetch resolves when the signed download URL arrives, but the
-renderer then downloads the bytes itself and shows a loading message until they
-land, so treating the URL as readiness would close the span over a spinner and
-report success even when that second download fails. Measuring them needs the
-renderer to report its own readiness; until it does they are left out, because
-no number beats a wrong one.
+The trajectory viewer is itself a dynamic import, but unlike the file renderers
+it owns its own data fetch, so its readiness is observable from the component
+that mounts it.
+
+File previews are not measured yet, and the reason is worth recording so the
+follow-up starts from it. `FileRenderer` code-splits every view — markdown,
+code, notebook, JSON, diff, spreadsheet, document — behind a loading stub, and
+binary previews additionally resolve their fetch when the signed download URL
+arrives rather than when the bytes do. Content being available is therefore
+several hundred milliseconds to several seconds short of content being on
+screen, and on the first open of each file type it is short by exactly the
+chunk wait worth measuring. A correct `ui.files.open` needs the renderers to
+report when they have painted; until they do, no number beats one that is wrong
+in the cold case and reports success over a spinner.
 
 They are emitted by `useOpenLatencySpan`
 (`frontend/src/lib/use-open-latency-span.ts`) under service name

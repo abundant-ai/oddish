@@ -82,11 +82,6 @@ function renderPanel({
         throw new Error("Unexpected request during render");
       },
     },
-    // Telemetry is periphery to the action rules under test, and loading it for
-    // real would pull React and the OpenTelemetry API through a loader that
-    // only admits "@/lib/" paths.
-    "@/lib/use-open-latency-span": { useOpenLatencySpan: () => {} },
-    "@/lib/open-intent": { markOpenIntent: () => {} },
   };
   function load(name: string): unknown {
     if (name in cache) return cache[name];
