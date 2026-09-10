@@ -19,10 +19,17 @@ import { QA_STATUS_LABELS } from "@/lib/deliveries";
 
 /** Review progress and task quality; solver failure never determines this. */
 export function taskReviewStatus(task: Task): keyof typeof QA_STATUS_LABELS {
+  const verdict =
+    task.verdict?.verdict ??
+    (task.verdict?.is_good === true
+      ? "accept"
+      : task.verdict?.is_good === false
+        ? "reject"
+        : null);
   if (
     taskHasActiveVerdict(task) ||
     (task.verdict_status !== "failed" &&
-      task.verdict?.is_good == null &&
+      verdict == null &&
       taskHasActiveAnalysis(task))
   ) {
     return task.verdict_status === "queued" || task.verdict_status === "pending"
@@ -31,8 +38,8 @@ export function taskReviewStatus(task: Task): keyof typeof QA_STATUS_LABELS {
   }
   if (task.verdict_status === "failed") return "error";
   if (task.verdict && task.review_version_matches === false) return "outdated";
-  if (task.verdict?.is_good === false) return "needs_fixes";
-  if (task.verdict?.is_good === true) return "accepted";
+  if (verdict === "reject") return "needs_fixes";
+  if (verdict === "accept") return "accepted";
   return "never";
 }
 

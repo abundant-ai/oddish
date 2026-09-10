@@ -84,7 +84,6 @@ import {
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   rejectedMustFixLabel,
-  taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
@@ -407,9 +406,8 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 ];
 
 // QA is task-scoped: a verdict can come from a run that did not cover this
-// experiment's trials. When settled trials here carry no grade the chip goes
-// dashed ("earlier run"). Clicking opens the task overview, which lists the
-// full graded set.
+// experiment's trials. Report that coverage gap in the tooltip without
+// replacing the verdict or treating the reviewed task version as outdated.
 function TaskVerdictChip({
   task,
   ungradedSettled,
@@ -421,14 +419,8 @@ function TaskVerdictChip({
 }) {
   const status = taskReviewStatus(task);
   const running = status === "queued" || status === "running";
-  const stale =
-    status === "outdated" ||
-    (!running &&
-      status !== "error" &&
-      task.verdict != null &&
-      ungradedSettled > 0);
   const chipClass =
-    status === "error" || stale
+    status === "error" || status === "outdated"
       ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
       : status === "accepted"
         ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
@@ -437,13 +429,13 @@ function TaskVerdictChip({
           : running
             ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
             : "bg-muted text-muted-foreground";
-  const label = stale ? REVIEW_LABELS.outdated : REVIEW_LABELS[status];
+  const label = REVIEW_LABELS[status];
   let tip =
     status === "error"
       ? `This review did not establish task quality. ${task.verdict_error ?? "Inspect review evidence."}`
       : `${label}. Human delivery sign-off is separate`;
 
-  if (stale && ungradedSettled > 0) {
+  if (!running && status !== "error" && task.verdict && ungradedSettled > 0) {
     tip += `. From an earlier QA run: ${ungradedSettled} settled trial${
       ungradedSettled === 1 ? "" : "s"
     } in this experiment ${ungradedSettled === 1 ? "was" : "were"} not part of it`;
@@ -624,7 +616,7 @@ export function ExperimentTrialsTable({
   const rejectedOnly = rejectedOnlyProp ?? rejectedOnlyState;
   const setRejectedOnly = onRejectedOnlyChange ?? setRejectedOnlyState;
   const rejectedTasks = useMemo(
-    () => tasks.filter(taskHasRejectedVerdict),
+    () => tasks.filter((task) => taskReviewStatus(task) === "needs_fixes"),
     [tasks]
   );
   const rejectedCount = rejectedTasks.length;
@@ -2595,7 +2587,7 @@ export function ExperimentTrialsTable({
                                   }
                                 />
                               )}
-                              {showAnalysis && taskHasRejectedVerdict(task) && (
+                              {showAnalysis && taskReviewStatus(task) === "needs_fixes" && (
                                 <div className="min-w-0">
                                   <Button
                                     type="button"

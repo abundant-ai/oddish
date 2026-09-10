@@ -60,7 +60,6 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import { taskReviewStatus, REVIEW_LABELS } from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { taskHasRejectedVerdict } from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -1468,12 +1467,16 @@ export function ExperimentDetailView({
       .filter((task): task is Task => task != null);
     const preservedOrderedTasks =
       drawerState.taskNavScope === "rejected"
-        ? remappedOrderedTasks.filter(taskHasRejectedVerdict)
+        ? remappedOrderedTasks.filter(
+            (task) => taskReviewStatus(task) === "needs_fixes"
+          )
         : remappedOrderedTasks;
     const seen = new Set(preservedOrderedTasks.map((task) => task.id));
     const growthPool =
       drawerState.taskNavScope === "rejected"
-        ? tasksForExperiment.filter(taskHasRejectedVerdict)
+        ? tasksForExperiment.filter(
+            (task) => taskReviewStatus(task) === "needs_fixes"
+          )
         : tasksForExperiment;
     const scopedOrderedTasks = [
       ...preservedOrderedTasks,

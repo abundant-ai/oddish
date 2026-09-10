@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 
-import { EXECUTION_LABELS, findingHref } from "@/lib/review";
+import { EXECUTION_LABELS, findingHref, taskReviewStatus } from "@/lib/review";
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,10 +14,7 @@ import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
-import {
-  isActivePipelineStatus,
-  taskHasRejectedVerdict,
-} from "@/lib/job-status";
+import { isActivePipelineStatus } from "@/lib/job-status";
 import { isAgentTrial } from "@/lib/types";
 import type {
   AnalysisClassification,
@@ -624,7 +621,7 @@ export function TaskOverviewPanel({
             variant="inline"
             qaActive={qaActive}
             detail={
-              taskHasRejectedVerdict(verdictTask) && mustFixCount > 0
+              taskReviewStatus(verdictTask) === "needs_fixes" && mustFixCount > 0
                 ? `${mustFixCount} Must Fix`
                 : undefined
             }
