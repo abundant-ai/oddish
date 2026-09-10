@@ -329,3 +329,107 @@ async def test_versioned_trial_detail_cold_and_warm_query_counts(api, by_index):
             await session.execute(
                 ExperimentModel.__table__.delete().where(ExperimentModel.id == task_id)
             )
+
+
+@pytest.mark.parametrize(
+    "suffix,reader,result",
+    [
+        (
+            "files?recursive=0&prefix=agent&limit=100&cursor=next",
+            "list_trial_files_s3",
+            {"files": [], "cursor": "later"},
+        ),
+        (
+            "files/agent/log.txt",
+            "get_trial_file_content_s3",
+            (b"trial bytes", "text/plain"),
+        ),
+        ("logs", "read_trial_logs", {"logs": "trial log"}),
+        (
+            "logs/structured?verifier_only=true",
+            "read_trial_logs_structured",
+            {"logs": []},
+        ),
+        ("trajectory", "read_trial_trajectory", {"steps": []}),
+        ("result", "read_trial_result", {"reward": 1}),
+    ],
+)
+async def test_trial_artifact_reads_share_approval_and_release_before_io(
+    api, monkeypatch, suffix, reader, result
+):
+    from oddish.db import ExperimentModel, TaskModel, TrialModel, TrialStatus
+
+    task_id = f"files_{uuid.uuid4().hex[:8]}"
+    trial_id = task_id + "-0"
+    async with get_session() as session:
+        session.add(ExperimentModel(id=task_id, name=task_id, org_id=api.org_id))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                task_path="/tmp/task",
+                org_id=api.org_id,
+                user="test",
+            )
+        )
+        await session.flush()
+        session.add(
+            TrialModel(
+                id=trial_id,
+                name=trial_id,
+                task_id=task_id,
+                experiment_id=task_id,
+                org_id=api.org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="anthropic/test",
+                status=TrialStatus.SUCCESS,
+            )
+        )
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def storage(trial, *args, **kwargs):
+        assert trial.id == trial_id
+        assert api.counts.active == 0
+        if reader == "list_trial_files_s3":
+            assert kwargs["cursor"] == "next" and kwargs["limit"] == 100
+            assert kwargs["recursive"] is False
+        entered.set()
+        await release.wait()
+        return result
+
+    storage_mock = AsyncMock(side_effect=storage)
+    monkeypatch.setattr(trials, reader, storage_mock)
+    api.counts.checkouts = 0
+    pending = asyncio.create_task(api.client.get(f"/trials/{trial_id}/{suffix}"))
+    try:
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert api.counts.checkouts == 1
+            assert api.counts.active == 0
+        finally:
+            release.set()
+            response = await pending
+        assert response.status_code == 200, response.text
+        async with get_session() as session:
+            await session.execute(
+                OrganizationModel.__table__.update()
+                .where(OrganizationModel.id == api.org_id)
+                .values(execution_enabled=False)
+            )
+        storage_mock.reset_mock()
+        response = await api.client.get(f"/trials/{trial_id}/{suffix}")
+        assert response.status_code == 403
+        storage_mock.assert_not_awaited()
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.id == trial_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(ExperimentModel.id == task_id)
+            )

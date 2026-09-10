@@ -2050,7 +2050,7 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               contentOnly={true}
             />
           }
@@ -2069,7 +2069,7 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();

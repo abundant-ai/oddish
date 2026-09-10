@@ -5,7 +5,7 @@ let identity = {
   orgRole: "org:admin",
   userId: "maya",
   orgId: "fixture",
-  isLoaded: false,
+  isLoaded: true,
 };
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
