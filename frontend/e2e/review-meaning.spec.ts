@@ -46,7 +46,7 @@ test.describe("real components with local fixture API", () => {
     });
     await page.goto("/deliveries/review-demo");
     const blocker = page.getByRole("link", {
-      name: "Task A · v7 · The verifier accepts an empty answer.",
+      name: "The verifier accepts an empty answer.",
       exact: true,
     });
     await expect(blocker).toBeVisible();

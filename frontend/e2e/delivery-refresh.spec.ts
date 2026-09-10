@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { board, history, taskRow } from "./delivery-fixtures";
+import { board, history, taskRow, reviewTaskRow } from "./delivery-fixtures";
 
 async function controlledAPI(page: Page) {
   const state = {
@@ -21,6 +21,19 @@ async function controlledAPI(page: Page) {
           (c) => c.key === body.check_key
         );
         if (check) check.status = body.checked ? "pass" : "fail";
+        const task = state.board.tasks[0];
+        if (String(body.check_key).startsWith("ack:")) {
+          const defect = task.defects.find(
+            (defect) => `ack:${defect.id}` === body.check_key
+          )!;
+          defect.acknowledged = true;
+          defect.acknowledged_by_name = "Maya";
+          task.checks.find((check) => check.key === "no_must_fix")!.status =
+            task.defects.every((defect) => defect.acknowledged)
+              ? "pass"
+              : "fail";
+          task.ready = task.checks.every((check) => check.status !== "fail");
+        }
       } else if (path.endsWith("/qa-work")) {
         state.board.tasks[0].qa_work.note = body.note;
       } else if (path.endsWith("/tasks") && request.method() === "POST") {
@@ -62,9 +75,10 @@ async function controlledAPI(page: Page) {
 }
 
 const current = (page: Page, version = 7) =>
-  page.getByRole("button", { name: new RegExp(`v${version} current`) });
+  page.locator("summary").filter({ hasText: new RegExp(`v${version}current`) });
 async function openBoard(page: Page) {
   await page.goto("/?task=task-a");
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
 }
 async function tick(page: Page) {
@@ -96,7 +110,7 @@ test("non-default creation keeps v7; default switch shows v8 with v7 history sti
   state.history = history(7, 8);
   await tick(page);
   await expect(
-    page.getByRole("button", { name: /v8 Version 8/ })
+    page.locator("summary").filter({ hasText: /v8Version 8/ })
   ).toBeVisible();
   await expect(current(page)).toBeVisible();
   state.board = board(8);
@@ -104,13 +118,13 @@ test("non-default creation keeps v7; default switch shows v8 with v7 history sti
   await tick(page);
   await expect(current(page, 8)).toBeVisible();
   await expect(
-    page.getByText(/Audit complete.*Audit missing for v8/)
+    page.getByText("Audit missing for v8", { exact: true })
   ).toBeVisible();
   await expect(
     page.getByText("v7 historical finding", { exact: true })
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /v1 Version 1/ })
+    page.locator("summary").filter({ hasText: /v1Version 1/ })
   ).toBeVisible();
   await expect(page).toHaveURL(/task=task-a/);
   expect(state.writes).toEqual([]);
@@ -151,17 +165,20 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
     page.getByRole("link", { name: "Task B", exact: true })
   ).toBeVisible();
   await expect(page.getByText("Teammate", { exact: true })).toBeVisible();
+  await expect(page.getByText("Known defect")).toBeHidden();
+  await page
+    .locator("summary")
+    .filter({ hasText: /^Acknowledged/ })
+    .click();
   await expect(page.getByText("Known defect")).toBeVisible();
   await expect(
-    page.getByText("Requires resolution or acknowledgment for v7.", {
-      exact: true,
-    })
+    page.getByRole("button", { name: "Acknowledge for v7", exact: true })
   ).toHaveCount(0);
   await expect(
     page
       .getByRole("listitem")
       .filter({ hasText: "Known defect" })
-      .getByRole("button", { name: "Acknowledge", exact: true })
+      .getByRole("button", { name: "Acknowledge for v7", exact: true })
   ).toHaveCount(0);
   state.board.tasks.pop();
   state.board.tasks[0].checks[1].status = "fail";
@@ -170,9 +187,7 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
   state.board.tasks[0].defects[0].acknowledged = false;
   await tick(page);
   await expect(
-    page.getByText("Requires resolution or acknowledgment for v7.", {
-      exact: true,
-    })
+    page.getByRole("button", { name: "Acknowledge for v7", exact: true })
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Task B", exact: true })
@@ -181,7 +196,7 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
     page
       .getByRole("listitem")
       .filter({ hasText: "Known defect" })
-      .getByRole("button", { name: "Acknowledge", exact: true })
+      .getByRole("button", { name: "Acknowledge for v7", exact: true })
   ).toBeVisible();
   expect(state.writes).toEqual([]);
 });
@@ -198,6 +213,7 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   }));
   state.board.tasks[25] = taskRow();
   await page.goto("/?page=2&filter=blocked&task=task-a");
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await page.getByRole("button", { name: "Show all 7 versions" }).click();
   await current(page).click();
@@ -231,7 +247,7 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
   await expect(current(page)).toContainText("qa (success)");
   await expect(
-    page.getByRole("button", { name: /v1 Version 1/ })
+    page.locator("summary").filter({ hasText: /v1Version 1/ })
   ).toBeVisible();
   expect(page.url()).toBe(url);
   expect(state.writes).toEqual([]);
@@ -302,6 +318,7 @@ test("local add, remove and sign-off refresh immediately and checks carry the vi
   await expect(
     page.getByRole("link", { name: "Task B", exact: true })
   ).toBeVisible();
+  await page.getByText("Task actions", { exact: true }).click();
   await page.getByRole("button", { name: "Remove from delivery" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(
@@ -344,6 +361,7 @@ test("finalized delivery does not poll and distinguishes live history from shipp
   await expect(
     page.getByText("Live task history · delivery shipped v7")
   ).toBeVisible();
+  await page.getByText("Live task history · delivery shipped v7").click();
   await expect(current(page, 8)).toBeVisible();
   const reads = { ...state.reads };
   await page.clock.fastForward(60000);
@@ -396,6 +414,7 @@ test("a failed first board load can recover without navigating away", async ({
   );
   state.failBoard = false;
   await page.getByRole("button", { name: "Retry delivery" }).click();
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await expect(page).toHaveURL(/filter=blocked&task=task-a/);
   expect(state.writes).toEqual([]);
@@ -439,6 +458,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
 }) => {
   const state = await controlledAPI(page);
   await page.goto("/?seed=fresh&filter=all&task=task-a&source=agent");
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   expect(state.reads).toEqual({ board: 0, history: 1 });
   await page.evaluate(() =>
@@ -450,12 +470,14 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   );
   await expect(page).toHaveURL(/group=owner/);
   await page.goBack();
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   expect(state.reads.board).toBe(0);
   await page.goForward();
   await expect(page).toHaveURL(/group=owner/);
   expect(state.reads.board).toBe(0);
   await page.goBack();
+  await page.getByText("QA history", { exact: true }).click();
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");
@@ -472,6 +494,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   expect(state.writes).toHaveLength(1);
   await page.clock.setSystemTime(new Date());
   await page.reload();
+  await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   expect(state.reads.board).toBe(2);
   await expect(page).toHaveURL(/source=agent/);
@@ -502,7 +525,166 @@ test("a frozen server board has no initial or periodic board requests", async ({
 }) => {
   const state = await controlledAPI(page);
   await page.goto("/?seed=frozen&filter=all&task=task-a");
+  await page.getByText("Live task history · delivery shipped v7").click();
   await expect(current(page)).toBeVisible();
   await page.clock.fastForward(60000);
   expect(state.reads).toEqual({ board: 0, history: 1 });
+});
+
+test("review shows outstanding decisions first and acknowledgment retains the version and evidence", async ({
+  page,
+}, testInfo) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = [
+    reviewTaskRow(),
+    {
+      ...taskRow(),
+      task_id: "task-b",
+      task_name: "Next task",
+      delivery_task_id: "member-b",
+    },
+  ];
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.goto("/?task=task-a");
+  const pending = page
+    .locator("details")
+    .filter({
+      has: page.locator("summary").filter({ hasText: /^Needs a decision/ }),
+    })
+    .first();
+  const accepted = page
+    .locator("details")
+    .filter({
+      has: page.locator("summary").filter({ hasText: /^Acknowledged/ }),
+    })
+    .first();
+  await expect(pending.locator("summary").first()).toHaveText(
+    "Needs a decision · 2 findings · v1"
+  );
+  await expect(accepted.locator("summary").first()).toHaveText(
+    "Acknowledged · 3 findings, 2 checks · v1"
+  );
+  await expect(
+    page.getByRole("link", {
+      name: state.board.tasks[0].task_name,
+      exact: true,
+    })
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Acknowledge for v1", exact: true })
+  ).toHaveCount(2);
+  await expect(
+    page.getByText(
+      "Sign-off is recorded. Outstanding finding or check decisions still block delivery."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("Enough rollouts", { exact: true })).toHaveCount(
+    0
+  );
+  await expect(
+    page.getByText("The image build leaves", { exact: false })
+  ).toBeHidden();
+  await expect(current(page, 1)).toBeHidden();
+  await page.evaluate(() => {
+    document.documentElement.classList.add("dark");
+    window.scrollTo(0, 0);
+  });
+  await page.clock.runFor(300);
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("delivery-review-dark.png"),
+    fullPage: true,
+  });
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
+  await page.clock.runFor(300);
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("delivery-review-light.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth
+    )
+  ).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const verifier = pending
+    .getByRole("listitem")
+    .filter({ hasText: "The verifier does not check" });
+  await verifier.getByText("Review evidence", { exact: true }).click();
+  await expect(
+    verifier.getByText("Fixture evidence:", { exact: false })
+  ).toBeVisible();
+  const evidenceHref = await verifier.getByRole("link").getAttribute("href");
+  expect(evidenceHref).toContain("version=1");
+  expect(evidenceHref).toContain("finding=verifier");
+  expect(evidenceHref).toContain("taskFile=tests%2Ftest.sh");
+  expect(state.writes).toEqual([]);
+  await verifier
+    .getByRole("button", { name: "Acknowledge for v1", exact: true })
+    .click();
+  await expect(pending.locator("summary").first()).toHaveText(
+    "Needs a decision · 1 finding · v1"
+  );
+  await expect(accepted.locator("summary").first()).toHaveText(
+    "Acknowledged · 4 findings, 2 checks · v1"
+  );
+  expect(state.writes[0].body).toMatchObject({
+    check_key: "ack:verifier",
+    expected_version_id: "version-1",
+    checked: true,
+  });
+  await expect(page).toHaveURL(/task=task-a/);
+  await accepted.locator("summary").first().click();
+  const retained = accepted
+    .getByRole("listitem")
+    .filter({ hasText: "The verifier does not check" });
+  await expect(retained).toContainText("Recorded severity: should_fix");
+  await expect(retained).toContainText(
+    "Acknowledged by Maya for v1; finding retained"
+  );
+  await expect(retained.getByRole("link")).toHaveAttribute(
+    "href",
+    evidenceHref!
+  );
+  await retained.getByText("Review evidence", { exact: true }).click();
+  await expect(
+    retained.getByText("Fixture evidence:", { exact: false })
+  ).toBeVisible();
+  await pending
+    .getByRole("button", { name: "Acknowledge for v1", exact: true })
+    .click();
+  await expect(
+    page.getByText("Needs a decision", { exact: false })
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Ready to deliver", { exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByText("Review could not complete", { exact: true })
+  ).toBeVisible();
+  expect(state.writes.map(({ body }) => body.check_key)).toEqual([
+    "ack:verifier",
+    "ack:environment",
+  ]);
+});
+
+test("finalized review exposes evidence but cannot acknowledge outstanding findings", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = [reviewTaskRow()];
+  state.board.frozen = true;
+  await page.goto("/?task=task-a");
+  for (const button of await page
+    .getByRole("button", { name: "Acknowledge for v1", exact: true })
+    .all()) {
+    await expect(button).toBeDisabled();
+  }
+  await page.getByText("Review evidence", { exact: true }).click();
+  await expect(
+    page.getByText("Fixture evidence:", { exact: false })
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
 });

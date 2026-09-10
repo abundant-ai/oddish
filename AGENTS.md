@@ -2083,6 +2083,12 @@ missing and outdated reviews, and remains visible when every task is unreviewed.
 Delivery `filter` defaults to `outstanding`; `filter=all` restores the complete
 inventory. A `task` link resolves against the inventory (ID before legacy name)
 and keeps that row visible across filters, pagination, and sign-off refreshes.
+Expanded delivery tasks show unresolved findings and failed checks first;
+acknowledged findings and waived checks share a collapsed record. Individual
+findings replace the duplicate `no_must_fix` explanation when findings exist.
+The board derives delivery blockers independently of review status and recorded
+sign-off. Review filters, passed checks, and history use native disclosures;
+history remains mounted so board refreshes preserve its open versions.
 
 Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
 on `/tasks/{id}`. Overview preserves the file and line address for sharing.

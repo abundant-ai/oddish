@@ -568,9 +568,12 @@ test.describe("authenticated task view", () => {
     await page.getByRole("button", { name: "readme.txt" }).click();
     await expect(page.getByText("text preview loaded")).toBeVisible();
     await expect(page.getByText(/Showing first 100\.0 KB/)).toBeVisible();
+    await expect(page).toHaveURL(/taskFile=readme\.txt/);
 
     await page.getByRole("button", { name: "preview.png" }).click();
     await binaryRequestStarted;
+    await expect(page).toHaveURL(/taskFile=preview\.png/);
+    await expect(page.getByText("text preview loaded")).toHaveCount(0);
     await expect(page.getByRole("img", { name: "preview.png" })).toHaveCount(0);
     expect(
       binaryRequests.filter((url) => url.searchParams.get("presign") !== "1")
@@ -579,6 +582,17 @@ test.describe("authenticated task view", () => {
     releaseBinaryRequest();
     await expect(page.getByRole("img", { name: "preview.png" })).toBeVisible();
     expect(binaryRequests).toHaveLength(1);
+
+    // An incoming URL change must still select its file after a local click.
+    await page.evaluate(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("taskFile", "readme.txt");
+      window.history.pushState(null, "", url);
+    });
+    await expect(page.getByText("text preview loaded")).toBeVisible();
+    await expect(page.getByRole("img", { name: "preview.png" })).toHaveCount(0);
+    await page.goBack();
+    await expect(page.getByRole("img", { name: "preview.png" })).toBeVisible();
   });
 
   test("bounded open renders exact metrics, recent previews, historical experiments, and default switching", async ({

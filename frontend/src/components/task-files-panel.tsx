@@ -1443,7 +1443,35 @@ export function TaskFilesPanel({
     }
   }, [isOpen, taskId]);
 
-  // Synchronize a deep-linked file with its selection and directory pages.
+  const initialFileNode =
+    initialFilePath && !loadsTaskTreeByDirectory
+      ? (findNodeByPath(fileTree, initialFilePath) ??
+        findNodeBySuffix(fileTree, initialFilePath))
+      : null;
+  const initialSelectionPath =
+    initialFilePath &&
+    (loadsTaskTreeByDirectory || fileTree.length > 0) &&
+    initialFileNode?.type !== "dir"
+      ? (initialFileNode?.path ?? initialFilePath)
+      : null;
+  const applyInitialFileSelection = useEffectEvent((path: string) => {
+    if (selectedFilePath !== path) selectFilePath(path);
+  });
+
+  // Apply an incoming file address, not every local selection change. Next's
+  // search params can still contain the previous file just after a click.
+  useEffect(() => {
+    if (!isOpen || activePane !== "file" || !initialSelectionPath) return;
+    applyInitialFileSelection(initialSelectionPath);
+  }, [
+    activePane,
+    initialSelectionPath,
+    isOpen,
+    fileListIdentity,
+    listingContentHash,
+  ]);
+
+  // Directory responses can expand the deep link without reselecting it.
   useEffect(() => {
     if (!isOpen || activePane !== "file" || !initialFilePath) return;
     if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
@@ -1472,12 +1500,6 @@ export function TaskFilesPanel({
         }
       }
     }
-
-    if (node?.type === "dir") return;
-
-    // A file URL is already an exact resource address. Selecting it does not
-    // depend on whether its containing directory page happens to include it.
-    if (selectedFilePath !== targetPath) selectFilePath(targetPath);
   }, [
     activePane,
     directoryListings,
@@ -1486,8 +1508,6 @@ export function TaskFilesPanel({
     isOpen,
     loadDirectoryPage,
     loadsTaskTreeByDirectory,
-    selectFilePath,
-    selectedFilePath,
   ]);
 
   useEffect(() => {
