@@ -140,13 +140,11 @@ def _validate_explicit_environment_for_task(
         )
 
 
-def _default_cloud_environment_for_task(
+def _required_cloud_environment_for_task(
     task_path: Path | None,
     *,
     override_gpus: int | None,
-) -> EnvironmentType:
-    from oddish.runtime.routing import default_cloud_environment
-
+) -> EnvironmentType | None:
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
         requires_gpu = override_gpus > 0
@@ -165,7 +163,9 @@ def _default_cloud_environment_for_task(
         # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
         # hosted deployment validates the choice against its own cloud policy.
         return EnvironmentType.GKE
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    if requires_gpu:
+        return EnvironmentType.MODAL
+    return None
 
 
 def _map_batch_sweep_results(
@@ -943,7 +943,7 @@ def run(
         task_environment = environment
         _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
-            task_environment = _default_cloud_environment_for_task(
+            task_environment = _required_cloud_environment_for_task(
                 task_path,
                 override_gpus=override_gpus,
             )

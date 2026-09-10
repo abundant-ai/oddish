@@ -181,6 +181,79 @@ async def test_non_gke_environment_stays_on_default_variant():
         assert variants and all(v == "default" for v in variants)
 
 
+async def test_retry_preparation_reuses_the_environment_stored_on_the_trial():
+    from harbor.models.environment_type import EnvironmentType
+
+    from oddish.workers.harbor.runner import HarborOutcome
+    from oddish.workers.queue import trial_handler
+
+    task_id = "hsweep-archil-retry"
+    async with get_session() as session:
+        await _cleanup(session, task_id)
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="t",
+                org_id=None,
+                task_path="p",
+            )
+        )
+        await session.flush()
+        _task, trials, _is_append, _exp = await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id=task_id,
+                configs=[AgentModelPair(agent="nop", n_trials=1)],
+            ),
+            default_environment=EnvironmentType.ARCHIL,
+        )
+        trial_id = trials[0].id
+
+    first_attempt = await trial_handler._prepare_trial_run(
+        trial_id=trial_id,
+        worker_id=None,
+        queue_slot=None,
+        modal_function_call_id=None,
+    )
+    assert first_attempt is not None
+    assert first_attempt.trial_attempt == 1
+    assert first_attempt.trial_environment == EnvironmentType.ARCHIL
+
+    terminal, _run_hooks, event = await trial_handler._store_trial_results(
+        trial_id=trial_id,
+        outcome=HarborOutcome(
+            reward=None,
+            error="ConnectionResetError: provider transport failed",
+            exit_code=-1,
+            duration_sec=1.0,
+            job_result_path=None,
+            job_dir=None,
+            exception_type="ConnectionResetError",
+        ),
+        trial_s3_key=None,
+        execution_error=None,
+        trial_attempt=first_attempt.trial_attempt,
+    )
+    assert terminal is False
+    assert event is None
+
+    second_attempt = await trial_handler._prepare_trial_run(
+        trial_id=trial_id,
+        worker_id=None,
+        queue_slot=None,
+        modal_function_call_id=None,
+    )
+    assert second_attempt is not None
+    assert second_attempt.trial_attempt == 2
+    assert second_attempt.trial_environment == EnvironmentType.ARCHIL
+
+    async with get_session() as session:
+        stored_trial = await session.get(trial_handler.TrialModel, trial_id)
+        assert stored_trial is not None
+        assert stored_trial.environment == EnvironmentType.ARCHIL
+
+
 async def test_effective_sweep_environment_resolution_is_db_free():
     # Bug B core logic, provable WITHOUT a DB (the append integration test below
     # is DB-gated). The harbor stamp must resolve the SAME environment as

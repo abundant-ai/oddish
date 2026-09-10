@@ -505,6 +505,47 @@ def log_warning(
         logger.warning("logfire.warning(%r) failed", message, exc_info=True)
 
 
+def record_trial_execution_finished(
+    *,
+    trial_id: str,
+    kind: str,
+    environment: str,
+    status: str,
+    harbor_stage: str | None,
+    attempts: int,
+    environment_setup_seconds: float | None,
+    total_seconds: float | None,
+) -> None:
+    """Emit one structured event after a trial settlement commits."""
+    attributes = {
+        "event": "trial_execution_finished",
+        "trial_id": trial_id,
+        "kind": kind,
+        "environment": environment,
+        "status": status,
+        "harbor_stage": harbor_stage,
+        "attempts": attempts,
+        "environment_setup_seconds": environment_setup_seconds,
+        "total_seconds": total_seconds,
+    }
+    if not _configured:
+        rendered = " ".join(
+            f"{key}={value!r}" for key, value in sorted(attributes.items())
+        )
+        logger.info("trial_execution_finished %s", rendered)
+        return
+    try:
+        import logfire
+
+        logfire.info("trial_execution_finished", **attributes)
+    except Exception:
+        logger.warning(
+            "logfire.info(%r) failed",
+            "trial_execution_finished",
+            exc_info=True,
+        )
+
+
 def log_unpriced_trial_if_needed(
     *,
     cost_usd: float | None,

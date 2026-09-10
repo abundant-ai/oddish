@@ -60,6 +60,68 @@ def test_log_warning_keeps_standard_log_when_logfire_is_disabled(
     assert "Trial has token usage but no resolved cost" in caplog.text
 
 
+def test_trial_execution_finished_emits_structured_logfire_record(monkeypatch) -> None:
+    calls = []
+    fake_logfire = SimpleNamespace(
+        info=lambda message, **attributes: calls.append((message, attributes))
+    )
+    monkeypatch.setitem(__import__("sys").modules, "logfire", fake_logfire)
+    monkeypatch.setattr(observability, "_configured", True)
+    observability.record_trial_execution_finished(
+        trial_id="trial-1",
+        kind="agent",
+        environment="archil",
+        status="failed",
+        harbor_stage="environment_setup",
+        attempts=3,
+        environment_setup_seconds=42.5,
+        total_seconds=47.0,
+    )
+
+    assert calls == [
+        (
+            "trial_execution_finished",
+            {
+                "event": "trial_execution_finished",
+                "trial_id": "trial-1",
+                "kind": "agent",
+                "environment": "archil",
+                "status": "failed",
+                "harbor_stage": "environment_setup",
+                "attempts": 3,
+                "environment_setup_seconds": 42.5,
+                "total_seconds": 47.0,
+            },
+        )
+    ]
+
+
+def test_trial_execution_finished_keeps_standard_log_when_logfire_is_disabled(
+    monkeypatch, caplog
+) -> None:
+    calls = []
+    fake_logfire = SimpleNamespace(
+        info=lambda message, **attributes: calls.append((message, attributes))
+    )
+    monkeypatch.setitem(__import__("sys").modules, "logfire", fake_logfire)
+    monkeypatch.setattr(observability, "_configured", False)
+    caplog.set_level(logging.INFO, logger=observability.__name__)
+
+    observability.record_trial_execution_finished(
+        trial_id="trial-2",
+        kind="audit",
+        environment="daytona",
+        status="success",
+        harbor_stage="completed",
+        attempts=2,
+        environment_setup_seconds=2.0,
+        total_seconds=22.0,
+    )
+
+    assert calls == []
+    assert "trial_execution_finished" in caplog.text
+
+
 def test_unpriced_trial_helper_only_logs_null_cost_with_tokens(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
