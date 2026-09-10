@@ -1265,7 +1265,7 @@ export function TaskDetailClient({
             ))
           )}
           {analysisTrialsForVersion.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--paper-line)] pt-3">
               <span className="text-[11px] tracking-wide text-[color:var(--paper-ink-3)] uppercase">
                 QA
               </span>
