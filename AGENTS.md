@@ -1125,6 +1125,13 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
   `_AI_SDK_MODEL_ID_AGENTS`); add a new agent to the set matching its client.
+- Dockerfile-only tasks on Modal, Daytona, and Archil support public setup
+  followed by a restricted agent phase. Oddish adds the selected model and
+  agent runtime hosts to the agent-phase allowlist and disables supported
+  server-side web tools. This does not widen a restricted environment baseline:
+  legacy `allow_internet=false` still blocks agent installation unless its
+  dependencies are already available or explicitly allowed. Custom Compose
+  tasks use the separate Daytona-only restricted-network profile.
 - Kubernetes task charts that enforce their own runtime egress boundary can opt
   into Oddish's model-route bridge with a chart-root
   `.oddish-agent-egress-hosts` marker containing exactly
@@ -1709,6 +1716,14 @@ All authenticated hosted routes check `organizations.execution_enabled` through
 `backend/org_access.py`, including cached API keys. This check returns the fresh
 organization row (without loading relationships), and `require_auth` supplies it
 on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+`authorized_read_session(request, auth)` owns the same checks for read routes:
+resolve identity before entering, then check analysis-key resource restrictions
+and current organization approval on the borrowed read session. Trial detail,
+task open/panel/detail/files, delivery-board and QA-history reads reuse that
+session for their resource queries. End the scope before storage downloads or
+streaming; never hold a database connection across artifact I/O. Other routes
+keep `require_auth`, which uses the same checks but releases the session before
+returning. Workers can still call `require_execution_org` without a session.
 The shared Modal image must copy `org_access` through `add_local_python_source`
 in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
 installs dependencies without installing the backend project itself.
@@ -1948,6 +1963,20 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 
 ## `frontend/` — Next.js Dashboard
 
+Task and experiment drawers share the `experiment.trial-drawer` layout saved
+through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).
+The hosted `user_ui_layouts` table keys versioned JSON by authenticated
+organization-membership user ID and layout key. Only Clerk user sessions may
+access it. Apply backend migration `user_ui_layouts_001` before deployment.
+`use-user-ui-layout.ts` owns an account-specific store; it loads once per mounted
+page, merges gestures made while loading, and serializes coalesced writes.
+Only gestures save: viewport clamping and restoration never write a preference.
+The preferred expanded width survives maximizing; hidden panes preserve the
+last noncollapsed split. Public pages use local state without preference API
+requests. The old browser-global keys are not imported because they have no
+account ownership. A read failure leaves the drawer usable and exposes Retry;
+it must not overwrite an unread server preference with defaults.
+
 The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
@@ -2032,12 +2061,21 @@ folders. Keep the task navigation and overview mounted while the listing loads.
 Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
+`per_page` (10, 25, 50, or 100 rows; defaults to 25),
 `filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
 reads these directly with `useSearchParams`; native history updates preserve
 Back/Forward behavior without refetching the already-loaded full board.
 Filter/group changes reset the page and task focus. Bulk selections and draft
-edits remain local. The board owns the existing 15-second SWR refresh: each
+edits remain local. The delivery page passes its server-loaded board with the
+Clerk user/org IDs and fetch time to a page-owned SWR cache. The cache is keyed
+by user, organization, and delivery, never by presentation filters. A matching
+server result suppresses the immediate browser board read; missing/mismatched
+results fetch normally, and non-frozen snapshots at least 15 seconds old refresh
+on activation. The board and expanded history share this cache and its mutate
+functions. Experiment metadata uses the route ID without a backend request;
+the active browser page updates its tab title from the already-loaded experiment
+name. The board owns the existing 15-second SWR refresh: each
 successful read also revalidates the expanded task's QA history, including
 reads after page mutations. History has no separate timer. Refresh errors
 retain loaded data with a stale warning and adjacent retry; revalidation never
@@ -2172,3 +2210,31 @@ history exposes each retained version decision. New versions inherit neither
 findings nor decisions. Finalized delivery snapshots are never recomputed.
 Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
+
+
+Delivery overview uses the full board for current readiness, owner review
+outcomes (including completed tasks), and open/acknowledged finding counts;
+table filters never change these counts. Owner bars derive disjoint outcomes
+through `deliveryOwnerOutcome`: red for unresolved findings or rejected QA,
+green for accepted QA, grey only for rejected QA with at least one finding,
+all findings acknowledged, and human sign-off on the displayed version. Amber
+means QA is incomplete, missing, failed, or outdated. Sign-off totals are
+shown separately from QA outcomes and do not imply every delivery check passes.
+Selecting an owner shows all their tasks, including completed work. The daily
+history remains delivery-readiness history; it does not infer past owner outcomes. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
+preserves disclosure state as comma-separated panel IDs, with `!` for explicit
+collapse of a default-open section; drafts, dialogs, and bulk selection stay local.
+The board response includes `progress_history`: at most 30 daily observations
+(latest per UTC day). The page adds no request or polling timer for this chart.
+
+Apply core migration `delivery_progress_001` before deploying. The hosted
+`record_delivery_history` function samples active deliveries hourly through the
+existing Modal worker deployment; self-hosted operators can schedule
+`python -m oddish.core.delivery_progress` hourly. Each delivery commits separately
+under its delivery lock. The `(delivery_id, sample_hour)` primary key makes retries
+replace the hour's observation. Errors log the affected delivery ID and do not
+roll back other deliveries. Reads never record history. Finalization records the
+last observation and freezes daily history in the shipping snapshot. Old finalized
+snapshots remain unchanged. Progress history is stripped from customer-safe
+snapshots because its counts include internal/hidden tasks. Acknowledged findings
+are exceptions, not verified repairs; missing days have no observation, not zero.

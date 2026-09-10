@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR, { SWRConfig, useSWRConfig } from "swr";
 import {
   Check,
   ChevronDown,
@@ -18,6 +18,7 @@ import { findingHref } from "@/lib/review";
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
+  DELIVERY_PAGE_SIZES,
   parseDeliveryView,
   deliveryViewQuery,
   type DeliveryTaskFilter,
@@ -27,6 +28,8 @@ import {
   QA_ISSUE_LABELS,
   QA_STATUS_LABELS,
 } from "@/lib/deliveries";
+import { DeliveryDisclosure } from "@/components/delivery-disclosure";
+import { DeliveryOverview } from "@/components/delivery-overview";
 import { DeliveryQAWorkEditor } from "@/components/delivery-qa-work-editor";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
@@ -339,8 +342,9 @@ function ManualCheckRow({
 
 // Versions listed before "Show all" expands the history.
 const QA_HISTORY_PAGE = 5;
-// Task rows per page on the board.
-const TASK_PAGE_SIZE = 25;
+// Prefetching QA history for a whole 100-row page would fire 100 requests
+// at once; the first rows cover what a person reaches quickly.
+const QA_PREFETCH_LIMIT = 25;
 
 /** The board filter. The three non-"all" states are disjoint: every task
  * is blocked (a failing automated check or an open defect), awaiting
@@ -359,6 +363,70 @@ function applyTaskFilter(
   });
 }
 
+/** The rows the table actually renders: the board filter, then the QA-work
+ * filters, plus a task named by a deep link even when the filters hide it.
+ * Rendering and QA-history prefetching share this order. */
+function applyBoardView(
+  data: DeliveryBoardResponse,
+  view: {
+    filter: DeliveryTaskFilter;
+    qaDays: string;
+    qaFilter: string;
+    issueFilter: string;
+    ownerFilter: string;
+    groupBy: string;
+    focusTask: string | null;
+  }
+) {
+  const cutoff =
+    new Date(data.qa_as_of ?? 0).getTime() - Number(view.qaDays) * 86400000;
+  const statuses = new Map(
+    data.tasks.map((row) => [
+      row.delivery_task_id,
+      deliveryQAStatus(row, cutoff),
+    ])
+  );
+  const groupLabel = (row: DeliveryTaskBoardRow) =>
+    view.groupBy === "owner"
+      ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
+      : row.qa_work.issue_categories[0]
+        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
+        : "Uncategorized";
+  const rows = applyTaskFilter(data.tasks, view.filter).filter((row) => {
+    const status = statuses.get(row.delivery_task_id)!.status;
+    return (
+      (view.qaFilter === "all" ||
+        (view.qaFilter === "checked"
+          ? ["accepted", "needs_fixes"].includes(status)
+          : view.qaFilter === "needs_qa"
+            ? ["never", "outdated"].includes(status)
+            : status === view.qaFilter)) &&
+      (view.issueFilter === "all" ||
+        row.qa_work.issue_categories.includes(
+          view.issueFilter as QAIssueCategory
+        )) &&
+      (view.ownerFilter === "all" ||
+        (view.ownerFilter === "unassigned"
+          ? !row.qa_work.owner_user_id
+          : row.qa_work.owner_user_id ===
+            (view.ownerFilter === "mine"
+              ? data.qa_viewer_user_id
+              : view.ownerFilter)))
+    );
+  });
+  // Resolve IDs before legacy task names, against the complete inventory.
+  const focusedTask = view.focusTask
+    ? (data.tasks.find((row) => row.task_id === view.focusTask) ??
+      data.tasks.find((row) => row.task_name === view.focusTask))
+    : undefined;
+  const focusOutsideFilters =
+    focusedTask != null && !rows.includes(focusedTask);
+  if (focusOutsideFilters) rows.push(focusedTask);
+  if (view.groupBy !== "none")
+    rows.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
+  return { statuses, rows, groupLabel, focusedTask, focusOutsideFilters };
+}
+
 function QAHistoryPanel({
   taskId,
   versionId,
@@ -373,7 +441,11 @@ function QAHistoryPanel({
     fetcher,
     { keepPreviousData: true }
   );
-  const [showAll, setShowAll] = useState(false);
+  const historyParams = useSearchParams();
+  const historyPathname = usePathname();
+  const showAll = (historyParams.get("panels") ?? "")
+    .split(",")
+    .includes("all-versions");
   const refreshError = error && (
     <div role="alert" className="text-destructive text-xs">
       Failed to refresh QA history: {error.message}. Previously loaded history
@@ -430,7 +502,13 @@ function QAHistoryPanel({
         <button
           type="button"
           className="text-muted-foreground cursor-pointer text-xs hover:underline"
-          onClick={() => setShowAll(true)}
+          onClick={() =>
+            window.history.pushState(
+              null,
+              "",
+              `${historyPathname}${deliveryViewQuery(window.location.search, { panels: [...(historyParams.get("panels") ?? "").split(",").filter(Boolean), "all-versions"].join(",") })}${window.location.hash}`
+            )
+          }
         >
           Show all {data.versions.length} versions
         </button>
@@ -457,7 +535,10 @@ function QAHistoryVersionRow({
   verdict: TaskQAHistoryResponse["verdict"];
 }) {
   return (
-    <details className="rounded-md border p-3 text-sm">
+    <DeliveryDisclosure
+      panel={`version-${version.version_id}`}
+      className="rounded-md border p-3 text-sm"
+    >
       <summary className="cursor-pointer">
         <span className="inline-flex flex-wrap items-center gap-2">
           <span className="font-medium">v{version.version}</span>
@@ -597,7 +678,7 @@ function QAHistoryVersionRow({
             </p>
           )}
       </div>
-    </details>
+    </DeliveryDisclosure>
   );
 }
 
@@ -853,7 +934,11 @@ function TaskRow({
                 );
                 if (defects.length + checks.length === 0) return null;
                 return (
-                  <details key={String(acknowledged)} open={!acknowledged}>
+                  <DeliveryDisclosure
+                    key={String(acknowledged)}
+                    panel={acknowledged ? "acknowledged" : "decisions"}
+                    defaultOpen={!acknowledged}
+                  >
                     <summary className="cursor-pointer py-2 text-base font-medium">
                       {acknowledged ? "Acknowledged" : "Needs a decision"}
                       {" · "}
@@ -897,7 +982,10 @@ function TaskRow({
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>
-                          <details className="text-sm sm:col-start-1">
+                          <DeliveryDisclosure
+                            panel={`finding-${defect.id}`}
+                            className="text-sm sm:col-start-1"
+                          >
                             <summary className="cursor-pointer py-1 underline underline-offset-4">
                               {defect.finding
                                 ? "Review evidence"
@@ -923,7 +1011,7 @@ function TaskRow({
                                   ` · Execution: ${defect.reporting_trial_id}`}
                               </p>
                             </div>
-                          </details>
+                          </DeliveryDisclosure>
                           {acknowledged ? (
                             <p className="text-muted-foreground text-sm sm:col-start-1">
                               Acknowledged by{" "}
@@ -1004,7 +1092,7 @@ function TaskRow({
                         </li>
                       ))}
                     </ul>
-                  </details>
+                  </DeliveryDisclosure>
                 );
               })}
               {manualChecks.length > 0 && (
@@ -1061,7 +1149,7 @@ function TaskRow({
                   onSave={onSaveWork}
                 />
               )}
-              <details>
+              <DeliveryDisclosure panel="checks">
                 <summary className="cursor-pointer py-2 text-sm">
                   Review status and checks
                 </summary>
@@ -1106,8 +1194,8 @@ function TaskRow({
                     </p>
                   )}
                 </div>
-              </details>
-              <details>
+              </DeliveryDisclosure>
+              <DeliveryDisclosure panel="history">
                 <summary className="cursor-pointer py-2 text-sm">
                   {frozen
                     ? `Live task history · delivery shipped v${row.version}`
@@ -1118,9 +1206,9 @@ function TaskRow({
                   versionId={row.version_id}
                   frozen={frozen}
                 />
-              </details>
+              </DeliveryDisclosure>
               {isAdmin && !frozen && (
-                <details>
+                <DeliveryDisclosure panel="actions">
                   <summary className="cursor-pointer py-2 text-sm">
                     Task actions
                   </summary>
@@ -1153,7 +1241,7 @@ function TaskRow({
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
-                </details>
+                </DeliveryDisclosure>
               )}
             </div>
           </TableCell>
@@ -1163,21 +1251,66 @@ function TaskRow({
   );
 }
 
+export type InitialDeliveryBoard = {
+  board: DeliveryBoardResponse;
+  userId: string;
+  orgId: string;
+  fetchedAt: number;
+};
+
 export function DeliveryBoardClient({
   deliveryId,
   initialBoard,
 }: {
   deliveryId: string;
+  initialBoard: InitialDeliveryBoard | null;
+}) {
+  const auth = useAuth();
+  // The authenticated server snapshot can render before Clerk hydrates. Once
+  // Clerk is ready, its identity decides which cache and data may be shown.
+  const userId = auth.isLoaded ? auth.userId : initialBoard?.userId;
+  const orgId = auth.isLoaded ? auth.orgId : initialBoard?.orgId;
+  const snapshot =
+    initialBoard?.userId === userId &&
+    initialBoard?.orgId === orgId &&
+    initialBoard?.board.delivery.id === deliveryId
+      ? initialBoard
+      : null;
+  return (
+    <SWRConfig
+      key={JSON.stringify([userId, orgId, deliveryId])}
+      value={{ provider: () => new Map() }}
+    >
+      <DeliveryBoardContent
+        deliveryId={deliveryId}
+        initialBoard={snapshot?.board ?? null}
+        fetchedAt={snapshot?.fetchedAt}
+        enabled={Boolean(userId && orgId)}
+      />
+    </SWRConfig>
+  );
+}
+
+function DeliveryBoardContent({
+  deliveryId,
+  initialBoard,
+  fetchedAt,
+  enabled,
+}: {
+  deliveryId: string;
   initialBoard: DeliveryBoardResponse | null;
+  fetchedAt?: number;
+  enabled: boolean;
 }) {
   const { mutate: mutateResource } = useSWRConfig();
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, mutate } = useSWR<DeliveryBoardResponse>(
-    `/api/deliveries/${encodeURIComponent(deliveryId)}`,
+    enabled ? `/api/deliveries/${encodeURIComponent(deliveryId)}` : null,
     fetcher,
     {
-      refreshInterval: (board) => (board?.frozen ? 0 : 15000),
+      revalidateOnMount: !initialBoard,
+      refreshInterval: (board) => ((board ?? initialBoard)?.frozen ? 0 : 15000),
       revalidateOnFocus: !initialBoard?.frozen,
       revalidateOnReconnect: !initialBoard?.frozen,
       revalidateIfStale: !initialBoard?.frozen,
@@ -1199,6 +1332,20 @@ export function DeliveryBoardClient({
     }
   );
 
+  // A router-restored or prefetched snapshot may already be a polling period
+  // old. Keep it visible while refreshing; a fresh server load needs no retry.
+  useEffect(() => {
+    if (
+      enabled &&
+      initialBoard &&
+      !initialBoard.frozen &&
+      fetchedAt !== undefined &&
+      Date.now() - fetchedAt >= 15000
+    ) {
+      void mutate(undefined, { populateCache: false, throwOnError: false });
+    }
+  }, [enabled, initialBoard, fetchedAt, mutate]);
+
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1211,6 +1358,7 @@ export function DeliveryBoardClient({
   const searchParams = useSearchParams();
   const {
     page,
+    pageSize,
     filter,
     qaDays,
     qaFilter,
@@ -1231,6 +1379,51 @@ export function DeliveryBoardClient({
   const [notice, setNotice] = useState<string | null>(null);
   // Bulk selection, keyed by delivery_task_id.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const prefetched = useRef(new Set<string>());
+  // Warm only the first 25 histories on the rendered page, including task links.
+  useEffect(() => {
+    if (!data) return;
+    const { rows, focusedTask: taskFromLink } = applyBoardView(data, {
+      filter,
+      qaDays,
+      qaFilter,
+      issueFilter,
+      ownerFilter,
+      groupBy,
+      focusTask,
+    });
+    const focusedIndex = taskFromLink ? rows.indexOf(taskFromLink) : -1;
+    const currentPage = Math.min(
+      focusedIndex >= 0 ? Math.floor(focusedIndex / pageSize) : page,
+      Math.max(0, Math.ceil(rows.length / pageSize) - 1)
+    );
+    const start = currentPage * pageSize;
+    for (const row of rows.slice(
+      start,
+      start + Math.min(pageSize, QA_PREFETCH_LIMIT)
+    )) {
+      const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
+      if (!prefetched.current.has(key)) {
+        prefetched.current.add(key);
+        void mutateResource(key, fetcher(key), {
+          revalidate: false,
+          throwOnError: false,
+        });
+      }
+    }
+  }, [
+    data,
+    page,
+    pageSize,
+    focusTask,
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    mutateResource,
+  ]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
     setActionError(null);
@@ -1385,54 +1578,26 @@ export function DeliveryBoardClient({
   }
 
   const frozen = data.frozen;
-  const cutoff =
-    new Date(data.qa_as_of ?? 0).getTime() - Number(qaDays) * 86400000;
-  const statuses = new Map(
-    data.tasks.map((row) => [
-      row.delivery_task_id,
-      deliveryQAStatus(row, cutoff),
-    ])
-  );
+  const {
+    statuses,
+    rows: filteredTasks,
+    groupLabel,
+    focusedTask,
+    focusOutsideFilters,
+  } = applyBoardView(data, {
+    filter,
+    qaDays,
+    qaFilter,
+    issueFilter,
+    ownerFilter,
+    groupBy,
+    focusTask,
+  });
   const checkedCount = data.tasks.filter((row) =>
     ["accepted", "needs_fixes"].includes(
       statuses.get(row.delivery_task_id)!.status
     )
   ).length;
-  const filteredTasks = applyTaskFilter(data.tasks, filter).filter((row) => {
-    const status = statuses.get(row.delivery_task_id)!.status;
-    return (
-      (qaFilter === "all" ||
-        (qaFilter === "checked"
-          ? ["accepted", "needs_fixes"].includes(status)
-          : qaFilter === "needs_qa"
-            ? ["never", "outdated"].includes(status)
-            : status === qaFilter)) &&
-      (issueFilter === "all" ||
-        row.qa_work.issue_categories.includes(
-          issueFilter as QAIssueCategory
-        )) &&
-      (ownerFilter === "all" ||
-        (ownerFilter === "unassigned"
-          ? !row.qa_work.owner_user_id
-          : row.qa_work.owner_user_id === data.qa_viewer_user_id))
-    );
-  });
-  // Resolve IDs before legacy task names, against the complete inventory.
-  const focusedTask = focusTask
-    ? (data.tasks.find((row) => row.task_id === focusTask) ??
-      data.tasks.find((row) => row.task_name === focusTask))
-    : undefined;
-  const focusOutsideFilters =
-    focusedTask != null && !filteredTasks.includes(focusedTask);
-  if (focusOutsideFilters) filteredTasks.push(focusedTask);
-  const groupLabel = (row: DeliveryTaskBoardRow) =>
-    groupBy === "owner"
-      ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
-      : row.qa_work.issue_categories[0]
-        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
-        : "Uncategorized";
-  if (groupBy !== "none")
-    filteredTasks.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
   const claimWork = (rows: DeliveryTaskBoardRow[], limit: number) =>
     void run(async () => {
       const payload = await postJson<{ claimed_version_ids: string[] }>(
@@ -1463,18 +1628,15 @@ export function DeliveryBoardClient({
       { version_id: row.version_id, ...patch }
     );
   };
-  const pageCount = Math.max(
-    1,
-    Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
-  );
+  const pageCount = Math.max(1, Math.ceil(filteredTasks.length / pageSize));
   const focusedIndex = focusedTask ? filteredTasks.indexOf(focusedTask) : -1;
   const clampedPage = Math.min(
-    focusedIndex >= 0 ? Math.floor(focusedIndex / TASK_PAGE_SIZE) : page,
+    focusedIndex >= 0 ? Math.floor(focusedIndex / pageSize) : page,
     pageCount - 1
   );
   const pagedTasks = filteredTasks.slice(
-    clampedPage * TASK_PAGE_SIZE,
-    (clampedPage + 1) * TASK_PAGE_SIZE
+    clampedPage * pageSize,
+    (clampedPage + 1) * pageSize
   );
   // Tasks a mass sign-off may take: not signed off, no open blockers.
   // Blocked tasks keep the per-task acknowledge flow.
@@ -1683,6 +1845,22 @@ export function DeliveryBoardClient({
         )}
       </Card>
 
+      <DeliveryOverview
+        board={data}
+        filter={filter}
+        ownerFilter={ownerFilter}
+        onFilter={(nextFilter, owner) =>
+          updateView({
+            filter: nextFilter,
+            owner,
+            qa: null,
+            issue: null,
+            page: null,
+            task: null,
+          })
+        }
+      />
+
       <Card>
         <CardContent className="pt-4">
           {data.tasks.length === 0 ? (
@@ -1815,9 +1993,10 @@ export function DeliveryBoardClient({
                   </div>
                 )}
               </div>
-              <details
+              <DeliveryDisclosure
+                panel="filters"
                 className="mb-4"
-                open={
+                defaultOpen={
                   qaFilter !== "all" ||
                   issueFilter !== "all" ||
                   ownerFilter !== "all" ||
@@ -1914,6 +2093,28 @@ export function DeliveryBoardClient({
                       <SelectItem value="all">All owners</SelectItem>
                       <SelectItem value="unassigned">Unassigned</SelectItem>
                       <SelectItem value="mine">Mine</SelectItem>
+                      {[
+                        ...new Map(
+                          data.tasks
+                            .filter((row) => row.qa_work.owner_user_id)
+                            .map((row) => [
+                              row.qa_work.owner_user_id!,
+                              row.qa_owner_name ?? row.qa_work.owner_user_id!,
+                            ])
+                        ).entries(),
+                      ].map(([id, name]) => (
+                        <SelectItem key={id} value={id}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                      {!["all", "mine", "unassigned"].includes(ownerFilter) &&
+                        !data.tasks.some(
+                          (row) => row.qa_work.owner_user_id === ownerFilter
+                        ) && (
+                          <SelectItem value={ownerFilter}>
+                            {ownerFilter} (no assigned tasks)
+                          </SelectItem>
+                        )}
                     </SelectContent>
                   </Select>
                   <Select
@@ -1932,150 +2133,190 @@ export function DeliveryBoardClient({
                     </SelectContent>
                   </Select>
                 </div>
-              </details>
+              </DeliveryDisclosure>
               {focusOutsideFilters && (
                 <p className="text-muted-foreground mb-2 text-xs">
                   The linked task is shown even though it does not match the
                   selected filters.
                 </p>
               )}
-              {filteredTasks.length === 0 ? (
-                <p className="text-muted-foreground text-sm">
-                  No tasks match this filter.
-                </p>
-              ) : (
-                <Table className="min-w-[720px] table-fixed">
-                  <TableHeader>
-                    <TableRow>
-                      {bulkable && (
-                        <TableHead className="w-8">
-                          <Checkbox
-                            checked={
-                              allFilteredSelected
-                                ? true
-                                : selectedRows.length > 0
-                                  ? "indeterminate"
-                                  : false
-                            }
-                            onCheckedChange={(value) =>
-                              setSelected(
-                                value === true
-                                  ? new Set(
-                                      filteredTasks.map(
-                                        (row) => row.delivery_task_id
+              <div
+                key={`task-page-${clampedPage}`}
+                role={pageCount > 1 ? "region" : undefined}
+                aria-label={pageCount > 1 ? "Delivery tasks" : undefined}
+                tabIndex={pageCount > 1 ? 0 : undefined}
+                className={
+                  pageCount > 1
+                    ? "h-[min(68vh,48rem)] overflow-y-auto overscroll-y-none"
+                    : undefined
+                }
+              >
+                {filteredTasks.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">
+                    No tasks match this filter.
+                  </p>
+                ) : (
+                  <Table className="min-w-[720px] table-fixed">
+                    <TableHeader>
+                      <TableRow>
+                        {bulkable && (
+                          <TableHead className="w-8">
+                            <Checkbox
+                              checked={
+                                allFilteredSelected
+                                  ? true
+                                  : selectedRows.length > 0
+                                    ? "indeterminate"
+                                    : false
+                              }
+                              onCheckedChange={(value) =>
+                                setSelected(
+                                  value === true
+                                    ? new Set(
+                                        filteredTasks.map(
+                                          (row) => row.delivery_task_id
+                                        )
                                       )
-                                    )
-                                  : new Set()
-                              )
-                            }
-                            aria-label="Select all tasks in this view"
-                          />
+                                    : new Set()
+                                )
+                              }
+                              aria-label="Select all tasks in this view"
+                            />
+                          </TableHead>
+                        )}
+                        <TableHead className="w-10" />
+                        <TableHead>Task</TableHead>
+                        <TableHead className="w-44">Delivery status</TableHead>
+                        <TableHead className="w-28">Owner</TableHead>
+                        <TableHead className="w-40 text-right">
+                          Next action
                         </TableHead>
-                      )}
-                      <TableHead className="w-10" />
-                      <TableHead>Task</TableHead>
-                      <TableHead className="w-44">Delivery status</TableHead>
-                      <TableHead className="w-28">Owner</TableHead>
-                      <TableHead className="w-40 text-right">
-                        Next action
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pagedTasks.map((row, index) => (
-                      <Fragment key={row.delivery_task_id}>
-                        {groupBy !== "none" &&
-                          (index === 0 ||
-                            groupLabel(pagedTasks[index - 1]) !==
-                              groupLabel(row)) && (
-                            <TableRow>
-                              <TableCell
-                                colSpan={bulkable ? 6 : 5}
-                                className="bg-muted text-xs font-medium"
-                              >
-                                {groupLabel(row)}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        <TaskRow
-                          qa={statuses.get(row.delivery_task_id)!}
-                          busy={busy}
-                          canEditWork={
-                            !frozen &&
-                            (isAdmin ||
-                              (!!data.qa_viewer_user_id &&
-                                row.qa_work.owner_user_id ===
-                                  data.qa_viewer_user_id))
-                          }
-                          onClaim={() => claimWork([row], 1)}
-                          onRelease={() =>
-                            void run(() => patchWork(row, { release: true }))
-                          }
-                          onSaveWork={async (patch) => {
-                            await patchWork(row, patch);
-                            await mutate(undefined, {
-                              populateCache: false,
-                              throwOnError: false,
-                            });
-                          }}
-                          row={row}
-                          frozen={frozen}
-                          isAdmin={isAdmin}
-                          focused={row === focusedTask}
-                          onToggleExpanded={() =>
-                            updateView({
-                              task: row === focusedTask ? null : row.task_id,
-                              page: String(clampedPage + 1),
-                            })
-                          }
-                          link={`${pathname}${deliveryViewQuery(searchParams.toString(), { task: row.task_id, page: String(clampedPage + 1) })}`}
-                          selectable={bulkable}
-                          selected={selected.has(row.delivery_task_id)}
-                          onToggleSelect={() =>
-                            toggleSelect(row.delivery_task_id)
-                          }
-                          onSetCheck={(checkKey, deliveryTaskId, checked) =>
-                            setCheck(checkKey, deliveryTaskId, checked)
-                          }
-                          onRemove={() => removeTask(row.task_id)}
-                        />
-                      </Fragment>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-              {pageCount > 1 && (
-                <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
-                  <span>
-                    Page {clampedPage + 1} of {pageCount} ·{" "}
-                    {filteredTasks.length} tasks
-                  </span>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={clampedPage === 0}
-                      onClick={() =>
-                        updateView({ page: String(clampedPage), task: null })
-                      }
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedTasks.map((row, index) => (
+                        <Fragment key={row.delivery_task_id}>
+                          {groupBy !== "none" &&
+                            (index === 0 ||
+                              groupLabel(pagedTasks[index - 1]) !==
+                                groupLabel(row)) && (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={bulkable ? 6 : 5}
+                                  className="bg-muted text-xs font-medium"
+                                >
+                                  {groupLabel(row)}
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          <TaskRow
+                            qa={statuses.get(row.delivery_task_id)!}
+                            busy={busy}
+                            canEditWork={
+                              !frozen &&
+                              (isAdmin ||
+                                (!!data.qa_viewer_user_id &&
+                                  row.qa_work.owner_user_id ===
+                                    data.qa_viewer_user_id))
+                            }
+                            onClaim={() => claimWork([row], 1)}
+                            onRelease={() =>
+                              void run(() => patchWork(row, { release: true }))
+                            }
+                            onSaveWork={async (patch) => {
+                              await patchWork(row, patch);
+                              await mutate(undefined, {
+                                populateCache: false,
+                                throwOnError: false,
+                              });
+                            }}
+                            row={row}
+                            frozen={frozen}
+                            isAdmin={isAdmin}
+                            focused={row === focusedTask}
+                            onToggleExpanded={() =>
+                              updateView({
+                                task: row === focusedTask ? null : row.task_id,
+                                page: String(clampedPage + 1),
+                              })
+                            }
+                            link={`${pathname}${deliveryViewQuery(searchParams.toString(), { task: row.task_id, page: String(clampedPage + 1) })}`}
+                            selectable={bulkable}
+                            selected={selected.has(row.delivery_task_id)}
+                            onToggleSelect={() =>
+                              toggleSelect(row.delivery_task_id)
+                            }
+                            onSetCheck={(checkKey, deliveryTaskId, checked) =>
+                              setCheck(checkKey, deliveryTaskId, checked)
+                            }
+                            onRemove={() => removeTask(row.task_id)}
+                          />
+                        </Fragment>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+              {(pageCount > 1 ||
+                filteredTasks.length > DELIVERY_PAGE_SIZES[0]) && (
+                <nav
+                  aria-label="Task pages"
+                  className="text-muted-foreground mt-3 flex flex-wrap items-center justify-between gap-2 text-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <span>
+                      Page {clampedPage + 1} of {pageCount} ·{" "}
+                      {filteredTasks.length} tasks
+                    </span>
+                    <Select
+                      value={String(pageSize)}
+                      onValueChange={(value) => {
+                        updateView({ per_page: value, page: null, task: null });
+                      }}
                     >
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={clampedPage >= pageCount - 1}
-                      onClick={() =>
-                        updateView({
-                          page: String(clampedPage + 2),
-                          task: null,
-                        })
-                      }
-                    >
-                      Next
-                    </Button>
+                      <SelectTrigger
+                        className="h-8 w-32"
+                        aria-label="Rows per page"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {DELIVERY_PAGE_SIZES.map((size) => (
+                          <SelectItem key={size} value={String(size)}>
+                            {size} per page
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                </div>
+                  {pageCount > 1 && (
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={clampedPage === 0}
+                        onClick={() =>
+                          updateView({ page: String(clampedPage), task: null })
+                        }
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={clampedPage >= pageCount - 1}
+                        onClick={() =>
+                          updateView({
+                            page: String(clampedPage + 2),
+                            task: null,
+                          })
+                        }
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  )}
+                </nav>
               )}
             </>
           )}

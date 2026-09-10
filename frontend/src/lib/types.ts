@@ -1477,7 +1477,19 @@ export interface DeliveryTaskBoardRow {
   ready: boolean;
 }
 
+export interface DeliveryProgressPoint {
+  recorded_at: string;
+  task_count: number;
+  ready: number;
+  blocked: number;
+  awaiting_signoff: number;
+  unassigned: number;
+  open_findings: number;
+  acknowledged_findings: number;
+}
+
 export interface DeliveryBoardResponse {
+  progress_history?: DeliveryProgressPoint[];
   qa_as_of: string | null;
   qa_viewer_user_id: string | null;
   delivery: Omit<DeliveryListItem, "task_count">;

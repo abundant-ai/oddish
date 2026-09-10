@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -42,7 +41,7 @@ def _auth(bound_id: str | None = "analysis-1") -> AuthContext:
     )
 
 
-def _session(monkeypatch, analysis_trial, version=None):
+def _session(analysis_trial, version=None):
     class FakeSession:
         async def get(self, model, row_id):
             if model is TrialModel and row_id == "analysis-1":
@@ -55,22 +54,15 @@ def _session(monkeypatch, analysis_trial, version=None):
                 return version
             return None
 
-    @asynccontextmanager
-    async def fake_get_session():
-        yield FakeSession()
-
-    monkeypatch.setattr("auth.resource_access.get_session", fake_get_session)
+    return FakeSession()
 
 
 @pytest.mark.asyncio
 async def test_unbound_operator_probe_key_keeps_existing_read_policy(monkeypatch):
-    async def unexpected_session():
-        raise AssertionError("unbound keys must not query an analysis trial")
-
-    monkeypatch.setattr("auth.resource_access.get_session", unexpected_session)
     await authorize_bound_analysis_request(
         _request("/tasks/{task_id}/detail", path_params={"task_id": "task-2"}),
         _auth(None),
+        None,
     )
 
 
@@ -84,7 +76,7 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1", "source-2"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     await authorize_bound_analysis_request(
         _request(
@@ -92,6 +84,7 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
             path_params={"trial_id": "source-2"},
         ),
         _auth(),
+        session,
     )
 
     with pytest.raises(HTTPException) as denied:
@@ -101,6 +94,7 @@ async def test_qa_key_reads_only_trial_ids_derived_from_analysis_payload(monkeyp
                 path_params={"trial_id": "other-trial"},
             ),
             _auth(),
+            session,
         )
     assert denied.value.status_code == 403
 
@@ -115,7 +109,7 @@ async def test_bound_key_cannot_cross_organization_boundary(monkeypatch):
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     with pytest.raises(HTTPException) as denied:
         await authorize_bound_analysis_request(
@@ -124,6 +118,7 @@ async def test_bound_key_cannot_cross_organization_boundary(monkeypatch):
                 path_params={"trial_id": "source-1"},
             ),
             _auth(),
+            session,
         )
     assert denied.value.status_code == 403
 
@@ -151,7 +146,7 @@ async def test_qa_key_denies_trial_routes_the_prompt_does_not_need(
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     with pytest.raises(HTTPException) as denied:
         await authorize_bound_analysis_request(
@@ -160,6 +155,7 @@ async def test_qa_key_denies_trial_routes_the_prompt_does_not_need(
                 path_params={"trial_id": "source-1", "file_path": "secret.txt"},
             ),
             _auth(),
+            session,
         )
     assert denied.value.status_code == 403
 
@@ -183,11 +179,12 @@ async def test_qa_key_allows_only_the_evidence_routes(monkeypatch, route_path):
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     await authorize_bound_analysis_request(
         _request(route_path, path_params={"trial_id": "source-1"}),
         _auth(),
+        session,
     )
 
 
@@ -201,7 +198,7 @@ async def test_qa_key_denies_free_form_logs_for_an_unassigned_trial(monkeypatch)
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     with pytest.raises(HTTPException) as denied:
         await authorize_bound_analysis_request(
@@ -210,6 +207,7 @@ async def test_qa_key_denies_free_form_logs_for_an_unassigned_trial(monkeypatch)
                 path_params={"trial_id": "other-trial"},
             ),
             _auth(),
+            session,
         )
     assert denied.value.status_code == 403
 
@@ -224,7 +222,7 @@ async def test_qa_eval_key_rejects_a_payload_with_multiple_source_trials(monkeyp
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1", "source-2"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     for source_trial_id in ("source-1", "source-2"):
         with pytest.raises(HTTPException) as denied:
@@ -234,6 +232,7 @@ async def test_qa_eval_key_rejects_a_payload_with_multiple_source_trials(monkeyp
                     path_params={"trial_id": source_trial_id},
                 ),
                 _auth(),
+                session,
             )
         assert denied.value.status_code == 403
 
@@ -248,12 +247,13 @@ async def test_bound_key_denies_non_resource_and_mutating_routes(monkeypatch):
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     with pytest.raises(HTTPException):
         await authorize_bound_analysis_request(
             _request("/dashboard"),
             _auth(),
+            session,
         )
     with pytest.raises(HTTPException):
         await authorize_bound_analysis_request(
@@ -263,6 +263,7 @@ async def test_bound_key_denies_non_resource_and_mutating_routes(monkeypatch):
                 path_params={"trial_id": "source-1"},
             ),
             _auth(),
+            session,
         )
 
 
@@ -280,7 +281,7 @@ async def test_task_reading_analysis_key_reads_its_pinned_task_version(
         harbor_config={"analysis_payload": {}},
     )
     version = SimpleNamespace(id="version-7", task_id="task-1", version=7)
-    _session(monkeypatch, analysis, version)
+    session = _session(analysis, version)
 
     await authorize_bound_analysis_request(
         _request(
@@ -289,6 +290,7 @@ async def test_task_reading_analysis_key_reads_its_pinned_task_version(
             query="version=7",
         ),
         _auth(),
+        session,
     )
     await authorize_bound_analysis_request(
         _request(
@@ -297,6 +299,7 @@ async def test_task_reading_analysis_key_reads_its_pinned_task_version(
             query="version=7&recursive=true&presign=true",
         ),
         _auth(),
+        session,
     )
 
     for task_id, query in (
@@ -312,6 +315,7 @@ async def test_task_reading_analysis_key_reads_its_pinned_task_version(
                     query=query,
                 ),
                 _auth(),
+                session,
             )
 
 
@@ -326,7 +330,7 @@ async def test_summarize_key_cannot_read_task_files(monkeypatch):
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
     version = SimpleNamespace(id="version-7", task_id="task-1", version=7)
-    _session(monkeypatch, analysis, version)
+    session = _session(analysis, version)
 
     with pytest.raises(HTTPException) as denied:
         await authorize_bound_analysis_request(
@@ -336,6 +340,7 @@ async def test_summarize_key_cannot_read_task_files(monkeypatch):
                 query="version=7",
             ),
             _auth(),
+            session,
         )
     assert denied.value.status_code == 403
 
@@ -350,7 +355,7 @@ async def test_summarize_binding_fails_closed(monkeypatch):
         task_version_id="version-1",
         harbor_config={"analysis_payload": {"trial_ids": ["source-1"]}},
     )
-    _session(monkeypatch, analysis)
+    session = _session(analysis)
 
     with pytest.raises(HTTPException):
         await authorize_bound_analysis_request(
@@ -359,4 +364,5 @@ async def test_summarize_binding_fails_closed(monkeypatch):
                 path_params={"trial_id": "source-1"},
             ),
             _auth(),
+            session,
         )
