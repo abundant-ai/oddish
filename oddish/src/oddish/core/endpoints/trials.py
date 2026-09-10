@@ -39,32 +39,6 @@ from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
 from oddish.schemas import RegistryAuth, TrialResponse
 
 
-async def _attach_pre_trial_audit(
-    session: AsyncSession, response: TrialResponse, task_version_id: str | None
-) -> TrialResponse:
-    """Attach the pre-trial audit of the version this trial actually ran on.
-
-    Pinned to ``trials.task_version_id``, never the task's current version: a
-    task re-uploaded after the audit has findings describing a snapshot this
-    trial never saw, and showing those here would misattribute them.
-
-    Single-trial detail paths only. The grid's slim payload carries hundreds of
-    trials, and findings on each would balloon it.
-    """
-    if not task_version_id:
-        return response
-    version = await session.get(TaskVersionModel, task_version_id)
-    if version is None:
-        return response
-    response.pre_trial_findings = (version.pre_trial or {}).get("items") or []
-    response.pre_trial_status = (
-        version.pre_trial_status.value if version.pre_trial_status else None
-    )
-    response.pre_trial_error = version.pre_trial_error
-    response.pre_trial_cost_usd = (version.pre_trial or {}).get("cost_usd")
-    return response
-
-
 async def get_trial_by_index_core(
     session: AsyncSession,
     *,
@@ -72,34 +46,10 @@ async def get_trial_by_index_core(
     index: int,
     org_id: str | None = None,
 ) -> TrialResponse:
-    """Get trial response by 0-based index with optional org scoping."""
-    trial_id = f"{task_id}-{index}"
-    result = await session.execute(
-        select(TrialModel, TaskModel.task_path, TaskModel.org_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.id == trial_id)
+    """Resolve the indexed trial ID through the shared full-detail reader."""
+    return await get_trial_response_for_org_core(
+        session, trial_id=f"{task_id}-{index}", org_id=org_id
     )
-    row = result.first()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-    trial, task_path, task_org_id = row
-    if org_id is not None and task_org_id != org_id:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
-    jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
-    qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
-    exclusions = await load_cost_exclusions(session)
-    response = build_trial_response(
-        trial,
-        task_path,
-        queue_info=queue_info_by_trial_id.get(trial.id),
-        jobs=jobs_by_subject.get(("trials", trial.id), []),
-        qa_cost_usd=qa_costs.get(trial.id),
-        exclusions=exclusions,
-    )
-    return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
 
 async def rerun_trial_analysis_core(
@@ -146,19 +96,29 @@ async def get_trial_response_for_org_core(
     """Full TrialResponse for one trial by id (org-scoped via its task).
 
     Powers ``GET /trials/{trial_id}`` -- the on-click full-detail fetch for the
-    experiment grid, which loads only slim trials up front. Same builder as
-    ``get_trial_by_index_core`` but keyed on the trial id directly.
+    experiment grid, which loads only slim trials up front. The indexed route
+    delegates here so access checks and response assembly have one owner.
     """
     result = await session.execute(
-        select(TrialModel, TaskModel.task_path, TaskModel.org_id)
+        select(
+            TrialModel,
+            TaskModel.task_path,
+            TaskModel.org_id,
+            TaskVersionModel.pre_trial,
+            TaskVersionModel.pre_trial_status,
+            TaskVersionModel.pre_trial_error,
+        )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        # Audit the snapshot this trial ran, even after a new version is uploaded.
+        # A missing version must not hide the trial itself.
+        .outerjoin(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
         .where(TrialModel.id == trial_id)
     )
     row = result.first()
     if not row:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    trial, task_path, task_org_id = row
+    trial, task_path, task_org_id, pre_trial, audit_status, audit_error = row
     if org_id is not None and task_org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
@@ -174,7 +134,11 @@ async def get_trial_response_for_org_core(
         qa_cost_usd=qa_costs.get(trial.id),
         exclusions=exclusions,
     )
-    return await _attach_pre_trial_audit(session, response, trial.task_version_id)
+    response.pre_trial_findings = (pre_trial or {}).get("items") or []
+    response.pre_trial_status = audit_status.value if audit_status else None
+    response.pre_trial_error = audit_error
+    response.pre_trial_cost_usd = (pre_trial or {}).get("cost_usd")
+    return response
 
 
 async def retry_trial_core(

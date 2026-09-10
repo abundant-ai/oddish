@@ -243,3 +243,89 @@ async def test_database_failure_does_not_authorize_a_cached_key(api, monkeypatch
         await api.client.get("/trials/trial-1")
     reader.assert_not_awaited()
     assert api.counts.active == 0
+
+
+@pytest.mark.parametrize("by_index", [False, True], ids=["by-id", "by-index"])
+async def test_versioned_trial_detail_cold_and_warm_query_counts(api, by_index):
+    """Count actual route reads, including approval, with no mocked core reader."""
+    from oddish.db import (
+        ExperimentModel,
+        TaskModel,
+        TaskVersionModel,
+        TrialModel,
+        TrialStatus,
+        VerdictStatus,
+    )
+
+    task_id = f"trial_budget_{uuid.uuid4().hex[:8]}"
+    trial_id = f"{task_id}-0"
+    async with get_session() as session:
+        session.add(ExperimentModel(id=task_id, name=task_id, org_id=api.org_id))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                task_path="/tmp/task",
+                org_id=api.org_id,
+                user="test",
+            )
+        )
+        await session.flush()
+        session.add(
+            TaskVersionModel(
+                id=f"{task_id}-v1",
+                task_id=task_id,
+                version=1,
+                task_path="/tmp/v1",
+                pre_trial={"items": [], "cost_usd": 0.25},
+                pre_trial_status=VerdictStatus.SUCCESS,
+            )
+        )
+        await session.flush()
+        session.add(
+            TrialModel(
+                id=trial_id,
+                name=trial_id,
+                task_id=task_id,
+                experiment_id=task_id,
+                task_version_id=f"{task_id}-v1",
+                org_id=api.org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="anthropic/test",
+                status=TrialStatus.SUCCESS,
+            )
+        )
+    statements = []
+
+    def record(_conn, _cursor, statement, *_):
+        statements.append(statement)
+
+    path = f"/tasks/{task_id}/trials/0" if by_index else f"/trials/{trial_id}"
+    event.listen(engine.sync_engine, "after_cursor_execute", record)
+    try:
+        api.counts.checkouts = 0
+        cold = await api.client.get(path)
+        assert cold.status_code == 200, cold.text
+        assert len(statements) == 5, statements
+        assert api.counts.checkouts == 1
+        statements.clear()
+        warm = await api.client.get(path)
+        assert warm.status_code == 200, warm.text
+        assert len(statements) == 4, statements
+        assert api.counts.checkouts == 2
+        assert warm.json() == cold.json()
+        assert cold.json()["pre_trial_status"] == "success"
+        assert cold.json()["pre_trial_cost_usd"] == 0.25
+    finally:
+        event.remove(engine.sync_engine, "after_cursor_execute", record)
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.id == trial_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(ExperimentModel.id == task_id)
+            )
