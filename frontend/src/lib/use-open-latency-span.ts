@@ -461,6 +461,11 @@ export function useOpenLatencySpan({
           "abandoned",
           { reason: "page-hidden" }
         );
+        // The unload handler's flush has already run -- the tab went hidden
+        // before this component mounted -- so without flushing here the record
+        // waits on the batch timer of a page the browser may freeze or
+        // discard. This is the giving-up case that handler exists to keep.
+        flushTelemetry();
       }
       pending.current = null;
       return;
