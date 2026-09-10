@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import ProgrammingError
 
 from auth import AuthContext, AuthMethod, require_auth
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from pg_errors import is_undefined_column_or_table_error
 from user_alert_prefs import (
     DEFAULT_EXPERIMENT_MILESTONE_USD,
@@ -88,7 +88,7 @@ async def get_alert_preferences(
 ) -> AlertPreferencesResponse:
     user_id = _require_user_session(auth)
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             prefs = await get_user_alert_prefs(session, user_id)
     except ProgrammingError as exc:
         raise _unavailable(exc) from exc

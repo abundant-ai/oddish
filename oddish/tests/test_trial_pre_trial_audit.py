@@ -1,120 +1,159 @@
-"""The trial sidebar shows the audit of the version THAT trial ran on.
-
-A task re-uploaded after its audit has findings describing a snapshot the trial
-never saw; attaching those to the trial would misattribute them.
-"""
+"""Read real versioned trials: preserve audit provenance and bounded SQL reads."""
 
 from __future__ import annotations
 
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from types import SimpleNamespace
+import uuid
 
 import pytest
+import pytest_asyncio
+from fastapi import HTTPException
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from oddish.core.endpoints.trials import _attach_pre_trial_audit  # noqa: E402
-from oddish.db.models import TaskVersionModel, VerdictStatus  # noqa: E402
-from oddish.schemas import TrialResponse  # noqa: E402
+from oddish.core.endpoints.trials import (
+    get_trial_by_index_core,
+    get_trial_response_for_org_core,
+)
+from oddish.db.models import (
+    ExperimentModel,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+    TrialStatus,
+    VerdictStatus,
+    utcnow,
+)
+from test_statement_budgets import count_statements
 
 _FINDING = {"tier": "must_fix", "title": "Verifier ignores stderr"}
 
 
-def _response() -> TrialResponse:
-    return TrialResponse(
-        id="trial_1",
-        name="trial_1",
-        task_id="task_1",
-        task_path="/tmp/task",
+@pytest_asyncio.fixture
+async def versioned_trial(session):
+    task_id = f"audit-{uuid.uuid4().hex[:8]}"
+    task = TaskModel(
+        id=task_id, name=task_id, task_path="/tmp/task", org_id="audit-org", user="test"
+    )
+    experiment = ExperimentModel(id=task_id, name=task_id, org_id=task.org_id)
+    session.add_all([task, experiment])
+    await session.flush()
+    original = TaskVersionModel(
+        id=f"{task_id}-v1",
+        task_id=task_id,
+        version=1,
+        task_path="/tmp/v1",
+        pre_trial={"items": [_FINDING], "cost_usd": 0.25},
+        pre_trial_status=VerdictStatus.SUCCESS,
+    )
+    current = TaskVersionModel(
+        id=f"{task_id}-v2",
+        task_id=task_id,
+        version=2,
+        task_path="/tmp/v2",
+    )
+    session.add_all([original, current])
+    await session.flush()
+    task.current_version_id = current.id
+    trial = TrialModel(
+        id=f"{task_id}-0",
+        name=f"{task_id}-0",
+        task_id=task_id,
+        task_version_id=original.id,
+        experiment_id=experiment.id,
+        org_id=task.org_id,
         agent="claude-code",
         provider="anthropic",
-        queue_key="anthropic/claude-opus-5",
-        model=None,
-        status="success",
-        attempts=1,
-        max_attempts=3,
-        harbor_stage=None,
-        error_message=None,
-        result=None,
-        created_at=datetime(2026, 7, 28, tzinfo=timezone.utc),
-        started_at=None,
-        finished_at=None,
+        queue_key="anthropic/test",
+        status=TrialStatus.SUCCESS,
+    )
+    session.add(trial)
+    await session.flush()
+    return task, original, current, trial
+
+
+@pytest.fixture(
+    params=[get_trial_response_for_org_core, get_trial_by_index_core],
+    ids=["by-id", "by-index"],
+)
+def read_trial(request, session, versioned_trial):
+    task, _, _, trial = versioned_trial
+    kwargs = (
+        {"trial_id": trial.id}
+        if request.param is get_trial_response_for_org_core
+        else {"task_id": task.id, "index": 0}
     )
 
+    async def read(org_id="audit-org"):
+        return await request.param(session, org_id=org_id, **kwargs)
 
-class _Session:
-    def __init__(self, versions: dict):
-        self._versions = versions
-        self.asked_for: list[str] = []
-
-    async def get(self, model, row_id, **kw):
-        assert model is TaskVersionModel
-        self.asked_for.append(row_id)
-        return self._versions.get(row_id)
+    return read
 
 
 @pytest.mark.asyncio
-async def test_attaches_the_audit_of_the_trials_own_version():
-    audited = SimpleNamespace(
-        pre_trial={"items": [_FINDING]},
-        pre_trial_status=VerdictStatus.SUCCESS,
-        pre_trial_error=None,
-    )
-    session = _Session({"task_1-v1": audited})
-
-    out = await _attach_pre_trial_audit(session, _response(), "task_1-v1")
-
-    assert session.asked_for == ["task_1-v1"]
-    assert out.pre_trial_status == "success"
-    assert [f["title"] for f in out.pre_trial_findings] == ["Verifier ignores stderr"]
-
-
-@pytest.mark.asyncio
-async def test_a_newer_unaudited_version_shows_nothing():
-    """v5 was never audited; v1's findings must not leak onto a v5 trial."""
-    session = _Session(
-        {
-            "task_1-v1": SimpleNamespace(
-                pre_trial={"items": [_FINDING]},
-                pre_trial_status=VerdictStatus.SUCCESS,
-                pre_trial_error=None,
-            ),
-            "task_1-v5": SimpleNamespace(
-                pre_trial=None, pre_trial_status=None, pre_trial_error=None
-            ),
-        }
-    )
-
-    out = await _attach_pre_trial_audit(session, _response(), "task_1-v5")
-
-    assert out.pre_trial_findings == []
-    assert out.pre_trial_status is None
+async def test_original_audit_and_full_response_survive_cold_and_warm_reads(
+    read_trial, session
+):
+    # Evict seeded ORM objects so an identity-map hit cannot hide a lookup.
+    session.expunge_all()
+    with count_statements() as cold:
+        first = await read_trial()
+    with count_statements() as warm:
+        second = await read_trial()
+    # This fixture uses a write transaction: exclude optional-read SAVEPOINTs.
+    assert len([sql for sql in cold if sql.lstrip().upper().startswith("SELECT")]) == 4
+    assert len([sql for sql in warm if sql.lstrip().upper().startswith("SELECT")]) == 3
+    assert first.model_dump() == second.model_dump()
+    assert first.pre_trial_findings == [_FINDING]
+    assert first.pre_trial_status == "success"
+    assert first.pre_trial_cost_usd == 0.25
+    assert first.pre_trial_error is None
 
 
 @pytest.mark.asyncio
-async def test_failed_audit_keeps_its_error_and_no_findings():
-    session = _Session(
-        {
-            "task_1-v1": SimpleNamespace(
-                pre_trial=None,
-                pre_trial_status=VerdictStatus.FAILED,
-                pre_trial_error="TimeoutError()",
-            )
-        }
+@pytest.mark.parametrize(
+    "version_state", ["current", "unversioned", "deleted", "failed"]
+)
+async def test_audit_edge_cases(read_trial, session, versioned_trial, version_state):
+    _, original, current, trial = versioned_trial
+    if version_state == "current":
+        trial.task_version_id = current.id
+    elif version_state == "unversioned":
+        trial.task_version_id = None
+    elif version_state == "deleted":
+        original.deleted_at = utcnow()
+    else:
+        original.pre_trial = None
+        original.pre_trial_status = VerdictStatus.FAILED
+        original.pre_trial_error = "TimeoutError()"
+    await session.flush()
+    session.expunge_all()
+    response = await read_trial()
+    if version_state == "deleted":
+        # TaskVersionModel is not registered for automatic soft-delete filtering;
+        # the old session.get reader likewise preserved historical audit data.
+        assert response.pre_trial_findings == [_FINDING]
+        assert response.pre_trial_status == "success"
+        assert response.pre_trial_cost_usd == 0.25
+        return
+    assert response.pre_trial_findings == []
+    assert response.pre_trial_cost_usd is None
+    assert response.pre_trial_status == (
+        "failed" if version_state == "failed" else None
     )
-
-    out = await _attach_pre_trial_audit(session, _response(), "task_1-v1")
-
-    assert out.pre_trial_status == "failed"
-    assert out.pre_trial_error == "TimeoutError()"
-    assert out.pre_trial_findings == []
+    assert response.pre_trial_error == (
+        "TimeoutError()" if version_state == "failed" else None
+    )
 
 
 @pytest.mark.asyncio
-async def test_no_version_pin_skips_the_lookup_entirely():
-    session = _Session({})
-    out = await _attach_pre_trial_audit(session, _response(), None)
-    assert session.asked_for == []
-    assert out.pre_trial_findings == []
+@pytest.mark.parametrize("hidden", ["other-org", "deleted-task", "deleted-trial"])
+async def test_trial_visibility_is_preserved(
+    read_trial, session, versioned_trial, hidden
+):
+    task, _, _, trial = versioned_trial
+    if hidden == "deleted-task":
+        task.deleted_at = utcnow()
+    elif hidden == "deleted-trial":
+        trial.deleted_at = utcnow()
+    await session.flush()
+    with pytest.raises(HTTPException) as error:
+        await read_trial(org_id="other-org" if hidden == "other-org" else task.org_id)
+    assert error.value.status_code == 404

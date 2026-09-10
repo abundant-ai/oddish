@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
@@ -35,9 +35,17 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
 from oddish.db import (
     TrialModel,
+    get_read_session,
     get_session,
 )
 from oddish.schemas import TrialRetryRequest
@@ -58,7 +66,7 @@ router = APIRouter(tags=["Trials"])
 
 async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
     """Load a trial, then release the DB session before artifact I/O."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_trial_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
@@ -68,14 +76,14 @@ async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
 
 @router.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)
 async def get_trial(
+    request: Request,
     task_id: str,
     index: int,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TrialResponse:
     """Get a specific trial by its 0-based index within the task."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_trial_by_index_core(
             session, task_id=task_id, index=index, org_id=auth.org_id
         )
@@ -83,17 +91,17 @@ async def get_trial(
 
 @router.get("/trials/{trial_id}", response_model=TrialResponse)
 async def get_trial_full(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TrialResponse:
     """Full detail for a single trial by id.
 
     The experiment grid loads only slim trials; clicking a cell fetches the
     full trial here (timing, harbor, tokens, full analysis, etc.).
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_trial_response_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
@@ -133,12 +141,15 @@ async def list_task_trials(
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-
-        return await list_task_trials_for_task(
-            session, task_id, probe=probe, version=version
+    async with get_read_session() as session:
+        trials = await list_task_trials_for_task(
+            session, task_id, probe=probe, version=version, org_id=auth.org_id
         )
+        if not trials:
+            # Only an empty result needs the existence check: it separates "no
+            # trials yet" (200 []) from "not this org's task" (404).
+            await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        return trials
 
 
 @router.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])
@@ -148,7 +159,7 @@ async def list_experiment_trials(
 ) -> list[TrialResponse]:
     """List all non-superseded trials for an experiment (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_experiment_trials_for_org(session, experiment_id, auth.org_id)
 
 
@@ -260,7 +271,7 @@ async def get_trial_live(
 ) -> dict:
     """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await read_trial_live_for_id(
             session,
             trial_id=trial_id,
@@ -433,12 +444,17 @@ async def get_trial_trajectory_summary(
 ) -> dict:
     """Read the published summary or report the current refresh lifecycle."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
-    if trial.trajectory_summary_refresh_trial_id:
-        async with get_session() as session:
+    # No artifact I/O on this path, so one session serves both reads.
+    async with get_read_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+        refresh_trial = None
+        if trial.trajectory_summary_refresh_trial_id:
             refresh_trial = await session.get(
                 TrialModel, trial.trajectory_summary_refresh_trial_id
             )
+    if trial.trajectory_summary_refresh_trial_id:
         if (
             refresh_trial is None
             or refresh_trial.kind != "summarize"

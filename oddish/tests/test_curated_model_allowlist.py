@@ -251,3 +251,26 @@ def test_setup_failure_without_work():
     assert is_setup_failure_without_work(**kwargs) is True
     assert is_setup_failure_without_work(**{**kwargs, "input_tokens": 8}) is False
     assert is_setup_failure_without_work(**{**kwargs, "has_trajectory": True}) is False
+
+
+@pytest.mark.parametrize("agent", ["mini-swe-agent", "claude-code"])
+@pytest.mark.parametrize("model", ["geometric/glm-5.3", "gm/glm-5.3"])
+def test_curated_validation_preserves_geometric_submission(monkeypatch, agent, model):
+    _settings(monkeypatch)
+    submission = _sweep(agent, model)
+    validate_sweep_submission(submission)
+    trials = build_trial_specs_from_sweep(submission)
+    assert len(trials) == 1
+    assert trials[0].model == "geometric/glm-5.3"
+
+
+@pytest.mark.parametrize("allow_unknown", [False, True])
+def test_curated_escape_hatch_preserves_geometric_rejection(monkeypatch, allow_unknown):
+    _settings(monkeypatch)
+    submission = _sweep(
+        "mini-swe-agent", "geometric/gpt-4o", allow_unknown_model=allow_unknown
+    )
+    validate_sweep_submission(submission)
+    with pytest.raises(HTTPException) as exc:
+        build_trial_specs_from_sweep(submission)
+    assert exc.value.status_code == 400

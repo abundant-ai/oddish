@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 
 def _trial(trial_id: str = "t-1") -> SimpleNamespace:
@@ -24,7 +25,7 @@ def _legacy_storage(available: dict[str, str]) -> MagicMock:
     async def download(key: str) -> str:
         if key in available:
             return available[key]
-        raise FileNotFoundError(key)
+        raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
     storage.object_exists = AsyncMock(return_value=False)
     storage.download_text = AsyncMock(side_effect=download)

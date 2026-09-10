@@ -126,7 +126,7 @@ async def remove_delivery_task(delivery_id: str, task_id: str) -> dict:
 async def set_manual_check(delivery_id: str, data: ManualCheckSet) -> dict:
     async with get_session() as session:
         await set_manual_check_core(
-            session, delivery_id=delivery_id, org_id=None, data=data, user_id=None
+            session, delivery_id=delivery_id, org_id=None, data=data, user_id="local"
         )
         await session.commit()
         return {"check_key": data.check_key, "checked": data.checked}

@@ -170,7 +170,7 @@ export function DatasetDetailView({
 
   return (
     <div className="-mx-4 -my-4 min-h-[calc(100vh-3.5rem)] bg-background text-foreground">
-      {hasError && (
+      {hasError && !inlineAlert && (
         <div className="px-6 pt-6">
           <Alert variant="destructive">
             <AlertTitle>Failed to load dataset</AlertTitle>

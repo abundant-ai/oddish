@@ -1242,6 +1242,9 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                 # one exception; ``_store_trial_results`` writes their
                 # classification during settlement, above.
                 if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
+                    from oddish.core.task_findings import preserve_task_findings
+
+                    await preserve_task_findings(session, trial.task_version_id)
                     trial.analysis = None
                     trial.analysis_status = None
                     trial.analysis_error = None

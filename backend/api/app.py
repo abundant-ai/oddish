@@ -15,8 +15,10 @@ from observability import (
     instrument_fastapi,
     span as _otel_span,
 )
+from auth.verification import warm_clerk_jwks
 from oddish.config import settings
 from oddish.db import close_database_connections
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +57,32 @@ def _get_cors_origins() -> list[str]:
     Defaults to localhost origins for development.
     """
     env_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    if env_origins:
-        return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+    origins = (
+        [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+        if env_origins
+        else ["http://localhost:3000", "http://127.0.0.1:3000"]
+    )
+    # Each PR API permits its own stable frontend alias. MODAL_APP_NAME is
+    # already baked into the runtime image by modal_app.py.
+    app_name = os.getenv("MODAL_APP_NAME", "")
+    if app_name.startswith("oddish-pr-"):
+        pr_number = app_name.removeprefix("oddish-pr-")
+        if pr_number.isascii() and pr_number.isdecimal():
+            origins.append(f"https://pr-{pr_number}.oddish.app")
+    return origins
 
-    # Default: localhost for development
-    return [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+
+def _get_cors_origin_regex() -> str | None:
+    """Origin pattern for deployments whose hostname is not known in advance.
+
+    Every Vercel preview gets its own origin, so a list cannot name them; set
+    ``CORS_ALLOWED_ORIGIN_REGEX`` to something like
+    ``^https://oddish-[a-z0-9-]+\\.vercel\\.app$`` and the dashboard on those
+    previews can call this API directly (``NEXT_PUBLIC_API_DIRECT``). Unset
+    means list-only, exactly as before.
+    """
+    pattern = os.getenv("CORS_ALLOWED_ORIGIN_REGEX", "").strip()
+    return pattern or None
 
 
 async def _assert_quota_schema_or_force_off() -> None:
@@ -176,6 +196,9 @@ async def lifespan(_api: FastAPI):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+        # Verifying the first Clerk token needs the JWKS; fetch it now so a
+        # cold container's first request does not pay (or fail on) that hop.
+        jwks_warmup_task = asyncio.create_task(warm_clerk_jwks())
 
         # ODDISH_LOCAL_MODE executes trials inside this API process instead of
         # importing worker.functions, where hosted workers normally register
@@ -203,11 +226,12 @@ async def lifespan(_api: FastAPI):
     yield
 
     with _otel_span("app.shutdown"):
-        role_defaults_task.cancel()
-        try:
-            await role_defaults_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for startup_task in (role_defaults_task, jwks_warmup_task):
+            startup_task.cancel()
+            try:
+                await startup_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         if local_worker_task is not None:
             local_worker_task.cancel()
@@ -244,6 +268,7 @@ def create_app() -> FastAPI:
     api.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=_get_cors_origin_regex(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -257,9 +282,11 @@ def create_app() -> FastAPI:
 
     api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
 
+    from api.cache_headers import cache_header_middleware
     from api.capacity_headers import capacity_header_middleware
 
     api.middleware("http")(capacity_header_middleware)
+    api.middleware("http")(cache_header_middleware)
 
     from api.routers import (
         admin,
@@ -288,11 +315,13 @@ def create_app() -> FastAPI:
         tags,
         tasks,
         trials,
+        ui_layouts,
     )
 
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(notifications.router)
+    api.include_router(ui_layouts.router)
     api.include_router(api_keys.router)
     api.include_router(byok.router)
     api.include_router(clerk_webhooks.router)

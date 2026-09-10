@@ -10,6 +10,7 @@ import type { TagPickerItem } from "@/components/tag-picker";
 import { TagPicker } from "@/components/tag-picker-lazy";
 import { Button } from "@/components/ui/button";
 import type { UserTagRef } from "@/lib/types";
+import { apiFetch } from "@/lib/api";
 
 type TagScope = "VERSION" | "TASK" | "EXPERIMENT";
 
@@ -69,7 +70,7 @@ export function TagEditor({
   }
 
   async function assign(tagId: string): Promise<boolean> {
-    const res = await fetch("/api/tags/assign", {
+    const res = await apiFetch("/api/tags/assign", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -123,7 +124,7 @@ export function TagEditor({
       prev.some((t) => t.tag_id === pendingId) ? prev : [...prev, pending]
     );
 
-    const res = await fetch("/api/tags", {
+    const res = await apiFetch("/api/tags", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: rawKey, color, visibility: "PRIVATE" }),
@@ -157,7 +158,7 @@ export function TagEditor({
     const removed = tags.find((t) => t.tag_id === tagId);
     setTags((prev) => prev.filter((t) => t.tag_id !== tagId));
     if (tagId.startsWith(PENDING_PREFIX)) return;
-    const res = await fetch("/api/tags/unassign", {
+    const res = await apiFetch("/api/tags/unassign", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

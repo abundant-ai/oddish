@@ -47,6 +47,9 @@ const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 // /api/tasks/browse/experiment-options are separate resources and must not
 // count here — the `?` requires the query form.
 const BROWSE_RE = /\/api\/tasks\/browse\?/;
+// The matching-task count is a sibling path, so BROWSE_RE (which requires
+// "browse?") never matches it and the two fetches stay countable apart.
+const COUNT_RE = /\/api\/tasks\/browse\/count\?/;
 const FACETS_RE = /\/api\/tasks\/browse\/facets/;
 const TAGS_RE = /\/api\/tags(\?|$)/;
 const LEADERBOARD_RE = /\/api\/leaderboard\?/;
@@ -175,6 +178,7 @@ test.describe("tasks page network shape", () => {
 
     await holdCountedResponses(page, [
       BROWSE_RE,
+      COUNT_RE,
       FACETS_RE,
       TAGS_RE,
       LEADERBOARD_RE,
@@ -203,6 +207,12 @@ test.describe("tasks page network shape", () => {
     // own, not a revalidation.
     await page.waitForTimeout(1_500);
     expect(countSince(log, 0, BROWSE_RE)).toBe(1);
+    // The count rides beside the grid, not inside it: one fetch of its own,
+    // and never more than one for a filter state.
+    await expect
+      .poll(() => countSince(log, 0, COUNT_RE), { timeout: 10_000 })
+      .toBe(1);
+    expect(countSince(log, 0, COUNT_RE)).toBe(1);
 
     // Phase 2 — leave through the nav (client-side, cache intact) and come
     // back. The grid must paint from the cache: the browse revalidation is
@@ -248,6 +258,9 @@ test.describe("tasks page network shape", () => {
       .toBe(1);
     await page.waitForTimeout(1_500);
     expect(countSince(log, filterMark, BROWSE_RE)).toBe(1);
+    // New filters mean a new answer, so the count is re-asked exactly once —
+    // its cache key carries the filters (but never the page offset).
+    expect(countSince(log, filterMark, COUNT_RE)).toBe(1);
     expect(countSince(log, filterMark, FACETS_RE)).toBe(0);
     expect(countSince(log, filterMark, TAGS_RE)).toBe(0);
 
@@ -260,7 +273,7 @@ test.describe("tasks page network shape", () => {
     expect(countSince(log, 0, LEADERBOARD_RE)).toBeLessThanOrEqual(1);
   });
 
-  test("task-card paint seeds open, cold navigation stays non-blocking, and files intent loads detail", async ({
+  test("task-card paint seeds open, cold navigation stays non-blocking, and files intent loads panel metadata", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -297,6 +310,7 @@ test.describe("tasks page network shape", () => {
 
     let openCount = 0;
     let detailCount = 0;
+    let panelCount = 0;
     const releaseOpen: { current: (() => void) | null } = { current: null };
     let holdOpen = true;
     await page.route(
@@ -316,6 +330,16 @@ test.describe("tasks page network shape", () => {
       async (route) => {
         detailCount += 1;
         await route.fulfill({
+          status: 500,
+          json: { error: "Unexpected detail request" },
+        });
+      }
+    );
+    await page.route(
+      new RegExp(`/api/tasks/${READER_TASK_ID}/panel(?:\\?|$)`),
+      async (route) => {
+        panelCount += 1;
+        await route.fulfill({
           json: {
             task: {
               ...readerOpenResponse().task,
@@ -325,10 +349,14 @@ test.describe("tasks page network shape", () => {
               total: 25,
               completed: 25,
               failed: 0,
-              trials: [],
             },
-            versions: [readerOpenResponse().selected_version],
-            totals: readerOpenResponse().totals,
+            version: readerOpenResponse().selected_version,
+            can_retry: true,
+            cancel: null,
+            active_trials: 0,
+            qa_active: false,
+            can_run_qa: true,
+            has_analysis: false,
           },
         });
       }
@@ -341,22 +369,29 @@ test.describe("tasks page network shape", () => {
     ).toBeVisible();
     expect(openCount).toBe(1);
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
     (releaseOpen.current as (() => void) | null)?.();
     holdOpen = false;
     await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
 
     holdOpen = true;
     releaseOpen.current = null;
     await page.goto(`/tasks/${READER_TASK_ID}`);
     await expect(page.locator(".animate-pulse").first()).toBeVisible();
     expect(detailCount).toBe(0);
+    expect(panelCount).toBe(0);
     (releaseOpen.current as (() => void) | null)?.();
     holdOpen = false;
     await expect(
       page.getByRole("button", { name: "View task files" })
     ).toBeVisible();
     await page.getByRole("button", { name: "View task files" }).click();
-    await expect.poll(() => detailCount).toBe(1);
+    await expect.poll(() => panelCount).toBe(1);
+    await expect(
+      page.getByRole("button", { name: "Overview", exact: true })
+    ).toBeVisible();
+    expect(detailCount).toBe(0);
   });
 });

@@ -2424,7 +2424,7 @@ async def test_analysis_artifact_storage_errors_remain_retryable(monkeypatch):
     from oddish.workers import analysis_trials
 
     class UnavailableStorage:
-        async def object_exists(self, _key):
+        async def download_text(self, _key):
             raise TimeoutError("storage timed out")
 
     monkeypatch.setattr(
@@ -3256,6 +3256,9 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
         "oddish.core.trial_io.read_trial_trajectory", AsyncMock(return_value=None)
     )
 
+    monkeypatch.setattr(
+        "oddish.core.task_findings.preserve_task_findings", AsyncMock(return_value=[])
+    )
     await analysis_trials._import_qa_result(qa)
 
     assert task.status == TaskStatus.COMPLETED

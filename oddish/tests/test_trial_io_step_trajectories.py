@@ -11,6 +11,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from oddish.core import trial_io
 from oddish.core.trial_artifacts import TrialArtifactLayout, TrialArtifactMode
 
@@ -95,7 +97,7 @@ class _StepStorage:
     async def download_text(self, key: str) -> str:
         if key in self.objects:
             return self.objects[key]
-        raise FileNotFoundError(key)
+        raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
     async def object_exists(self, key: str) -> bool:
         return key in self.objects
@@ -170,7 +172,7 @@ def test_single_step_layout_unchanged():
         async def download_text(self, key: str) -> str:
             if key == f"{PREFIX}agent/trajectory.json":
                 return json.dumps(single)
-            raise FileNotFoundError(key)
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
         async def object_exists(self, key: str) -> bool:
             return key == f"{PREFIX}agent/trajectory.json"
@@ -207,7 +209,6 @@ def test_exact_step_read_propagates_storage_failures():
     # A transient S3 failure must not read as "no trajectory" (which finished
     # trials would cache); it propagates like the root EXACT read (Bugbot).
     import pytest
-    from botocore.exceptions import ClientError
 
     class _FlakyStorage(_StepStorage):
         async def download_text(self, key: str) -> str:
@@ -224,3 +225,22 @@ def test_exact_step_read_propagates_storage_failures():
         asyncio.run(
             trial_io._read_trial_trajectory_from_s3(_trial(), _FlakyStorage(), layout)
         )
+
+
+def test_exact_layout_reads_manifest_selected_step_directory(monkeypatch):
+    storage = _StepStorage()
+    selected = f"{PREFIX}run-1/"
+    storage.objects = {
+        key.replace(PREFIX, selected, 1): value
+        for key, value in storage.objects.items()
+    }
+    storage.objects[f"{PREFIX}result.json"] = json.dumps(
+        {"trial_results": [{"trial_name": "run-1"}]}
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
+    trial = _trial()
+    trial.attempts = 1
+
+    trajectory = asyncio.run(trial_io.read_trial_trajectory(trial))
+
+    _assert_merged(trajectory)

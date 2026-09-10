@@ -7,8 +7,15 @@ only add auth and transaction boundaries.
 
 from typing import Annotated
 
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from fastapi import APIRouter, Depends, HTTPException
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
+from fastapi import APIRouter, Depends, HTTPException, Request
 from models import UserModel, UserRole
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -26,7 +33,7 @@ from oddish.core.deliveries import (
     remove_delivery_task_core,
     set_manual_check_core,
 )
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
     CustomerResponse,
@@ -65,7 +72,7 @@ async def list_deliveries(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[DeliveryListItem]:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_deliveries_core(session, org_id=auth.org_id)
 
 
@@ -74,7 +81,7 @@ async def list_customers(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[CustomerResponse]:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with get_read_session() as session:
         customers = await list_customers_core(session, org_id=auth.org_id)
         return [CustomerResponse.model_validate(c) for c in customers]
 
@@ -150,11 +157,12 @@ async def _fill_user_names(
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
 async def get_delivery_board(
+    request: Request,
     delivery_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DeliveryBoardResponse:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
         board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=auth.org_id
         )
@@ -183,9 +191,7 @@ async def delete_delivery(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
     async with get_session() as session:
-        await delete_delivery_core(
-            session, delivery_id=delivery_id, org_id=auth.org_id
-        )
+        await delete_delivery_core(session, delivery_id=delivery_id, org_id=auth.org_id)
         await session.commit()
         return {"deleted": delivery_id}
 
@@ -254,11 +260,12 @@ async def finalize_delivery(
 
 @router.get("/tasks/{task_id}/qa-history", response_model=TaskQAHistoryResponse)
 async def get_task_qa_history(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TaskQAHistoryResponse:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
         return await get_task_qa_history_core(
             session, task_id=task_id, org_id=auth.org_id
         )
