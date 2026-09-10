@@ -2037,8 +2037,13 @@ from the saved verdict's QA trial and the displayed version. An older verdict
 must remain distinguishable from a review of the selected version. The shared
 bounded provenance query does not fetch trial artifacts or enqueue work.
 Experiment summary selections use `verdict=accepted|rejected|running|failed|unreviewed`;
-unreviewed includes missing and outdated reviews. Delivery `filter` defaults to
-`outstanding`; `filter=all` restores the complete inventory.
+review counts and filters both classify the loaded task rows with
+`taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
+trials. Drawer navigation retains the selected review group. Unreviewed includes
+missing and outdated reviews, and remains visible when every task is unreviewed.
+Delivery `filter` defaults to `outstanding`; `filter=all` restores the complete
+inventory. A `task` link resolves against the inventory (ID before legacy name)
+and keeps that row visible across filters, pagination, and sign-off refreshes.
 
 Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
 on `/tasks/{id}`. Overview preserves the file and line address for sharing.
@@ -2047,6 +2052,10 @@ absence without substituting current content or removing that address. Switching
 versions is browser history, including selecting today's default. Native history
 updates pass `null` as state so Next updates `useSearchParams` itself; passing
 Next's internal history marker bypasses that update.
+Only an explicit version selection clears the previous line anchor; browser
+Back/Forward restores the file and line address saved for the selected version.
+The task pane derives its pane, file, and lines directly from the URL. The code
+viewer ignores selection callbacks that echo its controlled selection prop.
 
 Source and execution reruns reuse the existing task-panel handlers. Source
 reruns target the default version, withdraw its published verdict, and can

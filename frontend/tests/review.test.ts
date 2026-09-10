@@ -80,6 +80,52 @@ runInNewContext(
   }
 );
 
+const badgeSource = ts.createSourceFile(
+  "badge.tsx",
+  readFileSync(
+    new URL("../src/components/task-verdict-badge.tsx", import.meta.url),
+    "utf8"
+  ),
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX
+);
+const presentation = badgeSource.statements.find(
+  (node) =>
+    ts.isFunctionDeclaration(node) && node.name?.text === "presentVerdict"
+);
+assert.ok(presentation);
+const badge: {
+  present?: (
+    task: Task,
+    iconSize: string,
+    active: boolean
+  ) => { title: string; isGood: boolean | null };
+} = {};
+runInNewContext(
+  ts.transpileModule(
+    `${presentation.getText(badgeSource)}\nexports.present = presentVerdict;`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+    }
+  ).outputText,
+  {
+    exports: badge,
+    require: (name: string) => {
+      assert.equal(name, "react/jsx-runtime");
+      return jsx;
+    },
+    ...review,
+    Loader2: box,
+    AlertTriangle: box,
+    CheckCircle2: box,
+    Microscope: box,
+  }
+);
+
 for (const [label, is_good, expected] of [
   ["accept", null, "accepted"],
   ["reject", null, "needs_fixes"],
@@ -94,6 +140,31 @@ for (const [label, is_good, expected] of [
       verdict: { verdict: label, is_good, confidence: null },
     };
     assert.equal(review.taskReviewStatus(reviewed), expected);
+    assert.equal(
+      review.taskReviewFilter(reviewed),
+      expected === "accepted" ? "accepted" : "rejected"
+    );
+    const presented = badge.present!(reviewed, "", false);
+    assert.equal(presented.title, review.REVIEW_LABELS[expected]);
+    assert.equal(presented.isGood, expected === "accepted");
+    for (const [override, state] of [
+      [{ review_version_matches: false }, "outdated"],
+      [{ verdict_status: "failed" }, "error"],
+      [{ verdict_status: "queued" }, "queued"],
+      [{ verdict_status: "running" }, "running"],
+    ] as const) {
+      const inactive = badge.present!({ ...reviewed, ...override }, "", false);
+      assert.equal(inactive.title, review.REVIEW_LABELS[state]);
+      assert.equal(inactive.isGood, null);
+      assert.equal(
+        review.taskReviewFilter({ ...reviewed, ...override }),
+        state === "outdated"
+          ? "unreviewed"
+          : state === "error"
+            ? "failed"
+            : "running"
+      );
+    }
     assert.equal(
       review.taskReviewStatus({ ...reviewed, analysis_status: "running" }),
       expected
@@ -140,6 +211,7 @@ for (const [label, is_good, expected] of [
 
 test("missing and inconclusive verdicts remain unreviewed", () => {
   assert.equal(review.taskReviewStatus(task), "never");
+  assert.equal(review.taskReviewFilter(task), "unreviewed");
   assert.equal(
     review.taskReviewStatus({
       ...task,

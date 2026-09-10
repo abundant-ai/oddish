@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
-import {
-  rejectedMustFixLabel,
-  taskHasRejectedVerdict,
-} from "../src/lib/job-status";
+import { rejectedMustFixLabel } from "../src/lib/job-status";
+import { taskReviewFilter } from "../src/lib/review";
 import type { Task } from "../src/lib/types";
 
 const rejected = {
@@ -13,39 +11,39 @@ const rejected = {
 } as unknown as Task;
 
 test("published and legacy rejections are reviewable", () => {
-  expect(taskHasRejectedVerdict(rejected)).toBe(true);
+  expect(taskReviewFilter(rejected)).toBe("rejected");
   expect(
-    taskHasRejectedVerdict({
+    taskReviewFilter({
       ...rejected,
       verdict: { is_good: false } as Task["verdict"],
     })
-  ).toBe(true);
+  ).toBe("rejected");
 });
 
 test("acceptance, missing evidence and failed QA are not rejections", () => {
   expect(
-    taskHasRejectedVerdict({
+    taskReviewFilter({
       ...rejected,
       verdict: { verdict: "accept", is_good: true } as Task["verdict"],
     })
-  ).toBe(false);
-  expect(taskHasRejectedVerdict({ ...rejected, verdict: null })).toBe(false);
-  expect(
-    taskHasRejectedVerdict({ ...rejected, verdict_status: "failed" })
-  ).toBe(false);
+  ).not.toBe("rejected");
+  expect(taskReviewFilter({ ...rejected, verdict: null })).not.toBe("rejected");
+  expect(taskReviewFilter({ ...rejected, verdict_status: "failed" })).not.toBe(
+    "rejected"
+  );
 });
 
 for (const status of ["queued", "running"] as const) {
   test(`replacement QA ${status} hides an old rejection`, () => {
+    expect(taskReviewFilter({ ...rejected, verdict_status: status })).not.toBe(
+      "rejected"
+    );
     expect(
-      taskHasRejectedVerdict({ ...rejected, verdict_status: status })
-    ).toBe(false);
-    expect(
-      taskHasRejectedVerdict({
+      taskReviewFilter({
         ...rejected,
         active_qa_trial: { kind: "qa", status } as Task["active_qa_trial"],
       })
-    ).toBe(false);
+    ).not.toBe("rejected");
   });
 }
 
@@ -67,12 +65,12 @@ test("rejected experiment copy uses the must-fix count", () => {
 
 test("a failing solver run alone does not reject a task", () => {
   expect(
-    taskHasRejectedVerdict({
+    taskReviewFilter({
       ...rejected,
       verdict: null,
       trials: [
         { kind: "agent", status: "failed", reward: 0 },
       ] as Task["trials"],
     })
-  ).toBe(false);
+  ).not.toBe("rejected");
 });

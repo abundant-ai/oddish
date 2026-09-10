@@ -35,9 +35,7 @@ function presentVerdict(
   const pending = review === "queued" || review === "running";
   const failed = review === "error";
   const isGood =
-    pending || failed || review === "outdated"
-      ? null
-      : (verdict?.is_good ?? null);
+    review === "accepted" ? true : review === "needs_fixes" ? false : null;
 
   let icon: ReactNode;
   let title: string;

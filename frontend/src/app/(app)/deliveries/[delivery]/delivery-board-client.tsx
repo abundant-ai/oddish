@@ -1336,6 +1336,14 @@ export function DeliveryBoardClient({
           : row.qa_work.owner_user_id === data.qa_viewer_user_id))
     );
   });
+  // Resolve IDs before legacy task names, against the complete inventory.
+  const focusedTask = focusTask
+    ? (data.tasks.find((row) => row.task_id === focusTask) ??
+      data.tasks.find((row) => row.task_name === focusTask))
+    : undefined;
+  const focusOutsideFilters =
+    focusedTask != null && !filteredTasks.includes(focusedTask);
+  if (focusOutsideFilters) filteredTasks.push(focusedTask);
   const groupLabel = (row: DeliveryTaskBoardRow) =>
     groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
@@ -1378,12 +1386,7 @@ export function DeliveryBoardClient({
     1,
     Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
   );
-  // Resolve legacy ?task= links after filtering and grouping, before rendering.
-  const focusedIndex = focusTask
-    ? filteredTasks.findIndex(
-        (row) => row.task_name === focusTask || row.task_id === focusTask
-      )
-    : -1;
+  const focusedIndex = focusedTask ? filteredTasks.indexOf(focusedTask) : -1;
   const clampedPage = Math.min(
     focusedIndex >= 0 ? Math.floor(focusedIndex / TASK_PAGE_SIZE) : page,
     pageCount - 1
@@ -1832,6 +1835,12 @@ export function DeliveryBoardClient({
                   </div>
                 )}
               </div>
+              {focusOutsideFilters && (
+                <p className="text-muted-foreground mb-2 text-xs">
+                  The linked task is shown even though it does not match the
+                  selected filters.
+                </p>
+              )}
               {filteredTasks.length === 0 ? (
                 <p className="text-muted-foreground text-sm">
                   No tasks match this filter.
@@ -1914,17 +1923,10 @@ export function DeliveryBoardClient({
                           row={row}
                           frozen={frozen}
                           isAdmin={isAdmin}
-                          focused={
-                            focusTask === row.task_name ||
-                            focusTask === row.task_id
-                          }
+                          focused={row === focusedTask}
                           onToggleExpanded={() =>
                             updateView({
-                              task:
-                                focusTask === row.task_name ||
-                                focusTask === row.task_id
-                                  ? null
-                                  : row.task_id,
+                              task: row === focusedTask ? null : row.task_id,
                               page: String(clampedPage + 1),
                             })
                           }

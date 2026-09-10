@@ -43,6 +43,24 @@ export function taskReviewStatus(task: Task): keyof typeof QA_STATUS_LABELS {
   return "never";
 }
 
+export type TaskReviewFilter =
+  | "all"
+  | "accepted"
+  | "rejected"
+  | "running"
+  | "failed"
+  | "unreviewed";
+
+/** The disjoint groups shared by review counts, table filters and drawer navigation. */
+export function taskReviewFilter(task: Task): Exclude<TaskReviewFilter, "all"> {
+  const status = taskReviewStatus(task);
+  if (status === "accepted") return "accepted";
+  if (status === "needs_fixes") return "rejected";
+  if (status === "error") return "failed";
+  if (status === "queued" || status === "running") return "running";
+  return "unreviewed";
+}
+
 /** A finding address pins content even when that version is today's default. */
 export function findingHref(
   taskId: string,

@@ -209,6 +209,148 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
   });
 
+  for (const query of [
+    "task=signed-off",
+    "task=Signed+off+version",
+    "task=signed-off&filter=blocked&qa=never&owner=mine&group=owner&page=9",
+  ]) {
+    test(`delivery focus survives conflicting filters: ${query}`, async ({
+      page,
+    }) => {
+      await page.goto(`/deliveries/review-demo?${query}`);
+      await expect(
+        page.getByText("Signed off on v1", { exact: true })
+      ).toBeVisible();
+      await expect(
+        page.getByText(/linked task is shown even though/)
+      ).toBeVisible();
+      await page.reload();
+      await expect(
+        page.getByText("Signed off on v1", { exact: true })
+      ).toBeVisible();
+    });
+  }
+
+  test("review counts match filtered rows when trials carry newer review progress", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?scenario=live-review");
+    await page
+      .getByRole("button", { name: "4 Review queued / running", exact: true })
+      .click();
+    for (const name of [
+      "Unreviewed version",
+      "New version with older review",
+      "Queued review",
+      "Running review",
+    ])
+      await expect(
+        page.getByRole("button", { name, exact: true })
+      ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Task A", exact: true })
+    ).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "0 No current review", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Unreviewed version", exact: true })
+    ).toHaveCount(0);
+    await page.goBack();
+    await expect(
+      page.getByRole("button", { name: "Unreviewed version", exact: true })
+    ).toBeVisible();
+    await page.reload();
+    await expect(
+      page.getByRole("button", {
+        name: "4 Review queued / running",
+        exact: true,
+      })
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("an entirely unreviewed task set still has a matching review count", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?scenario=unreviewed-only");
+    await page
+      .getByRole("button", { name: "2 No current review", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Unreviewed version", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "New version with older review",
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "0 Review queued / running",
+        exact: true,
+      })
+    ).toBeVisible();
+  });
+
+  test("opening an accepted task keeps drawer navigation inside accepted results", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?verdict=accepted");
+    await page
+      .getByRole("button", { name: "Fair agent failure", exact: true })
+      .click();
+    await expect(page.getByLabel(/Task \d of 3/)).toBeVisible();
+    const next = page.getByRole("button", { name: "Next task", exact: true });
+    await next.click();
+    await expect(page.getByLabel(/Task \d of 3/)).toBeVisible();
+    await expect(page).toHaveURL(/verdict=accepted/);
+    expect(["fair-failure", "awaiting-signoff", "signed-off"]).toContain(
+      new URL(page.url()).searchParams.get("task")
+    );
+  });
+
+  test("Back restores the complete finding address across task versions", async ({
+    page,
+  }) => {
+    await page.goto(
+      "/tasks/task-a?version=7&drawer=task&finding=empty-answer&taskPane=file&taskFile=tests%2Ftest.sh&taskLines=L7"
+    );
+    await expect(page.getByText("exit 0", { exact: true })).toBeVisible();
+    // Add another version address without remounting the task page, then let
+    // its normal popstate listeners load that version and restore its pane.
+    await page.evaluate(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("version", "task-a-v6");
+      url.searchParams.delete("taskLines");
+      window.history.pushState(null, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await expect(page).toHaveURL(/version=task-a-v6/);
+    await expect(page).not.toHaveURL(/taskLines=/);
+    await page.goBack();
+    await expect(page.getByText("exit 0", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/version=7/);
+    await expect(page).toHaveURL(/taskLines=L7/);
+    await page.goForward();
+    await expect(page).toHaveURL(/version=task-a-v6/);
+    await expect(page).not.toHaveURL(/taskLines=/);
+    await page.goBack();
+    await page.reload();
+    await expect(page.getByText("exit 0", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/taskLines=L7/);
+    await page
+      .locator("[data-column-number]")
+      .filter({ hasText: /^3$/ })
+      .click();
+    await expect(page).toHaveURL(/taskLines=L3(?:&|$)/);
+    await page
+      .locator("[data-column-number]")
+      .filter({ hasText: /^5$/ })
+      .click({ modifiers: ["Shift"] });
+    await expect(page).toHaveURL(/taskLines=L3-L5(?:&|$)/);
+  });
+
   test("new version keeps older review available without claiming current coverage", async ({
     page,
   }) => {
@@ -291,7 +433,10 @@ test.describe("real components with local fixture API", () => {
           expected_version_id: "awaiting-signoff-v1",
         },
       ]);
-    await expect(row).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect(
+      page.getByText(/linked task is shown even though/)
+    ).toBeVisible();
     await page.goto("/deliveries/review-demo?filter=all&task=awaiting-signoff");
     await expect(
       page.getByText("Signed off on v1", { exact: true })
