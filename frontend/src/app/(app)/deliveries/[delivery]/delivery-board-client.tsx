@@ -659,6 +659,7 @@ function TaskRow({
   onClaim,
   onRelease,
   onSaveWork,
+  pendingCheck,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -682,6 +683,7 @@ function TaskRow({
   groupBy: string;
   canEditWork: boolean;
   busy: boolean;
+  pendingCheck: { key: string; phase: "saving" | "refreshing" } | null;
   onClaim: () => void;
   onRelease: () => void;
   onSaveWork: (patch: {
@@ -987,7 +989,11 @@ function TaskRow({
                                 )
                               }
                             >
-                              Acknowledge for v{row.version}
+                              {pendingCheck?.key === `ack:${defect.id}`
+                                ? pendingCheck.phase === "saving"
+                                  ? "Saving…"
+                                  : "Updating…"
+                                : `Acknowledge for v${row.version}`}
                             </Button>
                           )}
                         </li>
@@ -1300,6 +1306,11 @@ function DeliveryBoardContent({
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pendingCheck, setPendingCheck] = useState<{
+    taskId: string | null;
+    key: string;
+    phase: "saving" | "refreshing";
+  } | null>(null);
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
   const [bulkSignoffRows, setBulkSignoffRows] = useState<
@@ -1380,7 +1391,7 @@ function DeliveryBoardContent({
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
       try {
-        await mutate(undefined, { populateCache: false, throwOnError: false });
+        await mutate();
       } finally {
         setBusy(false);
       }
@@ -1424,14 +1435,20 @@ function DeliveryBoardContent({
     const row = data?.tasks.find(
       (row) => row.delivery_task_id === deliveryTaskId
     );
-    void run(() =>
-      putCheck(
+    setPendingCheck({ taskId: deliveryTaskId, key: checkKey, phase: "saving" });
+    void run(async () => {
+      await putCheck(
         checkKey,
         deliveryTaskId,
         checked,
         row ? (row.version_id ?? null) : undefined
-      )
-    );
+      );
+      setPendingCheck({
+        taskId: deliveryTaskId,
+        key: checkKey,
+        phase: "refreshing",
+      });
+    }).finally(() => setPendingCheck(null));
   };
 
   const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
@@ -2041,6 +2058,11 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
+                            pendingCheck={
+                              pendingCheck?.taskId === row.delivery_task_id
+                                ? pendingCheck
+                                : null
+                            }
                             groupBy={groupBy}
                             busy={busy}
                             canEditWork={

@@ -1012,7 +1012,7 @@ test("mixed selections cannot be partly signed off and grouping keeps claim avai
   expect(state.writes).toEqual([]);
 });
 
-test("empty and single-observation progress stay compact through refresh", async ({
+test("history remains above counts with only one observation", async ({
   page,
 }, testInfo) => {
   const state = await controlledAPI(page);
@@ -1034,17 +1034,33 @@ test("empty and single-observation progress stay compact through refresh", async
     },
   ];
   await tick(page);
-  await expect(overview.getByLabel("Progress snapshot")).toHaveText(
-    "Sep 9 · 3 ready of 24 tasks"
-  );
-  await expect(overview.locator("svg")).toHaveCount(0);
+  const chart = overview.getByRole("img");
+  await expect(chart.getByText("24 total", { exact: true })).toBeVisible();
+  await expect(chart.getByText("3 ready", { exact: true })).toBeVisible();
+  await expect(overview.getByLabel("Progress snapshot")).toHaveCount(0);
   expect(
-    (await overview.getByLabel("Progress snapshot").boundingBox())!.height
-  ).toBeLessThan(80);
-  await page.screenshot({
-    path: testInfo.outputPath("delivery-single-observation.png"),
-    fullPage: true,
-  });
+    await chart
+      .locator(".recharts-line-dots circle")
+      .evaluateAll(
+        (elements) =>
+          elements.filter((e) => Number(e.getAttribute("r")) > 0).length
+      )
+  ).toBe(2);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.runFor(100);
+    const graph = (await chart.boundingBox())!;
+    const counts = (await overview.locator("dl").boundingBox())!;
+    expect(graph.y + graph.height).toBeLessThanOrEqual(counts.y);
+    await page.screenshot({
+      path: testInfo.outputPath(`delivery-single-observation-${width}.png`),
+      fullPage: true,
+    });
+  }
+  state.board.progress_history[0].recorded_at = "2026-09-10T12:00:00Z";
+  await tick(page);
+  await expect(chart.locator("time")).toHaveCount(1);
+  await expect(chart.getByText("24 total", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([]);
 });
 
@@ -1101,4 +1117,69 @@ test("history keeps gaps visible and separates equal endpoint labels", async ({
     });
   }
   expect(state.writes).toEqual([]);
+});
+
+test("acknowledgment shows saving and refreshing, and a failed save can be retried", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = [reviewTaskRow()];
+  await page.goto("/?task=task-a");
+  const finding = page
+    .getByRole("listitem")
+    .filter({ hasText: "The verifier does not check" });
+  const acknowledge = finding.getByRole("button", {
+    name: "Acknowledge for v1",
+    exact: true,
+  });
+  let releaseSave!: () => void;
+  let saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let failSave = true;
+  await page.route("**/api/deliveries/refresh-test/checks", async (route) => {
+    await saveGate;
+    if (failSave)
+      return route.fulfill({
+        status: 409,
+        json: { detail: "The selected task version changed." },
+      });
+    return route.fallback();
+  });
+  await acknowledge.click();
+  await expect(
+    finding.getByRole("button", { name: "Saving…", exact: true })
+  ).toBeDisabled();
+  expect(state.writes).toHaveLength(0);
+  releaseSave();
+  await expect(
+    page.getByText("The selected task version changed.", { exact: false })
+  ).toBeVisible();
+  await expect(acknowledge).toBeEnabled();
+  await page.clock.runFor(100);
+  failSave = false;
+  saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let releaseRefresh!: () => void;
+  const refreshGate = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  await page.route("**/api/deliveries/refresh-test", async (route) => {
+    await refreshGate;
+    return route.fallback();
+  });
+  await acknowledge.click();
+  await expect(
+    finding.getByRole("button", { name: "Saving…", exact: true })
+  ).toBeDisabled();
+  releaseSave();
+  await expect(
+    finding.getByRole("button", { name: "Updating…", exact: true })
+  ).toBeDisabled();
+  expect(state.writes).toHaveLength(1);
+  releaseRefresh();
+  await expect(
+    page.locator("summary").filter({ hasText: /^Needs a decision/ })
+  ).toHaveText("Needs a decision · 1 finding · v1");
 });

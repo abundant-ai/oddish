@@ -40,8 +40,7 @@ export function DeliveryOverview({
   };
   for (const row of tasks) counts[deliveryTaskState(row)]++;
   const days = deliveryProgressHistory(board, ownerFilter);
-  const observations = days.filter((day) => day.task_count !== null);
-  const latest = observations.at(-1);
+  const latest = days.findLast((day) => day.task_count !== null);
   const ownerName =
     ownerFilter === "all"
       ? "all owners"
@@ -56,38 +55,8 @@ export function DeliveryOverview({
       Math.max(1, ...days.map((day) => day.task_count ?? 0)) / 5;
   return (
     <section aria-label="Delivery overview" className="space-y-5">
-      <dl
-        className={`grid gap-4 py-4 ${counts.awaiting_signoff ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}
-      >
-        {(
-          Object.entries(DELIVERY_STATES) as [
-            DeliveryTaskState,
-            (typeof DELIVERY_STATES)[DeliveryTaskState],
-          ][]
-        )
-          .filter(([key]) => key !== "awaiting_signoff" || counts[key] > 0)
-          .map(([key, state]) => (
-            <div key={key}>
-              <dt className="text-muted-foreground text-sm">{state.label}</dt>
-              <dd className="mt-2 text-3xl font-medium tabular-nums">
-                {counts[key]}
-              </dd>
-            </div>
-          ))}
-      </dl>
       {!latest ? (
         <p className="text-muted-foreground py-3 text-sm">No history yet</p>
-      ) : observations.length === 1 ? (
-        <p
-          aria-label="Progress snapshot"
-          className="text-muted-foreground py-3 text-sm"
-        >
-          <time dateTime={latest.date}>
-            {historyDate.format(new Date(latest.date))}
-          </time>
-          {" · "}
-          {latest.ready} ready of {latest.task_count} tasks
-        </p>
       ) : (
         <div
           className="flex h-52 min-w-0 flex-col sm:h-60"
@@ -189,15 +158,36 @@ export function DeliveryOverview({
             <time dateTime={days[0].date}>
               {historyDate.format(new Date(days[0].date))}
             </time>
-            <time dateTime={days[days.length - 1].date}>
-              {!board.frozen &&
-              days[days.length - 1].date === board.qa_as_of?.slice(0, 10)
-                ? "Today"
-                : historyDate.format(new Date(days[days.length - 1].date))}
-            </time>
+            {days.length > 1 && (
+              <time dateTime={days[days.length - 1].date}>
+                {!board.frozen &&
+                days[days.length - 1].date === board.qa_as_of?.slice(0, 10)
+                  ? "Today"
+                  : historyDate.format(new Date(days[days.length - 1].date))}
+              </time>
+            )}
           </div>
         </div>
       )}
+      <dl
+        className={`grid gap-4 py-4 ${counts.awaiting_signoff ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}
+      >
+        {(
+          Object.entries(DELIVERY_STATES) as [
+            DeliveryTaskState,
+            (typeof DELIVERY_STATES)[DeliveryTaskState],
+          ][]
+        )
+          .filter(([key]) => key !== "awaiting_signoff" || counts[key] > 0)
+          .map(([key, state]) => (
+            <div key={key}>
+              <dt className="text-muted-foreground text-sm">{state.label}</dt>
+              <dd className="mt-2 text-3xl font-medium tabular-nums">
+                {counts[key]}
+              </dd>
+            </div>
+          ))}
+      </dl>
     </section>
   );
 }
