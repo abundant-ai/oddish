@@ -241,7 +241,6 @@ function getNodeName(path: string): string {
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
-const FILE_LOAD_ERROR = "Error loading file content";
 
 /**
  * Build the full nested tree from a recursive listing in one pass.
@@ -546,7 +545,10 @@ export function TaskFilesPanel({
     checksLoadError && !panel
       ? "Unable to load the static checks state."
       : null;
-  const checksFindings = checksVersion?.pre_trial_findings ?? [];
+  const checksFindings = [
+    ...(checksVersion?.retained_findings ?? []),
+    ...(checksVersion?.pre_trial_findings ?? []),
+  ];
   const taskQaActive = panel?.qa_active ?? false;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a
@@ -568,7 +570,6 @@ export function TaskFilesPanel({
   // Trajectory analysis is a single task-level QA job (classify every trial,
   // then synthesize the verdict), surfaced as one Run QA action.
   const [isRunningQA, setIsRunningQA] = useState(false);
-  const [qaEnvironment, setQAEnvironment] = useState("");
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [directoryListings, setDirectoryListings] = useState<
@@ -797,7 +798,12 @@ export function TaskFilesPanel({
         );
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to fetch file content");
+        if (!res.ok)
+          throw new Error(
+            res.status === 404
+              ? `${selectedFile.path}${currentVersion != null ? ` on v${currentVersion}` : ""} is unavailable. Historical evidence may have been removed; current content has not been substituted.`
+              : `Could not read ${selectedFile.path} (HTTP ${res.status}). Retry loading the evidence.`
+          );
         if (fileRouteServesBytes) {
           content = await res.text();
         } else {
@@ -919,8 +925,8 @@ export function TaskFilesPanel({
     (task?.trials ?? []).some(
       (trial) => trial.analysis_status || trial.analysis
     )
-      ? "Rerun QA"
-      : "Run QA";
+      ? "Rerun execution review"
+      : "Run execution review";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1028,8 +1034,6 @@ export function TaskFilesPanel({
       // the task verdict.
       const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment: qaEnvironment || null }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -1082,8 +1086,6 @@ export function TaskFilesPanel({
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ environment: qaEnvironment || null }),
         }
       );
       if (!res.ok) {
@@ -1098,14 +1100,7 @@ export function TaskFilesPanel({
     } finally {
       setChecksRerunning(false);
     }
-  }, [
-    baseUrl,
-    effectiveChecksTaskId,
-    panel,
-    checksRerunning,
-    mutateChecks,
-    qaEnvironment,
-  ]);
+  }, [baseUrl, effectiveChecksTaskId, panel, checksRerunning, mutateChecks]);
 
   const loadDirectoryPage = useCallback(
     async (path: string | null, cursor?: string | null) => {
@@ -1448,7 +1443,35 @@ export function TaskFilesPanel({
     }
   }, [isOpen, taskId]);
 
-  // Synchronize a deep-linked file with its selection and directory pages.
+  const initialFileNode =
+    initialFilePath && !loadsTaskTreeByDirectory
+      ? (findNodeByPath(fileTree, initialFilePath) ??
+        findNodeBySuffix(fileTree, initialFilePath))
+      : null;
+  const initialSelectionPath =
+    initialFilePath &&
+    (loadsTaskTreeByDirectory || fileTree.length > 0) &&
+    initialFileNode?.type !== "dir"
+      ? (initialFileNode?.path ?? initialFilePath)
+      : null;
+  const applyInitialFileSelection = useEffectEvent((path: string) => {
+    if (selectedFilePath !== path) selectFilePath(path);
+  });
+
+  // Apply an incoming file address, not every local selection change. Next's
+  // search params can still contain the previous file just after a click.
+  useEffect(() => {
+    if (!isOpen || activePane !== "file" || !initialSelectionPath) return;
+    applyInitialFileSelection(initialSelectionPath);
+  }, [
+    activePane,
+    initialSelectionPath,
+    isOpen,
+    fileListIdentity,
+    listingContentHash,
+  ]);
+
+  // Directory responses can expand the deep link without reselecting it.
   useEffect(() => {
     if (!isOpen || activePane !== "file" || !initialFilePath) return;
     if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
@@ -1477,12 +1500,6 @@ export function TaskFilesPanel({
         }
       }
     }
-
-    if (node?.type === "dir") return;
-
-    // A file URL is already an exact resource address. Selecting it does not
-    // depend on whether its containing directory page happens to include it.
-    if (selectedFilePath !== targetPath) selectFilePath(targetPath);
   }, [
     activePane,
     directoryListings,
@@ -1491,8 +1508,6 @@ export function TaskFilesPanel({
     isOpen,
     loadDirectoryPage,
     loadsTaskTreeByDirectory,
-    selectFilePath,
-    selectedFilePath,
   ]);
 
   useEffect(() => {
@@ -1689,7 +1704,9 @@ export function TaskFilesPanel({
     if (previewError || !selectedPreview) {
       return (
         <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          {FILE_LOAD_ERROR}
+          {previewError instanceof Error
+            ? previewError.message
+            : "File evidence unavailable"}
         </div>
       );
     }
@@ -2101,6 +2118,32 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  executionReviewAction={
+                    showAnalysis &&
+                    task && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRunQA}
+                        disabled={!canRunQA || isRunningQA}
+                        title={
+                          actionsReady
+                            ? "Reviews recorded runs and synthesizes the verdict for the default version; does not rerun solver trials."
+                            : "Loading latest task state."
+                        }
+                        className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                      >
+                        {isRunningQA ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Microscope className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {isRunningQA ? "Queueing..." : qaActionLabel}
+                      </Button>
+                    )
+                  }
+                  executionReviewError={qaActionError}
                 />
               ) : (
                 renderFileContent()
@@ -2243,7 +2286,9 @@ export function TaskFilesPanel({
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
                     title={
-                      actionsReady ? undefined : "Loading latest task state."
+                      actionsReady
+                        ? "Reruns solver trials in this task or experiment."
+                        : "Loading latest task state."
                     }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
@@ -2254,39 +2299,6 @@ export function TaskFilesPanel({
                     />
                     {isRerunning ? "Rerunning..." : "Rerun trials"}
                   </Button>
-                )}
-                {showAnalysis && task && (
-                  <>
-                    <select
-                      aria-label="QA sandbox provider"
-                      value={qaEnvironment}
-                      onChange={(event) => setQAEnvironment(event.target.value)}
-                      disabled={isRunningQA || checksRerunning}
-                      className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
-                    >
-                      <option value="">QA: Worker default</option>
-                      <option value="modal">QA: Modal</option>
-                      <option value="daytona">QA: Daytona</option>
-                    </select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRunQA}
-                      disabled={!canRunQA || isRunningQA}
-                      title={
-                        actionsReady ? undefined : "Loading latest task state."
-                      }
-                      className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                    >
-                      {isRunningQA ? (
-                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Microscope className="mr-1 h-3.5 w-3.5" />
-                      )}
-                      {isRunningQA ? "Queueing..." : qaActionLabel}
-                    </Button>
-                  </>
                 )}
               </div>
             </div>

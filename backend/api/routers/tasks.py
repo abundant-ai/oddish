@@ -91,7 +91,14 @@ from api.schemas import (
     ModelRenameRequest,
     ModelRenameResponse,
 )
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
@@ -141,6 +148,7 @@ from oddish.schemas import (
     OrgProbeRow,
     QARunRequest,
     TaskBrowseFacets,
+    TaskBrowseCountResponse,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -579,6 +587,19 @@ async def list_tasks(
         return tasks
 
 
+@router.get("/experiments/{experiment_id}/results")
+async def get_experiment_results(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+):
+    from oddish.core.endpoints.experiment_page import experiment_results_response
+
+    auth.require_scope(APIKeyScope.READ)
+    return await experiment_results_response(
+        experiment_id=experiment_id, org_id=auth.org_id
+    )
+
+
 @router.get("/experiments/{experiment_id}/open", response_model=ExperimentOpenResponse)
 async def get_experiment_open(
     experiment_id: str,
@@ -670,12 +691,26 @@ async def get_experiment_cost_totals_route(
         )
 
 
-@router.get("/tasks/browse", response_model=TaskBrowseResponse)
+@router.get(
+    "/tasks/browse",
+    response_model=TaskBrowseResponse | TaskBrowseCountResponse,
+)
 async def browse_tasks(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    count_only: bool = Query(
+        False,
+        description=(
+            "Return only the number of matching tasks, as "
+            "{'total': N}, instead of a page. The dashboard fetches this "
+            "separately from the grid and caches it per filter set, so paging "
+            "does not re-run the count. Shares this endpoint's parameter "
+            "parsing so the count can never apply different filters than the "
+            "listing it labels."
+        ),
+    ),
     query: str | None = None,
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
@@ -817,7 +852,7 @@ async def browse_tasks(
             "ANDed with the flat filters."
         ),
     ),
-) -> TaskBrowseResponse:
+) -> TaskBrowseResponse | TaskBrowseCountResponse:
     """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
@@ -862,7 +897,7 @@ async def browse_tasks(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await browse_tasks_core(
+        result = await browse_tasks_core(
             session,
             org_id=auth.org_id,
             limit=limit,
@@ -942,7 +977,12 @@ async def browse_tasks(
             top_metric=top_metric,
             or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
+            count_only=count_only,
         )
+        if count_only:
+            assert isinstance(result, int)
+            return TaskBrowseCountResponse(total=result)
+        return result
 
 
 @router.get("/tasks/browse/facets", response_model=TaskBrowseFacets)
@@ -1633,13 +1673,12 @@ async def get_task_status(
 async def get_task_open(
     request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version_id: str | None = None,
 ) -> TaskOpenResponse:
     """Bounded task-page header, aggregates, and trial preview."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_open_core(
             session,
             task_id=task_id,
@@ -1651,12 +1690,13 @@ async def get_task_open(
 
 @router.get("/tasks/{task_id}/panel", response_model=TaskPanelResponse)
 async def get_task_panel(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version: int | None = None,
 ) -> TaskPanelResponse:
-    auth.require_scope(APIKeyScope.READ)
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_panel_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
         )
@@ -1664,13 +1704,13 @@ async def get_task_panel(
 
 @router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TaskDetailResponse:
     """Task detail bundle: task + trials + per-version + cost rollups."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
@@ -1753,8 +1793,9 @@ def _build_task_file_etag(archive_etag: str, file_path: str) -> str:
 
 @router.get("/tasks/{task_id}/files")
 async def list_task_files(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
@@ -1778,9 +1819,8 @@ async def list_task_files(
     With stream=True the response is NDJSON: a listing chunk as soon as the
     tree is known, then per-file content chunks as they load.
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         source = await resolve_task_file_source(
             session,
             task_id=task_id,
@@ -1827,7 +1867,7 @@ async def get_task_file_content(
     file_path: str,
     request: Request,
     response: Response,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
     max_bytes: int | None = Query(None, ge=1),
@@ -1839,9 +1879,8 @@ async def get_task_file_content(
     ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
     so clients must revalidate rather than treating a version URL as immutable.
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         source = await resolve_task_file_source(
             session,
             task_id=task_id,

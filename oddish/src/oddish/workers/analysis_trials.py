@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from importlib import resources
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.analyze import Classification, TrialClassification
@@ -152,7 +152,7 @@ def analysis_check_payload(kind: str, harbor_config: dict | None) -> dict:
         # The ActionItem model accepts the prompt's own heading spellings
         # for the dimension field; the validator must not be stricter.
         "dimension_spellings": sorted(_DIMENSION_HEADING_SPELLINGS),
-        "tiers": [t.value for t in ActionTier],
+        "tiers": [ActionTier.MUST_FIX.value],
         "must_fix_tier": ActionTier.MUST_FIX.value,
     }
     trajectory_vocabulary = {
@@ -771,11 +771,20 @@ async def maybe_enqueue_audit_trial(
     version_id = task_version_id or task.current_version_id
     if version_id is None:
         return False
-    version = await session.get(TaskVersionModel, version_id, with_for_update=True)
-    if version is None or version.pre_trial_status is not None:
+    # Trial inserts hold foreign-key KEY SHARE locks on this version. Updating
+    # only audit state is compatible with those locks; FOR UPDATE would upgrade
+    # them and can deadlock concurrent submissions. The predicate admits one audit.
+    claimed = await session.scalar(
+        update(TaskVersionModel)
+        .where(
+            TaskVersionModel.id == version_id,
+            TaskVersionModel.pre_trial_status.is_(None),
+        )
+        .values(pre_trial_status=VerdictStatus.QUEUED, pre_trial_started_at=utcnow())
+        .returning(TaskVersionModel.id)
+    )
+    if claimed is None:
         return False
-    version.pre_trial_status = VerdictStatus.QUEUED
-    version.pre_trial_started_at = utcnow()
     await create_analysis_trial(
         session,
         task=task,
@@ -1217,6 +1226,9 @@ async def _import_qa_result(
             session, task_id, graded_version_id, expected=expected, trial_id=trial.id
         ):
             return
+        from oddish.core.task_findings import preserve_task_findings
+
+        await preserve_task_findings(session, graded_version_id)
         for entry in artifact["trials"]:
             trial_id = entry["trial_id"]
             row = await session.get(TrialModel, trial_id)
@@ -1243,6 +1255,7 @@ async def _import_qa_result(
                 break
             analysis = {
                 **entry["analysis"],
+                "action_items": [item.model_dump(mode="json") for item in parsed.action_items],
                 "trial_name": row.id,
                 "reward": reward,
                 "_graded_by": trial.id,
@@ -1286,6 +1299,7 @@ async def _import_qa_result(
             )
             classifications.append(parsed)
         if contract_drift is None:
+            reports = await preserve_task_findings(session, graded_version_id)
             await session.commit()
         else:
             # get_session commits on clean context exit; the rows written
@@ -1350,6 +1364,7 @@ async def _import_qa_result(
     verdict = apply_deterministic_verdict_rules(
         verdict,
         must_fix_ids=list(expected.get("pre_trial_must_fix_ids") or []),
+        task_defect_count=len(reports),
         baseline_evidence=list(expected.get("baseline_evidence") or []),
     )
     if verdict is None:

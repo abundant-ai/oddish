@@ -179,7 +179,12 @@ jobs:
       - name: Install Playwright browser
         if: steps.gate.outputs.have_clerk == 'true'
         working-directory: frontend
-        run: pnpm exec playwright install chromium --with-deps
+        run: |
+          # Playwright downloads its own Chromium. The runner's unrelated Chrome
+          # apt repository can have inconsistent package hashes and block the
+          # Ubuntu dependency install before any tests run.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          pnpm exec playwright install chromium --with-deps
 
       - name: Start frontend
         if: steps.gate.outputs.have_clerk == 'true'
@@ -214,6 +219,11 @@ jobs:
           CLERK_JWT_TEMPLATE: oddish
         run: pnpm exec playwright test
 
+      - name: Run account layout fixture tests
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.review.config.ts user-ui-layout.spec.ts --output layout-test-results
+
       - name: Show server logs on failure
         if: ${{ failure() && steps.gate.outputs.have_clerk == 'true' }}
         run: |
@@ -230,6 +240,7 @@ jobs:
           path: |
             frontend/playwright-report/
             frontend/test-results/
+            frontend/layout-test-results/
             /tmp/backend.log
             /tmp/frontend.log
           retention-days: 7

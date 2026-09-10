@@ -123,3 +123,7 @@ those terms requires a separate license from the rights holders. Contact
 
 Rights already granted for code released under Apache 2.0 remain in place.
 See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own license.
+
+Delivery sign-off requires a fix or individual acknowledgment for every reported
+task defect, including historical lower-severity findings. The CLI sends the
+reviewed version; new versions require a new decision. See `../DOCS.md`.

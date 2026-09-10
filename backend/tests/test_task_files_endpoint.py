@@ -15,8 +15,8 @@ from oddish.core.task_files import TaskFileSource
 
 
 @pytest.fixture
-def client():
-    from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
+def client(monkeypatch):
+    from auth import APIKeyScope, AuthContext, AuthMethod, get_auth_context
 
     fake_auth = AuthContext(
         method=AuthMethod.API_KEY,
@@ -29,7 +29,8 @@ def client():
         return fake_auth
 
     app = create_app()
-    app.dependency_overrides[require_auth] = fake_require_auth
+    app.dependency_overrides[get_auth_context] = fake_require_auth
+    monkeypatch.setattr("auth.require_execution_org", AsyncMock(return_value=object()))
     return TestClient(app)
 
 
@@ -58,7 +59,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
     )
 
     with (
-        patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
+        patch("auth.get_read_session", new=fake_get_read_session),
         patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
@@ -110,7 +111,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
     )
 
     with (
-        patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
+        patch("auth.get_read_session", new=fake_get_read_session),
         patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
@@ -160,7 +161,7 @@ def test_selected_file_forwards_preview_limit(client):
     )
 
     with (
-        patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
+        patch("auth.get_read_session", new=fake_get_read_session),
         patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
@@ -220,7 +221,7 @@ def test_selected_file_http_error_handling(
     get_file = AsyncMock(side_effect=HTTPException(storage_status, detail=detail))
 
     with (
-        patch("api.routers.tasks.get_read_session", new=fake_get_read_session),
+        patch("auth.get_read_session", new=fake_get_read_session),
         patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):

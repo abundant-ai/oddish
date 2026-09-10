@@ -458,6 +458,9 @@ async def complete_task_upload(
                 version_row.message = message
             version_row.expanded_at = None
             version_row.expanded_manifest_key = None
+            # Retained findings describe the replaced source bytes, not this
+            # new archive. Same-content retries return above and keep them.
+            version_row.reported_findings = []
             version_row.pre_trial = None
             version_row.pre_trial_status = None
             version_row.pre_trial_error = None

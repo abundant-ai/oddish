@@ -963,7 +963,9 @@ a dropdown of existing customers and a form for a new one. `POST
 
 The dashboard board can filter its task list: all tasks, blocked tasks
 (a failing check or an open defect), tasks awaiting sign-off (every
-check passes), or ready tasks. Use it to hide what is already approved. Each row also
+check passes), or ready tasks. Use it to hide what is already approved. The filter, the
+page, and the page size live in the URL (`?filter=`, `?page=`,
+`?per_page=`), so a filtered view can be shared or reloaded. Each row also
 has a selection checkbox (the header checkbox selects the whole filtered
 view): the bulk bar signs off every clean selected task or removes the
 selected tasks from the delivery in one action.
@@ -1118,3 +1120,10 @@ drawer's summary. `results.summary` must carry all six counts (`tests`,
 a report missing any of them is dropped whole. Missing, malformed, or
 oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
+
+Delivery sign-off requires resolving or individually acknowledging every
+reported defect, including historical `should_fix` and `optional` findings.
+`oddish delivery check`, `ack`, and `signoff` send the task version shown by the
+board; a version change requires reviewing the board again. `oddish delivery
+history` retains original severity labels and shows the current shipment
+requirement. An acknowledgment permits an exception without deleting a finding.

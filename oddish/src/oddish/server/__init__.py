@@ -98,6 +98,7 @@ from oddish.schemas import (
     QARunRequest,
     ExperimentOptionsResponse,
     TaskBatchCancelRequest,
+    TaskBrowseCountResponse,
     TaskBrowseResponse,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
@@ -492,10 +493,21 @@ async def list_tasks(
         )
 
 
-@api.get("/tasks/browse", response_model=TaskBrowseResponse)
+@api.get(
+    "/tasks/browse",
+    response_model=TaskBrowseResponse | TaskBrowseCountResponse,
+)
 async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    count_only: bool = Query(
+        False,
+        description=(
+            "Return only the number of matching tasks, as {'total': N}, "
+            "instead of a page. Mirrors the hosted route so a self-hosted "
+            "dashboard gets the browser's matching-task count too."
+        ),
+    ),
     query: str | None = None,
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
@@ -510,7 +522,7 @@ async def browse_tasks(
     tool_names: str | None = Query(None),
     tool_count_mins: str | None = Query(None),
     trial_metric_match: str = Query("any", pattern="^(any|all)$"),
-) -> TaskBrowseResponse:
+) -> TaskBrowseResponse | TaskBrowseCountResponse:
     """Browse selected default task versions with aggregated trial stats."""
     async with get_read_session() as session:
         from oddish.filters.trial_metrics import TrialMetricFilter
@@ -530,10 +542,11 @@ async def browse_tasks(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await browse_tasks_core(
+        result = await browse_tasks_core(
             session,
             limit=limit,
             offset=offset,
+            count_only=count_only,
             query=query,
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
@@ -549,6 +562,10 @@ async def browse_tasks(
             tool_count_mins=metric_filter.tool_count_mins,
             trial_metric_match=metric_filter.match.value,
         )
+        if count_only:
+            assert isinstance(result, int)
+            return TaskBrowseCountResponse(total=result)
+        return result
 
 
 @api.get("/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse)

@@ -153,6 +153,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
         message="old message",
         expanded_at=object(),
         expanded_manifest_key="tasks/task-1/v2-files/.oddish-manifest.json",
+        reported_findings=[{"finding": {"id": "old-defect", "tier": "must_fix"}}],
         pre_trial={"items": []},
         pre_trial_status=object(),
         pre_trial_error="old error",
@@ -194,6 +195,7 @@ async def test_complete_overwrite_updates_row_and_invalidates_derived_state(
     assert version.message == "old message"
     assert version.expanded_at is None
     assert version.expanded_manifest_key is None
+    assert version.reported_findings == []
     assert version.pre_trial is None
     assert version.pre_trial_status is None
     assert version.pre_trial_error is None
@@ -290,6 +292,7 @@ async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
     version = SimpleNamespace(
         id="task-1-v2",
         content_hash="new-hash",
+        reported_findings=[{"finding": {"id": "current-defect", "tier": "must_fix"}}],
         task_s3_key=f"tasks/task-1/v2-revisions/{'c' * 32}/",
     )
     task = SimpleNamespace(
@@ -314,6 +317,9 @@ async def test_complete_overwrite_replay_succeeds_after_staging_cleanup(
     )
 
     assert result.existing_task is True
+    assert version.reported_findings == [
+        {"finding": {"id": "current-defect", "tier": "must_fix"}}
+    ]
     assert storage.copied == []
 
 
@@ -324,6 +330,7 @@ async def test_complete_overwrite_replay_succeeds_before_staging_cleanup(
     version = SimpleNamespace(
         id="task-1-v2",
         content_hash="new-hash",
+        reported_findings=[{"finding": {"id": "current-defect", "tier": "must_fix"}}],
         task_s3_key=f"tasks/task-1/v2-revisions/{'c' * 32}/",
     )
     task = SimpleNamespace(
@@ -348,6 +355,9 @@ async def test_complete_overwrite_replay_succeeds_before_staging_cleanup(
     )
 
     assert result.existing_task is True
+    assert version.reported_findings == [
+        {"finding": {"id": "current-defect", "tier": "must_fix"}}
+    ]
     assert result.s3_key == f"tasks/task-1/v2-revisions/{'c' * 32}/"
     assert storage.copied == []
     assert storage.deleted == [f"task-upload-staging/task-1/{'e' * 32}.tar.gz"]

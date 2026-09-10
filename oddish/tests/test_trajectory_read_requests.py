@@ -135,3 +135,84 @@ async def test_storage_failure_is_not_treated_as_missing(
     assert exc.value.response["Error"]["Code"] == code
     assert sdk.get_object.await_args_list[-1].kwargs["Key"] == key
     assert not trial_io._TRAJECTORY_CACHE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [None, "", "404", "NoSuchKey", "NotFound"])
+async def test_missing_manifest_uses_legacy_layout(trajectory_storage, code):
+    from oddish.core.trial_artifacts import (
+        TrialArtifactMode,
+        resolve_trial_artifact_layout,
+    )
+
+    trial, objects, sdk, manifest_key, _ = trajectory_storage
+    objects[manifest_key] = ClientError(
+        {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+        "GetObject",
+    )
+    layout = await resolve_trial_artifact_layout(trial, trial_io.get_storage_client())
+    assert layout.mode is TrialArtifactMode.LEGACY
+    assert layout.artifact_prefix == trial.trial_s3_key
+    sdk.head_object.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_empty_code_404_preserves_selected_step_trajectory(trajectory_storage):
+    trial, objects, sdk, _, trajectory_key = trajectory_storage
+    missing = ClientError(
+        {"Error": {"Code": ""}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+        "GetObject",
+    )
+    objects[trajectory_key] = missing
+    prefix = trial.trial_s3_key + "selected/"
+    objects[prefix + "result.json"] = json.dumps(
+        {"step_results": [{"step_name": "solve"}]}
+    )
+    objects[prefix + "steps/solve/agent/trajectory.json"] = (
+        '{"steps": [{"step_id": 1}]}'
+    )
+
+    async def head_object(*, Bucket, Key):
+        if Key not in objects:
+            raise missing
+        return {}
+
+    sdk.head_object.side_effect = head_object
+    result = await trial_io.read_trial_trajectory(trial)
+    assert result["steps"][0]["step_id"] == 1
+    assert all(
+        "/old/" not in call.kwargs["Key"] for call in sdk.get_object.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["manifest", "trajectory"])
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"Error": {"Code": ""}},
+        {"Error": {"Code": ""}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+        {"Error": {"Code": ""}, "ResponseMetadata": {"HTTPStatusCode": 500}},
+        {
+            "Error": {"Code": "NoSuchBucket"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        },
+        {
+            "Error": {"Code": "AccessDenied"},
+            "ResponseMetadata": {"HTTPStatusCode": 404},
+        },
+        {"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 503}},
+    ],
+)
+async def test_ambiguous_or_service_errors_propagate(
+    trajectory_storage, target, response
+):
+    trial, objects, sdk, manifest_key, trajectory_key = trajectory_storage
+    key = manifest_key if target == "manifest" else trajectory_key
+    error = ClientError(response, "GetObject")
+    objects[key] = error
+    with pytest.raises(ClientError) as raised:
+        await trial_io.read_trial_trajectory(trial)
+    assert raised.value is error
+    sdk.head_object.assert_not_called()
+    assert not trial_io._TRAJECTORY_CACHE
