@@ -369,7 +369,9 @@ function applyBoardView(
       (view.filter === "all" ||
         (view.filter === "outstanding"
           ? !row.ready
-          : deliveryTaskState(row) === view.filter)) &&
+          : view.filter === "blocked"
+            ? ["needs_work", "qa_incomplete"].includes(deliveryTaskState(row))
+            : deliveryTaskState(row) === view.filter)) &&
       (view.issueFilter === "all" ||
         row.qa_work.issue_categories.includes(
           view.issueFilter as QAIssueCategory
@@ -1786,6 +1788,9 @@ function DeliveryBoardContent({
                       <SelectItem value="all">All states</SelectItem>
                       {filter === "outstanding" && (
                         <SelectItem value="outstanding">Outstanding</SelectItem>
+                      )}
+                      {filter === "blocked" && (
+                        <SelectItem value="blocked">Blocked</SelectItem>
                       )}
                       {Object.entries(DELIVERY_STATES).map(([key, state]) => (
                         <SelectItem key={key} value={key}>

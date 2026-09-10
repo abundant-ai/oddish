@@ -2319,3 +2319,8 @@ last observation and freezes daily history in the shipping snapshot. Old finaliz
 snapshots remain unchanged. Progress history is stripped from customer-safe
 snapshots because its counts include internal/hidden tasks. Acknowledged findings
 are exceptions, not verified repairs; missing days have no observation, not zero.
+
+Delivery legacy `filter=blocked` links include Needs work and QA incomplete,
+excluding Needs sign-off and Ready. Verdict provenance on delivery boards and
+task QA history orders by completion time (creation time when absent), then
+creation time and trial ID descending to resolve ties consistently.
