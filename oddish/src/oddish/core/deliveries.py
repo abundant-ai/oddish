@@ -16,6 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.delivery_qa import delivery_qa_statuses
+from oddish.core.delivery_progress import (
+    delivery_progress_history,
+    record_delivery_progress,
+)
 from oddish.core.task_findings import pre_trial_items, task_defect_items
 from oddish.db import (
     CustomerModel,
@@ -1209,7 +1213,9 @@ async def get_delivery_board_core(
             board = DeliveryBoardResponse.model_validate(snapshot.snapshot["board"])
             board.frozen = True
             return board
-    return await _compute_board(session, delivery)
+    board = await _compute_board(session, delivery)
+    board.progress_history = await delivery_progress_history(session, delivery.id)
+    return board
 
 
 # =============================================================================
@@ -1222,6 +1228,7 @@ def _customer_safe_board(board: DeliveryBoardResponse) -> dict:
     no hidden tasks."""
     public = board.model_dump(mode="json")
     public.pop("qa_viewer_user_id", None)
+    public.pop("progress_history", None)
     public["tasks"] = [
         {
             **{
@@ -1273,6 +1280,8 @@ async def finalize_delivery_core(
         row.pinned_version_id = row.version_id
 
     now = utcnow()
+    await record_delivery_progress(session, board, recorded_at=now)
+    board.progress_history = await delivery_progress_history(session, delivery.id)
     delivery.status = "finalized"
     delivery.finalized_at = now
     delivery.finalized_by_user_id = user_id

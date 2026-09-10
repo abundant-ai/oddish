@@ -733,6 +733,23 @@ async def reconcile_queue_state():
 
 @app.function(
     image=image,
+    secrets=runtime_secrets,
+    timeout=1800,
+    max_containers=1,
+    schedule=modal.Period(hours=1),
+)
+async def record_delivery_history():
+    """Record progress even when no delivery page is open."""
+    from oddish.core.delivery_progress import sample_active_deliveries
+
+    try:
+        await sample_active_deliveries()
+    finally:
+        await close_database_connections()
+
+
+@app.function(
+    image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
