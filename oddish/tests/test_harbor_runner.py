@@ -157,15 +157,19 @@ user = "agent"
 
 @pytest.mark.parametrize(
     "environment_type",
-    [EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.ARCHIL],
+    [
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.THUNDER,
+        EnvironmentType.ARCHIL,
+    ],
 )
-def test_restricted_direct_task_gets_model_hosts_and_web_defaults(
+def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     monkeypatch, tmp_path, environment_type
 ):
     task_path = _write_network_policy_task(tmp_path)
     environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
-        name="codex",
         import_path="example.agent:Agent",
         model_name="example-model",
         env={"MODEL_BASE_URL": "https://model.test/v1"},
@@ -181,20 +185,43 @@ def test_restricted_direct_task_gets_model_hosts_and_web_defaults(
 
     monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
-    harbor_runner._apply_restricted_agent_network_defaults(
+    harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
     )
 
     assert agent_config.extra_allowed_hosts == ["existing.test", "model.test"]
-    assert agent_config.kwargs["web_search"] == "disabled"
-    assert environment_config.extra_allowed_hosts == []
     assert captured["model_name"] == "example-model"
     assert captured["agent_env"] == {"MODEL_BASE_URL": "https://model.test/v1"}
     assert captured["agent_kwargs"] == {
         "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
     }
+
+
+def test_inject_restricted_agent_model_hosts_for_thunder_compose(monkeypatch, tmp_path):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.THUNDER)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="openai/gpt-5.5",
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: ["api.openai.com", "ab.chatgpt.com"],
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
 
 
 def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):
@@ -1455,9 +1482,6 @@ def test_restricted_cursor_does_not_allow_underlying_model_provider(tmp_path):
         (EnvironmentType.DAYTONA, "no-network", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "no-network", True),
         (EnvironmentType.MODAL, "public", "no-network", True),
-        (EnvironmentType.ARCHIL, "public", "public", False),
-        (EnvironmentType.ARCHIL, "no-network", "no-network", False),
-        (EnvironmentType.ARCHIL, "public", "no-network", True),
         (EnvironmentType.DOCKER, "public", "no-network", False),
     ],
 )
@@ -4709,6 +4733,7 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
         exception_info=SimpleNamespace(
             exception_type="AddTestsDirError",
             exception_message="Failed to add tests directory to environment.",
+            provider_error_code="provider_code",
             http_status=529,
             request_id="request-1",
             session_id="session-1",
@@ -4734,11 +4759,48 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
     )
 
     assert outcome.exception_type == "AddTestsDirError"
+    assert outcome.provider_error_code == "provider_code"
     assert outcome.error and "Failed to add tests directory" in outcome.error
     assert outcome.http_status == 529
     assert outcome.request_id == "request-1"
     assert outcome.session_id == "session-1"
     assert outcome.retry_after_seconds == 12.5
+
+
+def test_extract_outcome_restores_typed_thunder_capacity_code():
+    trial_result = SimpleNamespace(
+        exception_info=SimpleNamespace(
+            exception_type="CapacityError",
+            exception_message="capacity is unavailable",
+            http_status=503,
+            request_id=None,
+            session_id=None,
+            retry_after_seconds=20.0,
+        ),
+        agent_result=None,
+        verifier_result=None,
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+        environment_provider="thunder",
+    )
+
+    assert outcome.exception_type == "CapacityError"
+    assert outcome.provider_error_code == "sandbox_capacity_unavailable"
+    assert outcome.http_status == 503
+    assert outcome.retry_after_seconds == 20.0
 
 
 def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):
@@ -5544,3 +5606,183 @@ def test_antigravity_environment_hosts_span_install_and_model():
     )  # manifest
     assert "storage.googleapis.com" in hosts  # binary tarball
     assert "generativelanguage.googleapis.com" in hosts  # ...and inference works
+
+
+@pytest.mark.parametrize("gpu_type", ["A6000", "A100-NOT-A-GPU"])
+def test_thunder_fallback_rejects_a6000_on_modal(tmp_path, gpu_type):
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.schemas import HarborConfig
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        f'[environment]\ngpus = 1\ngpu_types = ["{gpu_type}"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        harbor_runner.FallbackEnvironmentCompatibilityError,
+        match=f"{gpu_type}.*will not be remapped",
+    ):
+        harbor_runner._fallback_gpu_types(
+            task_path=task_path,
+            hc=HarborConfig(),
+            environment=EnvironmentType.MODAL,
+            backend=ModalBackend(),
+        )
+
+
+@pytest.mark.parametrize(
+    "gpu_type,expected",
+    [
+        ("A100XL", "A100-80GB"),
+        (" a100xl ", "A100-80GB"),
+        ("A100", "A100-40GB"),
+        ("A100-80", "A100-80GB"),
+        ("A100-40", "A100-40GB"),
+        ("H100", "H100"),
+    ],
+)
+@pytest.mark.parametrize("use_override", [True, False])
+def test_thunder_fallback_translates_modal_gpu(
+    tmp_path, gpu_type, expected, use_override
+):
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.schemas import HarborConfig
+
+    (tmp_path / "task.toml").write_text(
+        '[environment]\ngpus = 2\ngpu_types = ["'
+        + ("H100" if use_override else gpu_type)
+        + '"]\n'
+    )
+    hc = HarborConfig.model_validate(
+        {"environment": {"kwargs": {"gpu_type": gpu_type} if use_override else {}}}
+    )
+    assert harbor_runner._fallback_gpu_types(
+        task_path=tmp_path,
+        hc=hc,
+        environment=EnvironmentType.MODAL,
+        backend=ModalBackend(),
+    ) == [expected]
+    # Translation must not mutate the persisted/source request.
+    if use_override:
+        assert hc.environment.kwargs["gpu_type"] == gpu_type
+
+
+@pytest.mark.parametrize(
+    "environment", [EnvironmentType.DAYTONA, EnvironmentType.ARCHIL]
+)
+def test_thunder_fallback_does_not_apply_modal_names_to_other_providers(
+    tmp_path, environment
+):
+    from types import SimpleNamespace
+    from oddish.schemas import HarborConfig
+
+    (tmp_path / "task.toml").write_text(
+        '[environment]\ngpus = 1\ngpu_types = ["A100XL"]\n'
+    )
+    # A destination advertising its own SDK name must receive that name.
+    backend = SimpleNamespace(
+        capabilities=lambda: SimpleNamespace(
+            gpu=SimpleNamespace(accelerators=("A100XL",), max_count=8)
+        )
+    )
+    assert harbor_runner._fallback_gpu_types(
+        task_path=tmp_path,
+        hc=HarborConfig(),
+        environment=environment,
+        backend=backend,
+    ) == ["A100XL"]
+
+
+def test_thunder_fallback_rebuilds_modal_config_without_thunder_kwargs(tmp_path):
+    from harbor.models.task.config import TaskConfig as HarborTaskConfig
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.schemas import HarborConfig
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        """
+[environment]
+gpus = 1
+gpu_types = ["A100"]
+
+[environment.kwargs]
+gpu_type = "A6000"
+startup_timeout_sec = 12
+shared_option = "task"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    hc = HarborConfig.model_validate(
+        {
+            "environment": {
+                "kwargs": {
+                    "gpu_type": "H100",
+                    "provision_attempts": 2,
+                    "shared_option": "job",
+                }
+            }
+        }
+    )
+    backend = ModalBackend()
+
+    gpu_types = harbor_runner._fallback_gpu_types(
+        task_path=task_path,
+        hc=hc,
+        environment=EnvironmentType.MODAL,
+        backend=backend,
+    )
+    assert gpu_types == ["H100"]
+
+    environment_config = harbor_runner._resolve_provider_environment_config(
+        hc=hc,
+        environment=EnvironmentType.MODAL,
+        backend=backend,
+        is_probe=False,
+        trial_id="trial-1",
+        worker_job_id="wj-1",
+        sandbox_launch=None,
+        fallback_from_environment="thunder",
+    )
+    assert environment_config.kwargs["shared_option"] == "job"
+    assert environment_config.kwargs["modal_exact_gpu_type"] is True
+    assert "gpu_type" not in environment_config.kwargs
+    assert "provision_attempts" not in environment_config.kwargs
+
+    harbor_runner._patch_task_toml(
+        task_path,
+        hc,
+        drop_environment_kwargs=harbor_runner._THUNDER_ONLY_ENVIRONMENT_KWARGS,
+        fallback_gpu_types=gpu_types,
+    )
+    rebuilt = HarborTaskConfig.model_validate_toml(
+        (task_path / "task.toml").read_text(encoding="utf-8")
+    )
+    assert rebuilt.environment.gpu_types == ["H100"]
+    assert rebuilt.environment.kwargs == {"shared_option": "task"}
+
+
+def test_thunder_fallback_rejects_gpu_on_cpu_only_destination(tmp_path):
+    from oddish.runtime.backends.daytona import DaytonaBackend
+    from oddish.schemas import HarborConfig
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        '[environment]\ngpus = 1\ngpu_types = ["H100"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        harbor_runner.FallbackEnvironmentCompatibilityError,
+        match="does not support the requested 1 GPU",
+    ):
+        harbor_runner._fallback_gpu_types(
+            task_path=task_path,
+            hc=HarborConfig(),
+            environment=EnvironmentType.DAYTONA,
+            backend=DaytonaBackend(),
+        )

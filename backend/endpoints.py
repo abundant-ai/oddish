@@ -65,7 +65,17 @@ async def _teardown_ec2_sandbox(external_id: str) -> bool:
     return bool(await function.remote.aio(external_id))
 
 
+async def _teardown_thunder_sandbox(external_id: str) -> bool:
+    function = modal.Function.from_name(
+        os.environ.get("MODAL_APP_NAME", "oddish"),
+        "teardown_thunder_sandbox",
+        environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+    )
+    return bool(await function.remote.aio(external_id))
+
+
 register_provider_teardown_delegate("ec2", _teardown_ec2_sandbox)
+register_provider_teardown_delegate("thunder", _teardown_thunder_sandbox)
 
 api = create_asgi_app()
 

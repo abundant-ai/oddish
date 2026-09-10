@@ -159,6 +159,34 @@ async def test_terminate_run_harvest_noop_on_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancel_harvest_terminates_persisted_thunder_sandbox_id(monkeypatch):
+    import oddish.dispatch.backends.modal as modal_backend
+
+    teardowns: list[tuple[str, str]] = []
+
+    async def recording_teardown(provider, external_id):
+        teardowns.append((provider, external_id))
+        return True
+
+    class _FakeDispatcher:
+        name = "modal"
+
+        async def cancel(self, handles):
+            return len(handles)
+
+    monkeypatch.setattr(core_helpers, "cancel_job_by_worker", recording_teardown)
+    monkeypatch.setattr(modal_backend, "ModalDispatcher", _FakeDispatcher)
+
+    result = {
+        "status": "cancelled",
+        "worker_targets": [("thunder", "sb-thunder-cancelled")],
+    }
+    await terminate_run_harvest(result)
+
+    assert teardowns == [("thunder", "sb-thunder-cancelled")]
+
+
+@pytest.mark.asyncio
 async def test_strict_terminate_reports_only_failed_handles(monkeypatch):
     from oddish.dispatch.backends import modal as modal_backend
 

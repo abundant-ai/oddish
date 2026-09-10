@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXECUTION_LANE = "default"
 EC2_TRIAL_EXECUTION_LANE = "ec2_trial"
+THUNDER_TRIAL_EXECUTION_LANE = "thunder_trial"
 
 _EC2_HANDLE = re.compile(
     r"^ec2://(?P<account>[0-9]{12})/(?P<region>[a-z0-9-]+)/"
@@ -63,6 +64,7 @@ class SandboxLaunchContext:
     deployment: str
     aws_account_id: str
     region: str
+    provider: str = "ec2"
 
     def ownership(self, external_id: str) -> Ec2SandboxOwnership:
         return Ec2SandboxOwnership(
@@ -79,11 +81,21 @@ class SandboxLaunchContext:
 
 
 def execution_lane_for_environment(environment: str | None) -> str:
-    return (
-        EC2_TRIAL_EXECUTION_LANE
-        if (environment or "").strip().lower() == "ec2"
-        else DEFAULT_EXECUTION_LANE
-    )
+    normalized = (environment or "").strip().lower()
+    if normalized == "ec2":
+        return EC2_TRIAL_EXECUTION_LANE
+    if normalized == "thunder":
+        return THUNDER_TRIAL_EXECUTION_LANE
+    return DEFAULT_EXECUTION_LANE
+
+
+def capacity_provider_for_execution_lane(execution_lane: str | None) -> str | None:
+    """Return the globally capacity-limited provider owned by a worker lane."""
+    if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        return "ec2"
+    if execution_lane == THUNDER_TRIAL_EXECUTION_LANE:
+        return "thunder"
+    return None
 
 
 def _context_from_run(run: SandboxRunModel) -> SandboxLaunchContext:
@@ -96,6 +108,7 @@ def _context_from_run(run: SandboxRunModel) -> SandboxLaunchContext:
         deployment=run.deployment,
         aws_account_id=run.aws_account_id,
         region=run.region,
+        provider=run.provider,
     )
 
 
@@ -168,6 +181,66 @@ async def create_ec2_sandbox_run(
         return _context_from_run(run)
 
 
+async def create_thunder_sandbox_run(
+    *,
+    worker_job_id: str,
+    worker_job_attempt: int,
+    trial_id: str,
+) -> SandboxLaunchContext:
+    """Create the durable Thunder attempt ledger before Harbor provisions it."""
+    async with get_session() as session:
+        worker = await session.scalar(
+            select(WorkerJobModel)
+            .where(WorkerJobModel.id == worker_job_id)
+            .with_for_update()
+        )
+        if worker is None:
+            raise SandboxLifecycleError(f"worker_job {worker_job_id} does not exist")
+        if worker.status != WorkerJobStatus.RUNNING:
+            raise SandboxProvisioningRefused(
+                f"worker_job {worker_job_id} is {worker.status.value}, not RUNNING"
+            )
+        if worker.attempts != worker_job_attempt:
+            raise SandboxProvisioningRefused(
+                f"worker_job {worker_job_id} attempt changed from "
+                f"{worker_job_attempt} to {worker.attempts}"
+            )
+        if worker.execution_lane != THUNDER_TRIAL_EXECUTION_LANE:
+            raise SandboxLifecycleError(
+                f"worker_job {worker_job_id} is not on the Thunder execution lane"
+            )
+        existing = await session.scalar(
+            select(SandboxRunModel).where(
+                SandboxRunModel.worker_job_id == worker_job_id,
+                SandboxRunModel.worker_job_attempt == worker_job_attempt,
+            )
+        )
+        if existing is not None:
+            if existing.trial_id != trial_id or existing.provider != "thunder":
+                raise SandboxLifecycleError(
+                    f"sandbox run {existing.id} does not match this Thunder trial"
+                )
+            return _context_from_run(existing)
+
+        run = SandboxRunModel(
+            id=generate_id(),
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+            trial_id=trial_id,
+            provider="thunder",
+            state=SandboxRunState.PROVISIONING.value,
+            # These columns predate Thunder and are EC2 ownership metadata.
+            # Keep neutral non-secret values until a later schema cleanup.
+            deployment="thunder",
+            aws_account_id="",
+            region="",
+            launch_token=secrets.token_urlsafe(24),
+        )
+        session.add(run)
+        await session.flush()
+        return _context_from_run(run)
+
+
 async def mark_environment_provisioned(
     *,
     context: SandboxLaunchContext,
@@ -176,22 +249,28 @@ async def mark_environment_provisioned(
     worker_id: str | None,
 ) -> None:
     """Persist provider identity while serializing against cancellation."""
-    if (provider or "").strip().lower() != "ec2":
+    normalized_provider = (provider or "").strip().lower()
+    if normalized_provider != context.provider:
         raise SandboxLifecycleError(
             f"sandbox run {context.sandbox_run_id} provisioned as {provider!r}"
         )
-    match = _EC2_HANDLE.fullmatch(external_id or "")
-    if match is None:
+    if not external_id:
         raise SandboxLifecycleError(
-            f"sandbox run {context.sandbox_run_id} emitted malformed EC2 handle"
+            f"sandbox run {context.sandbox_run_id} emitted an empty external id"
         )
-    if (
-        match.group("account") != context.aws_account_id
-        or match.group("region") != context.region
-    ):
-        raise SandboxLifecycleError(
-            f"sandbox run {context.sandbox_run_id} emitted an ownership-mismatched handle"
-        )
+    if normalized_provider == "ec2":
+        match = _EC2_HANDLE.fullmatch(external_id)
+        if match is None:
+            raise SandboxLifecycleError(
+                f"sandbox run {context.sandbox_run_id} emitted malformed EC2 handle"
+            )
+        if (
+            match.group("account") != context.aws_account_id
+            or match.group("region") != context.region
+        ):
+            raise SandboxLifecycleError(
+                f"sandbox run {context.sandbox_run_id} emitted an ownership-mismatched handle"
+            )
 
     async with get_session() as session:
         worker = await session.scalar(
@@ -241,7 +320,7 @@ async def mark_environment_provisioned(
         run.external_id = external_id
         run.provisioned_at = run.provisioned_at or datetime.now(timezone.utc)
         run.state = SandboxRunState.RUNNING.value
-        worker.provider = "ec2"
+        worker.provider = normalized_provider
         worker.external_id = external_id
         worker.sandbox_creating_at = worker.sandbox_creating_at or datetime.now(
             timezone.utc
@@ -331,16 +410,28 @@ async def terminate_sandbox_run(sandbox_run_id: str) -> bool:
         )
         return False
 
-    from oddish.runtime.registry import get_backend
+    if run.provider == "ec2":
+        from oddish.runtime.registry import get_backend
 
-    backend = cast(_Ec2LifecycleBackend | None, get_backend(run.provider))
-    if backend is None:
-        await mark_sandbox_failed(
-            run.id, error=f"provider backend {run.provider!r} is not registered"
+        backend = get_backend(run.provider)
+        if backend is None:
+            await mark_sandbox_failed(
+                run.id, error=f"provider backend {run.provider!r} is not registered"
+            )
+            return False
+        ec2_backend = cast(_Ec2LifecycleBackend, backend)
+        ownership = _context_from_run(run).ownership(run.external_id)
+        terminated = await ec2_backend.teardown_owned(
+            run.external_id, ownership=ownership
         )
-        return False
-    ownership = _context_from_run(run).ownership(run.external_id)
-    terminated = await backend.teardown_owned(run.external_id, ownership=ownership)
+    else:
+        # Hosted providers may keep credentials on a dedicated teardown
+        # function rather than on the reconciler.  The registered delegate
+        # preserves that secret boundary and falls back to the local backend in
+        # standalone deployments.
+        from oddish.core.helpers import cancel_job_by_worker
+
+        terminated = await cancel_job_by_worker(run.provider, run.external_id)
     if terminated:
         await mark_sandbox_terminated(run.id)
         return True
@@ -365,7 +456,10 @@ __all__ = [
     "SandboxLaunchContext",
     "SandboxLifecycleError",
     "SandboxProvisioningRefused",
+    "THUNDER_TRIAL_EXECUTION_LANE",
+    "capacity_provider_for_execution_lane",
     "create_ec2_sandbox_run",
+    "create_thunder_sandbox_run",
     "execution_lane_for_environment",
     "get_sandbox_ownership_by_external_id",
     "mark_environment_provisioned",

@@ -1,8 +1,10 @@
 """Capability negotiation + the cloud-environment default.
 
 The negotiation reproduces today's outcome (GPU/private-registry → Modal,
-plain CPU → Daytona) by iterating ``ordered_backends()`` (cheap-first) and
+plain CPU → Daytona) by iterating ``automatic_backends()`` (cheap-first) and
 returning the first backend whose capabilities satisfy the requirements.
+Explicit-only providers such as Thunder remain valid named environments but
+never participate in default selection.
 ``default_cloud_environment`` is the behavior-preserving facade the CLI and
 the backend cloud policy call."""
 
@@ -11,7 +13,7 @@ from __future__ import annotations
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.runtime.ports import ExecutionBackend
-from oddish.runtime.registry import ordered_backends
+from oddish.runtime.registry import automatic_backends, ordered_backends
 
 
 class NoEligibleBackendError(RuntimeError):
@@ -28,7 +30,7 @@ def select_backend(
     requires_private_registry: bool = False,
     requires_tpu: bool = False,
 ) -> ExecutionBackend:
-    for backend in ordered_backends():
+    for backend in automatic_backends(ordered_backends()):
         caps = backend.capabilities()
         if requires_gpu and caps.gpu is None:
             continue

@@ -63,7 +63,7 @@ dev = [
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
 # Mirror oddish/src/oddish/harbor-pin.toml (run oddish/scripts/sync_harbor_pin.py).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ce896ccd3b5305c5043aca6ed7a882a410c68054" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "df3bd8dc161692e97a0c572a1945b001483e032f" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
@@ -87,8 +87,6 @@ py-modules = [
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
-    "endpoint_health",
-    "endpoint_health_worker",
     "idempotency_store",
     "modal_app",
     "models",

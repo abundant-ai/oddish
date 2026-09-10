@@ -594,11 +594,13 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
 ) -> None:
     from oddish.workers.harbor import runner as harbor_runner
 
-    patch_requirements: list[bool] = []
+    patch_requirements: list[tuple[bool, bool]] = []
     monkeypatch.setattr(
         harbor_runner,
         "apply_harbor_patches",
-        lambda *, require_ec2: patch_requirements.append(require_ec2),
+        lambda *, require_ec2, require_thunder: patch_requirements.append(
+            (require_ec2, require_thunder)
+        ),
     )
     monkeypatch.setattr(harbor_runner, "get_backend", lambda _name: None)
     harbor_config = {"variant_id": variant_id} if variant_id is not None else {}
@@ -613,7 +615,7 @@ def test_ec2_runner_fails_before_either_engine_when_backend_is_unregistered(
                 harbor_config=harbor_config,
             )
         )
-    assert patch_requirements == [True]
+    assert patch_requirements == [(True, False)]
 
 
 @pytest.mark.parametrize(
