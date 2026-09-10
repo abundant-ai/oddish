@@ -6,7 +6,7 @@ import logging
 import mimetypes
 import re
 import time
-from collections.abc import Hashable, MutableMapping
+from collections.abc import Awaitable, Hashable, MutableMapping
 from contextlib import suppress
 from pathlib import Path
 
@@ -26,7 +26,12 @@ from oddish.db import TrialModel, get_storage_client
 from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
+    is_missing_object,
     resolve_trial_directory,
+)
+from oddish.timing import current_request_timing, timed_phase
+from oddish.workers.agents.claude_code import (
+    convert_claude_code_stream_text_to_trajectory,
 )
 from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
@@ -34,10 +39,10 @@ from oddish.workers.agents.grok_build_trajectory import (
 
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
-_STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
+_STRUCTURED_LOGS_CACHE: dict[tuple[str, int, str | None, bool], tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[tuple[str, int, str | None], tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[tuple[str, int, str | None], tuple[float, dict]] = {}
-_STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
+_STRUCTURED_LOGS_LOCKS: dict[tuple[str, int, str | None, bool], asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[tuple[str, int, str | None], asyncio.Lock] = {}
 _ARTIFACT_FALLBACK_ERRORS = (
@@ -48,6 +53,16 @@ _ARTIFACT_FALLBACK_ERRORS = (
     TypeError,
     ValueError,
 )
+_VERIFIER_STDOUT_RELATIVE_PATHS = (
+    "verifier/test-stdout.txt",
+    "verifier/stdout.txt",
+)
+_VERIFIER_STDERR_RELATIVE_PATHS = (
+    "verifier/test-stderr.txt",
+    "verifier/stderr.txt",
+)
+_VERIFIER_STDOUT_SUFFIXES = ("/test-stdout.txt", "/verifier/stdout.txt")
+_VERIFIER_STDERR_SUFFIXES = ("/test-stderr.txt", "/verifier/stderr.txt")
 logger = logging.getLogger(__name__)
 
 _EMPTY_PROBE_ARTIFACTS: dict = {
@@ -213,7 +228,8 @@ def _convert_grok_build_text_to_trajectory(
     )
     if trajectory is None:
         return None
-    return trajectory.to_json_dict()
+    serialized = trajectory.to_json_dict()
+    return serialized if isinstance(serialized, dict) else None
 
 
 async def read_trial_logs(trial: TrialModel) -> dict:
@@ -259,10 +275,13 @@ async def read_trial_logs(trial: TrialModel) -> dict:
     return {"trial_id": trial.id, "logs": "\n".join(logs_parts) if logs_parts else ""}
 
 
-async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
+async def _read_trial_logs_structured_uncached(
+    trial: TrialModel, *, verifier_only: bool = False
+) -> dict:
     """Read trial logs structured by category (agent, verifier, exception).
 
-    Uses parallel S3 downloads for improved performance.
+    ``verifier_only`` downloads only the named verifier streams and exception,
+    leaving auxiliary agent and session files out of the download plan.
     """
     result: dict = {
         "trial_id": trial.id,
@@ -296,29 +315,35 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
         for key in files:
             # Agent logs
-            if key.endswith(("/agent/oracle.txt", "/oracle.txt")):
+            if not verifier_only and key.endswith(("/agent/oracle.txt", "/oracle.txt")):
                 if oracle_key is None:
                     oracle_key = key
                     download_plan.append((key, "oracle", None))
                     matched_keys.add(key)
-            elif key.endswith(("/agent/setup/stdout.txt", "/setup/stdout.txt")):
+            elif not verifier_only and key.endswith(
+                ("/agent/setup/stdout.txt", "/setup/stdout.txt")
+            ):
                 if setup_key is None:
                     setup_key = key
                     download_plan.append((key, "setup", None))
                     matched_keys.add(key)
-            elif "/agent/command-" in key and key.endswith("/stdout.txt"):
+            elif (
+                not verifier_only
+                and "/agent/command-" in key
+                and key.endswith("/stdout.txt")
+            ):
                 match = re.search(r"(command-\d+)/stdout\.txt$", key)
                 if match:
                     cmd_name = match.group(1)
                     download_plan.append((key, "command", cmd_name))
                     matched_keys.add(key)
             # Verifier logs
-            elif key.endswith(("/verifier/test-stdout.txt", "/test-stdout.txt")):
+            elif key.endswith(_VERIFIER_STDOUT_SUFFIXES):
                 if verifier_stdout_key is None:
                     verifier_stdout_key = key
                     download_plan.append((key, "verifier_stdout", None))
                     matched_keys.add(key)
-            elif key.endswith(("/verifier/test-stderr.txt", "/test-stderr.txt")):
+            elif key.endswith(_VERIFIER_STDERR_SUFFIXES):
                 if verifier_stderr_key is None:
                     verifier_stderr_key = key
                     download_plan.append((key, "verifier_stderr", None))
@@ -328,34 +353,52 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 download_plan.append((key, "exception", None))
                 matched_keys.add(key)
 
-        # Add other log files that weren't matched
-        for key in files:
-            if key in matched_keys:
-                continue
-            s3_path = Path(key)
-            is_log_file = s3_path.suffix in (".log", ".txt")
-            is_log_dir = any(
-                part in s3_path.parts for part in ("logs", "agent", "verifier")
-            )
-            if (is_log_file or is_log_dir) and s3_path.suffix not in (
-                ".json",
-                ".patch",
-            ):
-                rel_path = key.replace(s3_prefix, "").strip("/")
-                download_plan.append((key, "other", rel_path))
+        if not verifier_only:
+            # Add other log files that weren't matched.
+            for key in files:
+                if key in matched_keys:
+                    continue
+                s3_path = Path(key)
+                is_log_file = s3_path.suffix in (".log", ".txt")
+                is_log_dir = any(
+                    part in s3_path.parts for part in ("logs", "agent", "verifier")
+                )
+                if (is_log_file or is_log_dir) and s3_path.suffix not in (
+                    ".json",
+                    ".patch",
+                ):
+                    rel_path = key.replace(s3_prefix, "").strip("/")
+                    download_plan.append((key, "other", rel_path))
 
         # Phase 2: Download all files in parallel
         if download_plan:
 
-            async def safe_download(key: str) -> str | None:
+            async def safe_download(key: str, category: str) -> str | None:
                 try:
                     return await storage.download_text(key)
+                except UnicodeDecodeError:
+                    # Auxiliary files under agent/ and verifier/ are not all
+                    # logs. Skip binary databases and compressed outputs rather
+                    # than failing the whole evidence request. For the named
+                    # verifier/agent text streams, retain the evidence and mark
+                    # malformed bytes with the same replacement behavior used
+                    # by the local-filesystem reader below.
+                    if category == "other" and Path(key).suffix not in (
+                        ".log",
+                        ".txt",
+                    ):
+                        return None
+                    return (await storage.download_bytes(key)).decode(
+                        "utf-8", errors="replace"
+                    )
                 except Exception:
                     if layout.mode is TrialArtifactMode.EXACT:
                         raise
                     return None
 
-            download_tasks = [safe_download(key) for key, _, _ in download_plan]
+            download_tasks = [
+                safe_download(key, category) for key, category, _ in download_plan
+            ]
             contents = await asyncio.gather(*download_tasks)
 
             # Phase 3: Assign results to appropriate fields
@@ -410,78 +453,93 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
 
     trial_dir = trial_paths.trial_dir
     agent_dir = trial_paths.agent_dir
-    verifier_dir = trial_paths.verifier_dir
 
-    # Agent: oracle.txt
-    oracle_path = agent_dir / "oracle.txt"
-    if oracle_path.exists():
-        with suppress(OSError):
-            result["agent"]["oracle"] = oracle_path.read_text(errors="replace")
-
-    # Agent: setup/stdout.txt
-    setup_path = agent_dir / "setup" / "stdout.txt"
-    if setup_path.exists():
-        with suppress(OSError):
-            result["agent"]["setup"] = setup_path.read_text(errors="replace")
-
-    # Agent: command-*/stdout.txt
-    for cmd_dir in sorted(agent_dir.glob("command-*")):
-        stdout_path = cmd_dir / "stdout.txt"
-        if stdout_path.exists():
+    if not verifier_only:
+        # Agent: oracle.txt
+        oracle_path = agent_dir / "oracle.txt"
+        if oracle_path.exists():
             with suppress(OSError):
-                content = stdout_path.read_text(errors="replace")
-                result["agent"]["commands"].append(
-                    {"name": cmd_dir.name, "content": content}
-                )
+                result["agent"]["oracle"] = oracle_path.read_text(errors="replace")
 
-    # Verifier: test-stdout.txt, test-stderr.txt
-    stdout_path = trial_paths.test_stdout_path
-    if stdout_path.exists():
-        with suppress(OSError):
+        # Agent: setup/stdout.txt
+        setup_path = agent_dir / "setup" / "stdout.txt"
+        if setup_path.exists():
+            with suppress(OSError):
+                result["agent"]["setup"] = setup_path.read_text(errors="replace")
+
+        # Agent: command-*/stdout.txt
+        for cmd_dir in sorted(agent_dir.glob("command-*")):
+            stdout_path = cmd_dir / "stdout.txt"
+            if stdout_path.exists():
+                with suppress(OSError):
+                    content = stdout_path.read_text(errors="replace")
+                    result["agent"]["commands"].append(
+                        {"name": cmd_dir.name, "content": content}
+                    )
+
+    for relative_path in _VERIFIER_STDOUT_RELATIVE_PATHS:
+        stdout_path = trial_dir / relative_path
+        if not stdout_path.exists():
+            continue
+        try:
             result["verifier"]["stdout"] = stdout_path.read_text(errors="replace")
+        except OSError:
+            continue
+        break
 
-    stderr_path = trial_paths.test_stderr_path
-    if stderr_path.exists():
-        with suppress(OSError):
+    for relative_path in _VERIFIER_STDERR_RELATIVE_PATHS:
+        stderr_path = trial_dir / relative_path
+        if not stderr_path.exists():
+            continue
+        try:
             result["verifier"]["stderr"] = stderr_path.read_text(errors="replace")
+        except OSError:
+            continue
+        break
 
     exception_path = trial_dir / "exception.txt"
     if exception_path.exists():
         with suppress(OSError):
             result["exception"] = exception_path.read_text(errors="replace")
 
-    # Capture other log files as fallback
-    matched_paths: set[Path] = set()
-    if agent_dir.exists():
-        if (agent_dir / "oracle.txt").exists():
-            matched_paths.add(agent_dir / "oracle.txt")
-        if (agent_dir / "setup" / "stdout.txt").exists():
-            matched_paths.add(agent_dir / "setup" / "stdout.txt")
-        for cmd_dir in agent_dir.glob("command-*"):
-            if (cmd_dir / "stdout.txt").exists():
-                matched_paths.add(cmd_dir / "stdout.txt")
-    if verifier_dir.exists():
-        if (verifier_dir / "test-stdout.txt").exists():
-            matched_paths.add(verifier_dir / "test-stdout.txt")
-        if (verifier_dir / "test-stderr.txt").exists():
-            matched_paths.add(verifier_dir / "test-stderr.txt")
+    if not verifier_only:
+        # Capture other log files as fallback.
+        matched_paths: set[Path] = set()
+        if agent_dir.exists():
+            if (agent_dir / "oracle.txt").exists():
+                matched_paths.add(agent_dir / "oracle.txt")
+            if (agent_dir / "setup" / "stdout.txt").exists():
+                matched_paths.add(agent_dir / "setup" / "stdout.txt")
+            for cmd_dir in agent_dir.glob("command-*"):
+                if (cmd_dir / "stdout.txt").exists():
+                    matched_paths.add(cmd_dir / "stdout.txt")
+        for relative_path in (
+            *_VERIFIER_STDOUT_RELATIVE_PATHS,
+            *_VERIFIER_STDERR_RELATIVE_PATHS,
+        ):
+            verifier_path = trial_dir / relative_path
+            if verifier_path.exists():
+                matched_paths.add(verifier_path)
 
-    for p in sorted(trial_dir.rglob("*")):
-        if not p.is_file() or p in matched_paths:
-            continue
-        is_log_file = p.suffix in (".log", ".txt")
-        is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
-        if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
-            with suppress(OSError, ValueError):
-                rel = p.relative_to(trial_dir)
-                content = p.read_text(errors="replace")
-                result["other"].append({"name": str(rel), "content": content})
+        for p in sorted(trial_dir.rglob("*")):
+            if not p.is_file() or p in matched_paths:
+                continue
+            is_log_file = p.suffix in (".log", ".txt")
+            is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
+            if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
+                with suppress(OSError, ValueError):
+                    rel = p.relative_to(trial_dir)
+                    content = p.read_text(errors="replace")
+                    result["other"].append({"name": str(rel), "content": content})
 
     return result
 
 
-async def read_trial_logs_structured(trial: TrialModel) -> dict:
-    cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
+async def read_trial_logs_structured(
+    trial: TrialModel, *, verifier_only: bool = False
+) -> dict:
+    """Read structured logs, optionally limited to verifier evidence."""
+    cache_key = (trial.id, trial.attempts, trial.trial_s3_key, verifier_only)
     if _should_cache_trial(trial):
         cached = _cache_get(_STRUCTURED_LOGS_CACHE, cache_key)
         if cached is not None:
@@ -494,7 +552,9 @@ async def read_trial_logs_structured(trial: TrialModel) -> dict:
             if cached is not None:
                 return cached  # type: ignore[return-value]
 
-        result = await _read_trial_logs_structured_uncached(trial)
+        result = await _read_trial_logs_structured_uncached(
+            trial, verifier_only=verifier_only
+        )
         if _should_cache_trial(trial):
             _cache_set(_STRUCTURED_LOGS_CACHE, cache_key, result)
         return result
@@ -511,7 +571,7 @@ async def _read_trial_probe_artifacts_uncached(trial: TrialModel) -> dict:
     """
     if isinstance(trial.result, dict):
         inlined = trial.result.get("_artifacts")
-        if inlined:
+        if isinstance(inlined, dict):
             return inlined
 
     # Imported here (not at module load) to avoid pulling the worker analysis
@@ -569,120 +629,128 @@ async def read_trial_probe_artifacts(trial: TrialModel) -> dict:
 _STEP_TRAJECTORY_KEY_RE = re.compile(r"/steps/([^/]+)/agent/trajectory\.json$")
 
 
-def _merge_step_trajectories(docs: list[tuple[str, dict]]) -> dict | None:
-    """Merge per-step ATIF trajectories of a multi-step trial into one.
+def _first_step_timestamp(trajectory: dict) -> str:
+    for step in trajectory.get("steps") or []:
+        ts = step.get("timestamp")
+        if ts:
+            return str(ts)
+    return "~"  # sorts after any ISO timestamp; keeps listing order for ties
 
-    Harbor step tasks write one trajectory per step under
-    ``steps/<name>/agent/trajectory.json``; each restarts ``step_id`` at 1.
-    Steps are ordered by their first timestamp (directory names carry no
-    execution order), concatenated, and renumbered so ids stay unique. The
-    header comes from the first step; ``final_metrics`` from the last that
-    has one.
-    """
-    parsed: list[tuple[str, str, dict]] = []
-    for name, doc in docs:
-        steps = doc.get("steps")
-        if not isinstance(steps, list) or not steps:
-            continue
-        first_ts = next(
-            (
-                s.get("timestamp")
-                for s in steps
-                if isinstance(s, dict) and s.get("timestamp")
-            ),
-            "",
-        )
-        parsed.append((str(first_ts), name, doc))
-    if not parsed:
-        return None
-    parsed.sort(key=lambda item: item[0])
-    if len(parsed) == 1:
-        return parsed[0][2]
 
-    merged = dict(parsed[0][2])
-    merged_steps: list[dict] = []
-    for _, name, doc in parsed:
-        for step in doc["steps"]:
-            if isinstance(step, dict):
-                step = {**step, "step_id": len(merged_steps) + 1, "harbor_step": name}
-            merged_steps.append(step)
-        if doc.get("final_metrics"):
-            merged["final_metrics"] = doc["final_metrics"]
-    merged["steps"] = merged_steps
-    merged["harbor_steps"] = [name for _, name, _ in parsed]
+def _sum_numeric_metrics(dicts: list[dict]) -> dict:
+    """Sum numeric leaves across final_metrics dicts; first value wins otherwise."""
+    merged: dict = {}
+    for d in dicts:
+        for key, value in d.items():
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                prev = merged.get(key)
+                if not isinstance(prev, (int, float)) or isinstance(prev, bool):
+                    # A step may carry null/str where another has a number;
+                    # never let that TypeError drop the whole trajectory.
+                    prev = 0
+                merged[key] = prev + value
+            elif isinstance(value, dict):
+                merged[key] = _sum_numeric_metrics(
+                    [v for v in (merged.get(key), value) if isinstance(v, dict)]
+                )
+            elif key not in merged:
+                merged[key] = value
     return merged
+
+
+def _merge_step_trajectories(named: list[tuple[str, dict]]) -> dict:
+    """Merge per-step ATIF trajectories of a multi-step trial into one document.
+
+    Harbor step tasks store one trajectory per step under
+    ``steps/<name>/agent/trajectory.json``. Steps are ordered by their first
+    inner-step timestamp (harbor runs them sequentially), inner step_ids are
+    re-sequenced, and each inner step is tagged with its harbor step name in
+    ``extra.harbor_step`` so viewers can render the boundary.
+    """
+    ordered = sorted(named, key=lambda nt: (_first_step_timestamp(nt[1]), nt[0]))
+    base = dict(ordered[0][1])
+    merged_steps: list[dict] = []
+    subagents: list = []
+    for step_name, trajectory in ordered:
+        for inner in trajectory.get("steps") or []:
+            inner = dict(inner)
+            extra = dict(inner.get("extra") or {})
+            extra.setdefault("harbor_step", step_name)
+            inner["extra"] = extra
+            inner["step_id"] = len(merged_steps) + 1
+            merged_steps.append(inner)
+        subagents.extend(trajectory.get("subagent_trajectories") or [])
+    base["steps"] = merged_steps
+    metrics = [
+        t.get("final_metrics")
+        for _, t in ordered
+        if isinstance(t.get("final_metrics"), dict)
+    ]
+    if metrics:
+        base["final_metrics"] = _sum_numeric_metrics(metrics)
+    if subagents:
+        base["subagent_trajectories"] = subagents
+    return base
 
 
 async def _read_step_trajectories(
     storage: StorageClient,
-    prefix: str,
-    listed_keys: tuple[str, ...],
+    files: list[str],
 ) -> dict | None:
-    """Load and merge ``steps/*/agent/trajectory.json`` from listed keys."""
-    docs: list[tuple[str, dict]] = []
-    for key in listed_keys:
-        if not key.startswith(prefix):
-            continue
-        match = _STEP_TRAJECTORY_KEY_RE.search(key)
-        if not match:
-            continue
-        with suppress(
-            *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
-        ):
+    """Read and merge ``steps/*/agent/trajectory.json`` from listed keys."""
+    try:
+        named: list[tuple[str, dict]] = []
+        for key in files:
+            match = _STEP_TRAJECTORY_KEY_RE.search(key)
+            if not match:
+                continue
             content = await storage.download_text(key)
             if content:
-                docs.append((match.group(1), _json.loads(content)))
-    return _merge_step_trajectories(docs)
-
-
-def _manifest_step_names(manifest: object) -> list[str]:
-    if not isinstance(manifest, dict):
-        return []
-    step_results = manifest.get("step_results")
-    if not isinstance(step_results, list):
-        return []
-    names = [
-        r.get("step_name")
-        for r in step_results
-        if isinstance(r, dict) and isinstance(r.get("step_name"), str)
-    ]
-    return names
+                named.append((match.group(1), _json.loads(content)))
+        if named:
+            return _merge_step_trajectories(named)
+    except (_json.JSONDecodeError, TypeError, ValueError):
+        # Malformed content reads as "no trajectory"; storage failures
+        # propagate so they are not mistaken for a missing artifact
+        # (and cached as None), matching the root EXACT read.
+        return None
+    return None
 
 
 async def _read_step_trajectories_exact(
     storage: StorageClient,
     artifact_prefix: str,
-    layout_manifest: object,
 ) -> dict | None:
-    """Merge step trajectories in EXACT mode without any prefix listing.
+    """Merge step trajectories in EXACT mode without scanning any prefix.
 
-    Exact reads must never scan directories (stale sibling attempts could
-    leak), so step names come from the trial's own result manifest -
-    ``step_results[].step_name`` - and each trajectory is probed by exact
-    key.
+    Step names come from the trial's own ``result.json`` (``step_results``),
+    so every S3 access is an exact key lookup — EXACT reads must never list
+    sibling directories.
     """
-    names = _manifest_step_names(layout_manifest)
-    if not names:
-        result_key = f"{artifact_prefix}result.json"
-        if await storage.object_exists(result_key):
-            with suppress(
-                *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
-            ):
-                names = _manifest_step_names(
-                    _json.loads(await storage.download_text(result_key))
-                )
-    docs: list[tuple[str, dict]] = []
-    for name in names:
-        key = f"{artifact_prefix}steps/{name}/agent/trajectory.json"
-        if not await storage.object_exists(key):
-            continue
-        with suppress(
-            *_ARTIFACT_FALLBACK_ERRORS, _json.JSONDecodeError, TypeError, ValueError
-        ):
-            content = await storage.download_text(key)
-            if content:
-                docs.append((name, _json.loads(content)))
-    return _merge_step_trajectories(docs)
+    result_key = f"{artifact_prefix}result.json"
+    try:
+        if not await storage.object_exists(result_key):
+            return None
+        result = _json.loads(await storage.download_text(result_key) or "{}")
+        step_names = [
+            s.get("step_name")
+            for s in result.get("step_results") or []
+            if isinstance(s, dict) and s.get("step_name")
+        ]
+        if not step_names:
+            return None
+        keys = []
+        for name in step_names:
+            key = f"{artifact_prefix}steps/{name}/agent/trajectory.json"
+            if await storage.object_exists(key):
+                keys.append(key)
+        return await _read_step_trajectories(storage, keys)
+    except (_json.JSONDecodeError, TypeError, ValueError):
+        # Malformed result.json reads as a non-step trial; storage
+        # failures propagate, matching the root EXACT read.
+        return None
 
 
 async def _read_trial_trajectory_from_s3(
@@ -693,36 +761,52 @@ async def _read_trial_trajectory_from_s3(
     if layout.mode is TrialArtifactMode.EXACT:
         assert layout.artifact_prefix is not None
         trajectory_key = f"{layout.artifact_prefix}agent/trajectory.json"
-        if await storage.object_exists(trajectory_key):
+        trajectory_file_exists = True
+        try:
+            content = await storage.download_text(trajectory_key)
+        except ClientError as exc:
+            if not is_missing_object(exc):
+                raise
+            trajectory_file_exists = False
+        else:
             try:
-                content = await storage.download_text(trajectory_key)
                 if content:
-                    parsed: dict = _json.loads(content)
-                    return parsed
+                    parsed = _json.loads(content)
+                    if isinstance(parsed, dict):
+                        return parsed
             except (_json.JSONDecodeError, TypeError, ValueError):
-                return None
+                pass
 
-        # Multi-step tasks have no top-level trajectory; their per-step
-        # trajectories live under steps/<name>/agent/.
-        merged = await _read_step_trajectories_exact(
-            storage, layout.artifact_prefix, layout.manifest
-        )
+        # Multi-step tasks store one trajectory per step instead of a
+        # root agent/trajectory.json (harbor [[steps]], 2026-04-22).
+        merged = await _read_step_trajectories_exact(storage, layout.artifact_prefix)
         if merged is not None:
             return merged
 
         grok_key = f"{layout.artifact_prefix}agent/grok-build.json"
-        if not await storage.object_exists(grok_key):
-            return None
-        try:
-            content = await storage.download_text(grok_key)
-            if not content:
-                return None
-            return _convert_grok_build_text_to_trajectory(
-                content,
-                model_name=trial.model,
-            )
-        except (_json.JSONDecodeError, TypeError, ValueError):
-            return None
+        if await storage.object_exists(grok_key):
+            try:
+                content = await storage.download_text(grok_key)
+                if content:
+                    grok_trajectory = _convert_grok_build_text_to_trajectory(
+                        content,
+                        model_name=trial.model,
+                    )
+                    if grok_trajectory is not None:
+                        return grok_trajectory
+            except (_json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        if trajectory_file_exists or bool(getattr(trial, "has_trajectory", False)):
+            claude_stream_key = f"{layout.artifact_prefix}agent/claude-code.txt"
+            if await storage.object_exists(claude_stream_key):
+                content = await storage.download_text(claude_stream_key)
+                if content:
+                    return convert_claude_code_stream_text_to_trajectory(
+                        content,
+                        model_name=trial.model,
+                    )
+        return None
 
     if layout.mode is TrialArtifactMode.UNAVAILABLE:
         return None
@@ -735,7 +819,8 @@ async def _read_trial_trajectory_from_s3(
             content = await storage.download_text(trajectory_key)
             if content:
                 parsed = _json.loads(content)
-                return parsed
+                if isinstance(parsed, dict):
+                    return parsed
 
     for grok_key in _legacy_grok_build_candidate_keys(trial, layout.attempt_prefix):
         with suppress(*_ARTIFACT_FALLBACK_ERRORS):
@@ -748,28 +833,43 @@ async def _read_trial_trajectory_from_s3(
                 if parsed:
                     return parsed
 
+    if bool(getattr(trial, "has_trajectory", False)):
+        for claude_stream_key in _legacy_trial_candidate_keys(
+            trial,
+            layout.attempt_prefix,
+            "agent/claude-code.txt",
+        ):
+            with suppress(*_ARTIFACT_FALLBACK_ERRORS):
+                content = await storage.download_text(claude_stream_key)
+                if content:
+                    parsed = convert_claude_code_stream_text_to_trajectory(
+                        content,
+                        model_name=trial.model,
+                    )
+                    if parsed:
+                        return parsed
+
     try:
         files = (
             list(layout.listed_keys)
             if layout.listed_keys is not None
             else sorted(await storage.list_keys(layout.attempt_prefix))
         )
+        step_keys = [f for f in files if _STEP_TRAJECTORY_KEY_RE.search(f)]
+        if step_keys:
+            merged = await _read_step_trajectories(storage, step_keys)
+            if merged is not None:
+                return merged
         grok_build_keys: list[str] = []
         for f in files:
-            if f.endswith("/agent/trajectory.json"):
-                # Step trajectories merge as a set; a plain trajectory wins
-                # as before.
-                if _STEP_TRAJECTORY_KEY_RE.search(f):
-                    merged = await _read_step_trajectories(
-                        storage, layout.attempt_prefix, listed_keys=tuple(files)
-                    )
-                    if merged is not None:
-                        return merged
-                    continue
+            if f.endswith(
+                "/agent/trajectory.json"
+            ) and not _STEP_TRAJECTORY_KEY_RE.search(f):
                 content = await storage.download_text(f)
                 if content:
                     parsed = _json.loads(content)
-                    return parsed
+                    if isinstance(parsed, dict):
+                        return parsed
             if f.endswith("/agent/grok-build.json"):
                 grok_build_keys.append(f)
         for f in grok_build_keys:
@@ -847,22 +947,99 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
 
 async def read_trial_trajectory(trial: TrialModel) -> dict | None:
     cache_key = (trial.id, trial.attempts, trial.trial_s3_key)
+    timing = current_request_timing()
+    if timing is not None:
+        timing.trajectory_cache_hit = False
     if _should_cache_trial(trial):
         cached = _cache_get(_TRAJECTORY_CACHE, cache_key)
         if cached is not None:
+            if timing is not None:
+                timing.trajectory_cache_hit = True
             return cached  # type: ignore[return-value]
 
     lock = _get_lock(_TRAJECTORY_LOCKS, cache_key)
-    async with lock:
+    with timed_phase("trajectory_cache_wait"):
+        await lock.acquire()
+    try:
         if _should_cache_trial(trial):
             cached = _cache_get(_TRAJECTORY_CACHE, cache_key)
             if cached is not None:
+                if timing is not None:
+                    timing.trajectory_cache_hit = True
                 return cached  # type: ignore[return-value]
 
         result = await _read_trial_trajectory_uncached(trial)
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
+    finally:
+        lock.release()
+
+
+async def qa_source_evidence_errors(trial: TrialModel) -> tuple[str, ...]:
+    """Return evidence contradictions that make a source trial unsafe to QA."""
+    reads: dict[str, object] = {}
+    pending: list[tuple[str, Awaitable[object]]] = []
+    if trial.started_at is not None:
+        pending.extend(
+            (
+                ("result", read_trial_result(trial)),
+                ("verifier", read_trial_logs_structured(trial, verifier_only=True)),
+            )
+        )
+    if trial.has_trajectory:
+        pending.append(("trajectory", read_trial_trajectory(trial)))
+
+    if pending:
+        values = await asyncio.gather(
+            *(awaitable for _, awaitable in pending),
+            return_exceptions=True,
+        )
+        reads.update(
+            (name, value) for (name, _), value in zip(pending, values, strict=True)
+        )
+
+    def failure(name: str) -> str | None:
+        value = reads.get(name)
+        if not isinstance(value, BaseException):
+            return None
+        detail = getattr(value, "detail", None) or str(value) or type(value).__name__
+        return f"{name} read failed: {type(value).__name__}: {detail}"
+
+    errors = [message for name in reads if (message := failure(name)) is not None]
+    result = reads.get("result")
+    if trial.started_at is not None and not isinstance(result, BaseException):
+        if not isinstance(result, dict):
+            errors.append("result JSON object is unavailable")
+    trajectory = reads.get("trajectory")
+    if trial.has_trajectory and not isinstance(trajectory, BaseException):
+        if not isinstance(trajectory, dict):
+            errors.append(
+                "has_trajectory=true but no readable trajectory JSON object was found"
+            )
+
+    verifier = reads.get("verifier")
+    if trial.started_at is not None and not isinstance(verifier, BaseException):
+        verifier_streams = (
+            verifier.get("verifier") if isinstance(verifier, dict) else None
+        )
+        verifier_exception = (
+            verifier.get("exception") if isinstance(verifier, dict) else None
+        )
+        stdout = (
+            verifier_streams.get("stdout")
+            if isinstance(verifier_streams, dict)
+            else None
+        )
+        stderr = (
+            verifier_streams.get("stderr")
+            if isinstance(verifier_streams, dict)
+            else None
+        )
+        if stdout is None and stderr is None and verifier_exception is None:
+            errors.append("verifier stdout, stderr, and exception are unavailable")
+
+    return tuple(errors)
 
 
 async def read_trial_summary_inputs(
@@ -879,8 +1056,8 @@ async def read_trial_summary_inputs(
         assert layout.artifact_prefix is not None
         instruction_keys = [f"{layout.artifact_prefix}task/instruction.md"]
         verifier_keys = [
-            f"{layout.artifact_prefix}verifier/test-stdout.txt",
-            f"{layout.artifact_prefix}verifier/stdout.txt",
+            f"{layout.artifact_prefix}{relative_path}"
+            for relative_path in _VERIFIER_STDOUT_RELATIVE_PATHS
         ]
     elif layout.mode is TrialArtifactMode.UNAVAILABLE:
         return trajectory, None, None
@@ -891,10 +1068,7 @@ async def read_trial_summary_inputs(
             "task/instruction.md",
         )
         verifier_keys = []
-        for relative_path in (
-            "verifier/test-stdout.txt",
-            "verifier/stdout.txt",
-        ):
+        for relative_path in _VERIFIER_STDOUT_RELATIVE_PATHS:
             verifier_keys.extend(
                 _legacy_trial_candidate_keys(
                     trial,

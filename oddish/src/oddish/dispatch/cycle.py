@@ -32,6 +32,8 @@ from oddish.observability import (
 )
 from oddish.workers.queue.slots import count_held_queue_slots
 from oddish.workers.queue.worker_job_dispatcher import (
+    DispatchUnit,
+    QueueDemandKey,
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
     fetch_running_worker_handles,
@@ -136,19 +138,20 @@ class DispatchPlan:
     """Shared discovery/count/planning result for every dispatcher host.
 
     ``unit_plan`` preserves the effective dispatch unit
-    ``(queue_key, harbor_variant_id, execution_lane)`` so Modal can choose the
+    ``(queue_key, harbor_variant_id, execution_lane, priority_class, org_id)``
+    so Modal can choose the
     credential-scoped, image-bound Function.
     """
 
     queue_units: tuple[tuple[str, str, str], ...]
     queue_keys: tuple[str, ...]
-    queued_by_org_queue: dict[tuple[str | None, str, str, str], int]
+    queued_by_org_queue: dict[QueueDemandKey, int]
     running_by_queue: dict[tuple[str, str, str], int]
     queued_by_queue: dict[str, int]
     running_by_queue_key: dict[str, int]
     held_by_queue_key: dict[str, int]
     concurrency_limits: dict[str, int]
-    unit_plan: list[tuple[str, str, str]]
+    unit_plan: list[DispatchUnit]
 
 
 DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str, str]]]]
@@ -156,7 +159,7 @@ CountsFn = Callable[
     [tuple[str, ...]],
     Awaitable[
         tuple[
-            dict[tuple[str | None, str, str, str], int],
+            dict[QueueDemandKey, int],
             dict[tuple[str, str, str], int],
         ]
     ],
@@ -193,6 +196,8 @@ async def build_dispatch_plan(
     _held: HeldFn = count_held_queue_slots,
     capacity_limits_by_lane: dict[str, int] | None = None,
     held_by_lane: dict[str, int] | None = None,
+    fairness_cursors: dict[str, int] | None = None,
+    pending_by_org_queue: dict[QueueDemandKey, int] | None = None,
 ) -> DispatchPlan:
     """Discover queue work and compute the variant-preserving spawn plan.
 
@@ -202,6 +207,11 @@ async def build_dispatch_plan(
     queue_units = tuple(await _discover())
     queue_keys = tuple({qk for qk, _variant, _lane in queue_units})
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
+    ready_by_org_queue = queued_by_org_queue
+    queued_by_org_queue = {
+        key: max(0, count - (pending_by_org_queue or {}).get(key, 0))
+        for key, count in ready_by_org_queue.items()
+    }
     # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
     # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
     # On fast re-fires, plan against max(running, held) per queue_key -- else the
@@ -217,10 +227,17 @@ async def build_dispatch_plan(
         held_by_queue_key=held_by_queue_key,
         capacity_limits_by_lane=capacity_limits_by_lane,
         held_by_lane=held_by_lane,
+        fairness_cursors=fairness_cursors,
     )
 
     queued_by_queue: dict[str, int] = {}
-    for (_org, queue_key, _variant, _lane), queued in queued_by_org_queue.items():
+    for (
+        _org,
+        queue_key,
+        _variant,
+        _lane,
+        _priority,
+    ), queued in ready_by_org_queue.items():
         queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
     running_by_queue_key: dict[str, int] = {}
     for (queue_key, _variant, _lane), running in running_by_queue.items():
@@ -354,7 +371,7 @@ async def _run_dispatch_cycle(
 
         admitted, rejected = admit_spawn_plan(spawn_plan, admit)
 
-        spawn_units = [unit for unit in plan.unit_plan if unit[0] in admitted]
+        spawn_units = [unit[:3] for unit in plan.unit_plan if unit[0] in admitted]
         unit_spawner = getattr(dispatcher, "spawn_units", None)
         if unit_spawner is not None:
             handles = list(await unit_spawner(spawn_units=spawn_units))

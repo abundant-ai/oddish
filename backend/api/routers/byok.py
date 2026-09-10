@@ -19,7 +19,7 @@ import statsig_client
 from api.schemas import ByokStatusResponse, PutByokKeyRequest
 from auth import AuthContext, AuthMethod, require_auth
 from models import UserProviderKeyModel
-from oddish.db import get_session, utcnow
+from oddish.db import get_read_session, get_session, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ async def get_byok_status(
         enabled = statsig_client.byok_gate_passes(auth.user_id, org_id=auth.org_id)
     except Exception:
         logger.warning("byok gate check failed; showing disabled", exc_info=True)
-    async with get_session() as session:
+    async with get_read_session() as session:
         row = await _live_key_row(session, auth.user_id)
     return ByokStatusResponse(
         enabled=enabled,

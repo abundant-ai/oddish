@@ -76,8 +76,8 @@ frontend/                       # Next.js App Router dashboard
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
-│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, experiments,
-│   │   │                       # qa, skills, documents, usage, settings, admin
+│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, deliveries,
+│   │   │                       # qa, skills, documents, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -149,13 +149,31 @@ High-level flow:
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
    importer writes `trials.analysis`, `trials.trajectory_summary`, and
-   `tasks.verdict`. The verdict is only requested above an evidence bar
-   (≥5 QA-eligible trials from ≥3 agents, `MIN_VERDICT_TRIALS` /
-   `MIN_VERDICT_AGENTS` in `oddish.workers.analysis_trials`); below it the
-   QA trial still classifies trials and the task completes without a
-   verdict. A sweep of `T` tasks × `N` trials therefore creates `T`
+   `tasks.verdict`. Once at least one eligible current-version solver trial
+   exists, QA requests a verdict using every eligible trial, regardless of agent
+   diversity. Existing eligibility exclusions and audit-readiness checks apply.
+   A validated current audit with `must_fix` findings or a failed deterministic
+   baseline rejects the task even with zero eligible solver trials. With zero
+   eligible trials and no established rejection, the task completes with no
+   verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+   Delivery requirements remain independently configurable (defaults: five
+   trials and three agents); a verdict alone does not qualify a task for delivery. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
-   created once per task version at sweep time.
+   created once per task version at sweep time. Its analysis payload pins the
+   task content hash and the SHA-256 hash of the bundled pre-trial policy. A
+   successful import copies the policy hash into `task_versions.pre_trial`, so
+   operators can select versions that need a newer policy rerun. Historical
+   audit trials and stored results can omit the hash.
+   QA rerun and pre-trial audit endpoints accept an optional `environment`
+   (`modal` or `daytona`); omitted/null retains the worker default. The task
+   panel and bulk Run QA toolbar use the worker default. Explicit API selections are
+   stored on the new trial and survive retries; they do not change the global
+   default or the environment of automatically enqueued follow-up QA.
+   Replacement QA requests preflight every eligible source through the same
+   result, verifier, and trajectory readers exposed to the analysis sandbox.
+   Missing started-trial result/verifier evidence or a `has_trajectory = true`
+   row without a readable trajectory returns HTTP 409 before stored analysis is
+   reset or the current verdict is withdrawn.
    `POST /qa-evals` is the lower-level historical prompt-replay primitive. It
    creates one output experiment and one `qa_eval` trial per exact source
    solver trial. Terminal failed sources remain replayable when no trajectory
@@ -213,7 +231,8 @@ High-level flow:
    handles; a task is failed only when no other live trial remains. Queuing
    replacement QA withdraws the previous verdict through `queue_verdict`.
    Completion publishes only the new verdict; a classification-only pass
-   completes with SUCCESS status and no verdict. Cancellation, failure, or
+   completes with SUCCESS status and no verdict unless current audit or
+   baseline evidence establishes a deterministic rejection. Cancellation, failure, or
    abandonment of an active replacement never restores its previous result.
    Cancelling unrelated trials preserves an existing verdict when no QA
    replacement was active. Older QA artifacts remain in trial storage.
@@ -222,12 +241,16 @@ High-level flow:
    payload with a missing or FAILED status.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
-   reported, phase timing, trajectory availability, arbitrary verifier
+   reported, phase timing, readable trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
    Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
    S3; only counts, the tool name, and the report's trial-relative artifact path
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
+   Before upload, restricted-runtime transport values are removed from valid
+   `.json` artifacts by parsing and recursively redacting strings, which keeps
+   numbers and booleans typed and the JSON parseable. Logs, malformed JSON, and
+   binary artifacts use the streaming byte scrubber.
    It also derives trajectory elapsed time and tool usage directly from ATIF
    steps into `trials.trajectory_duration_seconds`, `trials.total_tool_calls`,
    and `trials.tool_counts`. Task and experiment filters combine model and
@@ -380,6 +403,21 @@ summary template must retain the `{{taxonomy}}` placeholder, rendered by the
 QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
 a code change that ships with a deploy.
 
+Both source-audit and solver-classification prompts allow the author-provided
+reference baseline to install a bundled executable without rebuilding source.
+Solver source/language/build requirements still apply to normal solver grading;
+reference leaks, stored-answer replay, reward tampering, and broken baselines
+remain defects. After changing this policy, use the source-audit rerun endpoint
+for affected current versions: deploying a prompt does not replace stored
+findings or their task verdicts. The stored `audit_policy_hash` identifies which
+audit policy produced each result.
+
+`POST /tasks/{task_id}/qa/pre-trial` accepts an optional JSON body with
+`environment: "modal" | "daytona"`; `POST /qa-evals` accepts the same field.
+The provider is stored on each created analysis trial as `trials.environment`,
+so workers and retries execute on that provider. An omitted or null value
+retains the deployed worker default. Source solver trials are unchanged.
+
 Each automatic QA brief snapshots authoritative Trial facts (id, status,
 reward, trajectory availability, and agent), current-version nop/oracle
 baseline results, and the source-audit status/findings into its pinned analysis
@@ -387,7 +425,83 @@ payload. The QA agent fetches complete result, verifier, and trajectory
 resources for each solver Trial; it writes judgments only. Import restores
 `trial_name` and `reward` from the graded Trial row, and a source-audit
 `must_fix` finding or failed deterministic baseline rejects an otherwise
-accepted verdict.
+accepted or absent model verdict. Trial classifications, rewards, and summaries
+retain their own meaning: a `GOOD_FAILURE` can coexist with task rejection.
+
+New QA jobs pin a fingerprint of source bytes, audit status, timestamps, and
+findings (excluding later exploitation annotations). Import checks it and the
+latest uncancelled QA identity under the task lock before storing classifications
+and again before publishing the verdict. Legacy jobs without a fingerprint
+must match the current audit finding IDs and must-fix subset. An audit rerun
+withdraws the old verdict and returns the task to RUNNING; admission waits for
+all solver and existing QA jobs, plus audit execution and result publication,
+then creates one replacement QA. `task_audit_pending` checks both live audit jobs
+and the current version's PENDING/QUEUED/RUNNING audit status; automatic admission,
+manual QA, and cleanup share this gate. A terminal audit job alone cannot
+complete the task. Both
+audit and QA settlement re-enter admission. Cleanup requeues QA whose saved
+audit no longer matches instead of repeatedly importing it. Audit writes also
+check the latest audit trial under the version lock, and duplicate successful
+imports preserve the original timestamps and exploitation annotations.
+
+General task-run cancellation mirrors a cancelled audit onto its task version
+in the same transaction, setting pending pre-trial status to FAILED with the
+audit's error and finish time. `settle_cancelled_audit_status` requires the
+owning task lock and verifies that the latest non-superseded audit is cancelled
+and no audit execution remains active. Cleanup runs this repair before QA
+admission for historical stranded versions, reporting `cancelled_audits_healed`.
+It defers versions whose task still has active trials or worker jobs and closes
+an idle current-version task without launching replacement QA, while
+preserving published verdicts, newer audits, and work in other experiments.
+
+Delivery boards expose the latest QA run's evidence coverage and completion time.
+`oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
+audit with the current default version, using the same eligibility clauses and
+evidence serialization as QA admission. A recent timestamp alone does not make
+a result current. The board's seven-day/24-hour counter includes current accepted
+and rejected results, excluding execution failures and in-flight runs; it does
+not change the existing delivery sign-off requirements.
+Classification-only QA can still publish a deterministic baseline rejection;
+that verdict counts when its `_graded_by` identifies the selected QA run.
+Legacy synthesized verdicts without `_graded_by` remain readable.
+
+`task_versions.qa_work` stores owner user ID, claim time, issue categories (first
+is primary), and handoff note once per version across deliveries. TASKS-scoped
+authenticated users may POST `/deliveries/{id}/qa-work/claim`; version locks and
+SKIP LOCKED prevent duplicate claims across deliveries. PATCH
+`/deliveries/{id}/qa-work` requires ownership or an admin and supports release.
+Both require an active delivery and current version membership. Claims carry
+candidate version IDs from the displayed filters, so stale browsers cannot
+silently claim a newer version. New versions start unassigned. Finalized boards
+retain their QA state and time cutoff in the existing snapshot. Hosted user-name
+resolution stays in the delivery router; standalone coordination uses `local`.
+The board preserves task rows and expanded history across selected-version
+changes. QA-work drafts retain the version and notes from when they opened;
+a changed version disables saving and keeps the notes available to copy.
+Task-scoped `PUT /deliveries/{id}/checks` requests may include
+`expected_version_id` (including explicit null). The core locks the task and
+returns HTTP 409 if its selected default differs before writing or deleting a
+sign-off, acknowledgment, waiver, or manual check. Positive sign-off and exception decisions require a non-null expected version
+and an authenticated person. Other checks retain optional version matching for
+older clients; the delivery board always supplies the displayed version.
+
+`oddish assign` calls `POST /tasks/qa-work/assign` with up to 1,000 task IDs,
+an assignee, and optional `replace`. Hosted assignment requires admin access
+(a full-scope API key) and resolves email, user ID, or GitHub handle inside the
+caller's organization. `oddish.core.qa_work` locks tasks then their current
+versions in stable order, checks the whole batch before writing, and updates
+the same `task_versions.qa_work` metadata used by delivery claims. Other owners
+are skipped unless replacement is explicit; repeat assignments preserve claim
+times, and notes/categories are retained. No delivery membership is required.
+Active boards reflect the assignments; finalized snapshots remain unchanged.
+
+QA and source audits submit a draft through `/probe-harness/submit-analysis-result`.
+It runs the same strict validator used by the verifier and importer, allowing
+one initial submission and two repairs. Missing fields remain validation errors.
+Attempt JSON and validation messages are retained under
+`/logs/<artifact>.submissions/` and copied into verifier artifacts. A later
+invalid, missing, or over-limit submission removes any previously published
+result, so a rejected draft cannot leave a stale accepted artifact.
 
 ### Worker job kinds
 
@@ -463,23 +577,15 @@ handlers must pass `auth.org_id`; never accept an organization selector from
 the client. A user cost drilldown returns 404 when the requested user belongs
 to another org. Deployment-wide diagnostics or mutations (global queue
 status/health and slot topology, model concurrency, shared-channel Slack
-alert settings, model endpoint smoke checks, and the global cost-exclusion
+alert settings and the global cost-exclusion
 lists) additionally require the
 active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
-that capability through `GET /admin/operator-access` and hides those controls
-for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+admin capabilities through `GET /admin/operator-access`, then hides those
+controls for other orgs.
+`GET /admin/concurrency` reports the deploy, database override,
 deprecated-controller advisory, and actual effective limit for one canonical
 queue key; `PUT /admin/concurrency` sets or clears the database override.
-`POST /admin/model-endpoints` sends one short `litellm_completion` request from
-the hosted API container using its platform provider credentials. It does not
-claim to exercise an agent's Responses, Messages, CLI, or sandbox path.
-Expected provider and configuration failures return a structured 200 response;
-unexpected integration/programming errors remain 500s. The request creates no
-task, trial, worker job, or persisted history. The operator-only frontend
-Diagnostics tab derives its model rows from `GET /admin/queue-health` capacity
-keys, runs "Test all" in batches of at most three, and keeps results only in
-browser state.
 
 Admin cost exclusions (`oddish/core/cost_exclusions.py`) name spend that was
 never really paid for, along three axes: a **model** (`cost_excluded_models`,
@@ -560,8 +666,19 @@ selected-version trial preview remains capped at 20 rows. The handler uses at
 most three SQL statements, stays below the
 50 KB response budget, and must not select trial `result`, `analysis`,
 `error_message`, jobs, or ORM relationships. `GET /tasks/{task_id}/detail`
-remains the compatibility bundle for CLI and drawer consumers during the soak;
+remains the compatibility bundle for CLI and explicit full-history operations;
 do not point the task route back at it.
+
+`GET /tasks/{task_id}/panel?version=N` supplies task-panel audit metadata,
+selected-version content hash, verdict, and action availability in two SQL
+statements. Omitted version selects the task's default; missing or deleted
+explicit versions return 404. Hosted readers use the verified organization ID.
+The file panel uses this resource instead of polling `/detail` and basic task
+state independently. Files load independently, overview trial evidence loads
+on tab intent, and full retry targets load only on click; experiment-scoped
+retries retain their host trial set. Unknown audit metadata keeps reruns disabled.
+The normal 30-second panel poll detects in-place file revisions; active QA/audits
+poll every five seconds.
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
@@ -603,9 +720,22 @@ need repository metadata or task-owner identity. The anonymous `/open` and
 React is not an access-control boundary. `/trial-page` returns at most 250
 projected trials and omits full analysis, errors, results, phase timing, Harbor
 config, and ORM relationships.
-In React, `/open` owns the page's initial loading and fatal-error state;
-`/trial-page` owns incremental trial loading and a retryable inline error, so a
-trial-page failure must not replace task shells that `/open` already returned.
+Experiment pages use `/results` for initial and incremental loading. Task and
+trial collections each use one SQL `DECLARE`/`FETCH` cursor, fetched in batches
+of 500 rows, within a read-only repeatable-read transaction so totals and rows agree.
+Both cursors close on completion, failure, or client disconnect. The transaction
+is required for cursor lifetime and snapshot consistency; this endpoint does not
+use the autocommit read session. SQL cursors avoid asyncpg's unnamed prepared
+statement cursor failures with the pooler's required `statement_cache_size=0`;
+do not switch this to `AsyncSession.stream` without a real-driver regression.
+Batches bound application row buffering, not
+the database query's own sort/aggregate memory or the total response size.
+The page displays downloaded task/trial counts independently of trials that
+finished running. Only a validated completion record marks the download complete;
+refresh failures retain and label the last complete results. A failed
+response retains any downloaded rows and exposes Retry, including when the request
+fails before metadata arrives. The older paginated endpoints remain available to
+other clients.
 
 `overwrite_current_version` replaces the archive and metadata for
 `tasks.current_version_id` without changing its ID or version number. Uploads
@@ -614,7 +744,9 @@ land at a unique staging key, copy to an immutable
 version row atomically switches `task_s3_key`. Expanded-file readers accept a
 manifest only when its `archive_key` matches that selected source, so failed
 cleanup cannot expose the prior expansion. The replacement clears derived-file
-bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
+bookkeeping, retained `reported_findings`, and pre-trial audit state before
+re-enqueuing expansion. Same-content upload retries preserve those findings.
+Existing
 trials pinned to that version resolve to the replacement content.
 
 Sweep appends resolve their own version through `resolve_append_version_id`
@@ -651,6 +783,45 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Task-file publication and read latency
+
+Task-file publication writes complete, immutable directories under
+`tasks/<id>/v<N>-expanded/<token>/`, then atomically sets the existing
+`task_versions.expanded_manifest_key` after checking the source hash and archive
+key under the version-row lock. Publication does not delete or copy the previous
+directory. Retain published directories for in-flight readers and presigned URLs;
+also retain a candidate when commit acknowledgement is uncertain. Failed uploads
+and positively identified stale candidates can be cleaned up separately. There is
+no new schema migration or automatic backfill in this change.
+
+`resolve_task_file_source` returns a `TaskFileSource` snapshot containing version,
+archive prefix, published manifest key, and content hash from one authorized query.
+All hosted, standalone, and public file routes pass that snapshot through. Only
+database-selected immutable directories bypass legacy manifest validation. Existing
+`v<N>-files/` layouts retain their checks; missing individual members still fall
+back to the archive. Listing responses (including the first NDJSON chunk) and file
+responses carry `source_hash` for the contents selected by the database.
+
+File-list request state records the requested and received content fingerprints.
+Late task details do not abort a pending listing just to add a previously unknown
+fingerprint; a differing fingerprint still invalidates the listing. The response
+fingerprint resolves the race whether details or the listing finish first. URL
+selection and line anchors retain their existing ownership.
+
+Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
+`backend.request.phases` includes storage operation counts, downloaded/archive bytes,
+archive-cache hit/miss, file source, and known file bytes. SDK failures log only
+selected provider diagnostics, never request headers or file contents. Existing
+Clerk login resolves organization and GitHub data between database sessions, then
+rechecks organization/user rows before writing. The write session locks the
+observed user, rejects membership removal during HTTP, and applies fetched GitHub
+data only when the stored identity fields still match the pre-fetch snapshot.
+No login Clerk HTTP request may
+hold a database connection or provisioning lock. Membership callbacks retain their
+existing transaction ownership. Identity provisioning suppresses automatic relationship loads in its own queries;
+organization isolation, role refresh, and new-user provisioning remain unchanged.
+See `docs/task-file-latency.md` for the staged verification checklist.
+
 ### Task Browser Summary
 
 The default `GET /tasks/browse` path selects and paginates tasks before card
@@ -669,6 +840,10 @@ trial create/import, start/reset, completion, cancellation, retry/supersede,
 scoped deletion, and default-version selection. Advanced aggregate filters,
 comparisons, and non-default aggregate sorts intentionally retain their
 on-demand trial aggregation path.
+
+The pre-trial audit enqueue claims `pre_trial_status IS NULL` with one conditional
+UPDATE, in the same transaction as audit creation. It must not upgrade the version
+to `FOR UPDATE` after trial inserts have taken foreign-key `KEY SHARE` locks.
 
 Refreshes serialize per version with sorted transaction-scoped PostgreSQL
 advisory locks; do not replace those locks with `FOR UPDATE` on
@@ -833,8 +1008,33 @@ they select the shared task and trial, open the trajectory tab, and retain the
 cited step anchor. They must never point signed-out readers at authenticated
 `/tasks/...` routes.
 
-Experiment pages use independent task and trial cursors. The first `/open` page
-includes the exact experiment summary; later task pages request
+Authenticated experiment task rows include `verdict.primary_issue`, a preview
+limited to 240 characters in the task query, falling back to verdict reasoning
+when the primary issue is empty or absent, plus nullable top-level
+`must_fix_count` from the current version's completed source audit. The full
+report stays in task detail; public experiment rows retain the verdict label,
+acceptance flag, and confidence without the prose preview or must-fix count.
+
+Experiment pages use one `/experiments/{id}/results` NDJSON response (or the
+public token-scoped equivalent). It contains experiment metadata, individual task
+and trial records, and an explicit completion record. There are no page limits or
+cursor requests in the browser. Each collection is read with one query inside a
+repeatable-read, read-only transaction, closed on completion or disconnect. The
+database driver buffers each collection; serialization streams individual records.
+Public projections and
+model aliases match the existing public endpoints. Member and public Next proxies
+pass the response body through without buffering. The client paints incoming records
+once per animation frame, validates completion/counts, and keeps partial rows with
+Retry after interruption. Graphs require a complete response. Active experiments
+refresh the complete response every 30 seconds and retain the previous complete
+snapshot while refreshing. A failed refresh leaves that snapshot complete and its
+graphs visible, exposes Retry, and keeps the 30-second refresh timer running.
+An interrupted initial download remains incomplete. Task rows and the Cost/New
+Spend cards omit the “not real” spend-exclusion badge; accounting exclusions are
+unchanged.
+
+The older `/open` and `/trial-page` APIs remain available for existing clients.
+The first `/open` page includes the exact experiment summary; later pages request
 `include_summary=false` and receive `summary=null` so they do not repeat the
 whole-experiment aggregation. `/focus?task=...&trial=...` resolves one URL target
 without walking either cursor. Authenticated focus reads retain addressability
@@ -992,7 +1192,18 @@ Storage defaults:
   in-place replacements use immutable
   `tasks/<task_id>/v<N>-revisions/<token>/.oddish-task.tar.gz` sources selected
   by `task_versions.task_s3_key` (legacy unversioned bundles remain readable)
+- expanded per-file trees: the expand worker mirrors a bundle to
+  `tasks/<task_id>/v<N>-files/` plus a `.oddish-manifest.json` sentinel and
+  then stamps `task_versions.expanded_manifest_key` under the version row's
+  lock; an in-place overwrite clears the stamp in the transaction that switches
+  `task_s3_key`. `resolve_task_file_source` returns it as `expanded`.
+  `False` skips the extracted tree; `True` and `None` still validate the
+  manifest against the selected archive because an overwrite can replace
+  the tree after the database read. Missing members fall back to the bundle.
+- Recursive trial-file listings remain complete for CLI downloads; only
+  non-recursive listings use `limit` and continuation cursors.
 - Harbor job outputs: `/tmp/harbor-jobs`
+
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 
 EC2 canary procedure:
@@ -1079,7 +1290,49 @@ set** in each caller. The full builder has no `load_only`, so it will not catch
 an omission. Builder unit tests cannot catch it either because in-memory models
 have every attribute set; the bug lives in the query options, not the builder.
 
+### Read sessions, the write guard, and statement budgets
+
+Every statement is a network round trip to a pooler that sits a network hop
+away from the API containers (measured 2026-09: 4 ms to 220 ms per trip
+depending on where Modal placed the container), so the number of statements a
+request issues is its latency budget. Three rules keep that number down:
+
+- **GET handlers use `get_read_session()`** (`oddish/db/connection.py`). It
+  checks the connection out in driver autocommit, so a read pays no `BEGIN`,
+  `COMMIT`, or reset `ROLLBACK`. `get_session()` remains the write path. A
+  read session **refuses to flush**: any pending ORM change raises
+  `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
+  write fails in tests instead of autocommitting statement by statement. The
+  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
+  a default policy) stays on `get_session()`.
+- **Reads that tolerate a not-yet-migrated table go through
+  `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
+  `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
+  `SAVEPOINT` under autocommit), returns `None` only for a missing table, and
+  re-raises everything else. Do not hand-roll `begin_nested()` + `ProgrammingError`
+  for this case again; the three former copies (cost exclusions, quota bumps,
+  quota limits) all use the helper.
+- **`oddish/tests/test_statement_budgets.py` pins statements per core** for
+  the task, trial, detail, browse and experiment-page reads. Raise a budget only
+  with a reason in the diff.
+
+Pooled SQLAlchemy connections are idle in driver `AUTOCOMMIT` mode so the
+asyncpg connection health check sends only its test command, without a
+`BEGIN`/`ROLLBACK` pair. The exported engine is a `READ COMMITTED` view of
+that same pool: `engine.begin()`, ordinary sessions, and writes retain their
+transactions. Read sessions override the view for their checkout. The pool
+size is unchanged; NullPool workers retain their existing configuration.
+
+Two per-process caches take the remaining fixed costs off the request path:
+`load_cost_exclusions` (`oddish/core/cost_exclusions.py`) refreshes at most once
+per `ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60; the admin routers call
+`invalidate_cost_exclusions()` after every edit), and the backend auth cache
+keeps Clerk identities for `ODDISH_AUTH_IDENTITY_TTL_SECONDS` (default 900)
+while taking role and email from the freshly verified token on every hit. Both
+use `oddish.cache.TTLCache`; new per-process caches should too.
+
 ### Dashboard pipeline stats use reserved queue keys
+
 
 `get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
 bucket trial counts by each trial's own `queue_key`, and the
@@ -1163,7 +1416,7 @@ timeout; a sweep that timed out spawned zero workers that cycle, and a SIGKILL
 mid-sweep left orphaned `idle in transaction` locks that deadlocked the next
 sweep):
 
-1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (180s) Modal schedule under
+1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (30s) Modal schedule under
    `DISPATCHER_TIMEOUT_SECONDS` (120s). It only discovers active queue keys
    (`discover_active_worker_job_queue_keys`) and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers via the org-first fair-share
@@ -1184,9 +1437,10 @@ sweep):
    metadata (`clear_terminal_trial_runtime_refs`) runs after the main
    transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
    can neither deadlock against live workers nor roll back the sweep.
-3. `process_single_job(queue_key)` acquires a `queue_slots` lease (stamping
+3. `process_single_job(queue_key)` adopts its reserved `queue_slots` lease
+   (or acquires one for an unreserved invocation), stamping
    `locked_by = <worker_id>`, `locked_at = NOW()`, `locked_until = NOW() +
-   WORKER_TIMEOUT + 30s`) and calls `run_single_worker_job` →
+   WORKER_TIMEOUT + 30s`, and calls `run_single_worker_job` →
    `drain_worker_jobs`, which atomically claims one or more `worker_jobs` rows
    (stamping `current_worker_id`), dispatches to the registered handler for the
    row's kind, writes heartbeats on both `worker_jobs.heartbeat_at` and the
@@ -1268,6 +1522,22 @@ sweep):
    within a single run. The DM claim key is `"dm:{alert.key}:{recipient}"`,
    so each person is DMed at most once per task version, ever.
 
+Endpoint health monitoring is hosted-only. `endpoint_health_worker.py` registers
+an independent one-minute check schedule and hourly 30-day retention job;
+`endpoint_health.py` owns explicit `ODDISH_ENDPOINT_MONITORS` configuration,
+provider calls, database claims, and incident transitions. Production registers
+these schedules by default; staging/previews require the deploy-time
+`ODDISH_ENABLE_ENDPOINT_MONITORING=true` flag. No targets means unmonitored.
+`endpoint_monitors` owns current state and expiring claim tokens;
+`endpoint_checks` stores completed observations. Provider calls hold no DB
+connection. Results update current state, append history, and write any Slack
+outbox events in ONE transaction; late/duplicate claims are ignored. Reuse the
+existing Slack sender rather than posting from the check loop. Two consecutive
+provider failures open an incident, success resolves it, and internal check errors
+cannot establish or resolve provider outages. Operator Admin's overview reads
+one small current-state query; history is lazy and bounded. Configuration,
+limits, delivery semantics, and isolated test instructions are in backend/README.md.
+
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. `_POST_SUCCESS_HOOKS` in
 `worker/functions.py` contains only `notify_github_trial` for successful
@@ -1307,6 +1577,21 @@ The file LISTING and file CONTENT endpoints both root at
 doubling an analysis or attempt segment. Analysis-result readers locate their
 one result artifact by filename suffix within that authoritative attempt prefix.
 
+The normal ATIF reader downloads the attempt manifest and selected
+`agent/trajectory.json` without preliminary existence checks: two GETs on
+a cache miss. `is_missing_object` in `db/storage.py` owns missing-object
+classification for both readers and storage diagnostics: a known missing code,
+or HTTP 404 with an absent/empty code, activates missing-file behavior. Explicit
+non-404 statuses and bucket, permission, and service errors propagate. Finished
+trajectories remain cached for 120 seconds in each process, keyed by trial, attempt, and
+artifact prefix. Request traces expose `storage.trajectory_cache.hit`,
+`storage_client_init.duration_ms`, and `trajectory_cache_wait.duration_ms`
+alongside storage request counts and download timings.
+
+Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
+within the existing 64-character column; high-volume ledger inserts must not
+truncate UUIDs to the eight-character IDs used by some other entities.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively
@@ -1327,12 +1612,32 @@ silently breaks throughput or correctness — read before touching
    heartbeating. Running and paused jobs periodically open a short session so
    they react to spend reported by sibling trials and to quota changes.
 
-2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
-   enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE
-   SKIP LOCKED`), not by spawn count. The dispatcher budgets on `worker_jobs`
-   RUNNING (`limit - running`) while the worker gates on a free slot — if those
-   counters drift, the dispatcher over-spawns workers that exit immediately
-   (watch for `metric=queue_lock_contention` floods).
+2. **`queue_slots` is the real concurrency gate.** Hosted dispatch reserves
+   these same rows before calling Modal (`reserve_queue_launches`). Pending
+   reservations hold a unique `locked_by` token, a 300-second `locked_until`,
+   and `launch_demand` containing the organization/model/variant/lane/priority
+   class. Pending demand is subtracted from ready demand so the 30-second poll
+   cannot repeatedly launch workers for the same waiting jobs. At worker start,
+   `acquire_queue_slot(reservation_token=...)` atomically transfers the same row
+   to the worker and marks `launch_demand.adopted`; the first job claim clears
+   that demand in the same transaction as the claim, preventing duplicate
+   demand in the adoption-to-claim gap. Stale or duplicate tokens fail closed.
+   Failure releases only unadopted tokens. No Modal call runs inside
+   the reservation transaction. Expiry restores capacity even if the launcher
+   dies; the orphan reaper excludes pending launches until expiry.
+
+   `queue_dispatch_state` serializes hosted planning and persists organization
+   and class cursors. Organizations rotate; within each org, three launch turns
+   prefer priority > 0 (QA, audit, QA-eval, summarize), then one prefers <= 0.
+   An empty or capacity-blocked class lends its turn to the other. Workers keep
+   their allocated org/class while draining and retain priority/user/FIFO claim
+   ordering inside that scope. Ordinary launches therefore receive one in four
+   turns under sustained eligible analysis demand, even across one-slot polls.
+   This is allocation of newly available capacity, not preemption or capacity
+   reserved exclusively for QA. Generic self-hosted workers keep unscoped claims.
+   Model capacity remains shared across both classes and all variants/lanes.
+   Per-model transaction advisory locks serialize free-slot reservation with
+   legacy acquisitions; held leases above a newly lowered limit still count.
 
 3. **Slot leases can outlive their worker — reclaim per-slot.** The lease
    (`locked_until`) is `WORKER_TIMEOUT_SECONDS + 30` (~12h); a SIGKILLed /
@@ -1398,6 +1703,38 @@ uv sync
 uv run modal serve deploy.py
 ```
 
+### Hosted organization approval
+
+All authenticated hosted routes check `organizations.execution_enabled` through
+`backend/org_access.py`, including cached API keys. This check returns the fresh
+organization row (without loading relationships), and `require_auth` supplies it
+on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+The shared Modal image must copy `org_access` through `add_local_python_source`
+in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
+installs dependencies without installing the backend project itself.
+Clerk org creation and membership never grant approval. Missing active-org claims must return 403, not
+create a Personal org or infer membership by email. Both Clerk webhook and login
+provisioning use `sync_clerk_org` to serialize organization/slug writes and preserve
+revocation. Login and membership callbacks share one user update path that
+replaces placeholder emails when a real address arrives and preserves existing
+email when the payload omits it. Clerk v2 token organization claims are normalized
+after verification.
+
+Hosted dispatch filters unapproved orgs, and both worker lanes inject an approval
+callback into the core runner before execution and every 15 seconds. Keep that
+policy in backend; self-hosted core runners default to no callback. The reconciler
+and operator revoke command use the existing task cancellation/remote teardown
+path. Cleanup builds candidate task IDs from active trials and task/trial jobs
+before looking up tasks; do not restore per-task correlated job-history scans.
+Worker-job diagnostics compare the native status enum so PostgreSQL can use
+status indexes. The GitHub identity backfill preserves users on Clerk HTTP
+errors. An entirely failed batch of at least 10 users backs off for 15 minutes
+in the warm reconciler process (a restart resets the cooldown); failed/deferred
+lookups remain visible in the reconciler heartbeat rather than reporting health.
+Cleanup heartbeat errors include the exception class, including bare timeouts.
+See `backend/README.md` for initial migration IDs, deployment order, operator
+approval commands, and the separate live Clerk organization settings.
+
 ### Configuration (backend)
 
 ```bash
@@ -1406,7 +1743,10 @@ cp backend/.env.example backend/.env
 
 Minimum required: `ODDISH_DATABASE_URL` and `CLERK_DOMAIN`. Add
 `CLERK_SECRET_KEY` for Clerk-backed org management and `CLERK_WEBHOOK_SECRET`
-for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
+for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`
+(plus `CORS_ALLOWED_ORIGIN_REGEX` for Vercel preview origins when the dashboard
+calls the API directly),
+
 `CLERK_ISSUER`, `CLERK_JWT_AUDIENCE`, the `ODDISH_S3_*` set, provider keys
 (`AZURE_OPENAI_*`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, …),
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
@@ -1422,7 +1762,14 @@ is separate from the scheduled expense-notification webhook.
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
-poolers such as Supavisor / PgBouncer.
+poolers such as Supavisor / PgBouncer. Two request-path caches are tunable:
+`ODDISH_AUTH_IDENTITY_TTL_SECONDS` (Clerk identity entries in the auth cache,
+default 900; API-key entries stay at 60 s) and
+`ODDISH_COST_EXCLUSIONS_CACHE_SECONDS` (default 60, `0` disables). Every span
+also carries `oddish.modal_region` / `oddish.modal_cloud` from the container's
+`MODAL_REGION` / `MODAL_CLOUD_PROVIDER`, so per-region database round trips
+are a Logfire query rather than a probe.
+
 
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
@@ -1432,6 +1779,25 @@ directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
+
+Preview deployment parses the unique `-api.modal.run` URL from Modal's output
+with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
+`-api-qa-model.modal.run` URL is a separate endpoint and must never become the
+frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
+
+PR preview deploys and manual preview resets set
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=400`, allowing each worker function up to
+400 concurrent Modal containers for Archil testing.
+`ODDISH_MODAL_MAX_WORKERS_PER_POLL=400` lets the dispatcher launch up to 400
+workers in one pass. Previews also set
+`ODDISH_DEFAULT_MODEL_CONCURRENCY=400` and
+`ODDISH_MODEL_CONCURRENCY_OVERRIDES={}` so the inherited 256-trial model
+limits do not prevent one model from filling that pool. Saved admin overrides
+still take precedence. Worker/container limits and model queue limits are
+baked into the image and appended as the final runtime secret so older provider
+secrets cannot replace the deployment values during container import. These
+workers also launch and monitor Archil sandboxes; sandbox-provider capacity and Modal workspace quotas still
+apply independently.
 
 ### GKE Placement Contract
 
@@ -1459,6 +1825,25 @@ Required fields and where they come from:
 
 Migration: GKE tasks written before this contract (no mode, no zones) stop
 scheduling and fail with the requiredness error until updated.
+
+### Preview organization approval
+
+`backend/preview_org_approvals.py` owns copying production operator decisions
+into previews. `prepare_preview_database.sh` invokes it after migrations,
+seeding, and preserved-row restoration on every preparation, including reused
+branches, overlapping credential publication and awaiting both before deploy.
+It adds approved organization identities absent from the task sample,
+matches by Clerk ID (original database ID for legacy Personal organizations),
+revokes unknown/denied identities, and validates expected access in one
+transaction. Production's approval column must exist first. Abundant,
+SRE-World, and CyberMasters are required successful-access fixtures; their IDs
+are assertions about production approval, never an approval grant.
+
+Both paths in `preview_seed.py` must exclude `execution_enabled` from inserts
+and updates, allowing the column default on new rows. Budgets and credentials
+are not copied by approval sync. Keep the final sync outside migration/seed
+conditionals, and keep fleet maintenance out of per-PR CI. Revocation reaches
+existing previews only when their next preparation or operator sync runs.
 
 ### Preview Branch Preserved Rows
 
@@ -1510,6 +1895,16 @@ because the backend can hard-require new schema on its hot paths.
 deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
 after the backend, so a new frontend never reaches an old backend.
 
+Staging allows 400 worker containers and up to 400 starts per dispatcher poll.
+Its `STAGING_DATABASE_URL` GitHub secret remains a session-pool connection on
+port 5432 for migrations and bootstrap. Both staging workflows use
+`.github/scripts/staging/publish_runtime_db.py` to publish the same credentials
+on transaction-pool port 6543 to the `oddish-staging-db` Modal runtime secret.
+The runtime must not use session mode: its 20-connection pool rejected worker
+starts during the September 9 load test. Transaction pooling shares database
+backends across brief API and worker transactions; the 400-worker setting is
+an execution cap, not a claim of 400 simultaneous database transactions.
+
 ### Key Files
 
 | Path | Purpose |
@@ -1524,7 +1919,7 @@ after the backend, so a new frontend never reaches an old backend.
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries, deletion |
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
-| `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` plus hosted operator model-endpoint smoke checks |
+| `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` and hosted operator diagnostics |
 | `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
 | `api/services/slack_unfurls.py` | Task/experiment summary queries and Slack block construction |
 | `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |
@@ -1557,8 +1952,16 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, `/api/public/*`, `/sign-in`, `/sign-up`, `/api/client-traces`,
-and — deliberately, for link-unfurl bots — `/experiments/*`; everything else
-is Clerk-protected.
+and — deliberately, for link-unfurl bots — `/experiments/*` plus
+`/orgs/{orgSlug}/experiments/*`; everything else is Clerk-protected.
+Authenticated app pages live under `/orgs/{orgSlug}/…` (for example
+`/orgs/acme/tasks`). Unprefixed `/tasks` and the short-lived
+`/{orgSlug}/tasks` shape redirect when signed in. `/share/*` and `/datasets/*`
+stay unprefixed. Selecting another organization opens its dashboard with no
+query string or fragment, so resource IDs from the previous organization are
+not carried into the destination workspace. `OrgSlugSync` uses the same
+dashboard destination when the active organization changes before navigation
+finishes, rather than restoring the previous resource URL.
 
 Authenticated proxy routes forward incoming `traceparent`, `tracestate`, and
 `baggage` headers to the backend and join the backend's `Server-Timing` value
@@ -1567,17 +1970,128 @@ responses. Keep this behavior in `frontend/src/lib/proxy-headers.ts`; the
 generic JSON proxy requires its incoming request, and bespoke hot routes must
 use the same helpers instead of replacing an existing timing value.
 
+The shared authenticated proxy adds `next_auth`, `next_token`, `next_upstream`,
+`next_json` (buffered responses only), and `next_total` durations alongside
+backend timing, including errors. Task open/detail/panel use its streaming
+option. Streaming totals end at response construction, not the last body byte.
+
+**Direct API mode** (`NEXT_PUBLIC_API_DIRECT=1`, off by default) lets the
+browser call the backend itself instead of going through those `/api/*`
+handlers: one fewer hop (Vercel edge, Vercel function, then Modal) and one
+trace instead of two. `frontend/src/lib/api.ts` owns the mapping: every
+dashboard request keeps its `/api/...` string as its SWR key and as the URL
+it would send to the proxy; `resolveApiUrl` turns that into
+`${NEXT_PUBLIC_API_URL}/...` (identity for every proxy except the five
+`settings/*` and `admin/users/{id}/costs` rewrites listed there), `apiFetch`
+attaches the token minted by the Clerk client with
+`NEXT_PUBLIC_CLERK_JWT_TEMPLATE` (the same template the proxies use
+server-side), and `/api/public/*` reads go without a token. Experiment IDs lose
+the extra URL-encoding layer normally consumed by Next's route parser. Three proxy groups stay
+in the path because they do real work -- the Logfire relay
+(`/api/client-traces`), the zip import, and task browse (which translates the
+address-bar search/tag/date filters) -- and a request that cannot get a
+token yet (Clerk still loading) or runs during server rendering also keeps
+the proxy for that call. The backend side is `CORS_ALLOWED_ORIGIN_REGEX`
+(preview origins are unpredictable) and `backend/api/cache_headers.py`, which
+sets the `Cache-Control` values the proxies used to add, keyed on the matched
+route template; private responses also vary by `Authorization` so switching
+organizations cannot reuse another token's cached response. Each PR backend
+permits its own `https://pr-{number}.oddish.app` frontend origin. The combined
+`perf/request-path-combined` branch opts its Vercel preview into direct mode
+in `frontend/next.config.ts`; an explicit flag overrides this, and other
+deployments remain off by default. The public token-template name defaults to
+the existing server-side `CLERK_JWT_TEMPLATE` at build time.
+New mutation call sites must use `apiFetch`, never a bare
+`fetch("/api/...")`. The proxy files stay until direct mode has run in
+production for a while; delete them only in a dedicated change.
+
+
 The trial drawer surfaces verifier test counts only as a small passed/total
 row in the Summary tab (shown on public share views too); trials without test
 counts show no row. Persisted `_verifier` CTRF counts are the sole source.
 Historical trials without that summary show no count; opening a trial must not
 list or read its artifacts to reconstruct one.
 
+Experiment task rows give the name its own wrapping line, with verdict,
+findings link, version, and cost underneath. Member experiment task pages
+include nullable `must_fix_count`, computed from the current version's completed
+source audit; unknown or unfinished audits stay null. Public pages do not expose
+that count. Do not parse the rejection explanation to infer a finding count.
+
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
 experiment membership and its scoped trials without deleting the task, even
 when it was the task's final experiment membership. Whole-task deletion remains
 a separate explicit action outside the experiment-scoped table.
+
+The experiment drawer canonicalizes task/trial deep links with native browser
+history updates, without triggering a route navigation. Opening a visible task
+pane starts its file listing even while Overview is selected; switching between
+Overview and Files preserves the listing request, selection, and expanded
+folders. Keep the task navigation and overview mounted while the listing loads.
+Hidden task panes still defer their file requests.
+
+Delivery board view state lives in URL parameters: `page` (one-based),
+`filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
+`task` (expanded task ID; legacy task names remain supported). The browser
+reads these directly with `useSearchParams`; native history updates preserve
+Back/Forward behavior without refetching the already-loaded full board.
+Filter/group changes reset the page and task focus. Bulk selections and draft
+edits remain local. The board owns the existing 15-second SWR refresh: each
+successful read also revalidates the expanded task's QA history, including
+reads after page mutations. History has no separate timer. Refresh errors
+retain loaded data with a stale warning and adjacent retry; revalidation never
+clears cached data or starts analysis. Frozen delivery boards disable periodic
+refreshes and label separately fetched history as live task history rather than
+the shipped snapshot.
+Backend filtering/pagination is not implemented yet; the full task collection
+still supplies bulk actions and delivery-wide readiness checks.
+
+Review presentation distinguishes task defects, execution classifications,
+review progress, and version-specific human sign-off. Shared review words live
+in `frontend/src/lib/review.ts` and `frontend/src/lib/deliveries.ts`; a failed
+review does not establish a task defect, and favorable automation does not sign
+off a delivery. `pre_trial_passed` means the source review completed; the
+existing verdict and must-fix checks still decide whether defects block delivery.
+Do not change severity policy as part of presentation changes.
+
+Task open/panel and experiment task rows carry `review_version_matches`, derived
+from the saved verdict's QA trial and the displayed version. An older verdict
+must remain distinguishable from a review of the selected version. The shared
+bounded provenance query does not fetch trial artifacts or enqueue work.
+Experiment summary selections use `verdict=accepted|rejected|running|failed|unreviewed`;
+review counts and filters both classify the loaded task rows with
+`taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
+trials. Drawer navigation retains the selected review group. Unreviewed includes
+missing and outdated reviews, and remains visible when every task is unreviewed.
+Delivery `filter` defaults to `outstanding`; `filter=all` restores the complete
+inventory. A `task` link resolves against the inventory (ID before legacy name)
+and keeps that row visible across filters, pagination, and sign-off refreshes.
+Expanded delivery tasks show unresolved findings and failed checks first;
+acknowledged findings and waived checks share a collapsed record. Individual
+findings replace the duplicate `no_must_fix` explanation when findings exist.
+The board derives delivery blockers independently of review status and recorded
+sign-off. Review filters, passed checks, and history use native disclosures;
+history remains mounted so board refreshes preserve its open versions.
+
+Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
+on `/tasks/{id}`. Overview preserves the file and line address for sharing.
+A missing explicit version, finding, or historical file must explain its
+absence without substituting current content or removing that address. Switching
+versions is browser history, including selecting today's default. Native history
+updates pass `null` as state so Next updates `useSearchParams` itself; passing
+Next's internal history marker bypasses that update.
+Only an explicit version selection clears the previous line anchor; browser
+Back/Forward restores the file and line address saved for the selected version.
+The task pane derives its pane, file, and lines directly from the URL. The code
+viewer ignores selection callbacks that echo its controlled selection prop.
+
+Source and execution reruns reuse the existing task-panel handlers. Source
+reruns target the default version, withdraw its published verdict, and can
+automatically trigger execution review after import through
+`maybe_start_task_qa_stage`. Execution reruns review recorded eligible runs and
+synthesize a verdict; they do not rerun the solver. Reading pages or findings
+and changing view filters must not call either operation.
 
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production
@@ -1610,3 +2124,51 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+### QA model request gateway
+
+Opt-in `ODDISH_QA_MODEL_ROUTING_ENABLED` routes eligible platform-funded Sonnet 5
+QA/audit/QA-eval Claude Code calls through the dedicated `qa_model_gateway` Modal
+function (`backend/api/qa_model_app.py`), not the dashboard API's concurrency
+budget. `ODDISH_QA_MODEL_GATEWAY_URL` must name that function's HTTPS origin.
+`ODDISH_QA_MODEL_POOLS` declares verified independent account/model quotas and
+secret env references. HDO keys sharing an organization are not extra pools.
+
+`oddish.workers.queue.model_capacity` owns per-request admission at a projected
+65% load, using short PostgreSQL transactions and expiring request reservations.
+It never treats worker slots as API RPM and holds no DB connection during a
+provider call. Preserve this separation from `queue_slots` and QA job priority.
+`model_gateway` reuses worker-job token hashes for attempt-bound credentials;
+analysis READ keys must never acquire gateway access. Feature-off stops new
+routing while issued live attempt tokens continue working until revoked.
+The gateway forwards Anthropic messages and translates Bedrock event streams;
+never replay a partially streamed request or log provider keys/prompts.
+
+See `docs/qa-model-routing.md` for configuration, accounting conservatism,
+protocol scope, operator metrics, tests, and staging rollout prerequisites.
+
+### Mandatory task-defect delivery policy
+
+New source and execution findings use only `must_fix`; the shared
+`analysis_check_payload`/`check_analysis_result` contract enforces this at
+submission, verification, and import. `ActionTier` retains historical enum
+values for reading existing reports. Severity does not establish execution
+causation: unrelated findings leave `GOOD_FAILURE` unchanged.
+
+`oddish.core.task_findings` owns collection and retention. All recorded tiers
+on a current task version require individual delivery acknowledgment, including
+findings from superseded/deleted executions. Before clearing or replacing
+review state, call `preserve_task_findings` under the existing mutation
+transaction; it retains original evidence in `task_versions.reported_findings`.
+Read paths never write this column or enqueue analysis. Newly published verdicts
+reject established task defects; historical stored verdicts are not rewritten.
+In-place source overwrite clears retained findings in the transaction replacing
+the source bytes; re-analysis of unchanged source continues to retain them.
+
+The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
+and exception requests require the reviewed `expected_version_id` and the actor
+from authentication. Delivery manual-check uniqueness includes version, and
+history exposes each retained version decision. New versions inherit neither
+findings nor decisions. Finalized delivery snapshots are never recomputed.
+Apply `task_defects_001` before deploying this code. See
+`docs/delivery-design.md` for compatibility and forward-only migration policy.

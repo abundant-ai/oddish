@@ -1,6 +1,87 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from oddish.config import nop_oracle_kind
+
+if TYPE_CHECKING:
+    from oddish.db import TaskVersionModel, TrialModel
+
+
+def qa_trial_evidence(trial: TrialModel) -> dict:
+    """Authoritative, bounded facts the QA prompt and validator share."""
+    return {
+        "trial_id": trial.id,
+        "status": trial.status.value,
+        "reward": float(trial.reward) if trial.reward is not None else None,
+        "has_trajectory": bool(trial.has_trajectory),
+        "agent": trial.agent,
+        "baseline_kind": nop_oracle_kind(trial.agent),
+    }
+
+
+def audit_fingerprint(version: TaskVersionModel) -> str:
+    """Pin source bytes and an audit attempt, excluding later exploitation annotations."""
+    audit = version.pre_trial
+    if isinstance(audit, dict):
+        audit = {
+            **audit,
+            "items": [
+                {
+                    k: v
+                    for k, v in item.items()
+                    if k not in {"exploited", "exploit_evidence"}
+                }
+                for item in audit.get("items", [])
+            ],
+        }
+    encoded = json.dumps(
+        [
+            version.id,
+            version.content_hash,
+            version.pre_trial_status,
+            version.pre_trial_started_at,
+            version.pre_trial_finished_at,
+            audit,
+        ],
+        sort_keys=True,
+        default=str,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def audit_snapshot_matches(version: TaskVersionModel | None, payload: dict) -> bool:
+    """New QA jobs pin the whole audit; legacy jobs must match their saved finding IDs."""
+    # A matching snapshot of an unfinished audit still cannot authorize QA.
+    if (
+        version is not None
+        and version.pre_trial_status is not None
+        and version.pre_trial_status.value
+        in {
+            "queued",
+            "running",
+            "pending",
+        }
+    ):
+        return False
+    pinned = payload.get("audit_fingerprint")
+    if pinned is not None:
+        return version is not None and pinned == audit_fingerprint(version)
+    if version is None:
+        return not payload.get("pre_trial_item_ids")
+    # Existing jobs have no fingerprint; require their saved findings to match.
+    items = (version.pre_trial or {}).get("items", [])
+    items = [item for item in items if isinstance(item, dict) and item.get("id")]
+    return {str(item["id"]) for item in items} == set(
+        payload.get("pre_trial_item_ids", [])
+    ) and {
+        str(item["id"])
+        for item in items
+        if item.get("tier", item.get("severity")) == "must_fix"
+    } == set(payload.get("pre_trial_must_fix_ids", []))
 
 
 class AnalysisPayloadError(ValueError):
@@ -29,6 +110,8 @@ class ParsedAnalysisPayload:
     with_verdict: bool = True
     target_trial_id: str | None = None
     task_version_content_hash: str | None = None
+    audit_policy_hash: str | None = None
+    audit_fingerprint: str | None = None
 
 
 def parse_analysis_payload(
@@ -58,11 +141,21 @@ def parse_analysis_payload(
                 "audit analysis_payload.task_version_content_hash must be a "
                 "non-empty string when present"
             )
+        policy_hash = payload.get("audit_policy_hash")
+        if policy_hash is not None and (
+            not isinstance(policy_hash, str)
+            or len(policy_hash) != 64
+            or any(c not in "0123456789abcdef" for c in policy_hash)
+        ):
+            raise AnalysisPayloadError(
+                "audit analysis_payload.audit_policy_hash must be a SHA-256 hex digest"
+            )
         return ParsedAnalysisPayload(
             kind=kind,
             task_version_content_hash=(
                 content_hash.strip() if isinstance(content_hash, str) else None
             ),
+            audit_policy_hash=policy_hash,
         )
 
     if kind in ("qa", "qa_eval"):
@@ -126,6 +219,13 @@ def parse_analysis_payload(
             raise AnalysisPayloadError(
                 f"{kind} analysis_payload.with_verdict must be a boolean"
             )
+        fingerprint = payload.get("audit_fingerprint")
+        if fingerprint is not None and (
+            not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(c not in "0123456789abcdef" for c in fingerprint)
+        ):
+            raise AnalysisPayloadError("audit_fingerprint must be a SHA-256 hex digest")
         return ParsedAnalysisPayload(
             kind=kind,
             trial_ids=trial_ids,
@@ -134,6 +234,7 @@ def parse_analysis_payload(
             pre_trial_item_ids=pre_trial_item_ids,
             pre_trial_must_fix_ids=pre_trial_must_fix_ids,
             with_verdict=with_verdict,
+            audit_fingerprint=fingerprint,
         )
 
     if kind == "summarize":

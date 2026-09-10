@@ -8,14 +8,15 @@ the version they attested to and only count while it is still the default.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, func, or_, select, text
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.delivery_qa import delivery_qa_statuses
+from oddish.core.task_findings import pre_trial_items, task_defect_items
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -38,10 +39,15 @@ from oddish.schemas import (
     DeliveryDefect,
     DeliveryListItem,
     DeliveryPatch,
+    DeliveryQAStatus,
     DeliveryResponse,
     DeliveryTaskBoardRow,
     DeliveryTasksAdd,
     ManualCheckSet,
+    QAWorkClaim,
+    QAWorkMetadata,
+    QAWorkPatch,
+    TaskQAHistoryDecision,
     TaskQAHistoryFinding,
     TaskQAHistoryResponse,
     TaskQAHistoryRun,
@@ -51,8 +57,7 @@ from oddish.schemas import (
 # The automated checks a delivery can run, with their default parameters.
 # ``check_config["automated"]`` merges over these per key; unknown keys are
 # rejected at write time so a typo cannot silently disable a check.
-# ``min_rollouts`` defaults mirror the verdict evidence bar
-# (``MIN_VERDICT_TRIALS`` / ``MIN_VERDICT_AGENTS`` in analysis_trials).
+# Delivery minimums are independent of verdict generation.
 DEFAULT_AUTOMATED_CHECKS: dict[str, dict[str, Any]] = {
     "pre_trial_passed": {"enabled": True},
     "min_rollouts": {"enabled": True, "min_trials": 5, "min_agents": 3},
@@ -72,10 +77,10 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Pre-trial audit passed",
+    "pre_trial_passed": "Source review completed",
     "min_rollouts": "Enough rollouts",
-    "verdict_ok": "Verdict accepts",
-    "no_must_fix": "No must-fix defects",
+    "verdict_ok": "No blocking defects in verdict",
+    "no_must_fix": "Every defect resolved or acknowledged",
 }
 
 
@@ -102,6 +107,8 @@ def _normalized_check_config(raw: dict | None) -> DeliveryCheckConfig:
         key: {**defaults, **config.automated.get(key, {})}
         for key, defaults in DEFAULT_AUTOMATED_CHECKS.items()
     }
+    # This requirement cannot be disabled, including by legacy configuration.
+    merged["no_must_fix"]["enabled"] = True
     return DeliveryCheckConfig(automated=merged, manual=config.manual)
 
 
@@ -201,9 +208,7 @@ async def create_customer_core(
         )
     )
     if existing is not None:
-        raise HTTPException(
-            status_code=409, detail=f"customer '{name}' already exists"
-        )
+        raise HTTPException(status_code=409, detail=f"customer '{name}' already exists")
     # Same savepoint guard as _resolve_customer: a concurrent create of
     # the same name is a conflict here, not a 500.
     try:
@@ -444,34 +449,8 @@ async def remove_delivery_task_core(
     await session.flush()
 
 
-def _defect_id(version_id: str, item: dict, source: str) -> str:
-    """A stable id for one must-fix item, for 'ack:<id>' ticks.
-
-    A non-empty string id is the author's own dedup key and is used as-is.
-    Anything else hashes the item's identifying fields — source and raw id
-    included — so two distinct defects that happen to share a title cannot
-    collapse into one acknowledgement.
-    """
-    raw = item.get("id")
-    if isinstance(raw, str) and raw:
-        return raw[:56]
-    seed = ":".join(
-        [
-            version_id,
-            source,
-            "" if raw is None else str(raw),
-            str(item.get("file") or ""),
-            str(item.get("line_start") or ""),
-            str(item.get("title") or ""),
-        ]
-    )
-    return hashlib.sha1(seed.encode()).hexdigest()[:16]
-
-
 def _distinct_agent_count():
-    """Distinct agents under the verdict evidence bar's rules: trimmed,
-    lowercased, blanks ignored (``_has_verdict_evidence`` in
-    ``workers.analysis_trials``)."""
+    """Distinct agents for delivery: trimmed, lowercased, blanks ignored."""
     return func.count(
         func.distinct(func.nullif(func.trim(func.lower(TrialModel.agent)), ""))
     )
@@ -480,100 +459,20 @@ def _distinct_agent_count():
 def _verdict_qa_clauses() -> list:
     """Filters for QA runs that can author ``tasks.verdict``.
 
-    A run staged below the verdict evidence bar carries with_verdict=false:
-    it completes SUCCESS but restores the prior verdict instead of
-    authoring one, so it cannot vouch for the version it graded.
+    Classification-only runs carry with_verdict=false and cannot vouch for
+    the version they graded. This includes historical runs below the former
+    evidence threshold and runs whose source audit was unavailable.
     """
     return [
         TrialModel.kind == "qa",
         TrialModel.status == TrialStatus.SUCCESS,
         TrialModel.task_version_id.isnot(None),
         func.coalesce(
-            TrialModel.harbor_config["analysis_payload"].op("->>")(
-                "with_verdict"
-            ),
+            TrialModel.harbor_config["analysis_payload"].op("->>")("with_verdict"),
             "true",
         )
         != "false",
     ]
-
-
-def _pre_trial_items(version: TaskVersionModel) -> list[dict]:
-    """The pre-trial audit items, dicts only; any malformed shape reads []."""
-    items = (version.pre_trial or {}).get("items")
-    if not isinstance(items, list):
-        return []
-    return [i for i in items if isinstance(i, dict)]
-
-
-async def _must_fix_items(
-    session: AsyncSession, versions: dict[str, TaskVersionModel]
-) -> dict[str, list[dict]]:
-    """Open must-fix items per version id: ``{id, title, source}``.
-
-    Sources are the version's pre-trial audit and the trial analyses on the
-    version. Superseded trials stay in: a defect describes the task version,
-    not the run, so retrying the run must not clear the finding (a real fix
-    edits the task and lands on a new version anyway).
-    """
-    out: dict[str, list[dict]] = {vid: [] for vid in versions}
-    seen: dict[str, set[str]] = {vid: set() for vid in versions}
-
-    def add(vid: str, item: dict, source: str) -> None:
-        defect_id = _defect_id(vid, item, source)
-        if defect_id in seen[vid]:
-            return
-        seen[vid].add(defect_id)
-        out[vid].append(
-            {
-                "id": defect_id,
-                "title": str(item.get("title") or "untitled defect"),
-                "source": source,
-            }
-        )
-
-    for vid, version in versions.items():
-        for item in _pre_trial_items(version):
-            if item.get("tier") == "must_fix":
-                add(vid, item, "pre_trial")
-
-    if versions:
-        defect_scope = EligibleTrialScope(
-            membership=[TrialModel.task_version_id.in_(list(versions))],
-            include_superseded=True,
-            include_deleted=True,
-        )
-        # The array-shape guard must live INSIDE the set-returning function:
-        # jsonb_array_elements runs in FROM before any WHERE filter, so a row
-        # whose action_items is an object or scalar would otherwise raise.
-        items = func.jsonb_array_elements(
-            case(
-                (
-                    func.jsonb_typeof(TrialModel.analysis["action_items"])
-                    == "array",
-                    TrialModel.analysis["action_items"],
-                ),
-                else_=text("'[]'::jsonb"),
-            )
-        ).table_valued("value", joins_implicitly=True)
-        rows = (
-            await session.execute(
-                select(TrialModel.task_version_id, items.c.value)
-                .where(
-                    *defect_scope.clauses(),
-                    items.c.value.op("->>")("tier") == "must_fix",
-                )
-                # A defect describes the version, not the run: deleting or
-                # superseding the trial that reported it must not clear it.
-                # Only an acknowledgement or a new version does.
-                .execution_options(include_deleted=True)
-            )
-        ).all()
-        for vid, item in rows:
-            if isinstance(item, dict):
-                add(vid, item, "trial")
-
-    return out
 
 
 # =============================================================================
@@ -607,8 +506,7 @@ async def _validate_signoff_or_ack(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "acknowledge each must-fix defect on its own "
-                    "with 'ack:<defect-id>'"
+                    "acknowledge each must-fix defect on its own with 'ack:<defect-id>'"
                 ),
             )
         if check_key not in WAIVABLE_CHECKS:
@@ -618,9 +516,7 @@ async def _validate_signoff_or_ack(
             )
         return
     if key.startswith(ACK_CHECK_PREFIX):
-        defects = (await _must_fix_items(session, {version.id: version}))[
-            version.id
-        ]
+        defects = (await task_defect_items(session, {version.id: version}))[version.id]
         if key[len(ACK_CHECK_PREFIX) :] not in {d["id"] for d in defects}:
             raise HTTPException(
                 status_code=404,
@@ -631,9 +527,7 @@ async def _validate_signoff_or_ack(
     # drift from the display. Unacked defects and unwaived failing checks
     # both refuse it.
     board = await _compute_board(session, delivery)
-    row = next(
-        (r for r in board.tasks if r.delivery_task_id == member.id), None
-    )
+    row = next((r for r in board.tasks if r.delivery_task_id == member.id), None)
     if row is None:
         raise HTTPException(status_code=404, detail="task not in this delivery")
     unacknowledged = [d.id for d in row.defects if not d.acknowledged]
@@ -672,11 +566,12 @@ async def set_manual_check_core(
     _require_active(delivery)
     config = _normalized_check_config(delivery.check_config)
     key = data.check_key
-    if (
+    is_decision = (
         key == SIGNOFF_CHECK_KEY
         or key.startswith(ACK_CHECK_PREFIX)
         or key.startswith(WAIVE_CHECK_PREFIX)
-    ):
+    )
+    if is_decision:
         scope_kind = "task"
     else:
         definition = next((m for m in config.manual if m.key == key), None)
@@ -701,16 +596,31 @@ async def set_manual_check_core(
         )
         if member is None:
             raise HTTPException(status_code=404, detail="task not in this delivery")
+        if (
+            data.checked
+            and is_decision
+            and (data.expected_version_id is None or user_id is None)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="expected_version_id and an authenticated person are required for acknowledgment or sign-off",
+            )
         # The tick attests to the content the human looked at: the task's
         # current default version. A later version change un-ticks it.
         task_version_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == member.task_id)
+            select(TaskModel.current_version_id)
+            .where(TaskModel.id == member.task_id)
+            .with_for_update()
         )
-        if data.checked and (
-            key == SIGNOFF_CHECK_KEY
-            or key.startswith(ACK_CHECK_PREFIX)
-            or key.startswith(WAIVE_CHECK_PREFIX)
+        if (
+            "expected_version_id" in data.model_fields_set
+            and data.expected_version_id != task_version_id
         ):
+            raise HTTPException(
+                status_code=409,
+                detail="The selected task version changed. Refresh the delivery and review the new version.",
+            )
+        if data.checked and is_decision:
             await _validate_signoff_or_ack(
                 session, delivery, member, key, task_version_id
             )
@@ -724,6 +634,7 @@ async def set_manual_check_core(
         select(DeliveryManualCheckModel).where(
             DeliveryManualCheckModel.delivery_id == delivery.id,
             DeliveryManualCheckModel.check_key == data.check_key,
+            DeliveryManualCheckModel.task_version_id == task_version_id,
             (
                 DeliveryManualCheckModel.delivery_task_id == data.delivery_task_id
                 if data.delivery_task_id is not None
@@ -753,6 +664,94 @@ async def set_manual_check_core(
 # =============================================================================
 # Board computation
 # =============================================================================
+
+
+async def claim_delivery_qa_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    user_id: str,
+    data: QAWorkClaim,
+) -> list[str]:
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
+    _require_active(delivery)
+    # The version lock also arbitrates claims made through another delivery.
+    # Candidate version IDs keep a stale browser from claiming a new version.
+    versions = (
+        await session.scalars(
+            select(TaskVersionModel)
+            .join(TaskModel, TaskModel.current_version_id == TaskVersionModel.id)
+            .join(DeliveryTaskModel, DeliveryTaskModel.task_id == TaskModel.id)
+            .where(
+                DeliveryTaskModel.delivery_id == delivery_id,
+                TaskModel.org_id == org_id,
+                TaskVersionModel.id.in_(data.version_ids),
+                TaskVersionModel.qa_work["owner_user_id"].astext.is_(None),
+            )
+            .order_by(
+                case(
+                    {
+                        version_id: index
+                        for index, version_id in enumerate(data.version_ids)
+                    },
+                    value=TaskVersionModel.id,
+                )
+            )
+            .limit(data.limit)
+            .with_for_update(of=TaskVersionModel, skip_locked=True)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    for version in versions:
+        work = QAWorkMetadata.model_validate(version.qa_work or {})
+        work.owner_user_id, work.claimed_at = user_id, utcnow()
+        version.qa_work = work.model_dump(mode="json")
+    await session.flush()
+    return [version.id for version in versions]
+
+
+async def patch_delivery_qa_work_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    user_id: str,
+    is_admin: bool,
+    data: QAWorkPatch,
+) -> None:
+    delivery = await _get_delivery(session, delivery_id, org_id, for_update=True)
+    _require_active(delivery)
+    version = await session.scalar(
+        select(TaskVersionModel)
+        .join(TaskModel, TaskModel.current_version_id == TaskVersionModel.id)
+        .join(DeliveryTaskModel, DeliveryTaskModel.task_id == TaskModel.id)
+        .where(
+            DeliveryTaskModel.delivery_id == delivery_id,
+            TaskModel.org_id == org_id,
+            TaskVersionModel.id == data.version_id,
+        )
+        .with_for_update(of=TaskVersionModel)
+        .execution_options(populate_existing=True)
+    )
+    if version is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Task version changed or left this delivery; refresh the board",
+        )
+    work = QAWorkMetadata.model_validate(version.qa_work or {})
+    if work.owner_user_id != user_id and not is_admin:
+        raise HTTPException(
+            status_code=403, detail="Claim this task before editing its QA work"
+        )
+    if data.release:
+        work.owner_user_id, work.claimed_at = None, None
+    if data.issue_categories is not None:
+        work.issue_categories = list(dict.fromkeys(data.issue_categories))
+    if data.note is not None:
+        work.note = data.note
+    version.qa_work = work.model_dump(mode="json")
+    await session.flush()
 
 
 def _check(
@@ -837,7 +836,7 @@ async def _compute_board(
             ).all():
                 rollouts[version_id] = (count, agents)
 
-            must_fix_items = await _must_fix_items(session, versions)
+            must_fix_items = await task_defect_items(session, versions)
 
         # ``tasks.verdict`` is last-write-wins across versions, so the
         # stored verdict belongs to the NEWEST successful QA run. It only
@@ -851,9 +850,7 @@ async def _compute_board(
                     *_verdict_qa_clauses(),
                 )
                 .order_by(
-                    func.coalesce(
-                        TrialModel.finished_at, TrialModel.created_at
-                    ).desc()
+                    func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
                 )
             )
         ).all()
@@ -869,6 +866,8 @@ async def _compute_board(
         ).all():
             max_versions[task_id] = highest
 
+    qa_statuses = await delivery_qa_statuses(session, tasks=tasks, versions=versions)
+
     ticks = (
         await session.scalars(
             select(DeliveryManualCheckModel).where(
@@ -877,9 +876,12 @@ async def _compute_board(
         )
     ).all()
     task_ticks = {
-        (t.delivery_task_id, t.check_key): t for t in ticks if t.delivery_task_id
+        (t.delivery_task_id, t.check_key, t.task_version_id): t
+        for t in ticks
+        if t.delivery_task_id
     }
     delivery_ticks = {t.check_key: t for t in ticks if t.delivery_task_id is None}
+    previous_ticks = {(t.delivery_task_id, t.check_key) for t in ticks}
 
     rows: list[DeliveryTaskBoardRow] = []
     for member in members:
@@ -902,9 +904,7 @@ async def _compute_board(
                         _check(
                             "task_exists",
                             passed=False,
-                            detail=(
-                                "task was deleted; remove it from this delivery"
-                            ),
+                            detail=("task was deleted; remove it from this delivery"),
                             label="Task exists",
                         )
                     ],
@@ -927,10 +927,12 @@ async def _compute_board(
                     )
                 )
                 return
-            if not passed and version is not None:
+            if not passed and version is not None and key in WAIVABLE_CHECKS:
                 # A person may ship a red check anyway, but the override is
                 # recorded and bound to the version they looked at.
-                waive = task_ticks.get((member.id, WAIVE_CHECK_PREFIX + key))
+                waive = task_ticks.get(
+                    (member.id, WAIVE_CHECK_PREFIX + key, version.id)
+                )
                 if waive is not None and waive.task_version_id == version.id:
                     checks.append(
                         DeliveryCheckResult(
@@ -953,15 +955,30 @@ async def _compute_board(
         else:
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
-                ack = task_ticks.get((member.id, ACK_CHECK_PREFIX + item["id"]))
-                acknowledged = (
-                    ack is not None and ack.task_version_id == version.id
+                ack = task_ticks.get(
+                    (member.id, ACK_CHECK_PREFIX + item["id"], version.id)
                 )
+                acknowledged = ack is not None and ack.task_version_id == version.id
                 defects.append(
                     DeliveryDefect(
                         id=item["id"],
                         title=item["title"],
                         source=item["source"],
+                        finding_id=(
+                            str(
+                                item["finding"].get("links_to") or item["finding"]["id"]
+                            )
+                            if item["finding"].get("links_to")
+                            or item["finding"].get("id") is not None
+                            else None
+                        ),
+                        file=item["finding"].get("file"),
+                        line_start=item["finding"].get("line_start"),
+                        line_end=item["finding"].get("line_end"),
+                        recorded_tier=item["recorded_tier"],
+                        finding=item["finding"],
+                        reporting_trial_id=item.get("reporting_trial_id"),
+                        review_trial_id=item.get("review_trial_id"),
                         acknowledged=acknowledged,
                         acknowledged_by_user_id=(
                             ack.checked_by_user_id if acknowledged else None
@@ -974,9 +991,9 @@ async def _compute_board(
             automated(
                 "pre_trial_passed",
                 audited,
-                f"audit passed on {vlabel}"
+                f"source review completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"no successful audit on {vlabel}",
+                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -991,7 +1008,11 @@ async def _compute_board(
 
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
-                automated("verdict_ok", False, "no verdict yet")
+                automated(
+                    "verdict_ok",
+                    False,
+                    f"no completed execution-review verdict on {vlabel}",
+                )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
@@ -1003,30 +1024,41 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     accepted,
-                    "verdict accepts"
+                    "review found no blocking defects; human sign-off is separate"
                     if accepted
-                    else f"verdict rejects: {verdict.get('primary_issue') or ''}",
+                    else f"blocking defect: {verdict.get('primary_issue') or ''}",
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
             if not defects:
-                must_fix_detail = f"no must-fix defects on {vlabel}"
+                must_fix_detail = f"no reported task defects on {vlabel}; review completion checked separately"
             elif unacknowledged:
                 must_fix_detail = (
-                    f"{unacknowledged} of {len(defects)} must-fix "
+                    f"{unacknowledged} of {len(defects)} task defects "
                     f"unacknowledged on {vlabel}"
                 )
             else:
-                must_fix_detail = (
-                    f"all {len(defects)} must-fix acknowledged on {vlabel}"
+                must_fix_detail = f"all {len(defects)} task defects acknowledged as exceptions on {vlabel}"
+            historical_unacknowledged = sum(
+                d.recorded_tier != "must_fix" and not d.acknowledged for d in defects
+            )
+            if historical_unacknowledged:
+                must_fix_detail += (
+                    f"; {historical_unacknowledged} historically lower-severity findings "
+                    "still require "
+                    "individual acknowledgment; the recorded review is unchanged"
                 )
             automated("no_must_fix", unacknowledged == 0, must_fix_detail)
 
         # Every task needs a person's sign-off, bound to the version they
         # looked at. The tick records who signed and when.
-        signoff = task_ticks.get((member.id, SIGNOFF_CHECK_KEY))
-        if signoff is not None and version is not None and (
-            signoff.task_version_id == version.id
+        signoff = task_ticks.get(
+            (member.id, SIGNOFF_CHECK_KEY, version.id if version else None)
+        )
+        if (
+            signoff is not None
+            and version is not None
+            and (signoff.task_version_id == version.id)
         ):
             checks.append(
                 _check(
@@ -1044,12 +1076,15 @@ async def _compute_board(
                 _check(
                     SIGNOFF_CHECK_KEY,
                     passed=False,
-                    # An unchecked box already says "not signed off"; only a
-                    # stale tick needs words.
+                    # Name the version still awaiting a human commitment.
                     detail=(
-                        ""
-                        if signoff is None
-                        else "signed off on an older version; sign off again"
+                        "signed off on an older version; sign off again"
+                        if (member.id, SIGNOFF_CHECK_KEY) in previous_ticks
+                        else (
+                            f"awaiting sign-off on v{version.version}"
+                            if version
+                            else "awaiting sign-off"
+                        )
                     ),
                     kind="manual",
                     label="Signed off",
@@ -1059,7 +1094,9 @@ async def _compute_board(
         for definition in config.manual:
             if definition.scope != "task":
                 continue
-            tick = task_ticks.get((member.id, definition.key))
+            tick = task_ticks.get(
+                (member.id, definition.key, version.id if version else None)
+            )
             if tick is None:
                 checks.append(
                     _check(
@@ -1067,6 +1104,9 @@ async def _compute_board(
                         passed=False,
                         kind="manual",
                         label=definition.label,
+                        detail="checked on an older version; re-attest"
+                        if (member.id, definition.key) in previous_ticks
+                        else "",
                     )
                 )
             elif version is not None and tick.task_version_id == version.id:
@@ -1101,8 +1141,8 @@ async def _compute_board(
                 version=version.version if version else None,
                 pinned_version_id=member.pinned_version_id,
                 newer_version_exists=bool(
-                    version and max_versions.get(task.id, version.version)
-                    > version.version
+                    version
+                    and max_versions.get(task.id, version.version) > version.version
                 ),
                 is_visible=member.is_visible,
                 sort_order=member.sort_order,
@@ -1110,6 +1150,10 @@ async def _compute_board(
                 internal_note=member.internal_note,
                 checks=checks,
                 defects=defects,
+                qa=qa_statuses.get(task.id, DeliveryQAStatus()),
+                qa_work=QAWorkMetadata.model_validate(version.qa_work or {})
+                if version
+                else QAWorkMetadata(),
                 ready=all(c.status in ("pass", "off", "waived") for c in checks),
             )
         )
@@ -1138,6 +1182,7 @@ async def _compute_board(
         and all(c.status == "pass" for c in delivery_checks)
     )
     return DeliveryBoardResponse(
+        qa_as_of=utcnow(),
         delivery=DeliveryResponse.model_validate(delivery),
         check_config=config,
         tasks=rows,
@@ -1176,8 +1221,16 @@ def _customer_safe_board(board: DeliveryBoardResponse) -> dict:
     """The snapshot variant a future share page serves: no internal notes,
     no hidden tasks."""
     public = board.model_dump(mode="json")
+    public.pop("qa_viewer_user_id", None)
     public["tasks"] = [
-        {**row, "internal_note": None}
+        {
+            **{
+                key: value
+                for key, value in row.items()
+                if key not in {"qa", "qa_work", "qa_owner_name"}
+            },
+            "internal_note": None,
+        }
         for row in public["tasks"]
         if row["is_visible"]
     ]
@@ -1335,35 +1388,41 @@ async def get_task_qa_history_core(
 
     # The board's defect source, so history and board never disagree on
     # what counts as a must-fix (pre-trial items plus trial analyses).
-    must_fix = await _must_fix_items(session, {v.id: v for v in versions})
+    must_fix = await task_defect_items(session, {v.id: v for v in versions})
 
     # Which version the stored verdict covers: the one graded by the
     # newest verdict-producing QA run (same rule as the board).
     verdict_version_id = await session.scalar(
         select(TrialModel.task_version_id)
         .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
-        .order_by(
-            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
-        )
+        .order_by(func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc())
         .limit(1)
     )
+
+    decisions_by_version: dict[str, list[TaskQAHistoryDecision]] = {}
+    decisions = await session.scalars(
+        select(DeliveryManualCheckModel)
+        .join(
+            DeliveryTaskModel,
+            DeliveryTaskModel.id == DeliveryManualCheckModel.delivery_task_id,
+        )
+        .where(DeliveryTaskModel.task_id == task_id)
+        .order_by(DeliveryManualCheckModel.checked_at, DeliveryManualCheckModel.id)
+    )
+    for decision in decisions:
+        if decision.task_version_id:
+            decisions_by_version.setdefault(decision.task_version_id, []).append(
+                TaskQAHistoryDecision.model_validate(decision)
+            )
 
     out = []
     for version in versions:
         count, agents = rollouts.get(version.id, (0, 0))
         findings = [
             TaskQAHistoryFinding(
-                tier=str(item.get("tier") or ""),
-                title=str(item.get("title") or "untitled"),
-                source="pre_trial",
-            )
-            for item in _pre_trial_items(version)
-        ] + [
-            TaskQAHistoryFinding(
-                tier="must_fix", title=item["title"], source="trial"
+                tier=item["recorded_tier"], title=item["title"], source=item["source"]
             )
             for item in must_fix[version.id]
-            if item["source"] == "trial"
         ]
         out.append(
             TaskQAHistoryVersion(
@@ -1373,22 +1432,19 @@ async def get_task_qa_history_core(
                 message=version.message,
                 is_current=version.id == task.current_version_id,
                 pre_trial_status=(
-                    version.pre_trial_status.value
-                    if version.pre_trial_status
-                    else None
+                    version.pre_trial_status.value if version.pre_trial_status else None
                 ),
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
                 pre_trial_should_fix=sum(
-                    1
-                    for i in _pre_trial_items(version)
-                    if i.get("tier") == "should_fix"
+                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
                 ),
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),
                 findings=findings,
+                decisions=decisions_by_version.get(version.id, []),
             )
         )
 

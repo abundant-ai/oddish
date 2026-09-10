@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -139,6 +140,49 @@ def test_url_fragment_derives_from_modal_app_label():
     assert expected in WORKFLOW.read_text()
 
 
+@pytest.mark.parametrize(
+    "log",
+    [
+        f"Created web function api_app => {PREVIEW_URL}",
+        f"Created web function api_app =>\n│   {PREVIEW_URL}\n"
+        f"Created web function qa_model_gateway =>\n│   {PREVIEW_URL.replace('-api.', '-api-qa-model.')}",
+        f"{PREVIEW_URL.replace('-api.', '-api-qa-model.')}\n{PREVIEW_URL}",
+        f"{PREVIEW_URL}\n{PREVIEW_URL}",
+    ],
+)
+def test_extract_modal_api_url_ignores_gateway_and_duplicate_output(tmp_path, log):
+    log_path = tmp_path / "deploy.log"
+    log_path.write_text(log)
+    result = subprocess.run(
+        [sys.executable, str(PREVIEW / "extract_modal_api_url.py"), str(log_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == PREVIEW_URL
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "Deployment failed",
+        PREVIEW_URL.replace("-api.", "-api-qa-model."),
+        f"{PREVIEW_URL}\n{PREVIEW_URL.replace('pr-0-', 'pr-1-')}",
+    ],
+)
+def test_extract_modal_api_url_rejects_missing_or_ambiguous_api(tmp_path, log):
+    log_path = tmp_path / "deploy.log"
+    log_path.write_text(log)
+    result = subprocess.run(
+        [sys.executable, str(PREVIEW / "extract_modal_api_url.py"), str(log_path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Expected one Modal API URL" in result.stderr
+
+
 def test_prepare_stops_before_supabase_wait():
     s = PREPARE.read_text()
     assert "stop_modal_preview_app.sh" in s
@@ -208,6 +252,9 @@ def _run_prepare(
     stop_exit=0,
     rebuild=False,
     want_summary=False,
+    approval_exit=0,
+    expect_exit=0,
+    require_overlap=False,
 ):
     tmp = Path(tempfile.mkdtemp())
     pv = tmp / "preview"
@@ -238,10 +285,27 @@ def _run_prepare(
     if rebuild:
         migrate_body += '\nprintf 1 > "$SCHEMA_REBUILT_FILE"'
     stub("run_preview_migrations.sh", migrate_body)
-    stub("publish_modal_db_secret.sh", f'echo publish >> "{order}"')
+    publish_body = f'echo publish >> "{order}"'
+    if require_overlap:
+        publish_body += f'\ntouch "{tmp}/publish-started"'
+        publish_body += (
+            f'\nfor i in {{1..100}}; do [ -f "{tmp}/approval-started" ] && exit 0; sleep 0.01; done\nexit 8'
+        )
+    stub("publish_modal_db_secret.sh", publish_body)
     (pv / "seed_preview_db.py").write_text("")
     fake_uv = bins / "uv"
-    fake_uv.write_text(f'#!/usr/bin/env bash\necho seed >> "{order}"\n')
+    overlap_body = ""
+    if require_overlap:
+        overlap_body = (
+            f'touch "{tmp}/approval-started"; '
+            f'for i in {{1..100}}; do [ -f "{tmp}/publish-started" ] && break; sleep 0.01; done; '
+            f'[ -f "{tmp}/publish-started" ] || exit 8; '
+        )
+    fake_uv.write_text(
+        f'#!/usr/bin/env bash\n'
+        f'case "$*" in *sync_org_approvals.py*) {overlap_body}echo approvals >> "{order}"; exit {approval_exit};; '
+        f'*) echo seed >> "{order}";; esac\n'
+    )
     fake_uv.chmod(0o755)
 
     for name in ("summary", "out", "env"):
@@ -264,7 +328,7 @@ def _run_prepare(
         capture_output=True,
         text=True,
     )
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == expect_exit, proc.stderr
     order_list = order.read_text().split()
     if want_summary:
         return order_list, (tmp / "summary").read_text()
@@ -289,7 +353,7 @@ def test_stop_fold_skipped_on_migrations_only():
     assert "seed" in order
     # The supabase step rotates the branch DB password on every run, so the
     # rotated value must reach the Modal secret even without a backend deploy.
-    assert order[-1] == "publish"
+    assert set(order[-2:]) == {"approvals", "publish"}
 
 
 @needs_bash
@@ -298,7 +362,8 @@ def test_created_branch_seeds_and_publishes_without_flags():
         {"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"},
         branch_was_created="true",
     )
-    assert order == ["supabase", "migrate", "seed", "publish"]
+    assert order[:-2] == ["supabase", "migrate", "seed"]
+    assert set(order[-2:]) == {"approvals", "publish"}
 
 
 @needs_bash
@@ -307,13 +372,15 @@ def test_no_work_when_all_flags_false():
     # step, so the secret publish must still follow -- skipping it left the
     # running backend with a dead connection string on frontend-only pushes.
     order = _run_prepare({"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"})
-    assert order == ["supabase", "publish"]
+    assert order[:-2] == ["supabase"]
+    assert set(order[-2:]) == {"approvals", "publish"}
 
 
 @needs_bash
 def test_full_fanout_order_when_deploy_and_migrations():
     order = _run_prepare({"DEPLOY_BACKEND": "true", "RUN_MIGRATIONS": "true"})
-    assert order == ["stop", "supabase", "migrate", "seed", "publish"]
+    assert order[:-2] == ["stop", "supabase", "migrate", "seed"]
+    assert set(order[-2:]) == {"approvals", "publish"}
 
 
 @needs_bash
@@ -387,7 +454,8 @@ def test_rebuild_skips_shell_seed():
         rebuild=True,
         want_summary=True,
     )
-    assert order == ["stop", "supabase", "migrate", "publish"]
+    assert order[:-2] == ["stop", "supabase", "migrate"]
+    assert set(order[-2:]) == {"approvals", "publish"}
     assert "seed" not in order
     assert "Schema rebuilt from prod snapshot: `true`" in summary
 
@@ -399,7 +467,8 @@ def test_created_branch_rebuild_skips_shell_seed():
         branch_was_created="true",
         rebuild=True,
     )
-    assert order == ["supabase", "migrate", "publish"]
+    assert order[:-2] == ["supabase", "migrate"]
+    assert set(order[-2:]) == {"approvals", "publish"}
 
 
 def _run_compute_plan(extra_env):
@@ -770,3 +839,23 @@ def test_reset_redeploys_the_same_preview_it_replaces():
     deploy_oddish = {k: v for k, v in deploy_env.items() if k.startswith("ODDISH_")}
     reset_oddish = {k: v for k, v in reset_env.items() if k.startswith("ODDISH_")}
     assert deploy_oddish == reset_oddish
+
+
+@needs_bash
+def test_failed_approval_sync_fails_prepare_after_publishing_rotated_credentials():
+    order = _run_prepare(
+        {"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"},
+        approval_exit=7,
+        expect_exit=7,
+    )
+    assert order[0] == "supabase"
+    assert set(order[-2:]) == {"approvals", "publish"}
+
+
+@needs_bash
+def test_approval_sync_and_credential_publication_overlap():
+    order = _run_prepare(
+        {"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"},
+        require_overlap=True,
+    )
+    assert set(order[-2:]) == {"approvals", "publish"}

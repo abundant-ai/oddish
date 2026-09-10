@@ -7,11 +7,16 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
-from api.routers.cost_exclusions_shared import soft_delete, unavailable
+from api.routers.cost_exclusions_shared import (
+    invalidate_cost_exclusions,
+    soft_delete,
+    unavailable,
+)
+
 from auth import AuthContext, require_admin
 from auth.permissions import require_operator_org
 from oddish.core.llm_key_fingerprint import hash_llm_key, key_hint
-from oddish.db import CostExcludedLlmKeyModel, get_session
+from oddish.db import CostExcludedLlmKeyModel, get_read_session, get_session
 
 router = APIRouter(prefix="/admin/cost-excluded-keys", tags=["Admin"])
 
@@ -45,7 +50,7 @@ async def list_cost_excluded_keys(
 ) -> list[CostExcludedKeyResponse]:
     require_operator_org(auth)
     try:
-        async with get_session() as session:
+        async with get_read_session() as session:
             rows = await session.scalars(
                 select(CostExcludedLlmKeyModel).order_by(
                     CostExcludedLlmKeyModel.created_at.desc()
@@ -79,7 +84,9 @@ async def add_cost_excluded_key(
                 await session.commit()
             except IntegrityError:
                 raise HTTPException(status_code=409, detail="key is already excluded")
+            invalidate_cost_exclusions()
             return _response(row)
+
     except ProgrammingError as exc:
         raise unavailable(exc)
 

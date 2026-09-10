@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, cast, column, func, literal_column, or_, select, text
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql import ClauseElement, Executable
 from sqlalchemy.orm import aliased
 
 from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import experiment_trial_scope
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
     _parse_github_meta,
@@ -34,6 +39,7 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
     task_experiments,
+    get_session,
 )
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
@@ -53,6 +59,7 @@ from oddish.schemas import (
 OPEN_MAX_TASKS = 100
 OPEN_MAX_BYTES = 50_000
 TRIAL_PAGE_MAX_TRIALS = 250
+RESULTS_FETCH_BATCH_SIZE = 500
 _ACTIVE_VERDICT_STATUSES = (
     VerdictStatus.PENDING,
     VerdictStatus.QUEUED,
@@ -244,9 +251,23 @@ def _experiment_task_rows(
         stats.c.trial_version,
         TaskModel.run_analysis,
         TaskModel.verdict_status,
+        func.coalesce(
+            literal_column(
+                VERDICT_VERSION_SQL.format(task_id="tasks.id", verdict="tasks.verdict")
+            )
+            == func.coalesce(stats.c.trial_version_id, TaskModel.current_version_id),
+            False,
+        ).label("review_version_matches"),
         TaskModel.verdict["verdict"].astext.label("verdict_label"),
         TaskModel.verdict["is_good"].astext.label("verdict_is_good"),
         TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
+        func.left(
+            func.coalesce(
+                func.nullif(TaskModel.verdict["primary_issue"].astext, ""),
+                TaskModel.verdict["reasoning"].astext,
+            ),
+            240,
+        ).label("verdict_primary_issue"),
         func.left(TaskModel.verdict_error, 200).label("verdict_error"),
         TaskModel.created_at,
         TaskModel.updated_at,
@@ -262,7 +283,23 @@ def _experiment_task_rows(
         stats.c.average_score,
     ]
     if include_user:
-        columns.append(TaskModel.user)
+        columns.extend(
+            [
+                TaskModel.user,
+                case(
+                    (
+                        current_version.pre_trial_status == VerdictStatus.SUCCESS,
+                        func.jsonb_array_length(
+                            func.jsonb_path_query_array(
+                                current_version.pre_trial,
+                                cast('$.items[*] ? (@.tier == "must_fix")', JSONPATH),
+                            )
+                        ),
+                    ),
+                    else_=None,
+                ).label("must_fix_count"),
+            ]
+        )
     return (
         select(*columns)
         .select_from(TaskModel)
@@ -325,6 +362,11 @@ def _task_row_values(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _task_row(row: Mapping[str, Any]) -> ExperimentTaskRow:
     values = _task_row_values(row)
+    if values["verdict"] is not None:
+        values["verdict"] = {
+            **values["verdict"].model_dump(),
+            "primary_issue": row["verdict_primary_issue"],
+        }
     values["github_meta"] = _parse_github_meta(row["tags"])
     return ExperimentTaskRow.model_validate(values)
 
@@ -333,6 +375,92 @@ def _public_task_row(row: Mapping[str, Any]) -> PublicExperimentTaskRow:
     values = _task_row_values(row)
     values["github_meta"] = public_task_github_meta(_parse_github_meta(row["tags"]))
     return PublicExperimentTaskRow.model_validate(values)
+
+
+async def _experiment_summary(
+    session: AsyncSession, *, experiment_id: str, org_id: str
+):
+    tasks = _experiment_task_rows(experiment_id=experiment_id, org_id=org_id).subquery(
+        "experiment_open_tasks"
+    )
+    active_scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    active_trials = active_scope.trials
+    published_verdict = or_(
+        tasks.c.verdict_status.is_(None),
+        tasks.c.verdict_status.not_in((*_ACTIVE_VERDICT_STATUSES, VerdictStatus.FAILED)),
+    )
+    summary_result = await session.execute(
+        select(
+            func.count().label("task_count"),
+            *(
+                func.coalesce(func.sum(tasks.c[field]), 0).label(field)
+                for field in (
+                    "total",
+                    "completed",
+                    "failed",
+                    "skipped",
+                    "pass_count",
+                    "partial_count",
+                    "fail_count",
+                    "reward_sum",
+                    "reward_total",
+                )
+            ),
+            func.avg(tasks.c.average_score).label("average_score"),
+            func.count()
+            .filter(
+                published_verdict,
+                tasks.c.review_version_matches,
+                or_(
+                    tasks.c.verdict_label == "accept",
+                    tasks.c.verdict_is_good == "true",
+                ),
+            )
+            .label("qa_accepted"),
+            func.count()
+            .filter(
+                published_verdict,
+                tasks.c.review_version_matches,
+                or_(
+                    tasks.c.verdict_label == "reject",
+                    tasks.c.verdict_is_good == "false",
+                ),
+            )
+            .label("qa_rejected"),
+            func.count()
+            .filter(tasks.c.verdict_status.in_(_ACTIVE_VERDICT_STATUSES))
+            .label("qa_running"),
+            func.count()
+            .filter(
+                tasks.c.verdict_status == VerdictStatus.FAILED,
+            )
+            .label("qa_failed"),
+            select(1)
+            .select_from(active_trials)
+            .join(TaskModel, TaskModel.id == active_trials.task_id)
+            .where(
+                *active_scope.visible_predicates(),
+                TaskModel.org_id == org_id,
+                active_trials.status.in_(ACTIVE_TRIAL_STATUSES),
+            )
+            .exists()
+            .label("has_active_trials"),
+        ).select_from(tasks)
+    )
+    row = summary_result.mappings().one()
+    trial_count = int(row["total"] or 0)
+    completed = int(row["completed"] or 0)
+    failed = int(row["failed"] or 0)
+    skipped = int(row["skipped"] or 0)
+    values = dict(row)
+    values.update(
+        trial_count=trial_count,
+        active=max(trial_count - completed - failed - skipped, 0),
+        harness_error_count=failed,
+    )
+    summary = ExperimentPageSummary.model_validate(values)
+    active = bool(row["has_active_trials"]) or int(row["qa_running"] or 0) > 0
+    return summary, active
 
 
 async def get_experiment_open_core(
@@ -410,88 +538,12 @@ async def get_experiment_open_core(
         selected_task_ids = [str(row["task_id"]) for row in page_id_rows]
         rows = [rows_by_id[task_id] for task_id in selected_task_ids]
 
-    summary_row: Mapping[str, Any] | None = None
+    has_active_trials = False
     summary = None
     if include_summary:
-        tasks = _experiment_task_rows(
-            experiment_id=experiment_id, org_id=org_id
-        ).subquery("experiment_open_tasks")
-        active_scope = experiment_trial_scope(experiment_id, org_id=org_id)
-        active_trials = active_scope.trials
-        inactive_verdict = or_(
-            tasks.c.verdict_status.is_(None),
-            tasks.c.verdict_status.not_in(_ACTIVE_VERDICT_STATUSES),
+        summary, has_active_trials = await _experiment_summary(
+            session, experiment_id=experiment_id, org_id=org_id
         )
-        summary_result = await session.execute(
-            select(
-                func.count().label("task_count"),
-                *(
-                    func.coalesce(func.sum(tasks.c[field]), 0).label(field)
-                    for field in (
-                        "total",
-                        "completed",
-                        "failed",
-                        "skipped",
-                        "pass_count",
-                        "partial_count",
-                        "fail_count",
-                        "reward_sum",
-                        "reward_total",
-                    )
-                ),
-                func.avg(tasks.c.average_score).label("average_score"),
-                func.count()
-                .filter(
-                    inactive_verdict,
-                    or_(
-                        tasks.c.verdict_label == "accept",
-                        tasks.c.verdict_is_good == "true",
-                    ),
-                )
-                .label("qa_accepted"),
-                func.count()
-                .filter(
-                    inactive_verdict,
-                    or_(
-                        tasks.c.verdict_label == "reject",
-                        tasks.c.verdict_is_good == "false",
-                    ),
-                )
-                .label("qa_rejected"),
-                func.count()
-                .filter(tasks.c.verdict_status.in_(_ACTIVE_VERDICT_STATUSES))
-                .label("qa_running"),
-                func.count()
-                .filter(
-                    tasks.c.verdict_status == VerdictStatus.FAILED,
-                    tasks.c.verdict_label.is_(None),
-                    tasks.c.verdict_is_good.is_(None),
-                )
-                .label("qa_failed"),
-                select(1)
-                .select_from(active_trials)
-                .join(TaskModel, TaskModel.id == active_trials.task_id)
-                .where(
-                    *active_scope.visible_predicates(),
-                    TaskModel.org_id == org_id,
-                    active_trials.status.in_(ACTIVE_TRIAL_STATUSES),
-                )
-                .exists()
-                .label("has_active_trials"),
-            ).select_from(tasks)
-        )
-        summary_row = summary_result.mappings().one()
-        trial_count = int(summary_row["total"] or 0)
-        completed = int(summary_row["completed"] or 0)
-        failed = int(summary_row["failed"] or 0)
-        skipped = int(summary_row["skipped"] or 0)
-        summary_values = dict(summary_row)
-        summary_values.update(
-            trial_count=trial_count,
-            active=max(trial_count - completed - failed - skipped, 0),
-            harness_error_count=failed,
-        )
-        summary = ExperimentPageSummary.model_validate(summary_values)
 
     response_type = PublicExperimentOpenResponse if _public else ExperimentOpenResponse
     response = response_type(
@@ -502,10 +554,7 @@ async def get_experiment_open_core(
         # QA starts only after the visible agent trials settle. Keep clients
         # polling while that replacement verdict is active as well, otherwise
         # the first ``qa_running`` response would stop its own refresh loop.
-        has_active_trials=(
-            bool(summary_row and summary_row["has_active_trials"])
-            or bool(summary_row and int(summary_row["qa_running"] or 0) > 0)
-        ),
+        has_active_trials=has_active_trials,
         summary=summary,
         tasks=[_public_task_row(row) if _public else _task_row(row) for row in rows],
         **(
@@ -832,3 +881,176 @@ async def get_public_experiment_trial_page_core(
     )
     apply_model_display_names(response.trials, experiment_display_names(experiment))
     return response
+
+
+class _DeclareResultsCursor(Executable, ClauseElement):
+    inherit_cache = False
+
+    def __init__(self, query, name):
+        self.query = query
+        self.name = name
+
+
+@compiles(_DeclareResultsCursor)
+def _compile_results_cursor(element, compiler, **kwargs):
+    # Compile through SQLAlchemy so bind values keep their types and escaping.
+    name = compiler.preparer.quote(element.name)
+    return f"DECLARE {name} NO SCROLL CURSOR FOR " + compiler.process(
+        element.query, **kwargs
+    )
+
+
+async def _stream_result_rows(
+    session: AsyncSession,
+    query,
+    name: Literal[
+        "experiment_result_tasks",
+        "public_experiment_result_tasks",
+        "experiment_result_trials",
+    ],
+) -> AsyncIterator[Mapping[str, Any]]:
+    # SQL cursors stay within this response's transaction. AsyncSession.stream
+    # uses asyncpg PreparedStatement.cursor(), which cannot re-parse unnamed
+    # statements after type introspection with statement_cache_size=0.
+    await session.execute(_DeclareResultsCursor(query, name))
+    # FETCH's SQL text must differ for public tasks, member tasks and trials:
+    # asyncpg caches result-column metadata by statement, not by cursor contents.
+    fetch = text(f"FETCH FORWARD {RESULTS_FETCH_BATCH_SIZE} FROM {name}").columns(
+        *(column(col.key, col.type) for col in query.selected_columns)
+    )
+    while True:
+        rows = (await session.execute(fetch)).mappings().all()
+        for row in rows:
+            yield row
+        if len(rows) < RESULTS_FETCH_BATCH_SIZE:
+            break
+    await session.execute(text(f"CLOSE {name}"))
+    # On an exception/disconnect the enclosing get_session rolls back, closing
+    # the cursor even if the transaction is already aborted and CLOSE would fail.
+
+
+async def stream_experiment_results(
+    *,
+    experiment_id: str | None = None,
+    org_id: str | None = None,
+    public_token: str | None = None,
+) -> AsyncIterator[str]:
+    """One response, no page limits or repeated cursor queries.
+
+    The transaction closes when the client disconnects. Each collection uses one
+    server-side cursor with bounded fetch batches; records are serialized
+    individually without HTTP page boundaries.
+    A completion record distinguishes a full snapshot from an interrupted body.
+    """
+    async with get_session() as session:
+        # Task versions and totals must come from the same database snapshot.
+        await session.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        )
+        public = public_token is not None
+        display_names = {}
+        if public:
+            shared = await get_public_experiment(session, public_token)
+            if shared is None:
+                raise HTTPException(status_code=404, detail="Experiment not found")
+            experiment_id, org_id = shared.id, shared.org_id
+            experiment = _public_experiment_identity(shared)
+            display_names = experiment_display_names(shared)
+        else:
+            experiment = await _member_experiment(
+                session, experiment_id=experiment_id, org_id=org_id
+            )
+        summary, active = await _experiment_summary(
+            session, experiment_id=experiment_id, org_id=org_id
+        )
+        response_type = (
+            PublicExperimentOpenResponse if public else ExperimentOpenResponse
+        )
+        metadata = response_type(
+            experiment_id=str(experiment["id"]),
+            name=experiment["name"],
+            created_at=experiment["created_at"],
+            revision=experiment["revision"],
+            has_active_trials=active,
+            summary=summary,
+            **(
+                {}
+                if public
+                else {"owner": experiment["owner"], "link": experiment["link"]}
+            ),
+        )
+        yield (
+            json.dumps(
+                {"type": "experiment", "experiment": metadata.model_dump(mode="json")}
+            )
+            + "\n"
+        )
+        task_query = _experiment_task_rows(
+            experiment_id=experiment_id, org_id=org_id, include_user=not public
+        )
+        task_rows = _stream_result_rows(
+            session,
+            task_query.order_by(TaskModel.created_at.desc(), TaskModel.id.desc()),
+            "public_experiment_result_tasks" if public else "experiment_result_tasks",
+        )
+        try:
+            async for row in task_rows:
+                task = _public_task_row(row) if public else _task_row(row)
+                yield (
+                    json.dumps({"type": "task", "task": task.model_dump(mode="json")})
+                    + "\n"
+                )
+        finally:
+            await task_rows.aclose()
+        exclusions = None if public else await load_cost_exclusions(session)
+        query, trials = _experiment_trial_rows_query(
+            experiment_id=experiment_id, org_id=org_id
+        )
+        trial_rows = _stream_result_rows(
+            session,
+            query.order_by(trials.created_at.desc(), trials.id.desc()),
+            "experiment_result_trials",
+        )
+        try:
+            async for row in trial_rows:
+                trial = build_experiment_trial_cell(row, exclusions=exclusions)
+                if public:
+                    apply_model_display_names([trial], display_names)
+                yield (
+                    json.dumps(
+                        {"type": "trial", "trial": trial.model_dump(mode="json")}
+                    )
+                    + "\n"
+                )
+        finally:
+            await trial_rows.aclose()
+    yield '{"type":"complete"}\n'
+
+
+async def experiment_results_response(
+    *,
+    experiment_id: str | None = None,
+    org_id: str | None = None,
+    public_token: str | None = None,
+):
+    from fastapi.responses import StreamingResponse
+
+    records = stream_experiment_results(
+        experiment_id=experiment_id, org_id=org_id, public_token=public_token
+    )
+    # Resolve authorization/not-found before sending HTTP 200 headers.
+    first = await anext(records)
+
+    async def body():
+        try:
+            yield first
+            async for record in records:
+                yield record
+        finally:
+            await records.aclose()
+
+    return StreamingResponse(
+        body(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )

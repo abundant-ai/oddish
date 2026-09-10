@@ -119,6 +119,7 @@ STUCK_ANALYZING_REASON = (
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
 )
 
+
 async def reap_idle_in_transaction_zombies(
     *,
     idle_after_minutes: int = ZOMBIE_IDLE_MINUTES,
@@ -567,6 +568,7 @@ async def cleanup_orphaned_queue_state(
                 )
             )
 
+        cancelled_audits_healed = await _heal_cancelled_audits(session)
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
@@ -655,6 +657,7 @@ async def cleanup_orphaned_queue_state(
         "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
         "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
+        "cancelled_audits_healed": cancelled_audits_healed,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
         "stale_analysis_imports_healed": stale_analysis_imports_healed,
@@ -1235,10 +1238,10 @@ async def _advance_running_tasks_to_analysis(
                   AND t.deleted_at IS NULL
                   AND tr.deleted_at IS NULL
                   AND tr.superseded_by_trial_id IS NULL
-                  -- Agent trials only: an audit trial runs concurrently with
-                  -- them, and counting it here would suppress this backstop
-                  -- for its whole task while it runs.
-                  AND tr.kind = 'agent'
+                  -- Audit-only tasks also need recovery if the worker died
+                  -- after storing findings but before re-entering admission.
+                  -- Admission now waits for the audit even without solvers.
+                  AND tr.kind IN ('agent', 'audit')
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
                     WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
@@ -1387,7 +1390,12 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
     caller runs those AFTER this transaction commits, because the importer
     locks the same task rows this healer may still hold FOR UPDATE.
     """
-    from oddish.queue import live_analysis_trial_id, start_qa_for_task
+    from oddish.queue import start_qa_for_task, task_audit_pending
+    from oddish.core.analysis_payload import (
+        AnalysisPayloadError,
+        audit_snapshot_matches,
+    )
+    from oddish.workers.analysis_trials import analysis_check_payload
 
     stale_verdict_pending = (
         await session.execute(
@@ -1449,6 +1457,8 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
                 )
                 if active_qa is not None:
                     continue
+                if await task_audit_pending(session, task):
+                    continue
                 if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                     task.status = TaskStatus.COMPLETED
                     task.finished_at = task.finished_at or utcnow()
@@ -1465,31 +1475,35 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
                         WHERE tr.task_id = :task_id AND tr.kind = 'qa'
                           AND tr.deleted_at IS NULL
                           AND tr.superseded_by_trial_id IS NULL
+                          AND COALESCE(tr.harbor_stage, '') <> 'cancelled'
                           AND tr.status::text IN ('SUCCESS', 'FAILED')
-                        ORDER BY tr.created_at DESC LIMIT 1
+                        ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
                         """
                     ),
                     {"task_id": task.id},
                 )
                 if settled_qa is not None:
-                    logger.info(
-                        "healer: task %s has settled qa trial %s with no "
-                        "verdict, re-importing",
-                        task.id,
-                        settled_qa,
+                    settled = await session.get(TrialModel, str(settled_qa))
+                    version = (
+                        await session.get(TaskVersionModel, task.current_version_id)
+                        if task.current_version_id
+                        else None
                     )
-                    reimport_trial_ids.append(str(settled_qa))
-                    continue
-                # start_qa_for_task itself has no audit gate; creating a QA
-                # trial while an audit is live would bake "(none recorded)"
-                # findings into its brief. Skip for now: the audit's
-                # settlement re-enters admission, and the next sweep retries
-                # regardless.
-                if (
-                    await live_analysis_trial_id(session, task.id, kind="audit")
-                    is not None
-                ):
-                    continue
+                    try:
+                        expected = analysis_check_payload("qa", settled.harbor_config)
+                    except AnalysisPayloadError:
+                        expected = None  # The importer records the malformed payload.
+                    if settled.task_version_id == task.current_version_id and (
+                        expected is None or audit_snapshot_matches(version, expected)
+                    ):
+                        logger.info(
+                            "healer: task %s has settled qa trial %s with no "
+                            "verdict, re-importing",
+                            task.id,
+                            settled_qa,
+                        )
+                        reimport_trial_ids.append(str(settled_qa))
+                        continue
                 if await start_qa_for_task(session, task):
                     logger.info(
                         "healer: task %s was wedged in VERDICT_PENDING "
@@ -1506,8 +1520,107 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
     return verdict_pending_completed, reimport_trial_ids
 
 
+async def _heal_cancelled_audits(session) -> int:
+    """Clear audit bookkeeping left pending by historical cancellation paths."""
+    from oddish.core.verdict_state import cancel_verdict
+    from oddish.queue import settle_cancelled_audit_status
+
+    candidates = (
+        await session.execute(
+            text(
+                """
+                SELECT tv.task_id, tv.id
+                FROM task_versions tv
+                JOIN tasks t ON t.id = tv.task_id AND t.deleted_at IS NULL
+                JOIN LATERAL (
+                    SELECT tr.harbor_stage
+                    FROM trials tr
+                    WHERE tr.task_version_id = tv.id AND tr.kind = 'audit'
+                      AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
+                    ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
+                ) latest ON latest.harbor_stage = 'cancelled'
+                WHERE tv.deleted_at IS NULL
+                  AND tv.pre_trial_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trials tr
+                      WHERE tr.task_id = tv.task_id AND tr.deleted_at IS NULL
+                        AND tr.superseded_by_trial_id IS NULL
+                        AND tr.status::text IN ('PENDING','QUEUED','RUNNING','PAUSED','RETRYING')
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM worker_jobs wj
+                      WHERE wj.status::text IN ('QUEUED','RUNNING','RETRYING','BLOCKED')
+                        AND ((wj.subject_table = 'tasks' AND wj.subject_id = tv.task_id)
+                          OR (wj.subject_table = 'trials' AND wj.subject_id IN (
+                              SELECT id FROM trials WHERE task_id = tv.task_id
+                          )))
+                  )
+                ORDER BY tv.task_id, tv.id LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
+        )
+    ).all()
+    healed = 0
+    for task_id, version_id in candidates:
+        try:
+            async with session.begin_nested():
+                task = await session.scalar(
+                    select(TaskModel)
+                    .where(TaskModel.id == task_id)
+                    .with_for_update(skip_locked=True)
+                )
+                if task is None:
+                    continue
+                # Preserve other experiments' live work. When nothing remains,
+                # respect cancellation instead of letting admission launch new QA.
+                active = await session.scalar(
+                    text("""
+                    SELECT 1 WHERE EXISTS (
+                        SELECT 1 FROM trials tr
+                        WHERE tr.task_id = :task_id AND tr.deleted_at IS NULL
+                          AND tr.superseded_by_trial_id IS NULL
+                          AND tr.status::text IN ('PENDING','QUEUED','RUNNING','PAUSED','RETRYING')
+                    ) OR EXISTS (
+                        SELECT 1 FROM worker_jobs wj
+                        WHERE wj.status::text IN ('QUEUED','RUNNING','RETRYING','BLOCKED')
+                          AND ((wj.subject_table = 'tasks' AND wj.subject_id = :task_id)
+                            OR (wj.subject_table = 'trials' AND wj.subject_id IN (
+                                SELECT id FROM trials WHERE task_id = :task_id
+                            )))
+                    )
+                """),
+                    {"task_id": task_id},
+                )
+                if active is not None or not await settle_cancelled_audit_status(
+                    session, version_id
+                ):
+                    continue
+                if task.current_version_id == version_id and task.status in (
+                    TaskStatus.PENDING,
+                    TaskStatus.RUNNING,
+                    TaskStatus.VERDICT_PENDING,
+                ):
+                    now = utcnow()
+                    if task.verdict_status == VerdictStatus.SUCCESS:
+                        task.status = TaskStatus.COMPLETED
+                    else:
+                        cancel_verdict(task, error="Cancelled by user", now=now)
+                        task.status = TaskStatus.FAILED
+                    task.finished_at = task.finished_at or now
+                logger.info(
+                    "healer: cleared cancelled audit status for version %s", version_id
+                )
+            healed += 1
+        except SQLAlchemyError:
+            logger.exception(
+                "healer: cancelled audit repair failed for version %s", version_id
+            )
+    return healed
+
+
 async def _heal_stale_audit_imports(session) -> list[str]:
-    """Step 4b -- task versions stuck with a queued/running pre-trial audit
+    """Step 4b -- task versions awaiting pre-trial audit publication
     whose audit trial already settled: the importer died between settle and
     import (transient exception, worker crash). Returns the newest settled
     audit trial id per stuck version for the caller to re-import AFTER this
@@ -1532,9 +1645,9 @@ async def _heal_stale_audit_imports(session) -> list[str]:
                       AND tr.superseded_by_trial_id IS NULL
                       AND COALESCE(tr.harbor_stage, '') != 'cancelled'
                       AND tr.status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
-                    ORDER BY tr.created_at DESC LIMIT 1
+                    ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
                 ) settled ON true
-                WHERE tv.pre_trial_status::text IN ('QUEUED', 'RUNNING')
+                WHERE tv.pre_trial_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
                   AND NOT EXISTS (
                       SELECT 1 FROM trials live
                       WHERE live.task_version_id = tv.id
@@ -1726,7 +1839,6 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
     )
 
 
-
 async def _release_orphaned_slots(session) -> int:
     """Step 7 -- release queue slot leases whose owning worker is dead.
 
@@ -1747,8 +1859,9 @@ async def _release_orphaned_slots(session) -> int:
                 UPDATE queue_slots qs
                 SET    locked_by = NULL,
                        locked_until = NULL,
-                       locked_at = NULL
+                       locked_at = NULL, launch_demand = NULL
                 WHERE  qs.locked_by IS NOT NULL
+                  AND (qs.launch_demand IS NULL OR (qs.launch_demand->>'adopted')::boolean)
                   AND  (
                       qs.locked_at IS NULL
                       OR qs.locked_at < NOW() - make_interval(

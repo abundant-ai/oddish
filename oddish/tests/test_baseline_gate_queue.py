@@ -64,6 +64,22 @@ def _mixed_submission(name: str) -> TaskSubmission:
     )
 
 
+async def _finish_clean_audit(task_id: str, monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+    from oddish.workers import analysis_trials
+
+    monkeypatch.setattr(analysis_trials, "read_analysis_artifact", AsyncMock(return_value={"items": []}))
+    monkeypatch.setattr(analysis_trials, "read_own_trajectory", AsyncMock(return_value=None))
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+        audit = await session.scalar(select(TrialModel).where(
+            TrialModel.task_id == task_id, TrialModel.kind == "audit"
+        ))
+        audit.status = TrialStatus.SUCCESS
+    await analysis_trials.handle_analysis_trial_settled(audit.id)
+
+
 @pytest_asyncio.fixture
 async def cleanup_task_ids():
     ids: list[str] = []
@@ -683,12 +699,14 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
         result = await retry_trial_core(session, trial_id=kimi_id, org_id=None)
     assert result["status"] == "skipped"
 
-    # ...and the task is advanced, not left stuck RUNNING after the cancel.
+    # All solvers are settled, but admission waits for the still-running audit.
+    await _finish_clean_audit(task_id, monkeypatch)
     async with get_session() as session:
         task = (
             await session.execute(select(TaskModel).where(TaskModel.id == task_id))
         ).scalar_one()
-    assert task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING)
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict["verdict"] == "reject"
 
 
 @pytest.mark.asyncio
@@ -746,7 +764,9 @@ async def test_qa_classification_excludes_historical_task_versions(cleanup_task_
             _mixed_submission("qa-version"),
             task_id=task_id,
         )
-        current_trial = next(t for t in task.trials if t.agent == _LLM_AGENT)
+        current_trial = next(
+            t for t in task.trials if t.agent == _LLM_AGENT and t.kind == "agent"
+        )
         version_id = f"{task_id}-v2"
         session.add(
             TaskVersionModel(
@@ -797,8 +817,7 @@ async def test_release_still_works_after_flag_disabled(monkeypatch, cleanup_task
 
 @pytest.mark.asyncio
 async def test_agent_only_append_faulty_advances_task(monkeypatch, cleanup_task_ids):
-    """A gate-cancel on the append/retry path advances the task in the same
-    request instead of leaving it stuck RUNNING/PENDING."""
+    """A gate-cancelled append waits for its audit, then rejects faulty baselines."""
     monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
     task_id = f"pull-advance-{_RUN}"
     cleanup_task_ids.append(task_id)
@@ -808,11 +827,13 @@ async def test_agent_only_append_faulty_advances_task(monkeypatch, cleanup_task_
 
     kimi = await _append_llm_only(task_id)  # gated -> cancelled, and task advanced
     assert await _wj_status(kimi) == WorkerJobStatus.CANCELLED
+    await _finish_clean_audit(task_id, monkeypatch)
     async with get_session() as session:
         task = (
             await session.execute(select(TaskModel).where(TaskModel.id == task_id))
         ).scalar_one()
-    assert task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING)
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict["verdict"] == "reject"
 
 
 # ---------------------------------------------------------------------------

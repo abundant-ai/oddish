@@ -1,17 +1,53 @@
-import type { DeliveryBoardResponse, DeliveryCheckStatus } from "@/lib/types";
+import type {
+  DeliveryBoardResponse,
+  DeliveryQAStatus,
+  DeliveryTaskBoardRow,
+  QAIssueCategory,
+} from "@/lib/types";
 
-/** Tailwind classes for one check-status dot/chip. */
-export function checkTone(status: DeliveryCheckStatus): string {
-  switch (status) {
-    case "pass":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
-    case "fail":
-      return "bg-red-500/15 text-red-700 dark:text-red-400";
-    case "waived":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
-    default:
-      return "bg-muted text-muted-foreground";
+export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
+  instructions: "Instructions",
+  verifier: "Verifier / grading",
+  environment: "Environment / runtime",
+  evidence: "Missing evidence",
+  qa_execution: "QA execution",
+};
+
+export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
+  accepted: "No blocking defects found",
+  needs_fixes: "Blocking defects found",
+  outdated: "Review needs refresh",
+  queued: "Review queued",
+  running: "Review running",
+  error: "Review could not complete",
+  never: "Not reviewed",
+};
+
+export function deliveryQAStatus(
+  row: DeliveryTaskBoardRow,
+  cutoff: number
+): DeliveryQAStatus {
+  const qa = row.qa;
+  if (
+    (qa.status === "accepted" || qa.status === "needs_fixes") &&
+    (!qa.finished_at || new Date(qa.finished_at).getTime() < cutoff)
+  ) {
+    return {
+      ...qa,
+      status: "outdated",
+      detail: "Last completed QA is outside the selected time window",
+    };
   }
+  return qa;
+}
+
+/** Delivery blockers remain separate from review completion and recorded sign-off. */
+export function isDeliveryBlocked(row: DeliveryTaskBoardRow): boolean {
+  return (
+    row.checks.some(
+      (check) => check.kind === "automated" && check.status === "fail"
+    ) || row.defects.some((defect) => !defect.acknowledged)
+  );
 }
 
 /** One-line readiness summary for a board header. */
@@ -26,4 +62,77 @@ export function readySummary(board: DeliveryBoardResponse): string {
     } open`;
   }
   return base;
+}
+
+/** Shareable delivery view. Page numbers in URLs are one-based. */
+export type DeliveryTaskFilter =
+  | "all"
+  | "outstanding"
+  | "blocked"
+  | "awaiting_signoff"
+  | "ready";
+
+export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
+  const filter = params.get("filter");
+  const qa = params.get("qa");
+  const issue = params.get("issue");
+  const owner = params.get("owner");
+  const group = params.get("group");
+  const rawPage = params.get("page") ?? "1";
+  const page = Number(rawPage);
+  return {
+    page:
+      /^\d+$/.test(rawPage) && Number.isSafeInteger(page) && page > 0
+        ? page - 1
+        : 0,
+    filter: ([
+      "all",
+      "outstanding",
+      "blocked",
+      "awaiting_signoff",
+      "ready",
+    ].includes(filter ?? "")
+      ? filter
+      : "outstanding") as DeliveryTaskFilter,
+    qaDays: params.get("days") === "1" ? "1" : "7",
+    qaFilter:
+      qa &&
+      (Object.hasOwn(QA_STATUS_LABELS, qa) ||
+        qa === "checked" ||
+        qa === "needs_qa")
+        ? qa
+        : "all",
+    issueFilter: issue && Object.hasOwn(QA_ISSUE_LABELS, issue) ? issue : "all",
+    ownerFilter: owner === "mine" || owner === "unassigned" ? owner : "all",
+    groupBy: group === "owner" || group === "issue" ? group : "none",
+    focusTask: params.get("task") || null,
+  };
+}
+
+/** Preserve unrelated URL parameters, omitting default view values. */
+export function deliveryViewQuery(
+  current: string,
+  patch: Partial<
+    Record<
+      "page" | "filter" | "days" | "qa" | "issue" | "owner" | "group" | "task",
+      string | null
+    >
+  >
+) {
+  const params = new URLSearchParams(current);
+  const defaults: Record<string, string> = {
+    page: "1",
+    filter: "outstanding",
+    days: "7",
+    qa: "all",
+    issue: "all",
+    owner: "all",
+    group: "none",
+  };
+  for (const [key, value] of Object.entries(patch)) {
+    if (!value || value === defaults[key]) params.delete(key);
+    else params.set(key, value);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }

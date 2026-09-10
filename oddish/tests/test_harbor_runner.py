@@ -1670,6 +1670,53 @@ def test_runtime_transport_artifact_redaction_is_streaming_binary_and_atomic(
     assert list(tmp_path.glob(".oddish-redact-*")) == []
 
 
+def test_runtime_transport_artifact_redaction_preserves_json_types(tmp_path) -> None:
+    secret = "123456"
+    artifact = tmp_path / "trajectory.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "final_metrics": {
+                    "total_cached_tokens": 123456,
+                    "endpoint": f"https://runtime.test/{secret}",
+                },
+                f"secret-{secret}": [secret, True, None],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    harbor_runner._redact_runtime_transport_file(
+        artifact,
+        {secret: "[REDACTED]"},
+    )
+
+    output = json.loads(artifact.read_text(encoding="utf-8"))
+    assert output == {
+        "final_metrics": {
+            "total_cached_tokens": 123456,
+            "endpoint": "https://runtime.test/[REDACTED]",
+        },
+        "secret-[REDACTED]": ["[REDACTED]", True, None],
+    }
+    assert list(tmp_path.glob(".oddish-redact-*")) == []
+
+
+def test_runtime_transport_artifact_redaction_scrubs_malformed_json_bytes(
+    tmp_path,
+) -> None:
+    artifact = tmp_path / "malformed.json"
+    artifact.write_text('{"secret": runtime-secret}', encoding="utf-8")
+
+    harbor_runner._redact_runtime_transport_file(
+        artifact,
+        {"runtime-secret": "[REDACTED]"},
+    )
+
+    assert artifact.read_text(encoding="utf-8") == '{"secret": [REDACTED]}'
+    assert list(tmp_path.glob(".oddish-redact-*")) == []
+
+
 def test_runtime_transport_redacts_before_lifecycle_callback() -> None:
     runtime_endpoint = "https://private-model-route.test/openai/v1"
     runtime_secret = "private-runtime-secret"

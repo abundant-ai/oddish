@@ -1,0 +1,125 @@
+[
+  {
+    "id": "task-a",
+    "name": "Task A",
+    "version": 7,
+    "source_status": "success",
+    "verdict_status": "success",
+    "is_good": false,
+    "classification": "GOOD_FAILURE",
+    "qa_status": "needs_fixes",
+    "finding": {
+      "id": "empty-answer",
+      "tier": "must_fix",
+      "title": "The verifier accepts an empty answer.",
+      "file": "tests/test.sh",
+      "line_start": 7,
+      "line_end": 7,
+      "detail": "An empty answer reaches the unconditional success exit.",
+      "recommendation": "Require a non-empty answer before awarding credit."
+    },
+    "signed_off": false
+  },
+  {
+    "id": "fair-failure",
+    "name": "Fair agent failure",
+    "version": 1,
+    "source_status": "success",
+    "verdict_status": "success",
+    "is_good": true,
+    "classification": "GOOD_FAILURE",
+    "qa_status": "accepted",
+    "signed_off": false
+  },
+  {
+    "id": "invalid-execution",
+    "name": "Execution could not run",
+    "version": 1,
+    "source_status": "success",
+    "verdict_status": "failed",
+    "is_good": null,
+    "classification": "HARNESS_ERROR",
+    "qa_status": "error",
+    "error": "No valid evaluation was recorded. Inspect execution evidence.",
+    "signed_off": false
+  },
+  {
+    "id": "review-failed",
+    "name": "Review could not complete",
+    "version": 1,
+    "source_status": "failed",
+    "verdict_status": "failed",
+    "is_good": null,
+    "classification": null,
+    "qa_status": "error",
+    "error": "Evidence could not be read. The stored error does not establish the cause.",
+    "signed_off": false
+  },
+  {
+    "id": "unreviewed",
+    "name": "Unreviewed version",
+    "version": 2,
+    "source_status": null,
+    "verdict_status": null,
+    "is_good": null,
+    "classification": null,
+    "qa_status": "never",
+    "signed_off": false
+  },
+  {
+    "id": "review-queued",
+    "name": "Queued review",
+    "version": 1,
+    "source_status": "queued",
+    "verdict_status": "queued",
+    "is_good": null,
+    "classification": null,
+    "qa_status": "queued",
+    "signed_off": false
+  },
+  {
+    "id": "review-running",
+    "name": "Running review",
+    "version": 1,
+    "source_status": "running",
+    "verdict_status": "running",
+    "is_good": null,
+    "classification": null,
+    "qa_status": "running",
+    "signed_off": false
+  },
+  {
+    "id": "stale-review",
+    "name": "New version with older review",
+    "version": 8,
+    "historical_version": 7,
+    "source_status": null,
+    "verdict_status": "success",
+    "is_good": true,
+    "classification": null,
+    "qa_status": "outdated",
+    "signed_off": false
+  },
+  {
+    "id": "awaiting-signoff",
+    "name": "Completed review awaiting sign-off",
+    "version": 1,
+    "source_status": "success",
+    "verdict_status": "success",
+    "is_good": true,
+    "classification": "GOOD_SUCCESS",
+    "qa_status": "accepted",
+    "signed_off": false
+  },
+  {
+    "id": "signed-off",
+    "name": "Signed off version",
+    "version": 1,
+    "source_status": "success",
+    "verdict_status": "success",
+    "is_good": true,
+    "classification": "GOOD_SUCCESS",
+    "qa_status": "accepted",
+    "signed_off": true
+  }
+]

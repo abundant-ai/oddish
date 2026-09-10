@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { markOpenIntent } from "@/lib/open-intent";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -90,7 +91,6 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
@@ -821,6 +821,25 @@ export function TrialDetailPanel({
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+
+  // Selecting the trial is not the moment someone asks for its trajectory:
+  // the drawer opens on Summary, and `ActiveTabContent` renders null for every
+  // other tab, so `TrajectoryViewer` -- a dynamic import -- does not mount
+  // until this tab is chosen. Stamping only the trial click would fold however
+  // long they read the summary into the trajectory's load time, or age out
+  // past MAX_INTENT_AGE_MS and lose the chunk download the stamp exists to
+  // capture. The intent map overwrites by key, so this supersedes the trial
+  // click while leaving it correct for a `?tab=trajectory` deep link, where
+  // the viewer really does mount with the drawer.
+  const handleTabChange = useCallback(
+    (next: string) => {
+      if (next === "trajectory" && trial) {
+        markOpenIntent("ui.trajectory.open", trial.id);
+      }
+      setActiveTab(next);
+    },
+    [trial]
+  );
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -1437,9 +1456,6 @@ export function TrialDetailPanel({
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
-                            <TrialNotRealSpendBadge
-                              reason={trial.cost_exclusion_reason}
-                            />
                           </>
                         ) : (
                           "—"
@@ -1552,7 +1568,7 @@ export function TrialDetailPanel({
 
       <Tabs
         value={effectiveTab}
-        onValueChange={setActiveTab}
+        onValueChange={handleTabChange}
         className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="border-border border-b px-4 sm:px-6">
@@ -1597,7 +1613,7 @@ export function TrialDetailPanel({
           </TabsList>
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto overscroll-contain">
           <ActiveTabContent
             active={effectiveTab === "summary"}
             value="summary"

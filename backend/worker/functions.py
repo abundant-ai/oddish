@@ -1,3 +1,5 @@
+from functools import partial
+
 from oddish.config import Settings
 
 # Worker containers run ONE job for its full duration -- agent trials can run
@@ -86,6 +88,8 @@ from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
     release_queue_slot,
+    reserve_queue_launches,
+    release_launch_reservations,
 )
 
 from oddish.workers.queue.sandbox_capacity import (
@@ -155,6 +159,11 @@ ensure_builtin_handlers_registered()
 # the core package importing backend. Inert until a user has a key and the gate
 # is on; otherwise trials run on the platform keys as before.
 from .byok_resolver import install_byok_resolver
+from .org_access import (
+    authorize_worker_job,
+    approved_worker_job_counts,
+    cancel_unapproved_runs,
+)
 
 install_byok_resolver()
 
@@ -210,6 +219,9 @@ async def _run_one_job(
     queue_key: str,
     harbor_variant_id: str = "default",
     execution_lane: str = DEFAULT_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
 ) -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
@@ -283,6 +295,7 @@ async def _run_one_job(
             limit=queue_limit,
             worker_id=worker_id,
             lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
+            reservation_token=reservation_token,
         )
         if lock_slot is None:
             console.print(
@@ -317,11 +330,14 @@ async def _run_one_job(
                     queue_slot=lock_slot,
                     modal_function_call_id=fc_id,
                     post_success_hooks=_POST_SUCCESS_HOOKS,
+                    authorize_job=authorize_worker_job,
                     harbor_variant_id=harbor_variant_id,
                     execution_lane=execution_lane,
                     capacity_provider="ec2",
                     capacity_slot=capacity_slot,
                     worker_billing_spec=worker_billing_spec,
+                    priority_class=priority_class,
+                    org_id=org_id,
                 )
             )
             release_capacity_lease = True
@@ -333,9 +349,12 @@ async def _run_one_job(
                 budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
                 modal_function_call_id=fc_id,
                 post_success_hooks=_POST_SUCCESS_HOOKS,
+                authorize_job=authorize_worker_job,
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
                 worker_billing_spec=worker_billing_spec,
+                priority_class=priority_class,
+                org_id=org_id,
             )
         if jobs_processed == 0:
             console.print(
@@ -362,6 +381,8 @@ async def _run_one_job(
                         slot=lock_slot,
                         worker_id=worker_id,
                     )
+                elif reservation_token is not None:
+                    await release_launch_reservations([reservation_token])
             finally:
                 if capacity_slot is not None and release_capacity_lease:
                     await release_sandbox_capacity_lease(
@@ -397,6 +418,9 @@ async def process_single_job(
     queue_key: str,
     harbor_variant_id: str = "default",
     execution_lane: str = DEFAULT_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
 ):
     """Default-image single-job worker.
 
@@ -407,7 +431,14 @@ async def process_single_job(
         raise RuntimeError(
             f"generic worker refused non-default execution lane {execution_lane!r}"
         )
-    await _run_one_job(queue_key, harbor_variant_id, execution_lane)
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        execution_lane,
+        reservation_token=reservation_token,
+        priority_class=priority_class,
+        org_id=org_id,
+    )
 
 
 @app.function(
@@ -427,12 +458,22 @@ async def process_single_ec2_trial_job(
     queue_key: str,
     harbor_variant_id: str = "default",
     execution_lane: str = EC2_TRIAL_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
 ):
     if execution_lane != EC2_TRIAL_EXECUTION_LANE:
         raise RuntimeError(
             f"EC2 worker refused non-EC2 execution lane {execution_lane!r}"
         )
-    await _run_one_job(queue_key, harbor_variant_id, execution_lane)
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        execution_lane,
+        reservation_token=reservation_token,
+        priority_class=priority_class,
+        org_id=org_id,
+    )
 
 
 def _make_variant_entry(variant_id: str, lane: str):
@@ -446,12 +487,22 @@ def _make_variant_entry(variant_id: str, lane: str):
         queue_key: str,
         harbor_variant_id: str = variant_id,
         execution_lane: str = lane,
+        reservation_token: str | None = None,
+        priority_class: bool | None = None,
+        org_id: str | None = None,
     ):
         if execution_lane != lane:
             raise RuntimeError(
                 f"variant worker lane mismatch: expected {lane!r}, got {execution_lane!r}"
             )
-        await _run_one_job(queue_key, harbor_variant_id, execution_lane)
+        await _run_one_job(
+            queue_key,
+            harbor_variant_id,
+            execution_lane,
+            reservation_token=reservation_token,
+            priority_class=priority_class,
+            org_id=org_id,
+        )
 
     return _entry
 
@@ -541,6 +592,12 @@ async def reconcile_queue_state():
         await configure_storage_paths()
 
         try:
+            summary["unapproved_tasks_cancelled"] = await cancel_unapproved_runs()
+        except Exception as e:
+            phase_errors.append(f"unapproved_org_cleanup: {type(e).__name__}: {e}")
+            log_exception("reconcile phase failed", phase="unapproved_org_cleanup")
+
+        try:
             stale_cleared = await cleanup_stale_queue_slots()
             summary["stale_slots_cleared"] = stale_cleared
             if stale_cleared > 0:
@@ -610,6 +667,16 @@ async def reconcile_queue_state():
                 await backfill_github_id(max_users=200, time_budget_seconds=60.0)
             ).as_dict()
             summary.update({k: int(v) for k, v in gid_counts.items()})
+            if gid_counts["github_id_backfill_failed"]:
+                phase_errors.append(
+                    "github_id_backfill: Clerk identity lookups failed; "
+                    "existing identities preserved (see Clerk HTTP errors in logs)"
+                )
+            if gid_counts["github_id_backfill_deferred"]:
+                phase_errors.append(
+                    "github_id_backfill: retry deferred after failed Clerk batch; "
+                    "existing identities preserved"
+                )
             if any(gid_counts.values()):
                 console.print(
                     "metric=github_id_backfill "
@@ -906,6 +973,8 @@ async def poll_queue():
     cycle_started_at = time.monotonic()
     cycle_outcome: DispatchCycleOutcome = "error"
     workers_spawned = 0
+    reservations = []
+    launches_finished = False
     spawn_cap_reached = False
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
@@ -921,14 +990,19 @@ async def poll_queue():
             if ec2_capacity_limit > 0
             else 0
         )
-        plan = await build_dispatch_plan(
-            max_workers=MAX_WORKERS_PER_POLL,
-            concurrency_limits_for=_effective_model_concurrency_limits,
-            capacity_limits_by_lane={
-                EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
-            },
-            held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
-        )
+        with _otel_span("worker.reserve_queue_launches"):
+            plan, reservations = await reserve_queue_launches(
+                partial(
+                    build_dispatch_plan,
+                    _counts=approved_worker_job_counts,
+                    max_workers=MAX_WORKERS_PER_POLL,
+                    concurrency_limits_for=_effective_model_concurrency_limits,
+                    capacity_limits_by_lane={
+                        EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
+                    },
+                    held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
+                )
+            )
         record_dispatch_snapshot(
             queue_keys=plan.queue_keys,
             queued_by_queue=plan.queued_by_queue,
@@ -955,6 +1029,7 @@ async def poll_queue():
             _queue_key,
             variant,
             _lane,
+            _priority,
         ), queued in plan.queued_by_org_queue.items():
             if variant != "default":
                 variant_demand[variant] = variant_demand.get(variant, 0) + queued
@@ -973,6 +1048,7 @@ async def poll_queue():
                 _queue_key,
                 _variant,
                 _lane,
+                _priority,
             ), queued in plan.queued_by_org_queue.items():
                 key = org_id or "<none>"
                 org_buckets[key] = org_buckets.get(key, 0) + queued
@@ -988,7 +1064,7 @@ async def poll_queue():
             f"limit={ec2_capacity_limit}[/dim]"
         )
 
-        spawn_plan = plan.unit_plan
+        spawn_plan = [reservation.unit for reservation in reservations]
         spawn_cap_reached = len(spawn_plan) >= MAX_WORKERS_PER_POLL
 
         # Persist a heartbeat the admin dashboard reads back so operators can
@@ -997,7 +1073,8 @@ async def poll_queue():
         await record_queue_runtime_status(
             DISPATCHER_COMPONENT,
             {
-                "spawned": len(spawn_plan),
+                "planned": len(spawn_plan),
+                "spawned": 0,
                 "max_workers_per_poll": MAX_WORKERS_PER_POLL,
                 "spawn_cap_reached": len(spawn_plan) >= MAX_WORKERS_PER_POLL,
                 "active_queue_keys": len(plan.queue_keys),
@@ -1034,8 +1111,9 @@ async def poll_queue():
         # base image; blessed ids -> their own image), then spawn. Use Modal's
         # async spawn interface inside this async function to avoid blocking the
         # event loop and spurious AsyncUsageWarning noise.
-        spawn_calls = []
-        for unit in spawn_plan:
+        spawn_requests = []
+        for reservation in reservations:
+            unit = reservation.unit
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,
@@ -1043,21 +1121,41 @@ async def poll_queue():
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
                 ec2_variant_fns=_EC2_VARIANT_JOB_FUNCTIONS,
             )
-            spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
-        await asyncio.gather(*spawn_calls)
-        workers_spawned = len(spawn_plan)
-        for i, (queue_key, variant, lane) in enumerate(spawn_plan, start=1):
-            console.print(
-                f"[dim]Spawned worker {i}/{len(spawn_plan)} "
-                f"(queue_key={queue_key}, variant={variant}, lane={lane})[/dim]"
-            )
-
-        console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
-
-        # Stamp spawned_at only AFTER the spawn actually happened, so a worker
-        # that fails to spawn (the gather above raises -> caught below) leaves
-        # its row un-stamped instead of falsely reading as 'spawned'.
-        spawned_queue_keys = [queue_key for queue_key, _variant, _lane in spawn_plan]
+            spawn_kwargs["reservation_token"] = reservation.token
+            spawn_requests.append((fn, spawn_kwargs))
+        results = await asyncio.gather(
+            *(fn.spawn.aio(**kwargs) for fn, kwargs in spawn_requests),
+            return_exceptions=True,
+        )
+        failed = [
+            r.token
+            for r, result in zip(reservations, results)
+            if isinstance(result, BaseException)
+        ]
+        spawned_queue_keys = [
+            r.unit.queue_key
+            for r, result in zip(reservations, results)
+            if not isinstance(result, BaseException)
+        ]
+        workers_spawned = len(spawned_queue_keys)
+        launches_finished = True
+        await release_launch_reservations(failed)
+        await record_queue_runtime_status(
+            DISPATCHER_COMPONENT,
+            {
+                "planned": len(spawn_plan),
+                "spawned": workers_spawned,
+                "launch_failed": len(failed),
+                "max_workers_per_poll": MAX_WORKERS_PER_POLL,
+                "spawn_cap_reached": spawn_cap_reached,
+                "active_queue_keys": len(plan.queue_keys),
+                "queued_total": sum(plan.queued_by_queue.values()),
+                "running_total": sum(plan.running_by_queue.values()),
+            },
+        )
+        console.print(
+            f"[green]Dispatched {workers_spawned} workers; {len(failed)} launch failures[/green]"
+        )
         why_waiting = compute_post_spawn_why_waiting(
             plan,
             spawned_keys=spawned_queue_keys,
@@ -1067,6 +1165,9 @@ async def poll_queue():
             await stamp_dispatch_stage(spawned_queue_keys, why_waiting)
         except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
             console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
         cycle_outcome = "success"
 
     except asyncio.CancelledError:
@@ -1074,7 +1175,7 @@ async def poll_queue():
         raise
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
-        # crash the scheduled function -- the next poll in 3 minutes will retry.
+        # crash the scheduled function -- the next scheduled poll will retry.
         cycle_outcome = "skipped"
         console.print(
             f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
@@ -1083,6 +1184,15 @@ async def poll_queue():
         console.print(f"[red]Dispatcher error: {e}[/red]")
         raise
     finally:
+        # Cancellation/selection errors can leave calls accepted remotely. Only
+        # unadopted tokens are revoked; already-running workers keep their lease.
+        if not launches_finished:
+            try:
+                await release_launch_reservations([r.token for r in reservations])
+            except Exception as release_error:
+                console.print(
+                    f"[yellow]Launch release failed; leases expire in 300s: {release_error}[/yellow]"
+                )
         record_dispatch_cycle(
             workers_spawned=workers_spawned,
             spawn_cap_reached=spawn_cap_reached,

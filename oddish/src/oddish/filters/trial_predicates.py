@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from sqlalchemy import Integer, and_, exists, false, func, select
+from sqlalchemy import Integer, and_, exists, false, func, not_, select
 
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.db import AGENT_TRIAL_KIND, TrialModel, TrialStatus
 from oddish.filters.trial_metrics import TrialMetricFilter, TrialMetricMatch
 
@@ -122,3 +124,16 @@ def build_trial_metric_predicate(
         )
     )
     return and_(eligible_exists, ~failing_exists)
+
+
+def qa_eligible_trial_clauses() -> list[Any]:
+    """The solver evidence set shared by QA admission and delivery freshness."""
+    return [
+        TrialModel.kind == AGENT_TRIAL_KIND,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.imported_at.is_(None),
+        func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
+        TrialModel.status != TrialStatus.SKIPPED,
+        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
+        not_(baseline_agent_clause(TrialModel.agent)),
+    ]

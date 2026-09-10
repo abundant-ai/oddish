@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { Copy, Eye, EyeOff, Loader2 } from "lucide-react";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import type { ExperimentShareInfo } from "@/lib/types";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -51,7 +51,7 @@ export function ExperimentShareButton({
     setIsUpdating(true);
     setStatusMessage(null);
     try {
-      const res = await fetch(`/api/experiments/${encodedId}/publish`, {
+      const res = await apiFetch(`/api/experiments/${encodedId}/publish`, {
         method: "POST",
       });
       const payload = await res.json().catch(() => ({}));
@@ -82,7 +82,7 @@ export function ExperimentShareButton({
     setIsUpdating(true);
     setStatusMessage(null);
     try {
-      const res = await fetch(`/api/experiments/${encodedId}/unpublish`, {
+      const res = await apiFetch(`/api/experiments/${encodedId}/unpublish`, {
         method: "POST",
       });
       const payload = await res.json().catch(() => ({}));

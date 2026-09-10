@@ -172,6 +172,121 @@ JSON schema. Any future checked-in JSON must come from **Download dashboard as
 code** after the SQL has been exercised against deployed metrics; a handwritten
 lookalike is not treated as an importable export.
 
+## User-perceived open latency
+
+The metrics above describe the queue; `http.server.request.duration` describes
+one route. Neither answers how long a person waits for a screen, because one
+screen is several requests deep and neither clock includes render. Three
+browser spans measure that directly, from the moment a view is asked for until
+its content has been painted:
+
+| Span | Ends when |
+|---|---|
+| `ui.task.open` | The task page's trial matrix is readable. |
+| `ui.trajectory.open` | The selected trial's trajectory steps are on screen. |
+
+The trajectory viewer is itself a dynamic import, but unlike the file renderers
+it owns its own data fetch, so its readiness is observable from the component
+that mounts it.
+
+File previews are not measured yet, and the reason is worth recording so the
+follow-up starts from it. `FileRenderer` code-splits every view — markdown,
+code, notebook, JSON, diff, spreadsheet, document — behind a loading stub, and
+binary previews additionally resolve their fetch when the signed download URL
+arrives rather than when the bytes do. Content being available is therefore
+several hundred milliseconds to several seconds short of content being on
+screen, and on the first open of each file type it is short by exactly the
+chunk wait worth measuring. A correct `ui.files.open` needs the renderers to
+report when they have painted; until they do, no number beats one that is wrong
+in the cold case and reports success over a spinner.
+
+They are emitted by `useOpenLatencySpan`
+(`frontend/src/lib/use-open-latency-span.ts`) under service name
+`oddish-frontend`, and require `NEXT_PUBLIC_LOGFIRE_ENABLED=true` plus
+`LOGFIRE_BROWSER_TOKEN` in the frontend deployment. Without those the
+OpenTelemetry API returns a no-op tracer and nothing is recorded.
+
+Every span carries an `outcome` attribute:
+
+- `ready`: the content painted. This is the population to measure.
+- `error`: the view went away while a failure was still current.
+- `abandoned`: the person navigated away, switched files, or closed the view
+  before the content arrived. Excluding these from a latency percentile is
+  correct; ignoring the rate itself is not, because a slow screen shows up as
+  abandonment before it shows up as a slow `ready`. `open.abandon_reason`
+  separates `unmount` (moved within the app) from `page-hidden` (tab closed,
+  refreshed, backgrounded, or sent elsewhere) — the second is how someone
+  giving up on a slow load usually leaves, so treat a rise in it as a latency
+  signal.
+
+A failure does not end an open. SWR retries, and the task reader recovers a
+stale version 404, so a first-attempt error is frequently followed by a normal
+successful paint; ending the span there would file the recovered open under
+`error` and drop the slowest genuine waits out of the `ready` population.
+The clock keeps running instead, and `open.saw_error` marks the opens that hit
+a failure on the way. An `error` outcome therefore means the failure was still
+unresolved when the person left, and its duration includes any time they spent
+looking at the error state — read `error` as a count, not as a latency.
+
+`open.start_source` records which clock the span used. `page-load` means the
+first open after a hard navigation, backdated to `performance.timeOrigin` so
+the document request and hydration are included; `interaction` means a
+client-side open timed from mount. Compare the two only deliberately —
+`page-load` is a cold measurement and will always be slower, so a shift in the
+mix moves a combined percentile without anything having got slower.
+
+Opens that begin in a hidden tab are not measured at all. A cmd-clicked or
+middle-clicked tab is nobody's wait: `visibilitychange` never fires there
+because the tab was born hidden rather than changing, and
+`requestAnimationFrame` is frozen, so such an open would either surface minutes
+later with all that idle time recorded as latency or vanish when the tab is
+closed unlooked-at.
+
+`open.clock` says which moment the timer actually started from: `page-load`
+(the document request), `click` (a recorded navigation intent), or `mount`
+(the destination component appearing, used when no click was recorded).
+Prefer `click` over `mount` when judging an interaction: a `mount` open
+excludes the time spent downloading and rendering the destination, so a route
+whose chunk is slow to load looks fast. A rising share of `mount` means click
+sites are missing `markOpenIntent` (`frontend/src/lib/open-intent.ts`), not
+that the app got faster.
+
+Only `ui.task.open` can be a `page-load`. A trajectory is reached by clicking,
+so its wait begins at the click however the page was reached; it passes
+`claimsPageLoad: false` (the default) and is always `interaction`. Set the
+opt-in only on an open that represents a route someone can land on directly.
+
+These are spans, not metrics, so the dimension rules above do not apply:
+each is an individual record and may carry task, trial, and file identifiers.
+
+An open span is not the parent of the requests underneath it. It is started
+from a React effect, which runs after the render that already told SWR to
+fetch, so the requests are under way before there is a span to hang them from.
+Join on the recorded `oddish.task_id` / `oddish.trial_id` and the span's time
+bounds when a slow open needs breaking down.
+
+Weekly trend, for a dashboard panel:
+
+```sql
+SELECT
+    time_bucket('7 days', start_timestamp) AS week,
+    span_name,
+    COUNT(*) AS opens,
+    percentile_cont(0.50) WITHIN GROUP (ORDER BY duration) AS p50_seconds,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration) AS p95_seconds
+FROM records
+WHERE service_name = 'oddish-frontend'
+  AND deployment_environment = 'production'
+  AND span_name IN ('ui.task.open', 'ui.trajectory.open')
+  AND attributes->>'outcome' = 'ready'
+GROUP BY week, span_name
+ORDER BY week
+```
+
+Establish a baseline over two or three weeks before adding a regression alert;
+the retention window on the Growth plan is 90 days, so roughly thirteen weeks
+of trend are available at any time.
+
 ## Alerts
 
 `logfire-oddish-alerts.sql` contains four Logfire alert queries:

@@ -82,7 +82,9 @@ def backfill_analysis(
 
     # Resolve scope -> list of (task_id, trial_ids) jobs.
     jobs: list[tuple[str, list[str] | None]] = []
-    with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+    # Historical evidence recovery may rebuild ATIF from large captured agent
+    # streams before the server admits replacement QA.
+    with httpx.Client(timeout=300.0, headers=get_auth_headers()) as client:
         if trial:
             resolved = _task_id_from_trial(trial)
             if not resolved:
