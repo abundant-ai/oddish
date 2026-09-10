@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 import aioboto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 from oddish.config import settings
 from oddish.timing import current_request_timing, timed_phase
@@ -1015,8 +1015,9 @@ class StorageClient:
         task_s3_prefix: str | None = None,
         expanded: bool | None = None,
         expanded_manifest_key: str | None = None,
+        previews: bool = False,
     ) -> dict:
-        """First metadata-only pages, with one shared archive/manifest validation."""
+        """Bounded directory pages and optional previews from one selected source."""
         if not 1 <= len(directories) <= 8 or not 1 <= limit <= 1000:
             raise HTTPException(
                 400, "Request 1–8 directories and 1–1000 entries per page"
@@ -1045,11 +1046,79 @@ class StorageClient:
                 for path in paths
             )
         )
+        if previews:
+            # Bound both storage fan-out and payload size. Missing, binary and
+            # large members remain ordinary on-demand reads. Never walk below
+            # the requested directory pages to find preview candidates.
+            candidates = {}
+            for page in pages:
+                for file in page["files"]:
+                    size = file.get("size")
+                    if isinstance(size, int) and 0 <= size <= 32 * 1024:
+                        candidates.setdefault(str(file["path"]), file)
+            selected = []
+            budget = 256 * 1024
+            for path, file in sorted(
+                candidates.items(),
+                key=lambda item: (item[0] != "instruction.md", item[0]),
+            ):
+                if len(selected) >= 16:
+                    break
+                if file["size"] <= budget:
+                    selected.append((path, file))
+                    budget -= file["size"]
+
+            async def read_preview(path, file):
+                if source.archive_texts is not None:
+                    return path, source.archive_texts.get(path)
+                try:
+                    async with asyncio.timeout(1):
+                        text, truncated = await self.download_text_prefix(
+                            str(file["key"]), 32 * 1024
+                        )
+                    return path, None if truncated else text
+                except (BotoCoreError, ClientError, UnicodeError, TimeoutError):
+                    # Directory browsing remains usable when one preview fails.
+                    return path, None
+
+            contents = dict(
+                await asyncio.gather(*(read_preview(*item) for item in selected))
+            )
+            remaining = 256 * 1024
+            for path, _file in selected:
+                content = contents[path]
+                if content is None:
+                    continue
+                size = len(content.encode("utf-8"))
+                if size > min(32 * 1024, remaining):
+                    continue
+                remaining -= size
+                for page in pages:
+                    # Archive metadata is shared by the cache; never mutate it.
+                    page["files"] = [
+                        {**file, "content": content} if file["path"] == path else file
+                        for file in page["files"]
+                    ]
         return {
             "task_id": task_id,
             "version": version,
             "directories": dict(zip(paths, pages)),
         }
+
+    async def _task_archive_head(self, task_id, version, archive_key):
+        """Reuse metadata only for a cached, publisher-owned immutable archive."""
+        root = f"tasks/{task_id}/v{version}-revisions/"
+        if version is not None and archive_key.startswith(root):
+            token, _, name = archive_key[len(root) :].partition("/")
+            if (
+                len(token) == 32
+                and all(c in "0123456789abcdef" for c in token)
+                and name == self._TASK_ARCHIVE_OBJECT_NAME
+            ):
+                etag = self._archive_etag_hints.get(archive_key)
+                if etag and self._archive_cache_get((archive_key, etag)) is not None:
+                    return {"ETag": etag}
+        return await self.head_object(archive_key)
 
     async def _resolve_task_listing_source(
         self,
@@ -1069,7 +1138,7 @@ class StorageClient:
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_head = await self.head_object(archive_key)
+        archive_head = await self._task_archive_head(task_id, version, archive_key)
         if version is not None and expanded is not False:
             expanded_prefix = (
                 expanded_manifest_key.rsplit("/", 1)[0] + "/"
@@ -1629,7 +1698,7 @@ class StorageClient:
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_head = await self.head_object(archive_key)
+        archive_head = await self._task_archive_head(task_id, version, archive_key)
         archive_exists = archive_head is not None
 
         s3_key: str | None = None
