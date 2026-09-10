@@ -9,4 +9,4 @@
 - [x] Run focused backend and frontend regression checks, including combinations of representative records and paid-work boundaries.
 - [x] Exercise blocker navigation, URL restoration, and unavailable evidence in the inline Codex browser.
 - [x] Inspect the final diff and document observed validation and automatic rerun follow-up.
-- [ ] Open a draft PR against staging.
+- [x] Open a draft PR against staging (#1571).
