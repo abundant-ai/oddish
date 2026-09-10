@@ -50,6 +50,40 @@ export function isDeliveryBlocked(row: DeliveryTaskBoardRow): boolean {
   );
 }
 
+/** Disjoint owner-chart outcomes; these do not determine delivery readiness. */
+export function deliveryOwnerOutcome(row: DeliveryTaskBoardRow): {
+  status:
+    | "needs_work"
+    | "qa_incomplete"
+    | "qa_accepted"
+    | "accepted_exceptions";
+  signedOff: boolean;
+} {
+  // The backend only passes this check for the displayed version's sign-off.
+  const signedOff = row.checks.some(
+    (check) =>
+      check.key === "signoff" &&
+      check.kind === "manual" &&
+      check.status === "pass"
+  );
+  const openFindings = row.defects.some((finding) => !finding.acknowledged);
+  if (
+    row.qa.status === "needs_fixes" &&
+    signedOff &&
+    row.defects.length > 0 &&
+    !openFindings
+  ) {
+    return { status: "accepted_exceptions", signedOff };
+  }
+  if (openFindings || row.qa.status === "needs_fixes") {
+    return { status: "needs_work", signedOff };
+  }
+  return {
+    status: row.qa.status === "accepted" ? "qa_accepted" : "qa_incomplete",
+    signedOff,
+  };
+}
+
 /** One-line readiness summary for a board header. */
 export function readySummary(board: DeliveryBoardResponse): string {
   const base = `${board.ready_task_count}/${board.task_count} tasks ready`;
