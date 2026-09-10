@@ -106,6 +106,8 @@ export type DeliveryTaskFilter =
   | "awaiting_signoff"
   | "ready";
 
+export const DELIVERY_PAGE_SIZES = [10, 25, 50, 100];
+
 export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
   const filter = params.get("filter");
   const qa = params.get("qa");
@@ -114,7 +116,9 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
   const group = params.get("group");
   const rawPage = params.get("page") ?? "1";
   const page = Number(rawPage);
+  const pageSize = Number(params.get("per_page"));
   return {
+    pageSize: DELIVERY_PAGE_SIZES.includes(pageSize) ? pageSize : 25,
     page:
       /^\d+$/.test(rawPage) && Number.isSafeInteger(page) && page > 0
         ? page - 1
@@ -149,6 +153,7 @@ export function deliveryViewQuery(
   patch: Partial<
     Record<
       | "page"
+      | "per_page"
       | "filter"
       | "days"
       | "qa"
@@ -164,6 +169,7 @@ export function deliveryViewQuery(
   const params = new URLSearchParams(current);
   const defaults: Record<string, string> = {
     page: "1",
+    per_page: "25",
     filter: "outstanding",
     days: "7",
     qa: "all",

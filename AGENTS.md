@@ -2061,6 +2061,7 @@ folders. Keep the task navigation and overview mounted while the listing loads.
 Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
+`per_page` (10, 25, 50, or 100 rows; defaults to 25),
 `filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
 reads these directly with `useSearchParams`; native history updates preserve
