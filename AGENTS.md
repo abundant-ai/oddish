@@ -2195,3 +2195,24 @@ history exposes each retained version decision. New versions inherit neither
 findings nor decisions. Finalized delivery snapshots are never recomputed.
 Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
+
+
+Delivery overview uses the full board for current readiness, outstanding owner
+workload, and open/acknowledged finding counts; table filters never change these
+counts. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
+preserves disclosure state as comma-separated panel IDs, with `!` for explicit
+collapse of a default-open section; drafts, dialogs, and bulk selection stay local.
+The board response includes `progress_history`: at most 30 daily observations
+(latest per UTC day). The page adds no request or polling timer for this chart.
+
+Apply core migration `delivery_progress_001` before deploying. The hosted
+`record_delivery_history` function samples active deliveries hourly through the
+existing Modal worker deployment; self-hosted operators can schedule
+`python -m oddish.core.delivery_progress` hourly. Each delivery commits separately
+under its delivery lock. The `(delivery_id, sample_hour)` primary key makes retries
+replace the hour's observation. Errors log the affected delivery ID and do not
+roll back other deliveries. Reads never record history. Finalization records the
+last observation and freezes daily history in the shipping snapshot. Old finalized
+snapshots remain unchanged. Progress history is stripped from customer-safe
+snapshots because its counts include internal/hidden tasks. Acknowledged findings
+are exceptions, not verified repairs; missing days have no observation, not zero.

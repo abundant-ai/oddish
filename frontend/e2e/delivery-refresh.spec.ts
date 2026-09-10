@@ -164,7 +164,9 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
   await expect(
     page.getByRole("link", { name: "Task B", exact: true })
   ).toBeVisible();
-  await expect(page.getByText("Teammate", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("table").getByText("Teammate", { exact: true })
+  ).toBeVisible();
   await expect(page.getByText("Known defect")).toBeHidden();
   await page
     .locator("summary")
@@ -470,14 +472,14 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   );
   await expect(page).toHaveURL(/group=owner/);
   await page.goBack();
-  await page.getByText("QA history", { exact: true }).click();
+  // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
   expect(state.reads.board).toBe(0);
   await page.goForward();
   await expect(page).toHaveURL(/group=owner/);
   expect(state.reads.board).toBe(0);
   await page.goBack();
-  await page.getByText("QA history", { exact: true }).click();
+  // The shared URL restores the open history panel.
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");
@@ -494,7 +496,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   expect(state.writes).toHaveLength(1);
   await page.clock.setSystemTime(new Date());
   await page.reload();
-  await page.getByText("QA history", { exact: true }).click();
+  // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
   expect(state.reads.board).toBe(2);
   await expect(page).toHaveURL(/source=agent/);
@@ -648,7 +650,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     "href",
     evidenceHref!
   );
-  await retained.getByText("Review evidence", { exact: true }).click();
+  // Evidence stays expanded when acknowledgment moves it between sections.
   await expect(
     retained.getByText("Fixture evidence:", { exact: false })
   ).toBeVisible();
@@ -686,5 +688,123 @@ test("finalized review exposes evidence but cannot acknowledge outstanding findi
   await expect(
     page.getByText("Fixture evidence:", { exact: false })
   ).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
+test("overview counts all tasks and owner bars filter without requests", async ({
+  page,
+}, testInfo) => {
+  const state = await controlledAPI(page);
+  state.board.tasks.push(
+    {
+      ...taskRow(),
+      task_id: "ready",
+      delivery_task_id: "ready",
+      task_name: "Ready task",
+      ready: true,
+      checks: [],
+    },
+    {
+      ...taskRow(),
+      task_id: "unassigned",
+      delivery_task_id: "unassigned",
+      task_name: "Unassigned task",
+      qa_work: { ...taskRow().qa_work, owner_user_id: null },
+      qa_owner_name: null,
+    },
+    {
+      ...taskRow(),
+      task_id: "waiting",
+      delivery_task_id: "waiting",
+      task_name: "Awaiting task",
+      checks: taskRow().checks.filter((check) => check.kind === "manual"),
+    }
+  );
+  state.board.task_count = 4;
+  state.board.ready_task_count = 1;
+  state.board.progress_history = [
+    {
+      recorded_at: "2026-09-08T12:00:00Z",
+      task_count: 3,
+      ready: 0,
+      blocked: 3,
+      awaiting_signoff: 0,
+      unassigned: 2,
+      open_findings: 5,
+      acknowledged_findings: 0,
+    },
+    {
+      recorded_at: "2026-09-09T12:00:00Z",
+      task_count: 4,
+      ready: 1,
+      blocked: 2,
+      awaiting_signoff: 1,
+      unassigned: 1,
+      open_findings: 2,
+      acknowledged_findings: 3,
+    },
+  ];
+  await page.goto("/?filter=ready");
+  const overview = page.getByLabel("Delivery overview");
+  await expect(
+    overview.getByRole("button", { name: "Blocked 2", exact: true })
+  ).toBeVisible();
+  await expect(overview.getByRole("img")).toHaveAttribute(
+    "aria-label",
+    /4 total/
+  );
+  const reads = state.reads.board;
+  await overview
+    .getByRole("button", { name: "Maya: 1 blocked, 1 awaiting sign-off" })
+    .click();
+  await expect(page).toHaveURL(/owner=maya/);
+  await expect(page.getByRole("table")).toContainText("Awaiting task");
+  await expect(page.getByRole("table")).not.toContainText("Ready task");
+  await expect(page.getByRole("table")).not.toContainText("Unassigned task");
+  await overview.getByRole("button", { name: "Unassigned work 1" }).click();
+  await expect(page.getByRole("table")).toContainText("Unassigned task");
+  await page.goBack();
+  await expect(page.getByRole("table")).toContainText("Awaiting task");
+  expect(state.reads.board).toBe(reads);
+  expect(state.writes).toEqual([]);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({
+    path: testInfo.outputPath("delivery-overview-desktop.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(overview).toBeVisible();
+  expect(
+    await overview.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth
+    )
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath("delivery-overview-mobile.png"),
+    fullPage: true,
+  });
+});
+
+test("review disclosures restore from a shared link and browser Back", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await openBoard(page);
+  await page.getByRole("button", { name: "Show all 7 versions" }).click();
+  await current(page).click();
+  const url = page.url();
+  await page.reload();
+  await expect(
+    page.getByText("v7 historical finding", { exact: true })
+  ).toBeVisible();
+  await current(page).click();
+  await expect(
+    page.getByText("v7 historical finding", { exact: true })
+  ).toBeHidden();
+  await page.goBack();
+  await expect(
+    page.getByText("v7 historical finding", { exact: true })
+  ).toBeVisible();
+  expect(page.url()).toBe(url);
   expect(state.writes).toEqual([]);
 });
