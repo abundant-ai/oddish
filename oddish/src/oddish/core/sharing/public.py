@@ -480,9 +480,12 @@ async def list_public_task_files(
         list[str] | None,
         Query(
             max_length=8,
-            description="Repeat for 1–8 metadata-only directory pages; empty means root",
+            description="Repeat for 1–8 directory pages; empty means root",
         ),
     ] = None,
+    previews: bool = Query(
+        False, description="Include bounded small text previews in directory batches"
+    ),
     stream: bool = Query(
         False,
         description="Stream NDJSON: the file tree first, then file contents",
@@ -497,7 +500,7 @@ async def list_public_task_files(
             session, task_id=task_id, version=version
         )
 
-    if directories is not None and stream:
+    if (directories is not None or previews) and stream:
         raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
@@ -520,6 +523,7 @@ async def list_public_task_files(
     return await list_task_files_s3(
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
+        **({"previews": True} if previews else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,

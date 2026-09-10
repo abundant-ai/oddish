@@ -416,3 +416,29 @@ test("a delayed full file stays attached to its original version", async ({
     release();
   }
 });
+
+test("definition bundle previews switch files without individual reads", async ({ page }) => {
+  const reads: string[] = [];
+  await page.route(fileList, async (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("previews")).toBe("true");
+    const data = batch();
+    data.directories.tests.files = [
+      { path: "tests/first.sh", key: "first", size: 5, content: "FIRST" },
+      { path: "tests/second.sh", key: "second", size: 6, content: "SECOND" },
+    ] as typeof data.directories.tests.files;
+    await route.fulfill({ json: data });
+  });
+  await page.route("**/api/tasks/task-a/files/*?**", async (route) => {
+    reads.push(route.request().url());
+    await route.fulfill({ json: { content: "UNEXPECTED READ" } });
+  });
+  await page.goto("/experiments/review-demo?task=task-a");
+  await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
+  await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "second.sh 6 B", exact: true }).click();
+  await expect(page.getByText("SECOND", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
+  await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
+  expect(reads).toEqual([]);
+});

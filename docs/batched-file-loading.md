@@ -1,19 +1,19 @@
 # Batched task file loading
 
 Task and experiment drawers request the first page of root, solution, tests,
-and environment in one metadata-only request. File bodies still load only when
-selected. Task links retain `version`, `drawer`, `finding`, `taskPane`,
+and environment in one request with bounded small-file previews. Other file bodies
+load when selected. Task links retain `version`, `drawer`, `finding`, `taskPane`,
 `taskFile`, and `taskLines`; trial tab/file/line addresses remain independent.
 
 For the conventional task-page tree, four directory requests become one. Private
 experiment drawers previously requested recursive listings with inline file bodies;
-they now request the same bounded metadata batch and read the selected body directly.
+they now request the same bounded directory batch and read the selected body directly.
 Trial artifact routes also share organization approval and trial lookup in one
 database session, then release the connection before reading storage.
 
 ## API contract
 
-`GET /tasks/{id}/files?version=7&directories=&directories=solution&directories=tests&directories=environment&recursive=0&inline=0&presign=0&limit=100`
+`GET /tasks/{id}/files?version=7&directories=&directories=solution&directories=tests&directories=environment&recursive=0&inline=0&presign=0&limit=100&previews=true`
 
 The hosted, standalone, and `/public/experiments/{token}/tasks/{id}/files`
 routes accept the same opt-in parameters. The public route still verifies token
@@ -37,6 +37,20 @@ immutable expansions skip legacy validation as before; mutable legacy layouts
 retain their archive/manifest checks. Archive-only batches load/parse the archive
 once. Directory LIST operations run concurrently against that selected source.
 
+With `previews=true`, directory batches add `content` to at most 16 small files
+from those pages, prioritizing `instruction.md`, then sorting by path. Each preview
+is at most 32 KiB and all previews together at most 256 KiB. Archive text is reused;
+expanded members are read concurrently with a one-second deadline per member.
+Failed, binary, oversized, and unselected members retain on-demand reads.
+`previews=true` without `directories` is rejected.
+
+Hosted definition listings and body reads combine organization approval and exact
+task/version selection in one SQL statement for ordinary credentials. Bound
+analysis credentials retain their additional resource checks. The database
+connection is released before storage work. Warm publisher-owned immutable
+`vN-revisions/<32-hex-token>/` archives reuse their cached ETag without HEAD while
+archive bytes remain cached; legacy mutable paths still revalidate.
+
 ## Browser behavior
 
 `useTaskFileTree` holds directory data and pagination in SWR, including data loaded
@@ -50,9 +64,9 @@ existing panel poll detects in-place overwrites; a continuation page from anothe
 hash refreshes the initial inventory instead of mixing revisions. Late pages
 write only their captured cache key, including after navigation to another version.
 
-Task-name hover or keyboard focus starts one metadata prefetch after 150 ms.
+Task-name hover or keyboard focus starts one directory/preview prefetch after 150 ms.
 Rapid movement replaces the pending intent; an opening consumes the same SWR
-request. No prefetch writes browser history, selects a file, or fetches file bodies.
+request. Prefetch does not write browser history or select a file.
 Hidden trial task panes do not initiate a file batch on trial selection.
 
 An explicit URL-selected file reads immediately, even while its tree is pending,
@@ -122,3 +136,12 @@ IDs and historical versions with empty and populated caches, recording time to
 selected-file content, batch completion, SQL/checkouts, storage operations, and
 unused prefetched requests. The tests establish less duplicated work and preserved
 behavior; they do not establish a production latency percentage.
+
+Definition bundle follow-up verification (2026-09-10): 63 storage/endpoint tests,
+22 authorization/session tests, 21 bound-credential restriction tests,
+40 source/storage regression tests, and 17 browser
+file-loading tests passed. PostgreSQL tests checked one SQL statement, approval
+revocation, missing versions, and another organization's task. The browser test
+switched between bundled files with zero individual body reads. TypeScript and
+ESLint passed. These are local checks with mocked storage, not staging latency
+measurements.

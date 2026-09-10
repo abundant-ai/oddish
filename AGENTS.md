@@ -815,12 +815,21 @@ CLI responses are unchanged.
 (or the public token URL), task, version, and known content hash. The first batch
 contains root, solution, tests, and environment, at 100 entries each; other
 sections, wrappers, and continuation pages use the original listing API. Task-name
-hover and keyboard focus prefetch only that task's metadata after 150 ms; opening
+hover and keyboard focus prefetch that task's directory bundle after 150 ms; opening
 the drawer consumes the same SWR request. Reopening reuses data for 30 seconds,
 then refreshes; panel hash changes invalidate the revision. An older server's
 root-only response remains usable. File/line selection stays in the existing URL
 owners, and an addressed file reads directly before its directory tree finishes.
 Directory completion must not emit file-selection callbacks or clear line anchors.
+The browser opts into `previews=true`: at most 16 files, 32 KiB each and 256 KiB
+combined, selected only from the requested pages with `instruction.md` first.
+Storage reads previews concurrently and gives each read one second; failed, binary,
+large, and omitted members retain on-demand reads. Cached archive text needs no
+additional storage request. Hosted definition routes combine current organization
+approval with exact task/version source selection in one SQL statement for ordinary
+credentials; bound analysis credentials retain additional resource checks. Cached
+publisher-owned `vN-revisions/<32-hex-token>/` archives skip HEAD only while their
+bytes remain cached. Legacy mutable archives still revalidate.
 See `docs/batched-file-loading.md` for the contract and local verification.
 
 File-list request state records the requested and received content fingerprints.
