@@ -1709,6 +1709,14 @@ All authenticated hosted routes check `organizations.execution_enabled` through
 `backend/org_access.py`, including cached API keys. This check returns the fresh
 organization row (without loading relationships), and `require_auth` supplies it
 on `auth.org` on both cache hits and misses. Keep ORM rows out of identity caches.
+`authorized_read_session(request, auth)` owns the same checks for read routes:
+resolve identity before entering, then check analysis-key resource restrictions
+and current organization approval on the borrowed read session. Trial detail,
+task open/panel/detail/files, delivery-board and QA-history reads reuse that
+session for their resource queries. End the scope before storage downloads or
+streaming; never hold a database connection across artifact I/O. Other routes
+keep `require_auth`, which uses the same checks but releases the session before
+returning. Workers can still call `require_execution_org` without a session.
 The shared Modal image must copy `org_access` through `add_local_python_source`
 in `backend/modal_app.py`: API and worker startup both import it, and `uv_sync`
 installs dependencies without installing the backend project itself.
@@ -2037,7 +2045,15 @@ Delivery board view state lives in URL parameters: `page` (one-based),
 reads these directly with `useSearchParams`; native history updates preserve
 Back/Forward behavior without refetching the already-loaded full board.
 Filter/group changes reset the page and task focus. Bulk selections and draft
-edits remain local. The board owns the existing 15-second SWR refresh: each
+edits remain local. The delivery page passes its server-loaded board with the
+Clerk user/org IDs and fetch time to a page-owned SWR cache. The cache is keyed
+by user, organization, and delivery, never by presentation filters. A matching
+server result suppresses the immediate browser board read; missing/mismatched
+results fetch normally, and non-frozen snapshots at least 15 seconds old refresh
+on activation. The board and expanded history share this cache and its mutate
+functions. Experiment metadata uses the route ID without a backend request;
+the active browser page updates its tab title from the already-loaded experiment
+name. The board owns the existing 15-second SWR refresh: each
 successful read also revalidates the expanded task's QA history, including
 reads after page mutations. History has no separate timer. Refresh errors
 retain loaded data with a stale warning and adjacent retry; revalidation never

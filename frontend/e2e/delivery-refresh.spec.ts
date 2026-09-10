@@ -453,6 +453,84 @@ for (const scope of ["all", "selected"] as const) {
   });
 }
 
+test("a fresh server board avoids the initial read and keeps history, URL navigation, and edits live", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?seed=fresh&filter=all&task=task-a&source=agent");
+  await page.getByText("QA history", { exact: true }).click();
+  await expect(current(page)).toBeVisible();
+  expect(state.reads).toEqual({ board: 0, history: 1 });
+  await page.evaluate(() =>
+    window.history.pushState(
+      null,
+      "",
+      "?seed=fresh&filter=all&group=owner&source=agent"
+    )
+  );
+  await expect(page).toHaveURL(/group=owner/);
+  await page.goBack();
+  await page.getByText("QA history", { exact: true }).click();
+  await expect(current(page)).toBeVisible();
+  expect(state.reads.board).toBe(0);
+  await page.goForward();
+  await expect(page).toHaveURL(/group=owner/);
+  expect(state.reads.board).toBe(0);
+  await page.goBack();
+  await page.getByText("QA history", { exact: true }).click();
+  state.history = history(7, 7, "success");
+  await tick(page);
+  await expect(current(page)).toContainText("qa (success)");
+  expect(state.reads.board).toBe(1);
+  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page
+    .getByRole("textbox", { name: "Handoff note" })
+    .fill("Saved after server load");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => state.reads.board).toBe(2);
+  await expect(
+    page.getByText("Saved after server load", { exact: true })
+  ).toBeVisible();
+  expect(state.writes).toHaveLength(1);
+  await page.clock.setSystemTime(new Date());
+  await page.reload();
+  await page.getByText("QA history", { exact: true }).click();
+  await expect(current(page)).toBeVisible();
+  expect(state.reads.board).toBe(2);
+  await expect(page).toHaveURL(/source=agent/);
+});
+
+test("an old server snapshot refreshes on arrival", async ({ page }) => {
+  const state = await controlledAPI(page);
+  state.board.tasks[0].task_name = "Updated task";
+  await page.goto("/?seed=stale&filter=all");
+  await expect(
+    page.getByRole("link", { name: "Updated task", exact: true })
+  ).toBeVisible();
+  expect(state.reads.board).toBe(1);
+});
+
+test("a snapshot from another organization is discarded", async ({ page }) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?seed=wrong-org&filter=all");
+  await expect(
+    page.getByRole("link", { name: "Task A", exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("OTHER_ORG_PRIVATE_TASK")).toHaveCount(0);
+  expect(state.reads.board).toBe(1);
+});
+
+test("a frozen server board has no initial or periodic board requests", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?seed=frozen&filter=all&task=task-a");
+  await page.getByText("Live task history · delivery shipped v7").click();
+  await expect(current(page)).toBeVisible();
+  await page.clock.fastForward(60000);
+  expect(state.reads).toEqual({ board: 0, history: 1 });
+});
+
 test("review shows outstanding decisions first and acknowledgment retains the version and evidence", async ({
   page,
 }, testInfo) => {

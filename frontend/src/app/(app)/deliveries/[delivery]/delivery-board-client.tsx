@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import useSWR, { useSWRConfig } from "swr";
+import useSWR, { SWRConfig, useSWRConfig } from "swr";
 import {
   Check,
   ChevronDown,
@@ -1163,21 +1163,66 @@ function TaskRow({
   );
 }
 
+export type InitialDeliveryBoard = {
+  board: DeliveryBoardResponse;
+  userId: string;
+  orgId: string;
+  fetchedAt: number;
+};
+
 export function DeliveryBoardClient({
   deliveryId,
   initialBoard,
 }: {
   deliveryId: string;
+  initialBoard: InitialDeliveryBoard | null;
+}) {
+  const auth = useAuth();
+  // The authenticated server snapshot can render before Clerk hydrates. Once
+  // Clerk is ready, its identity decides which cache and data may be shown.
+  const userId = auth.isLoaded ? auth.userId : initialBoard?.userId;
+  const orgId = auth.isLoaded ? auth.orgId : initialBoard?.orgId;
+  const snapshot =
+    initialBoard?.userId === userId &&
+    initialBoard?.orgId === orgId &&
+    initialBoard?.board.delivery.id === deliveryId
+      ? initialBoard
+      : null;
+  return (
+    <SWRConfig
+      key={JSON.stringify([userId, orgId, deliveryId])}
+      value={{ provider: () => new Map() }}
+    >
+      <DeliveryBoardContent
+        deliveryId={deliveryId}
+        initialBoard={snapshot?.board ?? null}
+        fetchedAt={snapshot?.fetchedAt}
+        enabled={Boolean(userId && orgId)}
+      />
+    </SWRConfig>
+  );
+}
+
+function DeliveryBoardContent({
+  deliveryId,
+  initialBoard,
+  fetchedAt,
+  enabled,
+}: {
+  deliveryId: string;
   initialBoard: DeliveryBoardResponse | null;
+  fetchedAt?: number;
+  enabled: boolean;
 }) {
   const { mutate: mutateResource } = useSWRConfig();
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, mutate } = useSWR<DeliveryBoardResponse>(
-    `/api/deliveries/${encodeURIComponent(deliveryId)}`,
+    enabled ? `/api/deliveries/${encodeURIComponent(deliveryId)}` : null,
     fetcher,
     {
-      refreshInterval: (board) => (board?.frozen ? 0 : 15000),
+      revalidateOnMount: !initialBoard,
+      refreshInterval: (board) => ((board ?? initialBoard)?.frozen ? 0 : 15000),
       revalidateOnFocus: !initialBoard?.frozen,
       revalidateOnReconnect: !initialBoard?.frozen,
       revalidateIfStale: !initialBoard?.frozen,
@@ -1198,6 +1243,20 @@ export function DeliveryBoardClient({
       },
     }
   );
+
+  // A router-restored or prefetched snapshot may already be a polling period
+  // old. Keep it visible while refreshing; a fresh server load needs no retry.
+  useEffect(() => {
+    if (
+      enabled &&
+      initialBoard &&
+      !initialBoard.frozen &&
+      fetchedAt !== undefined &&
+      Date.now() - fetchedAt >= 15000
+    ) {
+      void mutate(undefined, { populateCache: false, throwOnError: false });
+    }
+  }, [enabled, initialBoard, fetchedAt, mutate]);
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
