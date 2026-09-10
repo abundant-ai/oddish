@@ -136,9 +136,10 @@ interface DirectoryListing {
   status: "ready" | "loading" | "error";
 }
 
-type FilePreview =
+type FilePreview = { sourceHash?: string | null } & (
   | { kind: "text"; content: string; isTruncated: boolean; size: number | null }
-  | { kind: "binary"; url: string; size: number | null };
+  | { kind: "binary"; url: string; size: number | null }
+);
 
 interface TaskFilesPanelProps {
   isOpen: boolean;
@@ -723,6 +724,27 @@ export function TaskFilesPanel({
       })
     : null;
 
+  // The body and listing can observe different revisions during an overwrite.
+  // Track the body's own response hash before accepting late panel metadata.
+  const previewSourceIdentity = JSON.stringify([
+    fileListIdentity,
+    selectedFilePath,
+  ]);
+  const [previewRevision, setPreviewRevision] = useState<FileListRevision>({
+    identity: previewSourceIdentity,
+    observedHash: currentContentHash,
+    requestHash: currentContentHash,
+    receivedHash: null,
+  });
+  const observedPreviewRevision = observeFileListRevision(
+    previewRevision,
+    previewSourceIdentity,
+    currentContentHash
+  );
+  if (observedPreviewRevision !== previewRevision)
+    setPreviewRevision(observedPreviewRevision);
+  const previewContentHash = observedPreviewRevision.requestHash;
+
   const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
     if (!selectedFile) return null;
     const params = new URLSearchParams();
@@ -731,7 +753,7 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
-    if (currentContentHash) params.set("source_hash", currentContentHash);
+    if (previewContentHash) params.set("source_hash", previewContentHash);
     const query = params.toString();
     return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
       query ? `?${query}` : ""
@@ -762,7 +784,7 @@ export function TaskFilesPanel({
           resolvedFilesUrl,
           selectedFile.path,
           shouldScopeFilesToVersion ? currentVersion : null,
-          currentContentHash,
+          previewContentHash,
           loadFilesLazily,
           fileRouteServesBytes ? "raw" : "json",
           selectedFile.url ?? null,
@@ -779,9 +801,17 @@ export function TaskFilesPanel({
         if (!url) throw new Error("File URL unavailable");
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch file URL");
-        const data = (await res.json()) as { url?: string };
+        const data = (await res.json()) as {
+          url?: string;
+          source_hash?: string | null;
+        };
         if (!data.url) throw new Error("File URL unavailable");
-        return { kind: "binary", url: data.url, size };
+        return {
+          kind: "binary",
+          url: data.url,
+          size,
+          sourceHash: data.source_hash ?? null,
+        };
       }
 
       const shouldTruncate =
@@ -789,6 +819,7 @@ export function TaskFilesPanel({
         selectedFile.size > TRUNCATE_THRESHOLD;
       let content: string | null = null;
       let isTruncated = false;
+      let sourceHash: string | null = null;
 
       if (selectedFile.url) {
         try {
@@ -827,17 +858,31 @@ export function TaskFilesPanel({
             content?: string;
             is_truncated?: boolean;
             size?: number;
+            source_hash?: string | null;
           };
           content = data.content ?? "";
           isTruncated = data.is_truncated ?? isTruncated;
           size = data.size ?? size;
+          sourceHash = data.source_hash ?? null;
         }
       }
 
-      return { kind: "text", content, isTruncated, size };
+      return { kind: "text", content, isTruncated, size, sourceHash };
     },
     { revalidateOnFocus: false, shouldRetryOnError: false }
   );
+  useEffect(() => {
+    if (!fetchedPreview) return;
+    setPreviewRevision((revision) =>
+      revision.identity === previewSourceIdentity
+        ? receiveFileListRevision(revision, fetchedPreview.sourceHash ?? null)
+        : revision
+    );
+  }, [
+    fetchedPreview,
+    previewSourceIdentity,
+    observedPreviewRevision.observedHash,
+  ]);
   const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
   const previewIdentity = unstable_serialize(previewRequestKey);
   const loadingFullFile = loadingFullFiles.has(previewIdentity);
@@ -1335,6 +1380,7 @@ export function TaskFilesPanel({
               content,
               isTruncated: false,
               size: selectedFile.size ?? null,
+              sourceHash: fetchedPreview?.sourceHash ?? null,
             },
             { revalidate: false }
           );
@@ -1349,11 +1395,16 @@ export function TaskFilesPanel({
         return;
       }
       let content: string;
+      let sourceHash: string | null = null;
       if (fileRouteServesBytes) {
         content = await res.text();
       } else {
-        const data = (await res.json()) as { content?: string };
+        const data = (await res.json()) as {
+          content?: string;
+          source_hash?: string | null;
+        };
         content = data.content ?? "";
+        sourceHash = data.source_hash ?? null;
       }
       await mutateResource<FilePreview>(
         requestKey,
@@ -1362,6 +1413,7 @@ export function TaskFilesPanel({
           content,
           isTruncated: false,
           size: selectedFile.size ?? null,
+          sourceHash,
         },
         { revalidate: false }
       );

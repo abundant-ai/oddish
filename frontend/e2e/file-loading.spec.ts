@@ -4,6 +4,88 @@ const finding =
   "/tasks/task-a?version=7&drawer=task&finding=empty-answer&taskPane=file&taskFile=tests%2Ftest.sh&taskLines=L7";
 const fileList = "**/api/tasks/task-a/files?**";
 
+for (const order of ["body-first", "metadata-first"] as const) {
+  for (const matches of [true, false]) {
+    test(`late preview hash: ${order}, ${matches ? "matching" : "changed"} contents`, async ({
+      page,
+    }) => {
+      let releaseMetadata!: () => void;
+      let releaseBody!: () => void;
+      const metadataGate = new Promise<void>((resolve) => {
+        releaseMetadata = resolve;
+      });
+      const bodyGate = new Promise<void>((resolve) => {
+        releaseBody = resolve;
+      });
+      const reads: URL[] = [];
+      await page.route("**/api/tasks/task-a/panel?**", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        data.version.content_hash = "fixture-v7";
+        await metadataGate;
+        await route.fulfill({ json: data });
+      });
+      await page.route(
+        "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+        async (route) => {
+          reads.push(new URL(route.request().url()));
+          const first = reads.length === 1;
+          if (first) await bodyGate;
+          await route.fulfill({
+            json: {
+              content: first && !matches ? "OLDER FILE" : "CURRENT FILE",
+              source_hash: first && !matches ? "old-hash" : "fixture-v7",
+              is_truncated: false,
+            },
+          });
+        }
+      );
+      try {
+        await page.goto(
+          "/experiments/review-demo?task=task-a&taskPane=file&taskFile=tests%2Ftest.sh&taskLines=L1"
+        );
+        await expect.poll(() => reads.length).toBe(1);
+        if (order === "body-first") {
+          releaseBody();
+          await expect(
+            page.getByText(matches ? "CURRENT FILE" : "OLDER FILE", {
+              exact: true,
+            })
+          ).toBeVisible();
+        }
+        const metadata = page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === "/api/tasks/task-a/panel"
+        );
+        releaseMetadata();
+        await (await metadata).finished();
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve())
+              )
+            )
+        );
+        if (order === "metadata-first") {
+          expect(reads).toHaveLength(1);
+          releaseBody();
+        }
+        await expect(
+          page.getByText("CURRENT FILE", { exact: true })
+        ).toBeVisible();
+        expect(reads).toHaveLength(matches ? 1 : 2);
+        if (!matches)
+          expect(reads[1].searchParams.get("source_hash")).toBe("fixture-v7");
+        expect(new URL(page.url()).searchParams.get("taskLines")).toBe("L1");
+      } finally {
+        releaseMetadata();
+        releaseBody();
+      }
+    });
+  }
+}
+
 function batch(version = 7) {
   return {
     version,

@@ -828,6 +828,10 @@ Late task details do not abort a pending listing just to add a previously unknow
 fingerprint; a differing fingerprint still invalidates the listing. The response
 fingerprint resolves the race whether details or the listing finish first. URL
 selection and line anchors retain their existing ownership.
+Selected-file previews keep their own requested/received fingerprint using the
+same revision bookkeeping. A late matching panel hash must not change the body
+request key or clear the preview; a differing body hash still triggers a fresh
+read. Preserve `source_hash` through previews, binary URLs, and full-file reads.
 
 Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
 `backend.request.phases` includes storage operation counts, downloaded/archive bytes,

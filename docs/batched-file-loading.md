@@ -61,6 +61,10 @@ or when it falls outside the first page. A requested line beyond the initial
 the remaining file; the completed body writes
 only to the file/version cache key captured when that request started.
 Receiving a file's size from the directory listing does not restart its body read.
+The selected file tracks its own response hash independently of its directory
+listing. A late matching panel hash leaves both its request key and painted
+content in place; a differing hash requests the new contents. This applies
+whether the body or panel metadata arrives first, including full-file reads.
 Existing wrapper-directory discovery, ancestor expansion, per-directory pagination,
 and missing historical evidence
 messages remain. Incoming file addresses set selection directly; they do not echo
