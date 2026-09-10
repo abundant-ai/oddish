@@ -555,7 +555,8 @@ async def test_harbor_event_ignores_superseded_trial(monkeypatch):
     assert trial.harbor_stage is None
 
 
-def test_capacity_error_end_hook_remains_eligible_for_fallback():
+def test_capacity_error_end_hook_remains_eligible_for_fallback(monkeypatch):
+    monkeypatch.setattr(trial_handler_mod.settings, "thunder_capacity_fallback", True)
     event = SimpleNamespace(
         environment_provider="thunder",
         result=SimpleNamespace(
@@ -574,6 +575,18 @@ def test_non_capacity_end_hook_is_not_fallback():
         ),
     )
 
+    assert trial_handler_mod._is_thunder_capacity_hook_error(event) is False
+
+
+def test_capacity_end_hook_is_not_suppressed_when_fallback_disabled(monkeypatch):
+    event = SimpleNamespace(
+        environment_provider="thunder",
+        result=SimpleNamespace(
+            exception_info=SimpleNamespace(exception_type="CapacityError")
+        ),
+    )
+
+    monkeypatch.setattr(trial_handler_mod.settings, "thunder_capacity_fallback", False)
     assert trial_handler_mod._is_thunder_capacity_hook_error(event) is False
 
 

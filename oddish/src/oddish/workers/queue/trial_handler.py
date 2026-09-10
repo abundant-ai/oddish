@@ -389,8 +389,15 @@ def _is_thunder_capacity_hook_error(
     hook_event: TrialHookEvent, *, environment: str | None = None
 ) -> bool:
     """Identify a capacity miss before the END hook closes the trial."""
+    if not settings.thunder_capacity_fallback:
+        return False
     result = getattr(hook_event, "result", None)
     exception_info = getattr(result, "exception_info", None)
+    provider_error_code = getattr(exception_info, "provider_error_code", None) or getattr(
+        exception_info, "code", None
+    )
+    if provider_error_code is not None:
+        return provider_error_code == THUNDER_CAPACITY_UNAVAILABLE_CODE
     return (
         (
             getattr(hook_event, "environment_provider", None) or environment or ""
@@ -1090,6 +1097,7 @@ async def _store_trial_results(
                 outcome.verifier_summary,
                 outcome.error,
                 outcome.exception_type,
+                provider_error_code=outcome.provider_error_code,
                 http_status=outcome.http_status,
                 request_id=outcome.request_id,
                 session_id=outcome.session_id,

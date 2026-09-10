@@ -207,6 +207,7 @@ def build_trial_result(
     error: str | None,
     exception_type: str | None,
     *,
+    provider_error_code: str | None = None,
     http_status: int | None = None,
     request_id: str | None = None,
     session_id: str | None = None,
@@ -225,7 +226,8 @@ def build_trial_result(
             {
                 key: value
                 for key, value in {
-                    "http_status": http_status,
+                "provider_error_code": provider_error_code,
+                "http_status": http_status,
                     "request_id": request_id,
                     "session_id": session_id,
                     "retry_after_seconds": retry_after_seconds,

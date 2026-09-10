@@ -613,16 +613,37 @@ async def _record_reroute_outcome(
                    attempts,
                    current_worker_id,
                    deleted_at,
-                   superseded_by_trial_id
+                   superseded_by_trial_id,
+                   result
             FROM trials
             WHERE id = $1
             FOR UPDATE
             """,
                 subject_id,
             )
+            result = trial.get("result") if trial is not None else None
+            harbor_exception = (
+                result.get("harbor_exception")
+                if isinstance(result, dict)
+                else None
+            )
+            terminal_capacity_error = bool(
+                trial is not None
+                and trial["status"] in {"FAILED", "RETRYING"}
+                and isinstance(harbor_exception, dict)
+                and harbor_exception.get("exception_type") == "CapacityError"
+                and (
+                    harbor_exception.get("provider_error_code")
+                    or THUNDER_CAPACITY_UNAVAILABLE_CODE
+                )
+                == THUNDER_CAPACITY_UNAVAILABLE_CODE
+            )
             if (
                 trial is None
-                or trial["status"] != "RUNNING"
+                or (
+                    trial["status"] != "RUNNING"
+                    and not terminal_capacity_error
+                )
                 or (trial["environment"] or "").strip().lower() != "thunder"
                 or int(trial["attempts"]) != reroute.subject_attempt
                 or trial["current_worker_id"] != worker_id
@@ -744,6 +765,7 @@ async def _record_reroute_outcome(
             UPDATE trials
             SET environment = $2,
                 status = 'RETRYING',
+                finished_at = NULL,
                 next_retry_at = NULL,
                 current_worker_id = NULL,
                 current_queue_slot = NULL,
