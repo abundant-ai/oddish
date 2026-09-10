@@ -2,8 +2,20 @@
 
 from sqlalchemy import text
 
+# Shared by bounded task reads. A stored verdict is task-scoped, so source
+# provenance must be checked before presenting it on a selected version.
+VERDICT_VERSION_SQL = """(
+    SELECT q.task_version_id FROM trials q
+    WHERE q.task_id = {task_id} AND q.kind = 'qa' AND q.status = 'SUCCESS'
+      AND q.deleted_at IS NULL
+      AND (CASE WHEN {verdict}->>'_graded_by' IS NOT NULL
+        THEN q.id = {verdict}->>'_graded_by'
+        ELSE COALESCE(q.harbor_config->'analysis_payload'->>'with_verdict', 'true') <> 'false' END)
+    ORDER BY COALESCE(q.finished_at, q.created_at) DESC, q.id DESC LIMIT 1
+)"""
+
 IDENTITY_SQL = text(
-    """
+    f"""
     WITH identity AS (
       SELECT t.id AS task_id, t.name, lower(t.status::text) AS status,
              lower(t.priority::text) AS priority, t."user", t.task_path, t.link,
@@ -29,6 +41,7 @@ IDENTITY_SQL = text(
       LIMIT 1
     )
     SELECT i.*,
+      COALESCE({VERDICT_VERSION_SQL.format(task_id="i.task_id", verdict="i.verdict")} = i.selected_version_id, false) AS review_version_matches,
       COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
         SELECT e.id, e.name FROM task_experiments te
         JOIN experiments e ON e.id = te.experiment_id

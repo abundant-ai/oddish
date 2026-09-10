@@ -47,7 +47,6 @@ test("invalid external URL values fall back to the default view", () => {
           days: "-7",
           qa: "constructor",
           issue: "__proto__",
-          owner: "stranger",
           group: "invalid",
           task: "",
         })
@@ -106,4 +105,45 @@ test("unsupported page sizes fall back to 25 rows", () => {
       25
     );
   }
+});
+
+test("default prioritizes outstanding work and complete inventory has an explicit URL", () => {
+  assert.equal(parseDeliveryView(new URLSearchParams()).filter, "outstanding");
+  const inventory = deliveryViewQuery("", { filter: "all" });
+  assert.equal(inventory, "?filter=all");
+  assert.equal(parseDeliveryView(new URLSearchParams(inventory)).filter, "all");
+});
+
+test("named owners and review panels survive shared links", () => {
+  const query = deliveryViewQuery("?task=abc", {
+    owner: "user_someone_else",
+    panels: "history,all-versions,version-v1,finding-f1,!decisions",
+  });
+  const params = new URLSearchParams(query);
+  assert.equal(parseDeliveryView(params).ownerFilter, "user_someone_else");
+  assert.equal(
+    params.get("panels"),
+    "history,all-versions,version-v1,finding-f1,!decisions"
+  );
+  assert.equal(parseDeliveryView(params).focusTask, "abc");
+});
+
+test("changing one view field preserves every other URL parameter", () => {
+  const current =
+    "?page=2&per_page=50&filter=blocked&days=1&qa=needs_fixes&issue=verifier&owner=user_42&group=owner&task=task_7&panels=history%2Call-versions&source=slack";
+  const params = new URLSearchParams(deliveryViewQuery(current, { page: "3" }));
+
+  assert.deepEqual(Object.fromEntries(params), {
+    page: "3",
+    per_page: "50",
+    filter: "blocked",
+    days: "1",
+    qa: "needs_fixes",
+    issue: "verifier",
+    owner: "user_42",
+    group: "owner",
+    task: "task_7",
+    panels: "history,all-versions",
+    source: "slack",
+  });
 });

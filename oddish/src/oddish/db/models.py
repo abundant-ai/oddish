@@ -823,6 +823,8 @@ class TaskVersionModel(TimestampedMixin, Base):
 
     # Human coordination is shared by every delivery of this version.
     qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Evidence retained when an audit or execution review is replaced.
+    reported_findings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
@@ -2756,10 +2758,11 @@ class CustomerModel(TimestampedMixin, Base):
 class DeliveryModel(TimestampedMixin, Base):
     """A customer-facing shipping checklist over a set of tasks.
 
-    Readiness is never stored: the board is recomputed from live signals
+    Readiness is computed from live signals
     (pre-trial audits, eligible trials, verdicts) against each task's
-    current default version. Only membership, manual ticks, config, and
-    the finalize snapshot persist.
+    current default version. Hourly observations track progress only; they never
+    decide readiness. Membership, manual ticks, config, and the finalize
+    snapshot also persist.
     """
 
     __tablename__ = "deliveries"
@@ -2875,10 +2878,11 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
         # delivery-level ticks (delivery_task_id IS NULL) get their own
         # partial unique index.
         Index(
-            "uq_delivery_manual_checks_task",
+            "uq_delivery_manual_checks_task_version",
             "delivery_id",
             "delivery_task_id",
             "check_key",
+            "task_version_id",
             unique=True,
             postgresql_where=text("delivery_task_id IS NOT NULL"),
         ),
@@ -2909,6 +2913,23 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class DeliveryProgressModel(Base):
+    """Hourly observations, independent of the immutable shipping snapshot."""
+
+    __tablename__ = "delivery_progress"
+
+    delivery_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("deliveries.id", ondelete="CASCADE"), primary_key=True
+    )
+    sample_hour: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    counts: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class DeliverySnapshotModel(Base):

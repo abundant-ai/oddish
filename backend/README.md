@@ -605,3 +605,96 @@ snapshot + adaptive daily goal on `GET /quotas/org`. Admission takes no
 locks; concurrent submissions can briefly overshoot a cap and the
 enforcement sweep cancels the overage. Only the sweep takes the quota
 advisory locks (org → payer, non-blocking).
+
+### Model endpoint monitoring
+
+The operator Admin overview shows failing or overdue model connections. Healthy
+connections stay behind **All connections and history**. Opening the page reads
+saved observations; **Check again** schedules one check and does not start a trial.
+Checks only establish whether a small completion works. They do not test agent
+startup, tools, long contexts, or capacity under load.
+
+Apply backend migration `endpoint_health_001` before deploying. The scheduled
+functions register by default in production (`MODAL_APP_NAME=oddish`), and are
+off in staging and PR previews. To exercise them in a non-production app, set
+`ODDISH_ENABLE_ENDPOINT_MONITORING=true` in the deployment environment. Set the
+same flag to `false` when deploying to disable the schedules. The API reports
+that disabled state explicitly.
+
+Set `ODDISH_ENDPOINT_MONITORS` in the app's runtime secret to a JSON array of
+connections to check. An empty array means no connections are monitored; the
+UI does not report that as healthy. Reference the same provider credentials and
+endpoint settings used for execution. Do not paste secret values into the array.
+For example (replace the deployment/model names with those actually configured):
+
+```json
+[
+  {
+    "name": "Primary OpenAI deployment",
+    "model": "azure/your-deployment-name",
+    "api_key_env": "AZURE_OPENAI_API_KEY",
+    "api_base_env": "AZURE_OPENAI_ENDPOINT",
+    "api_version_env": "AZURE_OPENAI_API_VERSION"
+  },
+  {
+    "name": "Direct Anthropic",
+    "model": "anthropic/your-model-id",
+    "api_key_env": "ANTHROPIC_API_KEY"
+  }
+]
+```
+
+Model strings use LiteLLM's explicit provider/model form. Optional `api_base_env`
+and `api_version_env` reference runtime variables; endpoints must be HTTPS with
+no embedded credentials or query string. Bedrock entries use `bedrock/<model-id>`,
+a required `region`, and the app's standard AWS runtime credentials, without
+`api_key_env`. `max_tokens` defaults to 1,024 and accepts 32–4,096: reasoning models
+may need budget before emitting visible text. Requests have a 20-second SDK
+timeout and a 22-second outer deadline, with SDK retries and response caching
+disabled. No router or provider fallback participates in a check.
+
+Connection identity includes the model and configuration references, but not the
+display name. Changing a reference creates a new history; rotating the secret
+behind the same reference continues that connection's history. Removed entries
+are disabled on the next scheduler run. History links remain readable for 30 days.
+This first version monitors explicit platform connections, not customer-owned
+keys or models discovered by scanning trial history.
+
+The scheduler wakes every minute, claims up to 10 due connections, and sends at
+most five concurrent requests without holding database connections. Normal checks
+are due every 15 minutes. Failures and monitor errors are due again after one
+minute, subject to the batch limit. Two consecutive provider failures open one
+incident; a successful completion closes it. Monitor defects are shown separately
+and never establish or resolve a provider incident. A missing observation for
+30 minutes is overdue even if the last result succeeded. At the maximum supported
+100 connections, first checks and large simultaneous failures can take multiple
+scheduler ticks to drain; the one-minute confirmation is a due time, not a latency
+promise.
+
+A check batch uses four SQL statements: synchronize configured connections, claim
+work, update current state, and insert check history. An incident transition adds
+one bulk Slack-outbox insert in the same transaction. An idle tick uses two
+statements. Claims expire after three minutes and are fenced by unique tokens, so
+late or duplicate results cannot overwrite a newer claim. The hourly retention
+job deletes at most 20,000 observations older than 30 days per run.
+
+Alerts use the existing Slack channel sender. Configure `SLACK_EXPENSE_WEBHOOK_URL`
+and enable `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` for that deployment; the
+optional named Slack secret is shared with the monitor. Each incident creates at
+most one opening and one recovery outbox record. Delivery runs on the existing
+five-minute schedule, adding up to a delivery interval in the normal case. Slack
+failures leave records pending. Delivery is at least once: a process crash after
+Slack accepts a message but before the database acknowledgement can duplicate it.
+The card reports when channel alerts were unavailable at the last check.
+
+Only administrators in `ODDISH_OPERATOR_ORG_ID` may read status/history or request
+checks. Notifications link to `/admin?endpoint=<connection-id>`. Provider exception
+text, completion text, and secret values are not persisted. History stores
+sanitized failure descriptions, HTTP status, latency, and a provider request ID
+when available. The current-status request and a bounded history request each use
+one monitoring query, in addition to the existing authentication queries.
+
+For local database verification, point `ENDPOINT_TEST_DATABASE_URL` at a disposable
+PostgreSQL database and run `pytest tests/test_endpoint_health.py` from `backend`.
+That suite recreates the monitoring tables and its isolated Slack-outbox fixture;
+it must not target an application database. Provider calls are mocked.

@@ -322,6 +322,7 @@ def _aggregate_task_detail_rollups(
             created_at=v.created_at,
             is_current=(v.id == current_version_id),
             pre_trial_findings=((v.pre_trial or {}).get("items") or []),
+            retained_findings=[report["finding"] for report in v.reported_findings or []],
             pre_trial_status=v.pre_trial_status,
             pre_trial_error=v.pre_trial_error,
             pre_trial_cost_usd=(v.pre_trial or {}).get("cost_usd"),

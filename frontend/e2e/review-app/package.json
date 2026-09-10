@@ -1,0 +1,7 @@
+{
+  "name": "oddish-review-browser-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack --hostname 127.0.0.1 --port 3207"
+  }
+}

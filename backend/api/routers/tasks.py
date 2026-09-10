@@ -91,7 +91,14 @@ from api.schemas import (
     ModelRenameRequest,
     ModelRenameResponse,
 )
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
@@ -1666,13 +1673,12 @@ async def get_task_status(
 async def get_task_open(
     request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version_id: str | None = None,
 ) -> TaskOpenResponse:
     """Bounded task-page header, aggregates, and trial preview."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_open_core(
             session,
             task_id=task_id,
@@ -1684,12 +1690,13 @@ async def get_task_open(
 
 @router.get("/tasks/{task_id}/panel", response_model=TaskPanelResponse)
 async def get_task_panel(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version: int | None = None,
 ) -> TaskPanelResponse:
-    auth.require_scope(APIKeyScope.READ)
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_panel_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
         )
@@ -1697,13 +1704,13 @@ async def get_task_panel(
 
 @router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TaskDetailResponse:
     """Task detail bundle: task + trials + per-version + cost rollups."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
@@ -1786,8 +1793,9 @@ def _build_task_file_etag(archive_etag: str, file_path: str) -> str:
 
 @router.get("/tasks/{task_id}/files")
 async def list_task_files(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
@@ -1811,9 +1819,8 @@ async def list_task_files(
     With stream=True the response is NDJSON: a listing chunk as soon as the
     tree is known, then per-file content chunks as they load.
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         source = await resolve_task_file_source(
             session,
             task_id=task_id,
@@ -1860,7 +1867,7 @@ async def get_task_file_content(
     file_path: str,
     request: Request,
     response: Response,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
     max_bytes: int | None = Query(None, ge=1),
@@ -1872,9 +1879,8 @@ async def get_task_file_content(
     ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
     so clients must revalidate rather than treating a version URL as immutable.
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         source = await resolve_task_file_source(
             session,
             task_id=task_id,

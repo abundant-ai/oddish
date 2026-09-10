@@ -57,6 +57,9 @@ ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
 )
+ENABLE_ENDPOINT_MONITORING = _env_flag(
+    "ODDISH_ENABLE_ENDPOINT_MONITORING", MODAL_APP_NAME == "oddish"
+)
 ENABLE_CARL_AGENT = _env_flag("ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish")
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
@@ -822,6 +825,8 @@ ENV_VARS = {
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
     "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
+    "ODDISH_ENABLE_ENDPOINT_MONITORING": str(ENABLE_ENDPOINT_MONITORING).lower(),
+    "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS": str(ENABLE_SLACK_EXPENSE_NOTIFICATIONS).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -1070,6 +1075,8 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "dashboard_cache",
             "dashboard_owner_backfill",
             "endpoints",
+            "endpoint_health",
+            "endpoint_health_worker",
             "idempotency_store",
             "modal_app",
             "modal_runtime",
