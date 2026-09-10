@@ -52,6 +52,10 @@ async def test_hourly_observations_daily_history_and_read_only_board(session):
     await record_delivery_progress(session, board, recorded_at=now + timedelta(hours=1))
     history = await delivery_progress_history(session, delivery.id)
     assert len(history) == 2  # Missing yesterday was not invented as a zero.
+    assert history[0].owners["unassigned"].task_count == 1
+    assert history[0].owners["unassigned"].ready == 0
+    assert history[1].owners["reviewer"].task_count == 1
+    assert "unassigned" not in history[1].owners
     assert history[0].unassigned == 1
     assert history[1].unassigned == 0
     assert history[1].recorded_at == now + timedelta(hours=1)
@@ -95,6 +99,8 @@ async def test_finalization_records_and_freezes_progress(session):
     )
     assert board.progress_history[-1].ready == 1
     assert board.progress_history[-1].unassigned == 0
+    assert board.progress_history[-1].owners["unassigned"].task_count == 1
+    assert board.progress_history[-1].owners["unassigned"].ready == 1
     assert "progress_history" not in _customer_safe_board(board)
     # Later task changes cannot rewrite what the finalized delivery shows.
     task.verdict = {"is_good": False, "verdict": "reject"}
@@ -186,3 +192,30 @@ async def test_background_recorder_samples_without_a_page_read(monkeypatch):
                 )
         finally:
             await transaction.rollback()
+
+
+@pytest.mark.asyncio
+async def test_legacy_observation_has_no_owner_history(session):
+    task, _, _ = await _green_task(session, "legacy-owner-progress")
+    delivery = await create_delivery_core(
+        session,
+        org_id=ORG,
+        user_id="reviewer",
+        data=DeliveryCreate(
+            name="legacy-owner-progress", customer="customer", task_ids=[task.id]
+        ),
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    await record_delivery_progress(session, board)
+    stored = await session.scalar(
+        select(DeliveryProgressModel).where(
+            DeliveryProgressModel.delivery_id == delivery.id
+        )
+    )
+    stored.counts = {
+        key: value for key, value in stored.counts.items() if key != "owners"
+    }
+    await session.flush()
+    point = (await delivery_progress_history(session, delivery.id))[0]
+    assert point.task_count == 1
+    assert point.owners is None

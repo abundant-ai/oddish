@@ -15,7 +15,11 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.schemas import DeliveryBoardResponse, DeliveryProgressPoint
+from oddish.schemas import (
+    DeliveryBoardResponse,
+    DeliveryOwnerProgress,
+    DeliveryProgressPoint,
+)
 
 
 async def record_delivery_progress(
@@ -32,7 +36,15 @@ async def record_delivery_progress(
         )
         for row in board.tasks
     )
+    owners: dict[str, DeliveryOwnerProgress] = {}
+    for row in board.tasks:
+        owner = owners.setdefault(
+            row.qa_work.owner_user_id or "unassigned", DeliveryOwnerProgress()
+        )
+        owner.task_count += 1
+        owner.ready += int(row.ready)
     point = DeliveryProgressPoint(
+        owners=owners,
         recorded_at=now,
         task_count=board.task_count,
         ready=board.ready_task_count,
