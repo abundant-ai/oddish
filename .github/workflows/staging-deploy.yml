@@ -94,8 +94,8 @@ jobs:
       ODDISH_MODAL_API_MAX_CONTAINERS: "8"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "40"
-      ODDISH_MODAL_MAX_WORKERS_PER_POLL: "40"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "400"
+      ODDISH_MODAL_MAX_WORKERS_PER_POLL: "400"
       # Explicit documentation of the default (MODAL_APP_NAME != "oddish").
       ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS: "false"
     steps:
@@ -171,6 +171,14 @@ jobs:
         run: |
           uv sync --frozen
           uv run alembic upgrade head
+
+      # Migrations keep the session URL above. Runtime transactions share the
+      # database pool instead of reserving one backend per connected worker.
+      - name: Publish staging runtime database connection
+        working-directory: backend
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: uv run python ../.github/scripts/staging/publish_runtime_db.py
 
       - name: Deploy
         working-directory: backend

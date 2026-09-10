@@ -444,6 +444,16 @@ audit no longer matches instead of repeatedly importing it. Audit writes also
 check the latest audit trial under the version lock, and duplicate successful
 imports preserve the original timestamps and exploitation annotations.
 
+General task-run cancellation mirrors a cancelled audit onto its task version
+in the same transaction, setting pending pre-trial status to FAILED with the
+audit's error and finish time. `settle_cancelled_audit_status` requires the
+owning task lock and verifies that the latest non-superseded audit is cancelled
+and no audit execution remains active. Cleanup runs this repair before QA
+admission for historical stranded versions, reporting `cancelled_audits_healed`.
+It defers versions whose task still has active trials or worker jobs and closes
+an idle current-version task without launching replacement QA, while
+preserving published verdicts, newer audits, and work in other experiments.
+
 Delivery boards expose the latest QA run's evidence coverage and completion time.
 `oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
 audit with the current default version, using the same eligibility clauses and
@@ -1881,6 +1891,16 @@ because the backend can hard-require new schema on its hot paths.
 `.github/workflows/staging-deploy.yml` sequences migrations then the Modal
 deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
 after the backend, so a new frontend never reaches an old backend.
+
+Staging allows 400 worker containers and up to 400 starts per dispatcher poll.
+Its `STAGING_DATABASE_URL` GitHub secret remains a session-pool connection on
+port 5432 for migrations and bootstrap. Both staging workflows use
+`.github/scripts/staging/publish_runtime_db.py` to publish the same credentials
+on transaction-pool port 6543 to the `oddish-staging-db` Modal runtime secret.
+The runtime must not use session mode: its 20-connection pool rejected worker
+starts during the September 9 load test. Transaction pooling shares database
+backends across brief API and worker transactions; the 400-worker setting is
+an execution cap, not a claim of 400 simultaneous database transactions.
 
 ### Key Files
 
