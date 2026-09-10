@@ -2637,6 +2637,8 @@ class ManualCheckSet(BaseModel):
     check_key: str = Field(min_length=1, max_length=64)
     # Required for task-scoped checks; must be omitted for delivery-scoped.
     delivery_task_id: str | None = None
+    # When supplied, reject a stale browser instead of checking a replacement.
+    expected_version_id: str | None = None
     checked: bool
     note: str = Field(default="", max_length=4000)
 

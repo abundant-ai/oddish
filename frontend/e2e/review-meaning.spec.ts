@@ -288,6 +288,7 @@ test.describe("real components with local fixture API", () => {
           check_key: "signoff",
           delivery_task_id: "delivery-awaiting-signoff",
           checked: true,
+          expected_version_id: "awaiting-signoff-v1",
         },
       ]);
     await expect(row).toHaveCount(0);

@@ -657,7 +657,7 @@ test.describe("authenticated task view", () => {
     );
     await page.getByRole("button", { name: "Make default" }).click();
     await expect.poll(() => defaultMutationCount).toBe(1);
-    await expect(page).not.toHaveURL(/version=/);
+    await expect(page).toHaveURL(/version=version-1/);
 
     // Revisit a resource cached before the mutation, then select the former
     // default. Every versioned cache must agree that v1 is now the default;
@@ -705,7 +705,7 @@ test.describe("authenticated task view", () => {
     );
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
-    await page.getByRole("button", { name: "Run QA" }).click();
+    await page.getByRole("button", { name: "Run execution review" }).click();
     await expect
       .poll(() => backfillBody)
       .toEqual({
