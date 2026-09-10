@@ -1807,6 +1807,13 @@ async def list_task_files(
         True, description="Include eligible text file contents in the listing"
     ),
     version: int | None = Query(None, description="Task version number"),
+    directories: Annotated[
+        list[str] | None,
+        Query(
+            max_length=8,
+            description="Repeat for 1–8 metadata-only directory pages; empty means root",
+        ),
+    ] = None,
     stream: bool = Query(
         False,
         description="Stream NDJSON: the file tree first, then file contents",
@@ -1828,6 +1835,9 @@ async def list_task_files(
             version=version,
         )
 
+    if directories is not None and stream:
+        raise HTTPException(400, "Batched directory listings do not stream file bodies")
+
     if stream:
         return await make_task_files_ndjson_response(
             stream_task_files_s3(
@@ -1847,6 +1857,7 @@ async def list_task_files(
 
     return await list_task_files_s3(
         task_id=task_id,
+        **({"directories": directories} if directories is not None else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,

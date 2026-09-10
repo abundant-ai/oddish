@@ -802,11 +802,36 @@ database-selected immutable directories bypass legacy manifest validation. Exist
 back to the archive. Listing responses (including the first NDJSON chunk) and file
 responses carry `source_hash` for the contents selected by the database.
 
+Task listings also accept repeated `directories` parameters (1–8 paths; an empty
+path means root), with `recursive=false&inline=false&presign=false`. Each directory
+gets its own first page and continuation cursor under `directories`; `limit` is
+per directory. Batch mode refuses `prefix`, `cursor`, and streaming. Hosted,
+standalone, and token-scoped public routes share this contract. Storage resolves
+and validates one source for the batch, then lists the bounded pages concurrently;
+archive-only sources are loaded once. Existing single-directory and recursive
+CLI responses are unchanged.
+
+`useTaskFileTree` owns the browser directory cache, scoped by user/organization
+(or the public token URL), task, version, and known content hash. The first batch
+contains root, solution, tests, and environment, at 100 entries each; other
+sections, wrappers, and continuation pages use the original listing API. Task-name
+hover and keyboard focus prefetch only that task's metadata after 150 ms; opening
+the drawer consumes the same SWR request. Reopening reuses data for 30 seconds,
+then refreshes; panel hash changes invalidate the revision. An older server's
+root-only response remains usable. File/line selection stays in the existing URL
+owners, and an addressed file reads directly before its directory tree finishes.
+Directory completion must not emit file-selection callbacks or clear line anchors.
+See `docs/batched-file-loading.md` for the contract and local verification.
+
 File-list request state records the requested and received content fingerprints.
 Late task details do not abort a pending listing just to add a previously unknown
 fingerprint; a differing fingerprint still invalidates the listing. The response
 fingerprint resolves the race whether details or the listing finish first. URL
 selection and line anchors retain their existing ownership.
+Selected-file previews keep their own requested/received fingerprint using the
+same revision bookkeeping. A late matching panel hash must not change the body
+request key or clear the preview; a differing body hash still triggers a fresh
+read. Preserve `source_hash` through previews, binary URLs, and full-file reads.
 
 Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
 `backend.request.phases` includes storage operation counts, downloaded/archive bytes,
@@ -1753,7 +1778,9 @@ on `auth.org` on both cache hits and misses. Keep ORM rows out of identity cache
 resolve identity before entering, then check analysis-key resource restrictions
 and current organization approval on the borrowed read session. Trial detail,
 task open/panel/detail/files, delivery-board and QA-history reads reuse that
-session for their resource queries. End the scope before storage downloads or
+session for their resource queries. Trial artifact GETs (files, logs, result,
+trajectory, and probe/debug artifacts) also share this scope, detaching the trial
+before calling storage. End the scope before storage downloads or
 streaming; never hold a database connection across artifact I/O. Other routes
 keep `require_auth`, which uses the same checks but releases the session before
 returning. Workers can still call `require_execution_org` without a session.

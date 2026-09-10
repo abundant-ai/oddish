@@ -362,24 +362,43 @@ async def list_task_files_s3(
     expanded: bool | None = None,
     expanded_manifest_key: str | None = None,
     source_hash: str | None = None,
+    directories: list[str] | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
-    storage = get_storage_client()
-
-    try:
-        result = await storage.list_task_files(
-            task_id=task_id,
-            prefix=prefix,
-            recursive=recursive,
-            limit=limit,
-            cursor=cursor,
-            presign=presign,
-            version=version,
-            task_s3_prefix=task_s3_prefix,
-            inline=inline,
-            expanded=expanded,
-            expanded_manifest_key=expanded_manifest_key,
+    if directories is not None and (
+        recursive or inline or presign or prefix is not None or cursor is not None
+    ):
+        raise HTTPException(
+            400,
+            "Batched directories require recursive=false, inline=false, "
+            "presign=false, and no prefix or cursor",
         )
+    storage = get_storage_client()
+    try:
+        if directories is not None:
+            result = await storage.list_task_directories(
+                task_id=task_id,
+                directories=directories,
+                limit=limit,
+                version=version,
+                task_s3_prefix=task_s3_prefix,
+                expanded=expanded,
+                expanded_manifest_key=expanded_manifest_key,
+            )
+        else:
+            result = await storage.list_task_files(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+                task_s3_prefix=task_s3_prefix,
+                inline=inline,
+                expanded=expanded,
+                expanded_manifest_key=expanded_manifest_key,
+            )
         return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
