@@ -12,7 +12,6 @@ import {
   Link2,
   Lock,
   Plus,
-  X,
 } from "lucide-react";
 
 import { findingHref } from "@/lib/review";
@@ -1526,6 +1525,15 @@ function DeliveryBoardContent({
   }
 
   const frozen = data.frozen;
+  const owners = new Map<string, string>();
+  for (const row of data.tasks) {
+    if (row.qa_work.owner_user_id) {
+      owners.set(
+        row.qa_work.owner_user_id,
+        row.qa_owner_name ?? row.qa_work.owner_user_id
+      );
+    }
+  }
   const {
     rows: filteredTasks,
     groupLabel,
@@ -1743,15 +1751,7 @@ function DeliveryBoardContent({
         )}
       </section>
 
-      <DeliveryOverview
-        board={data}
-        filter={filter}
-        ownerFilter={ownerFilter}
-        onFilter={(nextFilter) =>
-          updateView({ filter: nextFilter, page: null, task: null })
-        }
-        onOwnerChange={(owner) => updateView({ owner, page: null, task: null })}
-      />
+      <DeliveryOverview board={data} ownerFilter={ownerFilter} />
 
       <section>
         <div>
@@ -1765,23 +1765,68 @@ function DeliveryBoardContent({
                 </p>
               )}
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-medium">Tasks</h2>
-                {filter !== "all" && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      updateView({ filter: "all", page: null, task: null })
+                <div
+                  role="group"
+                  aria-label="Task filters"
+                  className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap"
+                >
+                  <Select
+                    value={filter}
+                    onValueChange={(filter) =>
+                      updateView({ filter, page: null, task: null })
                     }
-                    aria-label="Clear state filter"
                   >
-                    {filter === "outstanding"
-                      ? "Outstanding"
-                      : DELIVERY_STATES[filter].label}
-                    <X className="ml-1 h-3 w-3" />
-                  </Button>
-                )}
-                <div className="ml-auto flex flex-wrap items-center gap-2">
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="State filter"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All states</SelectItem>
+                      {filter === "outstanding" && (
+                        <SelectItem value="outstanding">Outstanding</SelectItem>
+                      )}
+                      {Object.entries(DELIVERY_STATES).map(([key, state]) => (
+                        <SelectItem key={key} value={key}>
+                          {state.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={ownerFilter}
+                    onValueChange={(owner) =>
+                      updateView({ owner, page: null, task: null })
+                    }
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="Owner filter"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All owners</SelectItem>
+                      {data.qa_viewer_user_id && (
+                        <SelectItem value="mine">Mine</SelectItem>
+                      )}
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {[...owners]
+                        .sort((a, b) => a[1].localeCompare(b[1]))
+                        .map(([id, name]) => (
+                          <SelectItem key={id} value={id}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      {!["all", "mine", "unassigned"].includes(ownerFilter) &&
+                        !owners.has(ownerFilter) && (
+                          <SelectItem value={ownerFilter}>
+                            {ownerFilter}
+                          </SelectItem>
+                        )}
+                    </SelectContent>
+                  </Select>
                   <Select
                     value={issueFilter}
                     onValueChange={(issue) =>
@@ -1789,7 +1834,7 @@ function DeliveryBoardContent({
                     }
                   >
                     <SelectTrigger
-                      className="w-44"
+                      className="w-full sm:w-44"
                       aria-label="Issue category filter"
                     >
                       <SelectValue />
@@ -1809,7 +1854,10 @@ function DeliveryBoardContent({
                       updateView({ group, page: null, task: null })
                     }
                   >
-                    <SelectTrigger className="w-40" aria-label="Group tasks">
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="Group tasks"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>

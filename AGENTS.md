@@ -2171,7 +2171,7 @@ review counts and filters both classify the loaded task rows with
 `taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
 trials. Drawer navigation retains the selected review group. Unreviewed includes
 missing and outdated reviews, and remains visible when every task is unreviewed.
-Delivery `filter` defaults to `all`; state counts filter the task queue using
+Delivery `filter` defaults to `all`; the State selector filters the task queue using
 `needs_work`, `qa_incomplete`, `awaiting_signoff`, and `ready`. A `task` link resolves against the inventory (ID before legacy name)
 and keeps that row visible across filters, pagination, and sign-off refreshes.
 Expanded delivery tasks show unresolved findings and failed checks first;
@@ -2286,6 +2286,8 @@ open findings or a failed rejection/task-existence check need work; other failin
 automated requirements mean QA incomplete; tasks with remaining human checks need
 sign-off; ready requires the board's version-specific readiness. Recorded QA age
 does not override delivery requirements, and approved exceptions can satisfy them.
+The toolbar contains State, Owner, Category, and Group selectors. Summary counts
+are read-only; the zero Needs sign-off count is omitted.
 The owner selector scopes current counts, the task queue, and recorded progress;
 state and category filters narrow only the queue. Finalize always uses the full
 board's `ready`, including delivery-level checks. Grouping by owner or state omits
@@ -2299,6 +2301,9 @@ It is stored inside the existing JSON counts column; no migration is needed.
 A null/missing `owners` means owner history was not recorded, while an absent user
 inside a recorded map means zero tasks. Never reconstruct past owners from today's
 assignments. Missing dates stay gaps; no observations show "No history yet".
+One observation shows a compact dated snapshot. Multiple observations use a
+step chart with endpoint counts and first/last date labels, without gridlines
+or a numbered vertical axis. Isolated observations retain a dot across gaps.
 `owner` accepts a user ID, `mine`, or `unassigned`. `panels` preserves disclosure
 state as comma-separated panel IDs, with `!` for explicit collapse of a default-open
 section; drafts, dialogs, and bulk selection stay local.

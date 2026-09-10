@@ -815,15 +815,33 @@ test("owner, state, and history share one scope without refetching; finalize sta
   });
   await page.goto("/");
   const overview = page.getByLabel("Delivery overview");
-  for (const label of [
-    "Needs work 1",
-    "QA incomplete 2",
-    "Needs sign-off 1",
-    "Ready 2",
-  ])
+  for (const [label, count] of [
+    ["Needs work", "1"],
+    ["QA incomplete", "2"],
+    ["Needs sign-off", "1"],
+    ["Ready", "2"],
+  ]) {
     await expect(
-      overview.getByRole("button", { name: label, exact: true })
-    ).toBeVisible();
+      overview.getByText(label, { exact: true }).locator("..").locator("dd")
+    ).toHaveText(count);
+  }
+  await expect(overview.getByRole("button")).toHaveCount(0);
+  const filters = page.getByRole("group", {
+    name: "Task filters",
+    exact: true,
+  });
+  expect(
+    await filters
+      .getByRole("combobox")
+      .evaluateAll((elements) =>
+        elements.map((element) => element.getAttribute("aria-label"))
+      )
+  ).toEqual([
+    "State filter",
+    "Owner filter",
+    "Issue category filter",
+    "Group tasks",
+  ]);
   await expect(overview.locator(".recharts-line-curve")).toHaveCount(2);
   expect(
     await overview
@@ -832,19 +850,29 @@ test("owner, state, and history share one scope without refetching; finalize sta
       .evaluate((element) => getComputedStyle(element).stroke)
   ).not.toBe("none");
   const reads = state.reads.board;
-  await overview.getByRole("button", { name: "Ready 2", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "State filter", exact: true })
+    .click();
+  await page.getByRole("option", { name: "Ready", exact: true }).click();
   await expect(
     page
       .getByRole("table")
       .getByRole("link", { name: "Ready task", exact: true })
   ).toBeVisible();
   await expect(page.getByRole("table")).not.toContainText("Missing review");
-  await page.getByRole("button", { name: "Clear state filter" }).click();
+  await page
+    .getByRole("combobox", { name: "State filter", exact: true })
+    .click();
+  await page.getByRole("option", { name: "All states", exact: true }).click();
   await page.getByRole("combobox", { name: "Owner filter" }).click();
   await page.getByRole("option", { name: "Jules", exact: true }).click();
   await expect(
-    overview.getByRole("button", { name: "Ready 1", exact: true })
-  ).toBeVisible();
+    overview.getByText("Ready", { exact: true }).locator("..").locator("dd")
+  ).toHaveText("1");
+  await expect(overview.locator("dt")).toHaveCount(3);
+  await expect(
+    overview.getByText("Needs sign-off", { exact: true })
+  ).toHaveCount(0);
   await expect(overview.getByRole("img")).toHaveAttribute(
     "aria-label",
     /Jules: 1 ready of 1 tasks/
@@ -869,12 +897,19 @@ test("owner, state, and history share one scope without refetching; finalize sta
     path: testInfo.outputPath("delivery-overview-dark.png"),
     fullPage: true,
   });
+  await page.mouse.move(0, 0);
   await page.setViewportSize({ width: 390, height: 844 });
-  expect(
-    await overview.evaluate(
-      (element) => element.scrollWidth <= element.clientWidth
+  await page.clock.runFor(100);
+  await expect
+    .poll(() =>
+      filters.evaluate((element) => element.scrollWidth <= element.clientWidth)
     )
-  ).toBe(true);
+    .toBe(true);
+  await expect
+    .poll(() =>
+      overview.evaluate((element) => element.scrollWidth <= element.clientWidth)
+    )
+    .toBe(true);
   await page.screenshot({
     path: testInfo.outputPath("delivery-overview-mobile.png"),
     fullPage: true,
@@ -974,5 +1009,96 @@ test("mixed selections cannot be partly signed off and grouping keeps claim avai
   await expect(
     page.getByRole("button", { name: "Claim task", exact: true })
   ).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
+test("empty and single-observation progress stay compact through refresh", async ({
+  page,
+}, testInfo) => {
+  const state = await controlledAPI(page);
+  await page.goto("/");
+  const overview = page.getByLabel("Delivery overview");
+  await expect(overview.getByText("No history yet")).toBeVisible();
+  await expect(overview.locator("svg")).toHaveCount(0);
+  state.board.qa_as_of = "2026-09-10T12:00:00Z";
+  state.board.progress_history = [
+    {
+      recorded_at: "2026-09-09T12:00:00Z",
+      task_count: 24,
+      ready: 3,
+      blocked: 21,
+      awaiting_signoff: 0,
+      unassigned: 0,
+      open_findings: 0,
+      acknowledged_findings: 0,
+    },
+  ];
+  await tick(page);
+  await expect(overview.getByLabel("Progress snapshot")).toHaveText(
+    "Sep 9 · 3 ready of 24 tasks"
+  );
+  await expect(overview.locator("svg")).toHaveCount(0);
+  expect(
+    (await overview.getByLabel("Progress snapshot").boundingBox())!.height
+  ).toBeLessThan(80);
+  await page.screenshot({
+    path: testInfo.outputPath("delivery-single-observation.png"),
+    fullPage: true,
+  });
+  expect(state.writes).toEqual([]);
+});
+
+test("history keeps gaps visible and separates equal endpoint labels", async ({
+  page,
+}, testInfo) => {
+  const state = await controlledAPI(page);
+  state.board.qa_as_of = "2026-09-10T12:00:00Z";
+  state.board.progress_history = [7, 8, 10].map((day) => ({
+    recorded_at: `2026-09-${String(day).padStart(2, "0")}T12:00:00Z`,
+    task_count: 24,
+    ready: 24,
+    blocked: 0,
+    awaiting_signoff: 0,
+    unassigned: 0,
+    open_findings: 0,
+    acknowledged_findings: 0,
+  }));
+  await page.goto("/");
+  const overview = page.getByLabel("Delivery overview");
+  await expect(overview.getByText("24 total", { exact: true })).toBeVisible();
+  await expect(overview.getByText("24 ready", { exact: true })).toBeVisible();
+  await expect(
+    overview.locator(".recharts-cartesian-grid, .recharts-yAxis")
+  ).toHaveCount(0);
+  await expect(overview.getByRole("img").locator("time")).toHaveText([
+    "Sep 7",
+    "Today",
+  ]);
+  const paths = await overview
+    .locator(".recharts-line-curve")
+    .evaluateAll((elements) => elements.map((e) => e.getAttribute("d")));
+  for (const path of paths) expect(path!.match(/M/g)).toHaveLength(2);
+  const dots = await overview
+    .locator(".recharts-line-dots circle")
+    .evaluateAll(
+      (elements) =>
+        elements.filter((e) => Number(e.getAttribute("r")) > 0).length
+    );
+  expect(dots).toBe(2);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const total = (await overview
+      .getByText("24 total", { exact: true })
+      .boundingBox())!;
+    const ready = (await overview
+      .getByText("24 ready", { exact: true })
+      .boundingBox())!;
+    expect(total.y + total.height).toBeLessThanOrEqual(ready.y);
+    expect(ready.x + ready.width).toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`delivery-history-gap-${width}.png`),
+      fullPage: true,
+    });
+  }
   expect(state.writes).toEqual([]);
 });
