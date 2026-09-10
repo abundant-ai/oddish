@@ -255,6 +255,47 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   expect(state.writes).toEqual([]);
 });
 
+test("task pagination stays put when the next page has fewer rows", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = Array.from({ length: 30 }, (_, i) => ({
+    ...taskRow(),
+    task_id: `task-${i}`,
+    task_name: `Task ${i}`,
+    delivery_task_id: `member-${i}`,
+  }));
+  await page.goto("/");
+
+  const taskRegion = page.getByRole("region", { name: "Delivery tasks" });
+  const pagination = page.getByRole("navigation", { name: "Task pages" });
+  const regionHeight = await taskRegion.evaluate(
+    (element) => element.clientHeight
+  );
+  const paginationOffset = await pagination.evaluate(
+    (element) =>
+      element.getBoundingClientRect().top -
+      element.previousElementSibling!.getBoundingClientRect().top
+  );
+
+  await taskRegion.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Page 2 of 2 · 30 tasks")).toBeVisible();
+  await expect(taskRegion).toHaveJSProperty("scrollTop", 0);
+  expect(await taskRegion.evaluate((element) => element.clientHeight)).toBe(
+    regionHeight
+  );
+  expect(
+    await pagination.evaluate(
+      (element) =>
+        element.getBoundingClientRect().top -
+        element.previousElementSibling!.getBoundingClientRect().top
+    )
+  ).toBe(paginationOffset);
+});
+
 test("an old version draft stays copyable and cannot save against the replacement", async ({
   page,
 }) => {
