@@ -10,13 +10,28 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardContent } from "@/components/ui/card";
-import { isDeliveryBlocked, type DeliveryTaskFilter } from "@/lib/deliveries";
+import {
+  deliveryOwnerOutcome,
+  isDeliveryBlocked,
+  type DeliveryTaskFilter,
+} from "@/lib/deliveries";
 import type { DeliveryBoardResponse } from "@/lib/types";
 
 const stages = [
   { key: "ready", label: "Ready", color: "#10b981" },
   { key: "awaiting_signoff", label: "Awaiting sign-off", color: "#f59e0b" },
   { key: "blocked", label: "Blocked", color: "#f87171" },
+] as const;
+
+const ownerOutcomes = [
+  { key: "needs_work", label: "Needs work", color: "#f87171" },
+  { key: "qa_incomplete", label: "QA incomplete", color: "#f59e0b" },
+  { key: "qa_accepted", label: "QA accepted", color: "#10b981" },
+  {
+    key: "accepted_exceptions",
+    label: "Accepted exceptions",
+    color: "#a1a1aa",
+  },
 ] as const;
 
 export function DeliveryOverview({
@@ -33,7 +48,10 @@ export function DeliveryOverview({
   const counts = { ready: 0, blocked: 0, awaiting_signoff: 0, unassigned: 0 };
   const owners = new Map<
     string,
-    { id: string; name: string; blocked: number; awaiting_signoff: number }
+    { id: string; name: string; total: number; signedOff: number } & Record<
+      (typeof ownerOutcomes)[number]["key"],
+      number
+    >
   >();
   let openFindings = 0;
   let acknowledgedFindings = 0;
@@ -48,27 +66,31 @@ export function DeliveryOverview({
       if (finding.acknowledged) acknowledgedFindings++;
       else openFindings++;
     }
-    if (stage === "ready") continue;
     const id = row.qa_work.owner_user_id ?? "unassigned";
-    if (id === "unassigned") counts.unassigned++;
+    if (id === "unassigned" && stage !== "ready") counts.unassigned++;
     const owner = owners.get(id) ?? {
       id,
       name: row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned",
-      blocked: 0,
-      awaiting_signoff: 0,
+      total: 0,
+      signedOff: 0,
+      needs_work: 0,
+      qa_incomplete: 0,
+      qa_accepted: 0,
+      accepted_exceptions: 0,
     };
-    owner[stage]++;
+    const outcome = deliveryOwnerOutcome(row);
+    owner[outcome.status]++;
+    owner.total++;
+    if (outcome.signedOff) owner.signedOff++;
     owners.set(id, owner);
   }
   const workload = [...owners.values()].sort(
     (a, b) =>
-      b.blocked + b.awaiting_signoff - (a.blocked + a.awaiting_signoff) ||
+      b.needs_work - a.needs_work ||
+      b.total - a.total ||
       a.name.localeCompare(b.name)
   );
-  const maxWork = Math.max(
-    1,
-    ...workload.map((owner) => owner.blocked + owner.awaiting_signoff)
-  );
+  const maxWork = Math.max(1, ...workload.map((owner) => owner.total));
   const history = board.progress_history ?? [];
   // Missing dates have no bar, rather than implying zero tasks or interpolated progress.
   const byDay = new Map(
@@ -232,44 +254,73 @@ export function DeliveryOverview({
             )}
           </section>
           <section className="min-w-0" aria-label="Work by owner">
-            <h3 className="text-sm font-medium">Outstanding work by owner</h3>
+            <h3 className="text-sm font-medium">Review outcomes by owner</h3>
             <p className="text-muted-foreground mt-1 text-xs">
-              Tasks in this delivery · select an owner to view their work
+              All assigned tasks, including completed work · select an owner to
+              view their tasks
             </p>
-            <div className="mt-3 max-h-52 space-y-1 overflow-y-auto">
+            <div
+              className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs"
+              aria-label="Owner chart legend"
+            >
+              {ownerOutcomes.map((outcome) => (
+                <span
+                  key={outcome.key}
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: outcome.color }}
+                  />
+                  {outcome.label}
+                </span>
+              ))}
+            </div>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Grey: QA rejected, findings acknowledged, and human sign-off
+              recorded. Green: QA accepted; sign-off may still be needed.
+            </p>
+            <div className="mt-3 max-h-64 space-y-1 overflow-y-auto">
               {workload.map((owner) => (
                 <button
                   key={owner.id}
                   className="hover:bg-muted/60 aria-pressed:bg-muted w-full rounded-md px-2 py-2 text-left"
-                  aria-label={`${owner.name}: ${owner.blocked} blocked, ${owner.awaiting_signoff} awaiting sign-off`}
-                  aria-pressed={
-                    ownerFilter === owner.id && filter === "outstanding"
-                  }
-                  onClick={() => onFilter("outstanding", owner.id)}
+                  aria-label={`${owner.name}: ${owner.total} tasks, ${owner.signedOff} signed off; ${ownerOutcomes.map((outcome) => `${owner[outcome.key]} ${outcome.label.toLowerCase()}`).join(", ")}`}
+                  aria-pressed={ownerFilter === owner.id && filter === "all"}
+                  onClick={() => onFilter("all", owner.id)}
                 >
                   <span className="mb-1.5 flex items-center justify-between gap-3 text-xs">
                     <span className="truncate">{owner.name}</span>
                     <span className="tabular-nums">
-                      {owner.blocked + owner.awaiting_signoff}
+                      {owner.signedOff}/{owner.total} signed off
                     </span>
                   </span>
-                  <span className="bg-muted flex h-2 overflow-hidden rounded-full">
-                    <span
-                      className="bg-red-400"
-                      style={{ width: `${(100 * owner.blocked) / maxWork}%` }}
-                    />
-                    <span
-                      className="bg-amber-500"
-                      style={{
-                        width: `${(100 * owner.awaiting_signoff) / maxWork}%`,
-                      }}
-                    />
+                  <span
+                    className="flex h-3 overflow-hidden rounded-full"
+                    aria-hidden="true"
+                  >
+                    {ownerOutcomes.map((outcome) => (
+                      <span
+                        key={outcome.key}
+                        style={{
+                          backgroundColor: outcome.color,
+                          width: `${(100 * owner[outcome.key]) / maxWork}%`,
+                        }}
+                      />
+                    ))}
+                  </span>
+                  <span className="text-muted-foreground mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums">
+                    {ownerOutcomes.map((outcome) => (
+                      <span key={outcome.key}>
+                        {owner[outcome.key]} {outcome.label.toLowerCase()}
+                      </span>
+                    ))}
                   </span>
                 </button>
               ))}
               {!workload.length && (
                 <p className="text-muted-foreground py-8 text-center text-sm">
-                  No outstanding work.
+                  No tasks in this delivery.
                 </p>
               )}
             </div>

@@ -736,6 +736,7 @@ test("overview counts all tasks and owner bars filter without requests", async (
   page,
 }, testInfo) => {
   const state = await controlledAPI(page);
+  state.board.tasks[0].qa.status = "needs_fixes";
   state.board.tasks.push(
     {
       ...taskRow(),
@@ -743,7 +744,12 @@ test("overview counts all tasks and owner bars filter without requests", async (
       delivery_task_id: "ready",
       task_name: "Ready task",
       ready: true,
-      checks: [],
+      qa: {
+        ...taskRow().qa,
+        status: "accepted",
+        finished_at: new Date().toISOString(),
+      },
+      checks: [{ ...taskRow().checks[1], status: "pass" }],
     },
     {
       ...taskRow(),
@@ -758,11 +764,54 @@ test("overview counts all tasks and owner bars filter without requests", async (
       task_id: "waiting",
       delivery_task_id: "waiting",
       task_name: "Awaiting task",
+      qa: {
+        ...taskRow().qa,
+        status: "accepted",
+        finished_at: new Date().toISOString(),
+      },
       checks: taskRow().checks.filter((check) => check.kind === "manual"),
     }
   );
-  state.board.task_count = 4;
-  state.board.ready_task_count = 1;
+  state.board.tasks.push(
+    {
+      ...taskRow(),
+      task_id: "exception",
+      delivery_task_id: "exception",
+      task_name: "Accepted exception",
+      qa: {
+        ...taskRow().qa,
+        status: "needs_fixes",
+        finished_at: new Date().toISOString(),
+      },
+      ready: true,
+      checks: [{ ...taskRow().checks[1], status: "pass" }],
+      defects: [
+        {
+          id: "known",
+          title: "Known defect",
+          source: "pre_trial",
+          acknowledged: true,
+        },
+      ],
+    },
+    {
+      ...taskRow(),
+      task_id: "complete-owner",
+      delivery_task_id: "complete-owner",
+      task_name: "Completed owner task",
+      qa: {
+        ...taskRow().qa,
+        status: "accepted",
+        finished_at: new Date().toISOString(),
+      },
+      ready: true,
+      qa_work: { ...taskRow().qa_work, owner_user_id: "jules" },
+      qa_owner_name: "Jules",
+      checks: [{ ...taskRow().checks[1], status: "pass" }],
+    }
+  );
+  state.board.task_count = 6;
+  state.board.ready_task_count = 3;
   state.board.progress_history = [
     {
       recorded_at: "2026-09-08T12:00:00Z",
@@ -796,11 +845,19 @@ test("overview counts all tasks and owner bars filter without requests", async (
   );
   const reads = state.reads.board;
   await overview
-    .getByRole("button", { name: "Maya: 1 blocked, 1 awaiting sign-off" })
+    .getByRole("button", {
+      name: "Maya: 4 tasks, 2 signed off; 1 needs work, 0 qa incomplete, 2 qa accepted, 1 accepted exceptions",
+    })
     .click();
   await expect(page).toHaveURL(/owner=maya/);
   await expect(page.getByRole("table")).toContainText("Awaiting task");
-  await expect(page.getByRole("table")).not.toContainText("Ready task");
+  await expect(page.getByRole("table")).toContainText("Ready task");
+  await expect(page.getByRole("table")).toContainText("Accepted exception");
+  await expect(
+    overview.getByRole("button", {
+      name: "Jules: 1 tasks, 1 signed off; 0 needs work, 0 qa incomplete, 1 qa accepted, 0 accepted exceptions",
+    })
+  ).toBeVisible();
   await expect(page.getByRole("table")).not.toContainText("Unassigned task");
   await overview.getByRole("button", { name: "Unassigned work 1" }).click();
   await expect(page.getByRole("table")).toContainText("Unassigned task");
@@ -824,6 +881,21 @@ test("overview counts all tasks and owner bars filter without requests", async (
     path: testInfo.outputPath("delivery-overview-mobile.png"),
     fullPage: true,
   });
+  state.board.tasks[0].qa.status = "accepted";
+  state.board.tasks[0].qa.finished_at = new Date().toISOString();
+  state.board.tasks[0].ready = true;
+  state.board.ready_task_count++;
+  state.board.tasks[0].checks = state.board.tasks[0].checks.map((check) => ({
+    ...check,
+    status: "pass",
+  }));
+  await tick(page);
+  await expect(
+    overview.getByRole("button", {
+      name: "Maya: 4 tasks, 3 signed off; 0 needs work, 0 qa incomplete, 3 qa accepted, 1 accepted exceptions",
+    })
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
 });
 
 test("review disclosures restore from a shared link and browser Back", async ({
