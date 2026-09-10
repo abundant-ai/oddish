@@ -79,7 +79,11 @@ async def task_defect_items(
                 "id": defect_id,
                 "title": str(item.get("title") or "untitled defect"),
                 "source": source,
-                "recorded_tier": item.get("tier", item.get("severity")),
+                "recorded_tier": (
+                    item["tier"]
+                    if item.get("tier") is not None
+                    else item.get("severity")
+                ),
                 "finding": item,
                 "reporting_trial_id": reporting_trial_id,
                 "review_trial_id": review_trial_id,
@@ -96,7 +100,10 @@ async def task_defect_items(
                 report.get("review_trial_id"),
             )
         for item in pre_trial_items(version):
-            if item.get("tier", item.get("severity")) in RECORDED_DEFECT_TIERS:
+            tier = (
+                item["tier"] if item.get("tier") is not None else item.get("severity")
+            )
+            if tier in RECORDED_DEFECT_TIERS:
                 add(
                     vid,
                     item,

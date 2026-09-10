@@ -541,6 +541,40 @@ async def test_qa_history(session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["pre_trial", "trial", "preserved"])
+@pytest.mark.parametrize(
+    "tiers, expected",
+    [
+        ({"tier": None, "severity": "must_fix"}, "must_fix"),
+        ({"severity": "must_fix"}, "must_fix"),
+        ({"tier": "should_fix", "severity": "must_fix"}, "should_fix"),
+    ],
+)
+async def test_qa_history_legacy_severity(session, source, tiers, expected):
+    task, version, experiment = await _green_task(session, "legacy-severity")
+    finding = {"id": "legacy", "title": "Legacy finding", **tiers}
+    if source == "pre_trial":
+        version.pre_trial = {"items": [finding]}
+    elif source == "trial":
+        session.add(
+            _trial(
+                task,
+                experiment,
+                version.id,
+                analysis={"action_items": [finding]},
+            )
+        )
+    else:
+        version.reported_findings = [{"finding": finding, "source": "trial"}]
+    await session.flush()
+
+    history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+    assert [(f.tier, f.title, f.source) for f in history.versions[0].findings] == [
+        (expected, "Legacy finding", "pre_trial" if source == "pre_trial" else "trial")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_deleted_task_blocks_readiness(session):
     task, _, _ = await _green_task(session, "deliv-deleted")
     delivery = await create_delivery_core(
