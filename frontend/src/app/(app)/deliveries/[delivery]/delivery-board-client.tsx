@@ -661,6 +661,7 @@ function TaskRow({
   onClaim,
   onRelease,
   onSaveWork,
+  pendingChecks,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -684,6 +685,7 @@ function TaskRow({
   groupBy: string;
   canEditWork: boolean;
   busy: boolean;
+  pendingChecks: Record<string, "saving" | "refreshing">;
   onClaim: () => void;
   onRelease: () => void;
   onSaveWork: (patch: {
@@ -979,7 +981,13 @@ function TaskRow({
                               size="sm"
                               className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
                               disabled={
-                                frozen || !isAdmin || busy || !row.version_id
+                                frozen ||
+                                !isAdmin ||
+                                busy ||
+                                !row.version_id ||
+                                !!pendingChecks[
+                                  `${row.delivery_task_id}:ack:${defect.id}`
+                                ]
                               }
                               onClick={() =>
                                 onSetCheck(
@@ -989,7 +997,15 @@ function TaskRow({
                                 )
                               }
                             >
-                              Acknowledge for v{row.version}
+                              {pendingChecks[
+                                `${row.delivery_task_id}:ack:${defect.id}`
+                              ]
+                                ? pendingChecks[
+                                    `${row.delivery_task_id}:ack:${defect.id}`
+                                  ] === "saving"
+                                  ? "Saving…"
+                                  : "Updating…"
+                                : `Acknowledge for v${row.version}`}
                             </Button>
                           )}
                         </li>
@@ -1302,6 +1318,9 @@ function DeliveryBoardContent({
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pendingChecks, setPendingChecks] = useState<
+    Record<string, "saving" | "refreshing">
+  >({});
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
   const [bulkSignoffRows, setBulkSignoffRows] = useState<
@@ -1381,11 +1400,9 @@ function DeliveryBoardContent({
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
-      try {
-        await mutate(undefined, { populateCache: false, throwOnError: false });
-      } finally {
-        setBusy(false);
-      }
+      // Preserve background refreshes for actions that do not show per-check progress.
+      void mutate(undefined, { populateCache: false, throwOnError: false });
+      setBusy(false);
     }
   };
 
@@ -1406,7 +1423,7 @@ function DeliveryBoardContent({
       }
     );
 
-  const setCheck = (
+  const setCheck = async (
     checkKey: string,
     deliveryTaskId: string | null,
     checked: boolean
@@ -1426,14 +1443,36 @@ function DeliveryBoardContent({
     const row = data?.tasks.find(
       (row) => row.delivery_task_id === deliveryTaskId
     );
-    void run(() =>
-      putCheck(
+    const pendingKey = `${deliveryTaskId}:${checkKey}`;
+    setPendingChecks((pending) => ({ ...pending, [pendingKey]: "saving" }));
+    setBusy(true);
+    setActionError(null);
+    try {
+      await putCheck(
         checkKey,
         deliveryTaskId,
         checked,
         row ? (row.version_id ?? null) : undefined
-      )
-    );
+      );
+      setPendingChecks((pending) => ({
+        ...pending,
+        [pendingKey]: "refreshing",
+      }));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      // Only this check waits for its result; other actions can proceed after saving.
+      setBusy(false);
+      try {
+        await mutate();
+      } finally {
+        setPendingChecks((pending) => {
+          const next = { ...pending };
+          delete next[pendingKey];
+          return next;
+        });
+      }
+    }
   };
 
   const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
@@ -2046,6 +2085,7 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
+                            pendingChecks={pendingChecks}
                             groupBy={groupBy}
                             busy={busy}
                             canEditWork={

@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from oddish.core.delivery_qa import delivery_qa_statuses
 from oddish.core.delivery_progress import (
@@ -130,7 +131,10 @@ async def _get_delivery(
     check and its snapshot, finalizing a board that omits the new task.
     """
     delivery = await session.get(
-        DeliveryModel, delivery_id, with_for_update=bool(for_update) or None
+        DeliveryModel,
+        delivery_id,
+        options=[joinedload(DeliveryModel.customer)],
+        with_for_update={"of": DeliveryModel} if for_update else None,
     )
     if delivery is None or delivery.org_id != org_id:
         raise HTTPException(status_code=404, detail="delivery not found")
@@ -592,14 +596,22 @@ async def set_manual_check_core(
                 status_code=422,
                 detail="delivery_task_id is required for a task-scoped check",
             )
-        member = await session.scalar(
-            select(DeliveryTaskModel).where(
-                DeliveryTaskModel.id == data.delivery_task_id,
-                DeliveryTaskModel.delivery_id == delivery.id,
+        # Fetch membership and lock the task's default version together. The
+        # delivery lock still serializes this decision against finalization.
+        membership = (
+            await session.execute(
+                select(DeliveryTaskModel, TaskModel.current_version_id)
+                .join(TaskModel, TaskModel.id == DeliveryTaskModel.task_id)
+                .where(
+                    DeliveryTaskModel.id == data.delivery_task_id,
+                    DeliveryTaskModel.delivery_id == delivery.id,
+                )
+                .with_for_update(of=TaskModel)
             )
-        )
-        if member is None:
+        ).one_or_none()
+        if membership is None:
             raise HTTPException(status_code=404, detail="task not in this delivery")
+        member, task_version_id = membership
         if (
             data.checked
             and is_decision
@@ -611,11 +623,6 @@ async def set_manual_check_core(
             )
         # The tick attests to the content the human looked at: the task's
         # current default version. A later version change un-ticks it.
-        task_version_id = await session.scalar(
-            select(TaskModel.current_version_id)
-            .where(TaskModel.id == member.task_id)
-            .with_for_update()
-        )
         if (
             "expected_version_id" in data.model_fields_set
             and data.expected_version_id != task_version_id

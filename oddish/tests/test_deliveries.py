@@ -1361,6 +1361,45 @@ async def test_review_failure_is_unknown_quality_not_a_defect(session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("repeat", [False, True])
+async def test_acknowledgment_statement_budget(session, repeat):
+    task, version, _ = await _green_task(session, "ack-budget")
+    version.pre_trial = {
+        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+    }
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="ack-budget", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    data = ManualCheckSet(
+        check_key="ack:def-1",
+        delivery_task_id=board.tasks[0].delivery_task_id,
+        expected_version_id=version.id,
+        checked=True,
+    )
+    if repeat:
+        await set_manual_check_core(
+            session, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u1"
+        )
+    async with AsyncSession(bind=await session.connection()) as writer:
+        with count_statements() as statements:
+            await set_manual_check_core(
+                writer, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u2"
+            )
+        updated = await get_delivery_board_core(
+            writer, delivery_id=delivery.id, org_id=ORG
+        )
+        assert updated.tasks[0].defects[0].acknowledged
+        assert updated.tasks[0].defects[0].acknowledged_by_user_id == "u2"
+    print(f"ack repeat={repeat}: {len(statements)} SQL statements")
+    assert len(statements) <= 6, "\n".join(statements)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("same_creation_time", [False, True])
 async def test_verdict_timestamp_ties_agree_between_board_and_history(session, same_creation_time):
     from datetime import datetime, timezone

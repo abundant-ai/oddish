@@ -2180,6 +2180,16 @@ findings replace the duplicate `no_must_fix` explanation when findings exist.
 The board derives delivery blockers independently of review status and recorded
 sign-off. Passed checks and history use native disclosures;
 history remains mounted so board refreshes preserve its open versions.
+Individual acknowledgment buttons show Saving while the check request runs,
+then Updating until the delivery read finishes. The global busy state ends at
+save completion; pending status is tracked per check so unrelated actions do not
+wait for a slow refresh. Check refreshes use the
+no-argument SWR `mutate()` form, whose promise waits for revalidation; passing
+`undefined` as mutation data starts revalidation without waiting for it.
+Delivery lookups join their customer, and task checks read membership and lock
+the default-version pointer in one query. An acknowledgment uses six core SQL
+statements (including the write), independent of whether the tick already exists;
+hosted authorization and subsequent delivery/history reads add their own queries.
 
 Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
 on `/tasks/{id}`. Overview preserves the file and line address for sharing.
@@ -2301,9 +2311,10 @@ It is stored inside the existing JSON counts column; no migration is needed.
 A null/missing `owners` means owner history was not recorded, while an absent user
 inside a recorded map means zero tasks. Never reconstruct past owners from today's
 assignments. Missing dates stay gaps; no observations show "No history yet".
-One observation shows a compact dated snapshot. Multiple observations use a
-step chart with endpoint counts and first/last date labels, without gridlines
-or a numbered vertical axis. Isolated observations retain a dot across gaps.
+The history chart sits above the state counts. Even one observation renders in
+the chart as labeled points; multiple observations form step lines with endpoint
+counts and first/last date labels, without gridlines or a numbered vertical axis.
+A single-day chart labels its date once. Isolated observations retain a dot across gaps.
 `owner` accepts a user ID, `mine`, or `unassigned`. `panels` preserves disclosure
 state as comma-separated panel IDs, with `!` for explicit collapse of a default-open
 section; drafts, dialogs, and bulk selection stay local.
