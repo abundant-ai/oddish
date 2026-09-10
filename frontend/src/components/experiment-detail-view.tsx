@@ -1150,13 +1150,21 @@ export function ExperimentDetailView({
   } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const drawerLayout = useUserUiLayout(!readOnly);
-  const { showTask, showTrial } = drawerLayout.layout;
+  // Incoming links reveal their target without changing the account's layout.
+  // Capture only the incoming URL: drawer navigation also writes these params.
+  const [linkedTaskPaneVisible, setLinkedTaskPaneVisible] = useState(
+    () => searchParams.has("taskFile") || searchParams.has("taskPane")
+  );
+  const showTask = linkedTaskPaneVisible || drawerLayout.layout.showTask;
+  const showTrial = drawerLayout.layout.showTrial;
   const handleShowTaskChange = (showTask: boolean) => {
-    drawerLayout.update({ showTask });
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
     void drawerLayout.flush();
   };
   const handleShowTrialChange = (showTrial: boolean) => {
-    drawerLayout.update({ showTrial });
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
     void drawerLayout.flush();
   };
   const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
@@ -1523,6 +1531,7 @@ export function ExperimentDetailView({
   // link: a late resolve must never yank them away from where they went.
   const cancelPendingDeepLink = useCallback(() => {
     clearPendingDeepLink();
+    setLinkedTaskPaneVisible(false);
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
     next.delete("task");

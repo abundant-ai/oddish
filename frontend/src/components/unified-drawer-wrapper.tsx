@@ -11,6 +11,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type DrawerMode = "task" | "trial";
 
@@ -115,7 +116,12 @@ export function UnifiedDrawerWrapper({
 
   const taskFilesPane = (
     <div className="bg-background flex h-full flex-col overflow-hidden">
-      <div className="border-border bg-muted/40 flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2 sm:h-12 sm:px-3">
+      <div
+        className={cn(
+          "border-border bg-muted/40 flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2 sm:h-12 sm:px-3",
+          taskOnlyActive && "pr-24 sm:pr-24"
+        )}
+      >
         <span className="text-muted-foreground pl-2 text-[10px] font-semibold tracking-wider uppercase">
           Task definition
         </span>
