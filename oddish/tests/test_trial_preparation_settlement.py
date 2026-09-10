@@ -408,22 +408,40 @@ async def test_run_trial_job_defers_thunder_capacity_to_atomic_reroute(
         retry_after_seconds=20.0,
     )
 
+    trial = SimpleNamespace(
+        id=trial_id, status=TrialStatus.RUNNING, agent="nop",
+        idempotency_key=None, environment="thunder", attempts=9,
+        max_attempts=9, current_worker_id="worker-1", finished_at=None,
+        error_message=None, superseded_by_trial_id=None,
+    )
+
     @asynccontextmanager
     async def trial_session(_trial_id, **_kwargs):
-        yield (
-            SimpleNamespace(),
-            SimpleNamespace(
-                id=trial_id,
-                status=TrialStatus.RUNNING,
-                agent="nop",
-                idempotency_key=None,
-            ),
-        )
+        yield SimpleNamespace(), trial
 
     async def heartbeat_trial_execution(*, stop_event, **_kwargs):
         await stop_event.wait()
 
     async def execute_trial(**_kwargs):
+        from harbor.trial.hooks import TrialEvent
+
+        await trial_handler._handle_harbor_event(
+            SimpleNamespace(
+                event=TrialEvent.END, environment_provider=None,
+                environment_external_id=None, environment=None,
+                result=SimpleNamespace(
+                    verifier_result=None,
+                    exception_info=SimpleNamespace(
+                        exception_type="CapacityError",
+                        exception_message="capacity unavailable",
+                    ),
+                ),
+            ),
+            trial_id=trial_id, worker_id="worker-1", worker_job_id="job-1",
+        )
+        assert trial.status == TrialStatus.RUNNING
+        assert trial.finished_at is None
+        assert trial.current_worker_id == "worker-1"
         return trial_handler.TrialExecutionResult(
             outcome=capacity_outcome,
             execution_error=None,
@@ -448,6 +466,10 @@ async def test_run_trial_job_defers_thunder_capacity_to_atomic_reroute(
         return None
 
     monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    async def owns_trial(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(trial_handler, "_worker_still_owns_trial", owns_trial)
     monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
     monkeypatch.setattr(settings, "job_scoped_tokens_enabled", False)
     monkeypatch.setattr(trial_handler, "_trial_session", trial_session)

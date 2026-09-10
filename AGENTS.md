@@ -1069,7 +1069,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   Capacity fallback remains off unless `ODDISH_THUNDER_CAPACITY_FALLBACK=true`;
   its destination defaults to `ODDISH_THUNDER_FALLBACK_PROVIDER=modal`. An
   exact SDK `sandbox_capacity_unavailable` result bypasses ordinary trial
-  failure settlement. One ownership-checked transaction changes the trial
+  failure settlement. The END hook also defers terminal state for eligible
+  capacity misses. Handoffs require the same RUNNING trial and worker ownership
+  in both validation and the SQL update; settled results cannot revive ownership.
+  One ownership-checked transaction changes the trial
   environment plus required runnable/claim state and moves the job from
   `thunder_trial` to the `default` execution lane. Payload, queue key, Harbor
   variant, priority, attempt identifiers and limits, and stored trial config
@@ -1081,8 +1084,17 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   provisioned `RUNNING` run is eligible for handoff, but any run with an
   external ID remains claim-blocked and retains its Thunder capacity
   lease until cleanup confirms teardown and clears
-  `reroute_pending_teardown`. Requested/completed/rejected/failed handoffs emit
-  structured `metric=thunder_capacity_handoff` logs and the bounded
+  `reroute_pending_teardown`.
+  Rejected handoffs settle a still-owned worker attempt and its still-owned
+  RUNNING trial as FAILED, preserving provider handles and capacity leases for
+  cleanup; cancellation and newer attempts are never overwritten. Modal fallback
+  translates Thunder A100XL to A100-80GB and SDK A100 to A100-40GB only when
+  Modal is the destination. Both the trial and worker-job attempt budgets are
+  checked from locked current rows before a handoff. If either is exhausted,
+  the owned attempt fails without scheduling a destination retry; source handles
+  and leases remain available to cleanup.
+  Requested/completed/rejected/failed handoffs emit structured
+  `metric=thunder_capacity_handoff` logs and the bounded
   `oddish.thunder.capacity_handoffs` counter. Apply the
   `thunder_fallback_001` core migration before enabling the gate.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers

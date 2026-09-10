@@ -391,6 +391,9 @@ def _is_thunder_capacity_hook_error(
     """Identify a capacity miss before the END hook closes the trial."""
     if not settings.thunder_capacity_fallback:
         return False
+    provider = getattr(hook_event, "environment_provider", None) or environment or ""
+    if provider.strip().lower() != EnvironmentType.THUNDER.value:
+        return False
     result = getattr(hook_event, "result", None)
     exception_info = getattr(result, "exception_info", None)
     provider_error_code = getattr(exception_info, "provider_error_code", None) or getattr(

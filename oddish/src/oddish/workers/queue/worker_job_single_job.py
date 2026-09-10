@@ -576,6 +576,7 @@ async def _record_reroute_outcome(
                    subject_table,
                    subject_id,
                    attempts,
+                   max_attempts,
                    current_worker_id,
                    execution_lane,
                    provider,
@@ -611,39 +612,22 @@ async def _record_reroute_outcome(
                    status::text AS status,
                    environment,
                    attempts,
+                   max_attempts,
                    current_worker_id,
                    deleted_at,
-                   superseded_by_trial_id,
-                   result
+                   superseded_by_trial_id
             FROM trials
             WHERE id = $1
             FOR UPDATE
             """,
                 subject_id,
             )
-            result = trial.get("result") if trial is not None else None
-            harbor_exception = (
-                result.get("harbor_exception")
-                if isinstance(result, dict)
-                else None
-            )
-            terminal_capacity_error = bool(
-                trial is not None
-                and trial["status"] in {"FAILED", "RETRYING"}
-                and isinstance(harbor_exception, dict)
-                and harbor_exception.get("exception_type") == "CapacityError"
-                and (
-                    harbor_exception.get("provider_error_code")
-                    or THUNDER_CAPACITY_UNAVAILABLE_CODE
-                )
-                == THUNDER_CAPACITY_UNAVAILABLE_CODE
-            )
+            # Capacity handoffs bypass settlement in run_trial_job. A settled
+            # trial no longer belongs to this handoff, even if an earlier
+            # result contains a capacity error. Match the UPDATE below.
             if (
                 trial is None
-                or (
-                    trial["status"] != "RUNNING"
-                    and not terminal_capacity_error
-                )
+                or trial["status"] != "RUNNING"
                 or (trial["environment"] or "").strip().lower() != "thunder"
                 or int(trial["attempts"]) != reroute.subject_attempt
                 or trial["current_worker_id"] != worker_id
@@ -658,6 +642,32 @@ async def _record_reroute_outcome(
                     reason="trial_ownership_changed",
                 )
                 return None
+
+            # The source attempt counts against both budgets. Read the limits
+            # under the same locks as the handoff so operator changes apply.
+            if attempts >= int(job["max_attempts"]) or reroute.subject_attempt >= int(
+                trial["max_attempts"]
+            ):
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="attempts_exhausted",
+                )
+                return await _settle_rejected_reroute(
+                    connection,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    attempts=attempts,
+                    subject_id=subject_id,
+                    subject_attempt=reroute.subject_attempt,
+                    error_message=(
+                        "Thunder capacity fallback not scheduled: attempt budget "
+                        f"exhausted (job {attempts}/{job['max_attempts']}, "
+                        f"trial {reroute.subject_attempt}/{trial['max_attempts']})."
+                    ),
+                )
 
             sandbox_run = await connection.fetchrow(
                 """
@@ -863,6 +873,77 @@ async def _record_reroute_outcome(
     return WorkerJobStatus.RETRYING
 
 
+async def _settle_rejected_reroute(
+    connection: asyncpg.Connection,
+    *,
+    job_id: str,
+    worker_id: str,
+    attempts: int,
+    subject_id: str | None,
+    subject_attempt: int | None,
+    error_message: str | None = None,
+) -> WorkerJobStatus | None:
+    """Close a rejected, still-owned attempt without releasing uncertain capacity."""
+    async with connection.transaction():
+        job = await connection.fetchrow(
+            """
+            SELECT status::text AS status, current_worker_id, attempts,
+                   kind::text AS kind, subject_table, subject_id, execution_lane
+            FROM worker_jobs WHERE id = $1 FOR UPDATE
+            """,
+            job_id,
+        )
+        if (
+            job is None
+            or job["status"] != "RUNNING"
+            or job["current_worker_id"] != worker_id
+            or int(job["attempts"]) != attempts
+            or job["kind"] != WorkerJobKind.TRIAL.value
+            or job["subject_table"] != "trials"
+            or job["subject_id"] != subject_id
+            or job["execution_lane"] != THUNDER_TRIAL_EXECUTION_LANE
+        ):
+            return None
+        message = error_message or (
+            "Thunder capacity fallback rejected: handoff ownership or sandbox "
+            "state changed. Provider handles and capacity leases retained for cleanup."
+        )
+        command = await connection.execute(
+            """
+            UPDATE worker_jobs
+            SET status = 'FAILED', error_message = $2, finished_at = NOW(),
+                heartbeat_at = NOW(), next_retry_at = NULL,
+                current_worker_id = NULL, current_queue_slot = NULL,
+                payload = payload - 'registry_auth_enc'
+            WHERE id = $1 AND status::text = 'RUNNING'
+              AND current_worker_id = $3 AND attempts = $4
+            """,
+            job_id,
+            message,
+            worker_id,
+            attempts,
+        )
+        if not _updated_one(command):
+            raise RuntimeError("Rejected Thunder handoff lost worker-job ownership")
+        await connection.execute(
+            """
+            UPDATE trials
+            SET status = 'FAILED', error_message = $2, finished_at = NOW(),
+                heartbeat_at = NOW(), next_retry_at = NULL,
+                current_worker_id = NULL, current_queue_slot = NULL
+            WHERE id = $1 AND status::text = 'RUNNING'
+              AND current_worker_id = $3 AND attempts = $4
+              AND LOWER(environment) = 'thunder'
+              AND deleted_at IS NULL AND superseded_by_trial_id IS NULL
+            """,
+            subject_id,
+            message,
+            worker_id,
+            subject_attempt,
+        )
+    return WorkerJobStatus.FAILED
+
+
 async def _record_outcome(
     *,
     job_id: str,
@@ -877,15 +958,31 @@ async def _record_outcome(
     connection = await _open_connection()
     try:
         if outcome.reroute is not None:
-            return await _record_reroute_outcome(
+            try:
+                status = await _record_reroute_outcome(
+                    connection,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    reroute=outcome.reroute,
+                    attempts=attempts,
+                    kind=kind,
+                    subject_table=subject_table,
+                    subject_id=subject_id,
+                )
+            except (ValueError, RuntimeError):
+                # Any partial handoff has rolled back. Recheck ownership in a
+                # fresh transaction before settling a rejected disposition.
+                logger.exception("Thunder handoff rejected for worker job %s", job_id)
+                status = None
+            if status is not None:
+                return status
+            return await _settle_rejected_reroute(
                 connection,
                 job_id=job_id,
                 worker_id=worker_id,
-                reroute=outcome.reroute,
                 attempts=attempts,
-                kind=kind,
-                subject_table=subject_table,
                 subject_id=subject_id,
+                subject_attempt=outcome.reroute.subject_attempt,
             )
         if outcome.success is not None:
             import json

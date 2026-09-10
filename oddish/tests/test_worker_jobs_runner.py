@@ -385,6 +385,7 @@ class _RerouteConnection:
             "subject_table": "trials",
             "subject_id": "trial-1",
             "attempts": 3,
+            "max_attempts": 6,
             "current_worker_id": "worker-1",
             "execution_lane": "thunder_trial",
             "provider": None,
@@ -396,6 +397,7 @@ class _RerouteConnection:
             "status": "RUNNING",
             "environment": "thunder",
             "attempts": 9,
+            "max_attempts": 12,
             "current_worker_id": "worker-1",
             "deleted_at": None,
             "superseded_by_trial_id": None,
@@ -648,7 +650,25 @@ async def test_reroute_releases_confirmed_external_sandbox(monkeypatch):
     "connection",
     [
         _RerouteConnection(job_overrides={"status": "CANCELLED"}),
+        _RerouteConnection(job_overrides={"current_worker_id": "new-worker"}),
+        _RerouteConnection(job_overrides={"attempts": 4}),
         _RerouteConnection(trial_overrides={"current_worker_id": "other-worker"}),
+        *[
+            _RerouteConnection(
+                trial_overrides={
+                    "status": status,
+                    "current_worker_id": owner,
+                    "result": {
+                        "harbor_exception": {
+                            "exception_type": "CapacityError",
+                            "provider_error_code": THUNDER_CAPACITY_UNAVAILABLE_CODE,
+                        }
+                    },
+                }
+            )
+            for status in ("FAILED", "RETRYING")
+            for owner in (None, "worker-1")
+        ],
         _RerouteConnection(run_overrides={"external_id": "sandbox-123"}),
         _RerouteConnection(leases=[]),
     ],
@@ -676,9 +696,152 @@ async def test_record_outcome_rejects_reroute_when_owned_state_changed(
         subject_id="trial-1",
     )
 
-    assert status is None
     assert connection.closed is True
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    if (
+        connection.job["status"] != "RUNNING"
+        or connection.job["current_worker_id"] != "worker-1"
+        or connection.job["attempts"] != 3
+    ):
+        assert status is None
+        assert updates == []
+    else:
+        assert status == WorkerJobStatus.FAILED
+        assert len(updates) == 2
+        job_sql, job_args = updates[0]
+        trial_sql, trial_args = updates[1]
+        assert "UPDATE worker_jobs" in job_sql
+        assert "UPDATE trials" in trial_sql
+        assert "status = 'FAILED'" in job_sql
+        assert "status = 'FAILED'" in trial_sql
+        assert job_args[2:] == ("worker-1", 3)
+        assert trial_args[2:] == ("worker-1", 9)
+        # Only the same live trial may be failed; cancelled/superseded/newer
+        # attempts must remain untouched even when the job still belongs to us.
+        assert "status::text = 'RUNNING'" in trial_sql
+        assert "current_worker_id = $3 AND attempts = $4" in trial_sql
+        assert "deleted_at IS NULL AND superseded_by_trial_id IS NULL" in trial_sql
+        for sql, _args in updates:
+            set_clause = sql.split("SET", 1)[1].split("WHERE", 1)[0]
+            for field in ("provider", "external_id", "environment", "execution_lane"):
+                assert f"{field} =" not in set_clause
+        assert not any("UPDATE sandbox" in sql for sql, _args in updates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "job_limit,trial_limit,expected",
+    [
+        (3, 12, WorkerJobStatus.FAILED),
+        (6, 9, WorkerJobStatus.FAILED),
+        (2, 8, WorkerJobStatus.FAILED),
+        (4, 10, WorkerJobStatus.RETRYING),
+    ],
+)
+async def test_reroute_respects_current_job_and_trial_budgets(
+    monkeypatch,
+    job_limit,
+    trial_limit,
+    expected,
+):
+    connection = _RerouteConnection(
+        job_overrides={"max_attempts": job_limit},
+        trial_overrides={"max_attempts": trial_limit},
+    )
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+
+    async def open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", open_connection)
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_reroute_outcome(),
+        attempts=3,
+        max_attempts=99,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+    assert status == expected
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    if expected == WorkerJobStatus.FAILED:
+        assert len(updates) == 2
+        assert all("status = 'FAILED'" in sql for sql, _args in updates)
+        assert all("budget exhausted" in args[1] for _sql, args in updates)
+        assert not any("FROM sandbox_runs" in sql for sql, _args in connection.calls)
+        assert not any("UPDATE sandbox" in sql for sql, _args in updates)
+    else:
+        assert any("execution_lane = $2" in sql for sql, _args in updates)
+
+
+@pytest.mark.asyncio
+async def test_rejected_reroute_rechecks_ownership_before_settlement(monkeypatch):
+    connection = _RerouteConnection(leases=[])
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    fetchrow = connection.fetchrow
+    job_reads = 0
+
+    async def racing_fetchrow(sql, *args):
+        nonlocal job_reads
+        if "FROM worker_jobs" in sql:
+            job_reads += 1
+            if job_reads == 2:
+                connection.job["current_worker_id"] = "new-worker"
+                connection.job["attempts"] = 4
+        return await fetchrow(sql, *args)
+
+    connection.fetchrow = racing_fetchrow
+
+    async def open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", open_connection)
+    assert (
+        await worker_job_single_job._record_outcome(
+            job_id="wj-1",
+            worker_id="worker-1",
+            outcome=_reroute_outcome(),
+            attempts=3,
+            max_attempts=6,
+            kind=WorkerJobKind.TRIAL,
+            subject_table="trials",
+            subject_id="trial-1",
+        )
+        is None
+    )
+    assert job_reads == 2
     assert not any("UPDATE " in sql for sql, _args in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_reroute_gate_rejection_settles_owned_attempt(monkeypatch):
+    connection = _RerouteConnection()
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", False)
+
+    async def open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", open_connection)
+    assert (
+        await worker_job_single_job._record_outcome(
+            job_id="wj-1",
+            worker_id="worker-1",
+            outcome=_reroute_outcome(),
+            attempts=3,
+            max_attempts=6,
+            kind=WorkerJobKind.TRIAL,
+            subject_table="trials",
+            subject_id="trial-1",
+        )
+        == WorkerJobStatus.FAILED
+    )
+    updates = [sql for sql, _args in connection.calls if "UPDATE " in sql]
+    assert len(updates) == 2
+    assert all("status = 'FAILED'" in sql for sql in updates)
 
 
 @pytest.mark.asyncio

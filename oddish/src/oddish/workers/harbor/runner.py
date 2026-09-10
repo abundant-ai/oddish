@@ -1636,7 +1636,7 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
 def _accelerator_family(value: str) -> str:
     normalized = value.strip().upper().replace("_", "-").rstrip("!")
     normalized = normalized.split(":", 1)[0].rstrip("!")
-    if normalized.startswith("A100"):
+    if normalized in {"A100", "A100XL", "A100-40", "A100-80", "A100-40GB", "A100-80GB"}:
         return "A100"
     return normalized
 
@@ -1696,6 +1696,22 @@ def _fallback_gpu_types(
     )
     if not requested:
         return None
+
+    if environment == EnvironmentType.MODAL:
+        # Thunder's SDK names its 80 GiB A100 A100XL; Modal expects
+        # A100-80GB. Do not forward SDK-only names into Modal's GPU parser.
+        modal_gpu_names = {
+            "A100": "A100-40GB",
+            "A100XL": "A100-80GB",
+            "A100-80": "A100-80GB",
+            "A100-40": "A100-40GB",
+        }
+        requested = [
+            modal_gpu_names.get(
+                accelerator.strip().upper(), accelerator.strip().upper()
+            )
+            for accelerator in requested
+        ]
 
     supported_families = {
         _accelerator_family(accelerator) for accelerator in support.accelerators

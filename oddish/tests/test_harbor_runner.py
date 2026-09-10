@@ -157,7 +157,12 @@ user = "agent"
 
 @pytest.mark.parametrize(
     "environment_type",
-    [EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.THUNDER, EnvironmentType.ARCHIL],
+    [
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.THUNDER,
+        EnvironmentType.ARCHIL,
+    ],
 )
 def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     monkeypatch, tmp_path, environment_type
@@ -5603,20 +5608,21 @@ def test_antigravity_environment_hosts_span_install_and_model():
     assert "generativelanguage.googleapis.com" in hosts  # ...and inference works
 
 
-def test_thunder_fallback_rejects_a6000_on_modal(tmp_path):
+@pytest.mark.parametrize("gpu_type", ["A6000", "A100-NOT-A-GPU"])
+def test_thunder_fallback_rejects_a6000_on_modal(tmp_path, gpu_type):
     from oddish.runtime.backends.modal import ModalBackend
     from oddish.schemas import HarborConfig
 
     task_path = tmp_path / "task"
     task_path.mkdir()
     (task_path / "task.toml").write_text(
-        '[environment]\ngpus = 1\ngpu_types = ["A6000"]\n',
+        f'[environment]\ngpus = 1\ngpu_types = ["{gpu_type}"]\n',
         encoding="utf-8",
     )
 
     with pytest.raises(
         harbor_runner.FallbackEnvironmentCompatibilityError,
-        match="A6000.*will not be remapped",
+        match=f"{gpu_type}.*will not be remapped",
     ):
         harbor_runner._fallback_gpu_types(
             task_path=task_path,
@@ -5624,6 +5630,69 @@ def test_thunder_fallback_rejects_a6000_on_modal(tmp_path):
             environment=EnvironmentType.MODAL,
             backend=ModalBackend(),
         )
+
+
+@pytest.mark.parametrize(
+    "gpu_type,expected",
+    [
+        ("A100XL", "A100-80GB"),
+        (" a100xl ", "A100-80GB"),
+        ("A100", "A100-40GB"),
+        ("A100-80", "A100-80GB"),
+        ("A100-40", "A100-40GB"),
+        ("H100", "H100"),
+    ],
+)
+@pytest.mark.parametrize("use_override", [True, False])
+def test_thunder_fallback_translates_modal_gpu(
+    tmp_path, gpu_type, expected, use_override
+):
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.schemas import HarborConfig
+
+    (tmp_path / "task.toml").write_text(
+        '[environment]\ngpus = 2\ngpu_types = ["'
+        + ("H100" if use_override else gpu_type)
+        + '"]\n'
+    )
+    hc = HarborConfig.model_validate(
+        {"environment": {"kwargs": {"gpu_type": gpu_type} if use_override else {}}}
+    )
+    assert harbor_runner._fallback_gpu_types(
+        task_path=tmp_path,
+        hc=hc,
+        environment=EnvironmentType.MODAL,
+        backend=ModalBackend(),
+    ) == [expected]
+    # Translation must not mutate the persisted/source request.
+    if use_override:
+        assert hc.environment.kwargs["gpu_type"] == gpu_type
+
+
+@pytest.mark.parametrize(
+    "environment", [EnvironmentType.DAYTONA, EnvironmentType.ARCHIL]
+)
+def test_thunder_fallback_does_not_apply_modal_names_to_other_providers(
+    tmp_path, environment
+):
+    from types import SimpleNamespace
+    from oddish.schemas import HarborConfig
+
+    (tmp_path / "task.toml").write_text(
+        '[environment]\ngpus = 1\ngpu_types = ["A100XL"]\n'
+    )
+    # A destination advertising its own SDK name must receive that name.
+    backend = SimpleNamespace(
+        capabilities=lambda: SimpleNamespace(
+            gpu=SimpleNamespace(accelerators=("A100XL",), max_count=8)
+        )
+    )
+    assert harbor_runner._fallback_gpu_types(
+        task_path=tmp_path,
+        hc=HarborConfig(),
+        environment=environment,
+        backend=backend,
+    ) == ["A100XL"]
 
 
 def test_thunder_fallback_rebuilds_modal_config_without_thunder_kwargs(tmp_path):
