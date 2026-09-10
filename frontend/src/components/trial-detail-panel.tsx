@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { markOpenIntent } from "@/lib/open-intent";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -820,6 +821,25 @@ export function TrialDetailPanel({
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+
+  // Selecting the trial is not the moment someone asks for its trajectory:
+  // the drawer opens on Summary, and `ActiveTabContent` renders null for every
+  // other tab, so `TrajectoryViewer` -- a dynamic import -- does not mount
+  // until this tab is chosen. Stamping only the trial click would fold however
+  // long they read the summary into the trajectory's load time, or age out
+  // past MAX_INTENT_AGE_MS and lose the chunk download the stamp exists to
+  // capture. The intent map overwrites by key, so this supersedes the trial
+  // click while leaving it correct for a `?tab=trajectory` deep link, where
+  // the viewer really does mount with the drawer.
+  const handleTabChange = useCallback(
+    (next: string) => {
+      if (next === "trajectory" && trial) {
+        markOpenIntent("ui.trajectory.open", trial.id);
+      }
+      setActiveTab(next);
+    },
+    [trial]
+  );
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -1548,7 +1568,7 @@ export function TrialDetailPanel({
 
       <Tabs
         value={effectiveTab}
-        onValueChange={setActiveTab}
+        onValueChange={handleTabChange}
         className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="border-border border-b px-4 sm:px-6">

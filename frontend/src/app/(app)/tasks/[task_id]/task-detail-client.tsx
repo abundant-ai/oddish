@@ -52,6 +52,8 @@ import {
   normalizedAgentModel,
   useTaskOpenReader,
 } from "@/lib/use-task-open-reader";
+import { markOpenIntent } from "@/lib/open-intent";
+import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
   formatRelativeTime,
@@ -691,6 +693,31 @@ export function TaskDetailClient({
     versions,
   } = useTaskOpenReader(taskId, initialVersionId);
 
+  // "Usable" is the trial matrix being readable, not the shell painting, and
+  // two caches will happily claim otherwise. A click from the task list seeds a
+  // browse snapshot into the `/open` key, and the reader runs SWR with
+  // `keepPreviousData`, so `isLoading` is false and `task` is non-null while
+  // the real results are still in flight -- with the previous task's data, on a
+  // switch. Requiring a non-snapshot payload whose id matches the route rejects
+  // both, so the span ends on the data people actually came for.
+  // The only open here that can be a landing view: a deep link or refresh lands
+  // on this route, so its wait legitimately starts at the document request.
+  // Files and trajectories are always reached by clicking and never opt in.
+  useOpenLatencySpan({
+    name: "ui.task.open",
+    subject: taskId,
+    ready: !isLoading && !isBrowseSnapshot && task?.id === taskId,
+    failed: error != null,
+    claimsPageLoad: true,
+    attributes: {
+      "oddish.task_id": taskId,
+      "oddish.trial_count": realTrialCount,
+      "oddish.agent_count": realAgentCount,
+      "oddish.version_count": versions.length,
+      "oddish.browse_snapshot": isBrowseSnapshot,
+    },
+  });
+
   const versionSummary: TrialAggregate = useMemo(
     () =>
       selectedVersion
@@ -757,6 +784,10 @@ export function TaskDetailClient({
     : -1;
 
   const handleSelectTrial = useCallback((trial: Trial) => {
+    // TrajectoryViewer is a dynamic import, so opening a trial downloads its
+    // chunk before the viewer can mount and start its own clock. Stamp the
+    // click or that download is missing from every first trajectory open.
+    markOpenIntent("ui.trajectory.open", trial.id);
     // The user (or hydration) is driving the drawer now; any unresolved
     // deep-link trial param no longer needs preserving.
     unresolvedTrialParamRef.current = false;
@@ -783,6 +814,7 @@ export function TaskDetailClient({
   }, []);
 
   const handleNavigateToTrial = useCallback((trial: Trial) => {
+    markOpenIntent("ui.trajectory.open", trial.id);
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
