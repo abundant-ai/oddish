@@ -2778,6 +2778,11 @@ class DeliveryTaskBoardRow(BaseModel):
     ready: bool
 
 
+class DeliveryOwnerProgress(BaseModel):
+    task_count: int = 0
+    ready: int = 0
+
+
 class DeliveryProgressPoint(BaseModel):
     recorded_at: datetime
     task_count: int
@@ -2787,6 +2792,8 @@ class DeliveryProgressPoint(BaseModel):
     unassigned: int
     open_findings: int
     acknowledged_findings: int
+    # None means the observation predates owner history; an empty map means zero tasks.
+    owners: dict[str, DeliveryOwnerProgress] | None = None
 
 
 class DeliveryBoardResponse(BaseModel):

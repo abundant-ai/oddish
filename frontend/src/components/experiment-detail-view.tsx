@@ -19,6 +19,7 @@ import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { fetcher } from "@/lib/api";
 import {
   prBadge,
@@ -1148,55 +1149,24 @@ export function ExperimentDetailView({
     trialId: string;
   } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
-  const [showTask, setShowTask] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-task"
-      );
-      // Default ON: only explicit "0" disables it.
-      return stored !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [showTrial, setShowTrial] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-trial"
-      );
-      return stored !== "0";
-    } catch {
-      return true;
-    }
-  });
-
-  const handleShowTaskChange = useCallback((next: boolean) => {
-    setShowTask(next);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        "oddish:trial-drawer-show-task",
-        next ? "1" : "0"
-      );
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const handleShowTrialChange = useCallback((next: boolean) => {
-    setShowTrial(next);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        "oddish:trial-drawer-show-trial",
-        next ? "1" : "0"
-      );
-    } catch {
-      // ignore
-    }
-  }, []);
+  const drawerLayout = useUserUiLayout(!readOnly);
+  // Incoming links reveal their target without changing the account's layout.
+  // Capture only the incoming URL: drawer navigation also writes these params.
+  const [linkedTaskPaneVisible, setLinkedTaskPaneVisible] = useState(
+    () => searchParams.has("taskFile") || searchParams.has("taskPane")
+  );
+  const showTask = linkedTaskPaneVisible || drawerLayout.layout.showTask;
+  const showTrial = drawerLayout.layout.showTrial;
+  const handleShowTaskChange = (showTask: boolean) => {
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
+    void drawerLayout.flush();
+  };
+  const handleShowTrialChange = (showTrial: boolean) => {
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
+    void drawerLayout.flush();
+  };
   const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
     ExperimentAgentSummary[]
   >([]);
@@ -1561,6 +1531,7 @@ export function ExperimentDetailView({
   // link: a late resolve must never yank them away from where they went.
   const cancelPendingDeepLink = useCallback(() => {
     clearPendingDeepLink();
+    setLinkedTaskPaneVisible(false);
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
     next.delete("task");
@@ -2036,8 +2007,17 @@ export function ExperimentDetailView({
 
       {drawerState && (
         <UnifiedDrawerWrapper
+          key={drawerLayout.identity ?? "public"}
+          layout={drawerLayout.layout}
+          onLayoutChange={drawerLayout.update}
+          onLayoutCommit={drawerLayout.flush}
+          layoutSaveError={drawerLayout.status === "error"}
+          onRetryLayoutSave={drawerLayout.retry}
           open={drawerState.isOpen}
-          onOpenChange={(open) => !open && closeDrawer()}
+          onOpenChange={(open) => {
+            void drawerLayout.flush();
+            if (!open) closeDrawer();
+          }}
           mode={drawerState.mode}
           showTask={showTask}
           showTrial={showTrial}

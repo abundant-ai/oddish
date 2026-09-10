@@ -1006,7 +1006,11 @@ def _supports_auto_restricted_agent_network(
     """Whether the existing single-container phase bridge applies."""
     if environment_config.import_path is not None:
         return False
-    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+    if environment_config.type not in (
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.ARCHIL,
+    ):
         return False
 
     environment_dir = task_path / "environment"

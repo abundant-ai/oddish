@@ -429,7 +429,12 @@ function TaskVerdictChip({
           : running
             ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
             : "bg-muted text-muted-foreground";
-  const label = REVIEW_LABELS[status];
+  const label =
+    status === "needs_fixes" &&
+    task.must_fix_count != null &&
+    task.must_fix_count > 0
+      ? `${task.must_fix_count} Must Fix Finding${task.must_fix_count === 1 ? "" : "s"}`
+      : REVIEW_LABELS[status];
   let tip =
     status === "error"
       ? `This review did not establish task quality. ${task.verdict_error ?? "Inspect review evidence."}`

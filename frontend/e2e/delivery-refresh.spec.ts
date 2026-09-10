@@ -214,7 +214,9 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
     delivery_task_id: `member-${i}`,
   }));
   state.board.tasks[25] = taskRow();
-  await page.goto("/?page=2&filter=blocked&task=task-a");
+  await page.goto(
+    "/?page=2&per_page=25&filter=qa_incomplete&task=task-a&source=agent"
+  );
   await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await page.getByRole("button", { name: "Show all 7 versions" }).click();
@@ -253,6 +255,47 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   ).toBeVisible();
   expect(page.url()).toBe(url);
   expect(state.writes).toEqual([]);
+});
+
+test("task pagination stays put when the next page has fewer rows", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = Array.from({ length: 30 }, (_, i) => ({
+    ...taskRow(),
+    task_id: `task-${i}`,
+    task_name: `Task ${i}`,
+    delivery_task_id: `member-${i}`,
+  }));
+  await page.goto("/");
+
+  const taskRegion = page.getByRole("region", { name: "Delivery tasks" });
+  const pagination = page.getByRole("navigation", { name: "Task pages" });
+  const regionHeight = await taskRegion.evaluate(
+    (element) => element.clientHeight
+  );
+  const paginationOffset = await pagination.evaluate(
+    (element) =>
+      element.getBoundingClientRect().top -
+      element.previousElementSibling!.getBoundingClientRect().top
+  );
+
+  await taskRegion.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Page 2 of 2 · 30 tasks")).toBeVisible();
+  await expect(taskRegion).toHaveJSProperty("scrollTop", 0);
+  expect(await taskRegion.evaluate((element) => element.clientHeight)).toBe(
+    regionHeight
+  );
+  expect(
+    await pagination.evaluate(
+      (element) =>
+        element.getBoundingClientRect().top -
+        element.previousElementSibling!.getBoundingClientRect().top
+    )
+  ).toBe(paginationOffset);
 });
 
 test("an old version draft stays copyable and cannot save against the replacement", async ({
@@ -410,7 +453,7 @@ test("a failed first board load can recover without navigating away", async ({
 }) => {
   const state = await controlledAPI(page);
   state.failBoard = true;
-  await page.goto("/?filter=blocked&task=task-a");
+  await page.goto("/?filter=qa_incomplete&task=task-a");
   await expect(page.locator("main").getByRole("alert")).toContainText(
     "board offline"
   );
@@ -418,42 +461,37 @@ test("a failed first board load can recover without navigating away", async ({
   await page.getByRole("button", { name: "Retry delivery" }).click();
   await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
-  await expect(page).toHaveURL(/filter=blocked&task=task-a/);
+  await expect(page).toHaveURL(/filter=qa_incomplete&task=task-a/);
   expect(state.writes).toEqual([]);
 });
 
-for (const scope of ["all", "selected"] as const) {
-  test(`bulk ${scope} sign-off keeps the versions shown when confirmation opened`, async ({
-    page,
-  }) => {
-    const state = await controlledAPI(page);
-    state.board.tasks[0].checks[0].status = "pass";
-    await openBoard(page);
-    if (scope === "selected")
-      await page
-        .getByRole("checkbox", { name: "Select Task A", exact: true })
-        .click();
-    await page
-      .getByRole("button", { name: `Sign off ${scope} (1)`, exact: true })
-      .click();
-    state.board = board(8);
-    state.board.tasks[0].checks[0].status = "pass";
-    state.history = history(8);
-    await tick(page);
-    await page
-      .getByRole("alertdialog")
-      .getByRole("button", {
-        name: scope === "all" ? "Sign off all" : "Sign off",
-        exact: true,
-      })
-      .click();
-    await expect.poll(() => state.writes.length).toBe(1);
-    expect(state.writes[0].body).toMatchObject({
-      check_key: "signoff",
-      expected_version_id: "version-7",
-    });
+test("bulk sign-off keeps the versions shown when confirmation opened", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks[0].checks[0].status = "pass";
+  await openBoard(page);
+  await page
+    .getByRole("checkbox", { name: "Select Task A", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Sign off", exact: true }).click();
+  state.board = board(8);
+  state.board.tasks[0].checks[0].status = "pass";
+  state.history = history(8);
+  await tick(page);
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", {
+      name: "Sign off",
+      exact: true,
+    })
+    .click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0].body).toMatchObject({
+    check_key: "signoff",
+    expected_version_id: "version-7",
   });
-}
+});
 
 test("a fresh server board avoids the initial read and keeps history, URL navigation, and edits live", async ({
   page,
@@ -661,7 +699,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     page.getByText("Needs a decision", { exact: false })
   ).toHaveCount(0);
   await expect(
-    page.getByText("Ready to deliver", { exact: true })
+    page.getByRole("table").getByText("Ready", { exact: true })
   ).toBeVisible();
   await expect(
     page.getByText("Review could not complete", { exact: true })
@@ -691,80 +729,132 @@ test("finalized review exposes evidence but cannot acknowledge outstanding findi
   expect(state.writes).toEqual([]);
 });
 
-test("overview counts all tasks and owner bars filter without requests", async ({
+test("owner, state, and history share one scope without refetching; finalize stays delivery-wide", async ({
   page,
 }, testInfo) => {
   const state = await controlledAPI(page);
-  state.board.tasks.push(
+  const task = taskRow();
+  state.board.tasks = [
     {
-      ...taskRow(),
-      task_id: "ready",
-      delivery_task_id: "ready",
-      task_name: "Ready task",
-      ready: true,
-      checks: [],
+      ...task,
+      task_name: "Missing review",
+      task_id: "incomplete",
+      delivery_task_id: "incomplete",
     },
     {
-      ...taskRow(),
-      task_id: "unassigned",
-      delivery_task_id: "unassigned",
-      task_name: "Unassigned task",
-      qa_work: { ...taskRow().qa_work, owner_user_id: null },
-      qa_owner_name: null,
+      ...task,
+      task_name: "Needs a fix",
+      task_id: "defect",
+      delivery_task_id: "defect",
+      defects: [
+        {
+          id: "finding",
+          title: "Known defect",
+          source: "pre_trial",
+          acknowledged: false,
+        },
+      ],
     },
     {
-      ...taskRow(),
+      ...task,
+      task_name: "Awaiting approval",
       task_id: "waiting",
       delivery_task_id: "waiting",
-      task_name: "Awaiting task",
-      checks: taskRow().checks.filter((check) => check.kind === "manual"),
-    }
-  );
-  state.board.task_count = 4;
-  state.board.ready_task_count = 1;
-  state.board.progress_history = [
-    {
-      recorded_at: "2026-09-08T12:00:00Z",
-      task_count: 3,
-      ready: 0,
-      blocked: 3,
-      awaiting_signoff: 0,
-      unassigned: 2,
-      open_findings: 5,
-      acknowledged_findings: 0,
+      checks: [{ ...task.checks[0], status: "pass" }, task.checks[1]],
     },
     {
-      recorded_at: "2026-09-09T12:00:00Z",
-      task_count: 4,
-      ready: 1,
-      blocked: 2,
-      awaiting_signoff: 1,
-      unassigned: 1,
-      open_findings: 2,
-      acknowledged_findings: 3,
+      ...task,
+      task_name: "Ready task",
+      task_id: "ready",
+      delivery_task_id: "ready",
+      ready: true,
+      checks: task.checks.map((check) => ({ ...check, status: "pass" })),
+      qa: { ...task.qa, status: "accepted" },
+    },
+    {
+      ...task,
+      task_name: "Jules complete",
+      task_id: "jules",
+      delivery_task_id: "jules",
+      ready: true,
+      checks: task.checks.map((check) => ({ ...check, status: "pass" })),
+      qa_work: { ...task.qa_work, owner_user_id: "jules" },
+      qa_owner_name: "Jules",
+    },
+    {
+      ...task,
+      task_name: "Unassigned task",
+      task_id: "unassigned",
+      delivery_task_id: "unassigned",
+      qa_work: { ...task.qa_work, owner_user_id: null },
+      qa_owner_name: null,
     },
   ];
-  await page.goto("/?filter=ready");
+  state.board.task_count = 6;
+  state.board.ready_task_count = 2;
+  state.board.progress_history = Array.from({ length: 10 }, (_, day) => {
+    const maya = day < 3 ? 2 : 4;
+    const jules = day < 6 ? 0 : 1;
+    const unassigned = day < 8 ? 0 : 1;
+    const ready = (day < 4 ? 0 : 1) + jules;
+    return {
+      recorded_at: `2026-09-${String(day + 1).padStart(2, "0")}T12:00:00Z`,
+      task_count: maya + jules + unassigned,
+      ready,
+      blocked: 3,
+      awaiting_signoff: 1,
+      unassigned,
+      open_findings: 1,
+      acknowledged_findings: 0,
+      owners: {
+        maya: { task_count: maya, ready: day < 4 ? 0 : 1 },
+        jules: { task_count: jules, ready: jules },
+        unassigned: { task_count: unassigned, ready: 0 },
+      },
+    };
+  });
+  await page.goto("/");
   const overview = page.getByLabel("Delivery overview");
+  for (const label of [
+    "Needs work 1",
+    "QA incomplete 2",
+    "Needs sign-off 1",
+    "Ready 2",
+  ])
+    await expect(
+      overview.getByRole("button", { name: label, exact: true })
+    ).toBeVisible();
+  await expect(overview.locator(".recharts-line-curve")).toHaveCount(2);
+  expect(
+    await overview
+      .locator(".recharts-line-curve")
+      .first()
+      .evaluate((element) => getComputedStyle(element).stroke)
+  ).not.toBe("none");
+  const reads = state.reads.board;
+  await overview.getByRole("button", { name: "Ready 2", exact: true }).click();
   await expect(
-    overview.getByRole("button", { name: "Blocked 2", exact: true })
+    page
+      .getByRole("table")
+      .getByRole("link", { name: "Ready task", exact: true })
+  ).toBeVisible();
+  await expect(page.getByRole("table")).not.toContainText("Missing review");
+  await page.getByRole("button", { name: "Clear state filter" }).click();
+  await page.getByRole("combobox", { name: "Owner filter" }).click();
+  await page.getByRole("option", { name: "Jules", exact: true }).click();
+  await expect(
+    overview.getByRole("button", { name: "Ready 1", exact: true })
   ).toBeVisible();
   await expect(overview.getByRole("img")).toHaveAttribute(
     "aria-label",
-    /4 total/
+    /Jules: 1 ready of 1 tasks/
   );
-  const reads = state.reads.board;
-  await overview
-    .getByRole("button", { name: "Maya: 1 blocked, 1 awaiting sign-off" })
-    .click();
-  await expect(page).toHaveURL(/owner=maya/);
-  await expect(page.getByRole("table")).toContainText("Awaiting task");
-  await expect(page.getByRole("table")).not.toContainText("Ready task");
-  await expect(page.getByRole("table")).not.toContainText("Unassigned task");
-  await overview.getByRole("button", { name: "Unassigned work 1" }).click();
-  await expect(page.getByRole("table")).toContainText("Unassigned task");
+  await expect(page.getByRole("table")).toContainText("Jules complete");
+  await expect(
+    page.getByRole("button", { name: "Finalize", exact: true })
+  ).toBeDisabled();
   await page.goBack();
-  await expect(page.getByRole("table")).toContainText("Awaiting task");
+  await expect(page.getByRole("table")).toContainText("Missing review");
   expect(state.reads.board).toBe(reads);
   expect(state.writes).toEqual([]);
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -772,8 +862,14 @@ test("overview counts all tasks and owner bars filter without requests", async (
     path: testInfo.outputPath("delivery-overview-desktop.png"),
     fullPage: true,
   });
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await page.clock.runFor(300);
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("delivery-overview-dark.png"),
+    fullPage: true,
+  });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(overview).toBeVisible();
   expect(
     await overview.evaluate(
       (element) => element.scrollWidth <= element.clientWidth
@@ -783,6 +879,31 @@ test("overview counts all tasks and owner bars filter without requests", async (
     path: testInfo.outputPath("delivery-overview-mobile.png"),
     fullPage: true,
   });
+});
+
+test("older owner observations show no history rather than delivery totals", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.progress_history = [
+    {
+      recorded_at: "2026-09-09T12:00:00Z",
+      task_count: 10,
+      ready: 8,
+      blocked: 2,
+      awaiting_signoff: 0,
+      unassigned: 1,
+      open_findings: 0,
+      acknowledged_findings: 0,
+    },
+  ];
+  await page.goto("/?owner=maya");
+  await expect(
+    page.getByLabel("Delivery overview").getByText("No history yet")
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Delivery overview").getByRole("img")
+  ).toHaveCount(0);
 });
 
 test("review disclosures restore from a shared link and browser Back", async ({
@@ -806,5 +927,52 @@ test("review disclosures restore from a shared link and browser Back", async ({
     page.getByText("v7 historical finding", { exact: true })
   ).toBeVisible();
   expect(page.url()).toBe(url);
+  expect(state.writes).toEqual([]);
+});
+
+test("mixed selections cannot be partly signed off and grouping keeps claim available", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  const waiting = taskRow();
+  waiting.checks[0].status = "pass";
+  waiting.task_name = "Awaiting approval";
+  state.board.tasks = [
+    waiting,
+    {
+      ...taskRow(),
+      task_id: "unassigned",
+      delivery_task_id: "unassigned",
+      task_name: "Unassigned task",
+      qa_work: { ...taskRow().qa_work, owner_user_id: null },
+      qa_owner_name: null,
+    },
+  ];
+  await page.goto("/");
+  await page
+    .getByRole("checkbox", { name: "Select all tasks in this view" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Sign off", exact: true })
+  ).toBeDisabled();
+  await page
+    .getByRole("checkbox", { name: "Select Unassigned task", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Sign off", exact: true })
+  ).toBeEnabled();
+  await page.getByRole("combobox", { name: "Group tasks" }).click();
+  await page
+    .getByRole("option", { name: "Group by owner", exact: true })
+    .click();
+  await expect(
+    page.getByRole("columnheader", { name: "Owner", exact: true })
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Review Unassigned task", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Claim task", exact: true })
+  ).toBeVisible();
   expect(state.writes).toEqual([]);
 });

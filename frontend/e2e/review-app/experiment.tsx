@@ -1,10 +1,15 @@
 "use client";
+import { useEffect } from "react";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { useSearchParams } from "next/navigation";
 import type { ExperimentPageSummary, Task } from "@/lib/types";
 import { tasks } from "./records";
+import { setFixtureAccount } from "./clerk";
 export function FixtureExperiment() {
   const scenario = useSearchParams().get("scenario");
+  useEffect(() => {
+    if (scenario === "layout-deep-link") setFixtureAccount("alice", "org-a");
+  }, [scenario]);
   const visibleTasks: Task[] = tasks.flatMap((task) => {
     if (scenario === "unreviewed-only")
       return task.id === "unreviewed" || task.id === "stale-review"

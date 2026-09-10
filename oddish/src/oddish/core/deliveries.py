@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -784,46 +784,47 @@ async def _compute_board(
 ) -> DeliveryBoardResponse:
     config = _normalized_check_config(delivery.check_config)
     auto = config.automated
-    members = await _member_rows(session, delivery.id)
-    task_ids = [m.task_id for m in members]
-
+    # Keep missing/deleted tasks as failing members. Only live tasks supply
+    # current-version evidence; joining these scalar relations cannot multiply
+    # membership rows the way joining trials or findings would.
+    member_rows = (
+        await session.execute(
+            select(DeliveryTaskModel, TaskModel, TaskVersionModel)
+            .outerjoin(TaskModel, TaskModel.id == DeliveryTaskModel.task_id)
+            .outerjoin(
+                TaskVersionModel,
+                and_(
+                    TaskVersionModel.id == TaskModel.current_version_id,
+                    TaskModel.deleted_at.is_(None),
+                ),
+            )
+            .where(DeliveryTaskModel.delivery_id == delivery.id)
+            .order_by(DeliveryTaskModel.sort_order, DeliveryTaskModel.created_at)
+            .execution_options(include_deleted=True)
+        )
+    ).all()
+    members = []
     tasks: dict[str, TaskModel] = {}
     versions: dict[str, TaskVersionModel] = {}
+    for member, task, version in member_rows:
+        members.append(member)
+        if task is not None:
+            tasks[task.id] = task
+        if version is not None:
+            versions[version.id] = version
+    task_ids = [m.task_id for m in members]
     max_versions: dict[str, int] = {}
     rollouts: dict[str, tuple[int, int]] = {}
     must_fix_items: dict[str, list[dict]] = {}
     latest_qa_version: dict[str, str] = {}
 
     if task_ids:
-        # Soft-deleted members must stay on the board as failing rows, not
-        # vanish: a delivery that silently drops a task could read ready and
-        # finalize a snapshot missing tasks still on it.
-        tasks = {
-            t.id: t
-            for t in (
-                await session.scalars(
-                    select(TaskModel)
-                    .where(TaskModel.id.in_(task_ids))
-                    .execution_options(include_deleted=True)
-                )
-            ).all()
-        }
         version_ids = [
             t.current_version_id
             for t in tasks.values()
             if t.current_version_id and t.deleted_at is None
         ]
         if version_ids:
-            versions = {
-                v.id: v
-                for v in (
-                    await session.scalars(
-                        select(TaskVersionModel).where(
-                            TaskVersionModel.id.in_(version_ids)
-                        )
-                    )
-                ).all()
-            }
             scope = EligibleTrialScope(
                 membership=[TrialModel.task_version_id.in_(version_ids)]
             )
@@ -853,13 +854,15 @@ async def _compute_board(
                     TrialModel.task_id.in_(task_ids),
                     *_verdict_qa_clauses(),
                 )
+                .distinct(TrialModel.task_id)
                 .order_by(
-                    func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
+                    TrialModel.task_id,
+                    func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
                 )
             )
         ).all()
         for qa_task_id, qa_version_id in qa_rows:
-            latest_qa_version.setdefault(qa_task_id, qa_version_id)
+            latest_qa_version[qa_task_id] = qa_version_id
 
         for task_id, highest in (
             await session.execute(

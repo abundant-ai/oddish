@@ -1,287 +1,223 @@
 "use client";
 
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { Card, CardContent } from "@/components/ui/card";
-import { isDeliveryBlocked, type DeliveryTaskFilter } from "@/lib/deliveries";
+import {
+  DELIVERY_STATES,
+  deliveryOwnerTasks,
+  deliveryProgressHistory,
+  deliveryTaskState,
+  type DeliveryTaskFilter,
+  type DeliveryTaskState,
+} from "@/lib/deliveries";
 import type { DeliveryBoardResponse } from "@/lib/types";
-
-const stages = [
-  { key: "ready", label: "Ready", color: "#10b981" },
-  { key: "awaiting_signoff", label: "Awaiting sign-off", color: "#f59e0b" },
-  { key: "blocked", label: "Blocked", color: "#f87171" },
-] as const;
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export function DeliveryOverview({
   board,
   filter,
   ownerFilter,
   onFilter,
+  onOwnerChange,
 }: {
   board: DeliveryBoardResponse;
   filter: DeliveryTaskFilter;
   ownerFilter: string;
-  onFilter: (filter: DeliveryTaskFilter, owner: string) => void;
+  onFilter: (filter: DeliveryTaskFilter) => void;
+  onOwnerChange: (owner: string) => void;
 }) {
-  const counts = { ready: 0, blocked: 0, awaiting_signoff: 0, unassigned: 0 };
-  const owners = new Map<
-    string,
-    { id: string; name: string; blocked: number; awaiting_signoff: number }
-  >();
-  let openFindings = 0;
-  let acknowledgedFindings = 0;
+  const tasks = deliveryOwnerTasks(board, ownerFilter);
+  const counts = {
+    needs_work: 0,
+    qa_incomplete: 0,
+    awaiting_signoff: 0,
+    ready: 0,
+  };
+  for (const row of tasks) counts[deliveryTaskState(row)]++;
+  const owners = new Map<string, string>();
   for (const row of board.tasks) {
-    const stage = row.ready
-      ? "ready"
-      : isDeliveryBlocked(row)
-        ? "blocked"
-        : "awaiting_signoff";
-    counts[stage]++;
-    for (const finding of row.defects) {
-      if (finding.acknowledged) acknowledgedFindings++;
-      else openFindings++;
-    }
-    if (stage === "ready") continue;
-    const id = row.qa_work.owner_user_id ?? "unassigned";
-    if (id === "unassigned") counts.unassigned++;
-    const owner = owners.get(id) ?? {
-      id,
-      name: row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned",
-      blocked: 0,
-      awaiting_signoff: 0,
-    };
-    owner[stage]++;
-    owners.set(id, owner);
-  }
-  const workload = [...owners.values()].sort(
-    (a, b) =>
-      b.blocked + b.awaiting_signoff - (a.blocked + a.awaiting_signoff) ||
-      a.name.localeCompare(b.name)
-  );
-  const maxWork = Math.max(
-    1,
-    ...workload.map((owner) => owner.blocked + owner.awaiting_signoff)
-  );
-  const history = board.progress_history ?? [];
-  // Missing dates have no bar, rather than implying zero tasks or interpolated progress.
-  const byDay = new Map(
-    history.map((point) => [point.recorded_at.slice(0, 10), point])
-  );
-  const days = [];
-  if (history.length) {
-    const start = new Date(history[0].recorded_at.slice(0, 10) + "T00:00:00Z");
-    const end = new Date(
-      (
-        board.finalized_at ??
-        board.qa_as_of ??
-        history.at(-1)!.recorded_at
-      ).slice(0, 10) + "T00:00:00Z"
-    );
-    for (
-      let day = start;
-      day <= end;
-      day = new Date(day.getTime() + 86400000)
-    ) {
-      const date = day.toISOString().slice(0, 10);
-      days.push({ date, ...byDay.get(date) });
+    if (row.qa_work.owner_user_id) {
+      owners.set(
+        row.qa_work.owner_user_id,
+        row.qa_owner_name ?? row.qa_work.owner_user_id
+      );
     }
   }
-  const latest = history.at(-1);
+  const days = deliveryProgressHistory(board, ownerFilter);
+  const latest = days.findLast((day) => day.task_count !== null);
+  const closeEndpoints =
+    latest &&
+    latest.task_count! - latest.ready! <
+      Math.max(1, ...days.map((day) => day.task_count ?? 0)) / 5;
   return (
-    <Card aria-label="Delivery overview">
-      <CardContent className="space-y-5 pt-5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-medium">Delivery overview</h2>
-          <button
-            className="text-muted-foreground text-xs underline underline-offset-4"
-            onClick={() => onFilter("all", "all")}
+    <section aria-label="Delivery overview" className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm font-medium">
+          {tasks.length} task{tasks.length === 1 ? "" : "s"}
+        </span>
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="delivery-owner"
+            className="text-muted-foreground text-xs"
           >
-            View all {board.task_count} tasks
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {[
-            ...stages,
-            { key: "unassigned", label: "Unassigned work", color: "#a1a1aa" },
-          ].map((stage) => (
-            <button
-              key={stage.key}
-              onClick={() =>
-                onFilter(
-                  stage.key === "unassigned"
-                    ? "outstanding"
-                    : (stage.key as DeliveryTaskFilter),
-                  stage.key === "unassigned" ? "unassigned" : "all"
-                )
-              }
-              aria-pressed={
-                stage.key === "unassigned"
-                  ? filter === "outstanding" && ownerFilter === "unassigned"
-                  : filter === stage.key && ownerFilter === "all"
-              }
-              className="hover:bg-muted/60 aria-pressed:bg-muted rounded-md border px-3 py-2 text-left"
+            Owner
+          </label>
+          <Select value={ownerFilter} onValueChange={onOwnerChange}>
+            <SelectTrigger
+              id="delivery-owner"
+              className="w-44"
+              aria-label="Owner filter"
             >
-              <span className="text-muted-foreground flex items-center gap-2 text-xs">
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: stage.color }}
-                />
-                {stage.label}
-              </span>
-              <span className="mt-1 block text-2xl font-medium tabular-nums">
-                {counts[stage.key as keyof typeof counts]}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
-          <section className="min-w-0" aria-label="Delivery progress history">
-            <h3 className="text-sm font-medium">Progress over time</h3>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Last 30 days · latest hourly observation per day · UTC
-            </p>
-            {history.length ? (
-              <>
-                <div
-                  className="mt-3 h-44"
-                  role="img"
-                  aria-label={`Delivery history, ${history.length} recorded days. Latest: ${latest!.ready} ready, ${latest!.blocked} blocked, ${latest!.awaiting_signoff} awaiting sign-off, ${latest!.task_count} total.`}
-                >
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={days}
-                      margin={{ top: 4, right: 4, bottom: 0, left: -24 }}
-                      accessibilityLayer
-                    >
-                      <CartesianGrid vertical={false} stroke="var(--border)" />
-                      <XAxis
-                        dataKey="date"
-                        tickFormatter={(date: string) => date.slice(5)}
-                        tick={{ fontSize: 11 }}
-                        minTickGap={28}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <YAxis
-                        allowDecimals={false}
-                        tick={{ fontSize: 11 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <Tooltip
-                        content={({ active, payload }) => {
-                          const point = payload?.[0]?.payload;
-                          return active && point?.recorded_at ? (
-                            <div className="bg-popover text-popover-foreground rounded-md border p-3 text-xs shadow-md">
-                              <p className="mb-2 font-medium">
-                                {point.date} · {point.task_count} tasks
-                              </p>
-                              {stages.map((stage) => (
-                                <p key={stage.key}>
-                                  {stage.label}: {point[stage.key]}
-                                </p>
-                              ))}
-                              <p className="mt-2">
-                                Findings awaiting decision:{" "}
-                                {point.open_findings}
-                              </p>
-                              <p>
-                                Exceptions acknowledged:{" "}
-                                {point.acknowledged_findings}
-                              </p>
-                            </div>
-                          ) : null;
-                        }}
-                      />
-                      {stages.map((stage) => (
-                        <Bar
-                          key={stage.key}
-                          dataKey={stage.key}
-                          name={stage.label}
-                          stackId="status"
-                          fill={stage.color}
-                          maxBarSize={28}
-                          isAnimationActive={false}
-                        />
-                      ))}
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <p className="text-muted-foreground mt-2 text-xs">
-                  {history.length === 1
-                    ? "History starts"
-                    : "Showing history from"}{" "}
-                  {history[0].recorded_at.slice(0, 10)}. Last recorded{" "}
-                  {latest!.recorded_at.slice(0, 16).replace("T", " ")} UTC.
-                  Missing days are gaps.
-                </p>
-              </>
-            ) : (
-              <div className="text-muted-foreground mt-3 flex h-44 items-center justify-center rounded-md border border-dashed px-6 text-center text-sm">
-                {board.frozen
-                  ? "No progress history was recorded before this delivery was finalized."
-                  : "History starts with the first hourly observation. Current counts are shown above."}
-              </div>
-            )}
-          </section>
-          <section className="min-w-0" aria-label="Work by owner">
-            <h3 className="text-sm font-medium">Outstanding work by owner</h3>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Tasks in this delivery · select an owner to view their work
-            </p>
-            <div className="mt-3 max-h-52 space-y-1 overflow-y-auto">
-              {workload.map((owner) => (
-                <button
-                  key={owner.id}
-                  className="hover:bg-muted/60 aria-pressed:bg-muted w-full rounded-md px-2 py-2 text-left"
-                  aria-label={`${owner.name}: ${owner.blocked} blocked, ${owner.awaiting_signoff} awaiting sign-off`}
-                  aria-pressed={
-                    ownerFilter === owner.id && filter === "outstanding"
-                  }
-                  onClick={() => onFilter("outstanding", owner.id)}
-                >
-                  <span className="mb-1.5 flex items-center justify-between gap-3 text-xs">
-                    <span className="truncate">{owner.name}</span>
-                    <span className="tabular-nums">
-                      {owner.blocked + owner.awaiting_signoff}
-                    </span>
-                  </span>
-                  <span className="bg-muted flex h-2 overflow-hidden rounded-full">
-                    <span
-                      className="bg-red-400"
-                      style={{ width: `${(100 * owner.blocked) / maxWork}%` }}
-                    />
-                    <span
-                      className="bg-amber-500"
-                      style={{
-                        width: `${(100 * owner.awaiting_signoff) / maxWork}%`,
-                      }}
-                    />
-                  </span>
-                </button>
-              ))}
-              {!workload.length && (
-                <p className="text-muted-foreground py-8 text-center text-sm">
-                  No outstanding work.
-                </p>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All owners</SelectItem>
+              {board.qa_viewer_user_id && (
+                <SelectItem value="mine">Mine</SelectItem>
               )}
-            </div>
-          </section>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
+              {[...owners]
+                .sort((a, b) => a[1].localeCompare(b[1]))
+                .map(([id, name]) => (
+                  <SelectItem key={id} value={id}>
+                    {name}
+                  </SelectItem>
+                ))}
+              {!["all", "mine", "unassigned"].includes(ownerFilter) &&
+                !owners.has(ownerFilter) && (
+                  <SelectItem value={ownerFilter}>{ownerFilter}</SelectItem>
+                )}
+            </SelectContent>
+          </Select>
         </div>
-        <p className="text-muted-foreground border-t pt-3 text-xs">
-          {openFindings} findings awaiting a decision · {acknowledgedFindings}{" "}
-          acknowledged as exceptions.
-          {board.delivery_checks.some((check) => check.status === "fail") &&
-            " Delivery-wide checks also remain open."}
-        </p>
-      </CardContent>
-    </Card>
+      </div>
+      <div className="grid grid-cols-2 border-y sm:grid-cols-4">
+        {(
+          Object.entries(DELIVERY_STATES) as [
+            DeliveryTaskState,
+            (typeof DELIVERY_STATES)[DeliveryTaskState],
+          ][]
+        ).map(([key, state]) => (
+          <button
+            type="button"
+            key={key}
+            onClick={() => onFilter(filter === key ? "all" : key)}
+            aria-pressed={filter === key}
+            className={`hover:bg-muted/50 aria-pressed:bg-muted/50 border-b-2 border-transparent px-4 py-4 text-left aria-pressed:border-current ${state.tone}`}
+          >
+            <span className="text-muted-foreground flex items-center gap-2 text-xs">
+              <span
+                className={`h-1.5 w-1.5 rounded-full bg-current ${state.tone}`}
+                aria-hidden="true"
+              />
+              {state.label}
+            </span>
+            <span className="text-foreground mt-2 block text-3xl font-medium tabular-nums">
+              {counts[key]}
+            </span>
+          </button>
+        ))}
+      </div>
+      {latest ? (
+        <div
+          className="h-44"
+          role="img"
+          aria-label={`Progress for ${ownerFilter === "all" ? "all owners" : ownerFilter === "mine" ? "my tasks" : (owners.get(ownerFilter) ?? ownerFilter)}: ${latest.ready} ready of ${latest.task_count} tasks on ${latest.date}.`}
+        >
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart
+              data={days}
+              margin={{ top: 16, right: 60, bottom: 0, left: -24 }}
+              accessibilityLayer
+            >
+              <CartesianGrid vertical={false} stroke="hsl(var(--border))" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={(date: string) => date.slice(5)}
+                tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                minTickGap={40}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "hsl(var(--popover))",
+                  color: "hsl(var(--popover-foreground))",
+                  borderColor: "hsl(var(--border))",
+                  borderRadius: 6,
+                  fontSize: 12,
+                }}
+              />
+              <Line
+                name="Total"
+                dataKey="task_count"
+                type="stepAfter"
+                stroke="hsl(var(--muted-foreground))"
+                strokeWidth={1.5}
+                dot={{ r: 2, fill: "hsl(var(--muted-foreground))" }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+              <Line
+                name="Ready"
+                dataKey="ready"
+                type="stepAfter"
+                stroke="var(--color-emerald-500)"
+                strokeWidth={2}
+                dot={{ r: 2, fill: "var(--color-emerald-500)" }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+              <ReferenceDot
+                x={latest.date}
+                y={latest.task_count!}
+                r={0}
+                label={{
+                  value: "Total",
+                  position: "right",
+                  dy: closeEndpoints ? -9 : 0,
+                  fill: "hsl(var(--muted-foreground))",
+                  fontSize: 12,
+                }}
+              />
+              <ReferenceDot
+                x={latest.date}
+                y={latest.ready!}
+                r={0}
+                label={{
+                  value: "Ready",
+                  position: "right",
+                  dy: closeEndpoints ? (latest.ready === 0 ? -24 : 9) : 0,
+                  fill: "var(--color-emerald-500)",
+                  fontSize: 12,
+                }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <p className="text-muted-foreground py-3 text-sm">No history yet</p>
+      )}
+    </section>
   );
 }
