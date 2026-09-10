@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { markOpenIntent } from "@/lib/open-intent";
 import { ExternalLink, GitPullRequest } from "lucide-react";
 import { useSWRConfig } from "swr";
 import { Badge, badgeVariants } from "@/components/ui/badge";
@@ -315,10 +314,6 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
   const selected = isSelected(task.id);
 
   function preserveBrowseSnapshot() {
-    // The task route's chunk still has to download and render before
-    // `ui.task.open` mounts, so stamp the click here or that whole interval is
-    // missing from the measurement (see lib/open-intent.ts).
-    markOpenIntent("ui.task.open", task.id);
     const openSnapshot = taskOpenFromBrowse(task);
     void mutate(
       taskOpenKey(task.id),

@@ -114,3 +114,63 @@ export function resolveInteractionStart({
   }
   return { startTime: intentAt, source: "click" };
 }
+
+/**
+ * Record a click on any in-app link to a task page.
+ *
+ * Stamping call sites one at a time does not hold. Tasks are linked from the
+ * task cards, the experiment table, trial panels, the delivery board and the
+ * admin user pages, and a link added next month would silently fall back to
+ * the mount clock and quietly under-report. One capture-phase listener on the
+ * document covers every ``<a>`` Next.js renders, including ones nobody has
+ * written yet.
+ *
+ * Capture phase so the stamp lands before any handler that calls
+ * ``preventDefault`` or navigates; the listener only reads.
+ */
+let navigationCaptureInstalled = false;
+
+export function installNavigationIntentCapture(): void {
+  if (navigationCaptureInstalled || typeof document === "undefined") return;
+  navigationCaptureInstalled = true;
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      try {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const anchor = target.closest("a[href]");
+        if (!anchor) return;
+        const href = anchor.getAttribute("href");
+        if (!href || href.startsWith("http")) return;
+
+        const taskId = taskIdFromPath(new URL(href, location.origin).pathname);
+        if (taskId) markOpenIntent("ui.task.open", taskId);
+      } catch {
+        /* a stamp is never worth breaking a navigation over */
+      }
+    },
+    { capture: true }
+  );
+}
+
+/**
+ * The task id in a dashboard path, or null when the path is something else.
+ *
+ * Authenticated URLs carry an organization slug (`/orgs/{slug}/tasks/{id}`),
+ * and the unprefixed form still exists, so both are accepted. Deeper paths
+ * such as `/tasks/{id}/probe` are a different page and are not this open.
+ *
+ * Pure and exported for tests.
+ */
+export function taskIdFromPath(pathname: string): string | null {
+  const segments = pathname.split("/").filter(Boolean);
+  const rest = segments[0] === "orgs" ? segments.slice(2) : segments;
+  if (rest.length !== 2 || rest[0] !== "tasks") return null;
+  try {
+    return decodeURIComponent(rest[1]);
+  } catch {
+    return rest[1];
+  }
+}

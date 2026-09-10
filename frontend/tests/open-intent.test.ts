@@ -7,6 +7,7 @@ import {
   markOpenIntent,
   resolveInteractionStart,
   takeOpenIntent,
+  taskIdFromPath,
 } from "../src/lib/open-intent.ts";
 
 const CLICK = 1_700_000_000_000;
@@ -90,4 +91,30 @@ test("concurrent intents for different subjects do not collide", () => {
 
   assert.equal(takeOpenIntent("ui.task.open", "task-b")?.at, CLICK + 50);
   assert.equal(takeOpenIntent("ui.task.open", "task-a")?.at, CLICK);
+});
+
+test("finds the task id in both slugged and unprefixed paths", () => {
+  assert.equal(taskIdFromPath("/tasks/implement-gofumpt"), "implement-gofumpt");
+  assert.equal(
+    taskIdFromPath("/orgs/abundant/tasks/implement-gofumpt"),
+    "implement-gofumpt"
+  );
+});
+
+test("decodes an encoded task id", () => {
+  assert.equal(taskIdFromPath("/tasks/a%2Fb"), "a/b");
+});
+
+test("ignores paths that are not a single task page", () => {
+  for (const path of [
+    "/tasks",
+    "/orgs/abundant/tasks",
+    "/tasks/some-task/probe",
+    "/orgs/abundant/tasks/some-task/probe",
+    "/experiments/abc",
+    "/dashboard",
+    "/",
+  ]) {
+    assert.equal(taskIdFromPath(path), null, path);
+  }
 });

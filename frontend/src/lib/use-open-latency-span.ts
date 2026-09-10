@@ -420,12 +420,39 @@ export function useOpenLatencySpan({
     }
     ensureUnloadHandler();
 
-    // Started in a background tab: not a wait anybody is having (see
-    // documentHidden). Consume the click stamp so it cannot be picked up by a
-    // later open, but leave the page-load latch alone -- nothing was measured,
-    // so a real landing open may still claim it.
+    // Mounted while the tab is hidden. Two different situations arrive here
+    // and they are told apart by whether a click was recorded.
+    //
+    // No click: a cmd-clicked or middle-clicked tab, which nobody is waiting
+    // on. It also cannot be measured -- `requestAnimationFrame` is frozen so
+    // it can never reach `ready`, and `visibilitychange` will not fire because
+    // the tab was born hidden rather than changing. Skip it, and leave the
+    // page-load latch unclaimed since nothing was measured.
+    //
+    // A click: someone asked for this in this tab and switched away while it
+    // loaded. That is a real wait, and an abandoned one. It can never reach
+    // `ready` for the same frozen-frame reason, and the `visibilitychange`
+    // that would have caught it has already passed, so record it now from the
+    // click rather than losing it.
     if (documentHidden()) {
-      takeOpenIntent(name, subject);
+      const abandonedIntent = takeOpenIntent(name, subject);
+      if (abandonedIntent) {
+        settleOpen(
+          {
+            name,
+            subject,
+            startTime: abandonedIntent.at,
+            startSource: "interaction",
+            clock: "click",
+            settled: false,
+            failing: false,
+            sawError: false,
+            attributes: latestAttributes.current,
+          },
+          "abandoned",
+          { reason: "page-hidden" }
+        );
+      }
       pending.current = null;
       return;
     }
