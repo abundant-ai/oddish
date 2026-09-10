@@ -1,6 +1,5 @@
 import type {
   DeliveryBoardResponse,
-  DeliveryCheckStatus,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -42,45 +41,13 @@ export function deliveryQAStatus(
   return qa;
 }
 
-export function deliveryNextAction(
-  row: DeliveryTaskBoardRow,
-  status: DeliveryQAStatus["status"]
-): string {
-  switch (status) {
-    case "never":
-      return "Open reviews";
-    case "outdated":
-      return "Inspect review to refresh";
-    case "queued":
-    case "running":
-      return "Inspect review progress";
-    case "error":
-      return "Inspect review error";
-    case "needs_fixes":
-      return "Open blocking finding";
-    case "accepted":
-      return row.ready
-        ? "Ready to deliver"
-        : row.checks?.some(
-              (check) => check.kind === "automated" && check.status === "fail"
-            )
-          ? "Inspect outstanding checks"
-          : "Awaiting sign-off";
-  }
-}
-
-/** Tailwind classes for one check-status dot/chip. */
-export function checkTone(status: DeliveryCheckStatus): string {
-  switch (status) {
-    case "pass":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
-    case "fail":
-      return "bg-red-500/15 text-red-700 dark:text-red-400";
-    case "waived":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
+/** Delivery blockers remain separate from review completion and recorded sign-off. */
+export function isDeliveryBlocked(row: DeliveryTaskBoardRow): boolean {
+  return (
+    row.checks.some(
+      (check) => check.kind === "automated" && check.status === "fail"
+    ) || row.defects.some((defect) => !defect.acknowledged)
+  );
 }
 
 /** One-line readiness summary for a board header. */

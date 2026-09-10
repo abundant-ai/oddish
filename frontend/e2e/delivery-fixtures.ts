@@ -103,3 +103,118 @@ export function history(
     }),
   };
 }
+
+/** Five retained findings, two accepted check exceptions, and an earlier sign-off. */
+export function reviewTaskRow(): DeliveryTaskBoardRow {
+  const row = taskRow(1);
+  row.task_name = "qa-golden-source-vadimdemedes__ink-303-927e39b0-88267eec";
+  row.qa = {
+    status: "error",
+    detail: "QA produced no current verdict",
+    trial_id: "qa-1",
+    finished_at: null,
+  };
+  row.checks = [
+    {
+      key: "pre_trial_passed",
+      kind: "automated",
+      label: "Source review completed",
+      status: "pass",
+      detail: "Source review completed on v1",
+    },
+    {
+      key: "min_rollouts",
+      kind: "automated",
+      label: "Enough rollouts",
+      status: "waived",
+      detail: "6/5 trials, 1/3 agents on v1",
+      checked_by_name: "Kyle",
+    },
+    {
+      key: "verdict_ok",
+      kind: "automated",
+      label: "No blocking defects in verdict",
+      status: "waived",
+      detail: "No completed execution-review verdict on v1",
+      checked_by_name: "Kyle",
+    },
+    {
+      key: "no_must_fix",
+      kind: "automated",
+      label: "Every defect resolved or acknowledged",
+      status: "fail",
+      detail: "2 of 5 task defects unacknowledged on v1",
+    },
+    {
+      key: "signoff",
+      kind: "manual",
+      label: "Signed off",
+      status: "pass",
+      detail: "",
+      checked_by_name: "Kyle",
+      checked_by_user_id: "kyle",
+    },
+  ];
+  row.defects = [
+    {
+      id: "build",
+      title:
+        "The image build leaves the compiled fixed ErrorOverview component in the build output.",
+      source: "pre_trial",
+      acknowledged: true,
+      recorded_tier: "must_fix",
+      acknowledged_by_name: "Kyle",
+    },
+    {
+      id: "network",
+      title:
+        "Internet access lets the agent fetch the real upstream fix for this public repository.",
+      source: "pre_trial",
+      acknowledged: true,
+      recorded_tier: "must_fix",
+      acknowledged_by_name: "Kyle",
+    },
+    {
+      id: "verifier",
+      finding_id: "verifier",
+      title:
+        "The verifier does not check that errors avoid unhandled promise rejections.",
+      source: "pre_trial",
+      acknowledged: false,
+      recorded_tier: "should_fix",
+      file: "tests/test.sh",
+      line_start: 7,
+      line_end: 9,
+      finding: {
+        id: "verifier",
+        tier: "should_fix",
+        title:
+          "The verifier does not check that errors avoid unhandled promise rejections.",
+        file: "tests/test.sh",
+        line_start: 7,
+        line_end: 9,
+        detail: "Fixture evidence: the shell script only checks the exit code.",
+        recommendation:
+          "Fixture recommendation: assert that the rejection is handled.",
+      },
+    },
+    {
+      id: "tsconfig",
+      title:
+        "Dockerfile leaves the agent's tsconfig.json in a permanently failing state",
+      source: "trial",
+      acknowledged: true,
+      recorded_tier: "must_fix",
+      acknowledged_by_name: "Kyle",
+    },
+    {
+      id: "environment",
+      title:
+        "Agent environment is missing the global.self polyfill that the verifier defines.",
+      source: "trial",
+      acknowledged: false,
+      recorded_tier: "should_fix",
+    },
+  ];
+  return row;
+}
