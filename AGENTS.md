@@ -815,12 +815,21 @@ CLI responses are unchanged.
 (or the public token URL), task, version, and known content hash. The first batch
 contains root, solution, tests, and environment, at 100 entries each; other
 sections, wrappers, and continuation pages use the original listing API. Task-name
-hover and keyboard focus prefetch only that task's metadata after 150 ms; opening
+hover and keyboard focus prefetch that task's directory bundle after 150 ms; opening
 the drawer consumes the same SWR request. Reopening reuses data for 30 seconds,
 then refreshes; panel hash changes invalidate the revision. An older server's
 root-only response remains usable. File/line selection stays in the existing URL
 owners, and an addressed file reads directly before its directory tree finishes.
 Directory completion must not emit file-selection callbacks or clear line anchors.
+The browser opts into `previews=true`: at most 16 files, 32 KiB each and 256 KiB
+combined, selected only from the requested pages with `instruction.md` first.
+Storage reads previews concurrently and gives each read one second; failed, binary,
+large, and omitted members retain on-demand reads. Cached archive text needs no
+additional storage request. Hosted definition routes combine current organization
+approval with exact task/version source selection in one SQL statement for ordinary
+credentials; bound analysis credentials retain additional resource checks. Cached
+publisher-owned `vN-revisions/<32-hex-token>/` archives skip HEAD only while their
+bytes remain cached. Legacy mutable archives still revalidate.
 See `docs/batched-file-loading.md` for the contract and local verification.
 
 File-list request state records the requested and received content fingerprints.
@@ -2172,7 +2181,9 @@ The board derives delivery blockers independently of review status and recorded
 sign-off. Passed checks and history use native disclosures;
 history remains mounted so board refreshes preserve its open versions.
 Individual acknowledgment buttons show Saving while the check request runs,
-then Updating until the delivery read finishes. Mutation refreshes use the
+then Updating until the delivery read finishes. The global busy state ends at
+save completion; pending status is tracked per check so unrelated actions do not
+wait for a slow refresh. Check refreshes use the
 no-argument SWR `mutate()` form, whose promise waits for revalidation; passing
 `undefined` as mutation data starts revalidation without waiting for it.
 Delivery lookups join their customer, and task checks read membership and lock
@@ -2319,3 +2330,8 @@ last observation and freezes daily history in the shipping snapshot. Old finaliz
 snapshots remain unchanged. Progress history is stripped from customer-safe
 snapshots because its counts include internal/hidden tasks. Acknowledged findings
 are exceptions, not verified repairs; missing days have no observation, not zero.
+
+Delivery legacy `filter=blocked` links include Needs work and QA incomplete,
+excluding Needs sign-off and Ready. Verdict provenance on delivery boards and
+task QA history orders by completion time (creation time when absent), then
+creation time and trial ID descending to resolve ties consistently.

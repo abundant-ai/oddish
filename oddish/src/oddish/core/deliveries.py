@@ -865,6 +865,8 @@ async def _compute_board(
                 .order_by(
                     TrialModel.task_id,
                     func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
+                    TrialModel.created_at.desc(),
+                    TrialModel.id.desc(),
                 )
             )
         ).all()
@@ -1414,7 +1416,11 @@ async def get_task_qa_history_core(
     verdict_version_id = await session.scalar(
         select(TrialModel.task_version_id)
         .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
-        .order_by(func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc())
+        .order_by(
+            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
+            TrialModel.created_at.desc(),
+            TrialModel.id.desc(),
+        )
         .limit(1)
     )
 

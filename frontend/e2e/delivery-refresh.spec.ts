@@ -1178,8 +1178,64 @@ test("acknowledgment shows saving and refreshing, and a failed save can be retri
     finding.getByRole("button", { name: "Updating…", exact: true })
   ).toBeDisabled();
   expect(state.writes).toHaveLength(1);
+  // A slow refresh only disables the finding just saved, not the next action.
+  const nextFinding = page
+    .getByRole("listitem")
+    .filter({ hasText: "Agent environment is missing" });
+  await expect(
+    nextFinding.getByRole("button", { name: "Acknowledge for v1", exact: true })
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "Release task", exact: true })
+  ).toBeEnabled();
+  await page.clock.runFor(100);
+  await nextFinding
+    .getByRole("button", { name: "Acknowledge for v1", exact: true })
+    .click();
+  await expect(
+    nextFinding.getByRole("button", { name: "Updating…", exact: true })
+  ).toBeDisabled();
+  await expect(
+    finding.getByRole("button", { name: "Updating…", exact: true })
+  ).toBeDisabled();
+  expect(state.writes).toHaveLength(2);
   releaseRefresh();
   await expect(
-    page.locator("summary").filter({ hasText: /^Needs a decision/ })
-  ).toHaveText("Needs a decision · 1 finding · v1");
+    page.getByRole("button", { name: "Updating…", exact: true })
+  ).toHaveCount(0);
+  await expect(
+    finding.getByRole("button", { name: "Acknowledge for v1", exact: true })
+  ).toHaveCount(0);
+  await expect(
+    nextFinding.getByRole("button", { name: "Acknowledge for v1", exact: true })
+  ).toHaveCount(0);
+});
+
+test("legacy blocked links include defects and incomplete QA but exclude signoff and ready tasks", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  const defect = reviewTaskRow();
+  defect.task_id = "defect";
+  defect.task_name = "Defect task";
+  const incomplete = taskRow();
+  incomplete.task_name = "Incomplete task";
+  const awaiting = taskRow();
+  awaiting.task_id = "awaiting";
+  awaiting.task_name = "Awaiting task";
+  awaiting.checks[0].status = "pass";
+  const ready = taskRow();
+  ready.task_id = "ready";
+  ready.task_name = "Ready task";
+  ready.checks.forEach((check) => (check.status = "pass"));
+  ready.ready = true;
+  state.board.tasks = [defect, incomplete, awaiting, ready];
+  await page.goto("/?filter=blocked");
+  await expect(page.getByRole("combobox", { name: "State filter" })).toHaveText(
+    "Blocked"
+  );
+  for (const name of ["Defect task", "Incomplete task"])
+    await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
+  for (const name of ["Awaiting task", "Ready task"])
+    await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
 });

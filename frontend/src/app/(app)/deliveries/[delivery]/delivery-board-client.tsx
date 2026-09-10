@@ -369,7 +369,9 @@ function applyBoardView(
       (view.filter === "all" ||
         (view.filter === "outstanding"
           ? !row.ready
-          : deliveryTaskState(row) === view.filter)) &&
+          : view.filter === "blocked"
+            ? ["needs_work", "qa_incomplete"].includes(deliveryTaskState(row))
+            : deliveryTaskState(row) === view.filter)) &&
       (view.issueFilter === "all" ||
         row.qa_work.issue_categories.includes(
           view.issueFilter as QAIssueCategory
@@ -659,7 +661,7 @@ function TaskRow({
   onClaim,
   onRelease,
   onSaveWork,
-  pendingCheck,
+  pendingChecks,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -683,7 +685,7 @@ function TaskRow({
   groupBy: string;
   canEditWork: boolean;
   busy: boolean;
-  pendingCheck: { key: string; phase: "saving" | "refreshing" } | null;
+  pendingChecks: Record<string, "saving" | "refreshing">;
   onClaim: () => void;
   onRelease: () => void;
   onSaveWork: (patch: {
@@ -979,7 +981,13 @@ function TaskRow({
                               size="sm"
                               className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
                               disabled={
-                                frozen || !isAdmin || busy || !row.version_id
+                                frozen ||
+                                !isAdmin ||
+                                busy ||
+                                !row.version_id ||
+                                !!pendingChecks[
+                                  `${row.delivery_task_id}:ack:${defect.id}`
+                                ]
                               }
                               onClick={() =>
                                 onSetCheck(
@@ -989,8 +997,12 @@ function TaskRow({
                                 )
                               }
                             >
-                              {pendingCheck?.key === `ack:${defect.id}`
-                                ? pendingCheck.phase === "saving"
+                              {pendingChecks[
+                                `${row.delivery_task_id}:ack:${defect.id}`
+                              ]
+                                ? pendingChecks[
+                                    `${row.delivery_task_id}:ack:${defect.id}`
+                                  ] === "saving"
                                   ? "Saving…"
                                   : "Updating…"
                                 : `Acknowledge for v${row.version}`}
@@ -1306,11 +1318,9 @@ function DeliveryBoardContent({
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [pendingCheck, setPendingCheck] = useState<{
-    taskId: string | null;
-    key: string;
-    phase: "saving" | "refreshing";
-  } | null>(null);
+  const [pendingChecks, setPendingChecks] = useState<
+    Record<string, "saving" | "refreshing">
+  >({});
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
   const [bulkSignoffRows, setBulkSignoffRows] = useState<
@@ -1390,11 +1400,9 @@ function DeliveryBoardContent({
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
-      try {
-        await mutate();
-      } finally {
-        setBusy(false);
-      }
+      // Preserve background refreshes for actions that do not show per-check progress.
+      void mutate(undefined, { populateCache: false, throwOnError: false });
+      setBusy(false);
     }
   };
 
@@ -1415,7 +1423,7 @@ function DeliveryBoardContent({
       }
     );
 
-  const setCheck = (
+  const setCheck = async (
     checkKey: string,
     deliveryTaskId: string | null,
     checked: boolean
@@ -1435,20 +1443,36 @@ function DeliveryBoardContent({
     const row = data?.tasks.find(
       (row) => row.delivery_task_id === deliveryTaskId
     );
-    setPendingCheck({ taskId: deliveryTaskId, key: checkKey, phase: "saving" });
-    void run(async () => {
+    const pendingKey = `${deliveryTaskId}:${checkKey}`;
+    setPendingChecks((pending) => ({ ...pending, [pendingKey]: "saving" }));
+    setBusy(true);
+    setActionError(null);
+    try {
       await putCheck(
         checkKey,
         deliveryTaskId,
         checked,
         row ? (row.version_id ?? null) : undefined
       );
-      setPendingCheck({
-        taskId: deliveryTaskId,
-        key: checkKey,
-        phase: "refreshing",
-      });
-    }).finally(() => setPendingCheck(null));
+      setPendingChecks((pending) => ({
+        ...pending,
+        [pendingKey]: "refreshing",
+      }));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      // Only this check waits for its result; other actions can proceed after saving.
+      setBusy(false);
+      try {
+        await mutate();
+      } finally {
+        setPendingChecks((pending) => {
+          const next = { ...pending };
+          delete next[pendingKey];
+          return next;
+        });
+      }
+    }
   };
 
   const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
@@ -1804,6 +1828,9 @@ function DeliveryBoardContent({
                       {filter === "outstanding" && (
                         <SelectItem value="outstanding">Outstanding</SelectItem>
                       )}
+                      {filter === "blocked" && (
+                        <SelectItem value="blocked">Blocked</SelectItem>
+                      )}
                       {Object.entries(DELIVERY_STATES).map(([key, state]) => (
                         <SelectItem key={key} value={key}>
                           {state.label}
@@ -2058,11 +2085,7 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
-                            pendingCheck={
-                              pendingCheck?.taskId === row.delivery_task_id
-                                ? pendingCheck
-                                : null
-                            }
+                            pendingChecks={pendingChecks}
                             groupBy={groupBy}
                             busy={busy}
                             canEditWork={

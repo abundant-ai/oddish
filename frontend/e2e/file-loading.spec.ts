@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { TaskFile } from "../src/lib/use-task-file-tree";
 
 const finding =
   "/tasks/task-a?version=7&drawer=task&finding=empty-answer&taskPane=file&taskFile=tests%2Ftest.sh&taskLines=L7";
@@ -87,13 +88,14 @@ for (const order of ["body-first", "metadata-first"] as const) {
 }
 
 function batch(version = 7) {
+  const files: TaskFile[] = [{ path: `tests/v${version}.sh`, key: "test", size: 7 }];
   return {
     version,
     source_hash: `fixture-v${version}`,
     directories: {
       "": { files: [], dirs: [{ path: "tests" }], cursor: null },
       tests: {
-        files: [{ path: `tests/v${version}.sh`, key: "test", size: 7 }],
+        files,
         dirs: [],
         cursor: "page-2",
       },
@@ -415,4 +417,30 @@ test("a delayed full file stays attached to its original version", async ({
   } finally {
     release();
   }
+});
+
+test("definition bundle previews switch files without individual reads", async ({ page }) => {
+  const reads: string[] = [];
+  await page.route(fileList, async (route) => {
+    const url = new URL(route.request().url());
+    expect(url.searchParams.get("previews")).toBe("true");
+    const data = batch();
+    data.directories.tests.files = [
+      { path: "tests/first.sh", key: "first", size: 5, content: "FIRST" },
+      { path: "tests/second.sh", key: "second", size: 6, content: "SECOND" },
+    ];
+    await route.fulfill({ json: data });
+  });
+  await page.route("**/api/tasks/task-a/files/*?**", async (route) => {
+    reads.push(route.request().url());
+    await route.fulfill({ json: { content: "UNEXPECTED READ" } });
+  });
+  await page.goto("/experiments/review-demo?task=task-a");
+  await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
+  await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "second.sh 6 B", exact: true }).click();
+  await expect(page.getByText("SECOND", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
+  await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
+  expect(reads).toEqual([]);
 });

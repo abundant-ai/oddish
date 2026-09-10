@@ -1397,3 +1397,37 @@ async def test_acknowledgment_statement_budget(session, repeat):
         assert updated.tasks[0].defects[0].acknowledged_by_user_id == "u2"
     print(f"ack repeat={repeat}: {len(statements)} SQL statements")
     assert len(statements) <= 6, "\n".join(statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_creation_time", [False, True])
+async def test_verdict_timestamp_ties_agree_between_board_and_history(session, same_creation_time):
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    task, v1, experiment = await _green_task(session, "deliv-qa-tie")
+    first = await session.scalar(select(TrialModel).where(
+        TrialModel.task_id == task.id, TrialModel.kind == "qa"
+    ))
+    first.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    first.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    second = _trial(task, experiment, v2.id, kind="qa")
+    # A larger unique ID resolves even an exact timestamp tie.
+    second.id = "zz-" + second.id
+    second.created_at = first.created_at if same_creation_time else datetime(2026, 7, 2, tzinfo=timezone.utc)
+    second.finished_at = first.finished_at
+    session.add(second)
+    await session.flush()
+    delivery = await create_delivery_core(session, data=DeliveryCreate(
+        customer="acme", name="timestamp-ties", task_ids=[task.id]
+    ), org_id=ORG, user_id="u1")
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+        assert _checks(board, task.id)["verdict_ok"].status == ("pass" if version == v2 else "fail")
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == v2.id
