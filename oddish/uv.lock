@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=a13206024d26d8582bf8ed52a127ef7a4853113e" }]
+overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=df3bd8dc161692e97a0c572a1945b001483e032f" }]
 
 [[package]]
 name = "aioboto3"
@@ -947,7 +947,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?rev=a13206024d26d8582bf8ed52a127ef7a4853113e#a13206024d26d8582bf8ed52a127ef7a4853113e" }
+source = { git = "https://github.com/abundant-ai/harbor?rev=df3bd8dc161692e97a0c572a1945b001483e032f#df3bd8dc161692e97a0c572a1945b001483e032f" }
 dependencies = [
     { name = "dirhash" },
     { name = "dockerfile-parse" },
@@ -1740,7 +1740,7 @@ requires-dist = [
     { name = "dockerfile-parse", marker = "extra == 'worker'", specifier = ">=2.0.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=a13206024d26d8582bf8ed52a127ef7a4853113e" },
+    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=df3bd8dc161692e97a0c572a1945b001483e032f" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
@@ -1760,7 +1760,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
-    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.6.1" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.7.1" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2787,15 +2787,15 @@ wheels = [
 
 [[package]]
 name = "thunder-sandbox"
-version = "0.6.1"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/23/330e5ba906f61f7d34fc9ee96734da3f28deed4786f0e8cf520774333b0e/thunder_sandbox-0.6.1.tar.gz", hash = "sha256:b159ebef3f63ac70f03b9b08db1f5ccddc7a24ae3ad43eb67e0ad3022bdfaecd", size = 39742, upload-time = "2026-09-08T22:51:30.374Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/89/3b275dfb6b6d099e7eec18b98ef0b71532b5494724922d194cf37dba75d5/thunder_sandbox-0.7.1.tar.gz", hash = "sha256:3550754fd6980434feaf949ab55af4963f4a63058751b72adc5de1f259dd73ce", size = 58421, upload-time = "2026-09-10T06:29:06.349Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/2e/04c46b3aa4478d2fc910c5b9b0a5101a39303b12bded7ac19fe58e56d940/thunder_sandbox-0.6.1-py3-none-any.whl", hash = "sha256:f64ce150566fbbe11d9d1406b3187088383c30d441fb09b48929e8e99f31bf29", size = 44399, upload-time = "2026-09-08T22:51:28.862Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/eb/7e442c8b82f638da4690fc5ca0fac67b1895ef6f39005357a64771fe92e4/thunder_sandbox-0.7.1-py3-none-any.whl", hash = "sha256:3251f24c777ce7919c7da5a050724a013d9963b17b4c24328e0ff870e1c28154", size = 63201, upload-time = "2026-09-10T06:29:04.928Z" },
 ]
 
 [[package]]

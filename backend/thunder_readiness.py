@@ -25,9 +25,9 @@ def thunder_worker_readiness() -> dict[str, str | bool]:
         raise RuntimeError("Thunder API token did not resolve")
 
     sdk_version = version("thunder-sandbox")
-    if sdk_version != "0.6.1":
+    if sdk_version != "0.7.1":
         raise RuntimeError(
-            f"Expected thunder-sandbox 0.6.1, found {sdk_version}"
+            f"Expected thunder-sandbox 0.7.1, found {sdk_version}"
         )
     return {
         "thunder_sandbox": sdk_version,

@@ -3,12 +3,15 @@ from __future__ import annotations
 import logging
 import asyncio
 from typing import Annotated
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from org_access import require_execution_org
 from oddish.timing import (
     begin_auth_timing,
@@ -225,10 +228,9 @@ async def get_auth_context(
                 try:
                     clerk_cached_auth: CachedAuthData | None = None
                     clerk_auth_context: AuthContext | None = None
-                    async with get_session() as session:
-                        clerk_result = await get_or_create_user_from_clerk(
-                            session, clerk_user_id, clerk_org_id, email, org_role
-                        )
+                    clerk_result = await get_or_create_user_from_clerk(
+                        clerk_user_id, clerk_org_id, email, org_role
+                    )
 
                     if clerk_result is None:
                         raise HTTPException(
@@ -289,17 +291,14 @@ async def get_auth_context(
         finish_auth_timing(auth_timing)
 
 
-async def require_auth(
-    request: Request,
-    auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> AuthContext:
-    """
-    Require authentication for an endpoint.
+@asynccontextmanager
+async def authorized_read_session(
+    request: Request, auth: AuthContext
+) -> AsyncIterator[AsyncSession]:
+    """Check access and borrow one connection until the route finishes its reads.
 
-    Use as a dependency:
-        @app.get("/tasks")
-        async def list_tasks(auth: AuthContext = Depends(require_auth)):
-            ...
+    Callers resolve identity first and end this scope before storage/network I/O.
+    Approval is read on every request, including cached identities.
     """
     if not auth.is_authenticated:
         raise HTTPException(
@@ -307,11 +306,19 @@ async def require_auth(
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    await authorize_bound_analysis_request(request, auth)
-    # Resolve organization data at the same boundary as approval, on both
-    # cache hits and misses. Auth caches contain identities, never ORM rows.
-    auth.org = await require_execution_org(auth.org_id)
-    return auth
+    async with get_read_session() as session:
+        await authorize_bound_analysis_request(request, auth, session)
+        auth.org = await require_execution_org(auth.org_id, session=session)
+        yield session
+
+
+async def require_auth(
+    request: Request,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> AuthContext:
+    """Authorize routes that do not borrow the approval read session."""
+    async with authorized_read_session(request, auth):
+        return auth
 
 
 async def require_admin(

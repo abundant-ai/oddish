@@ -264,8 +264,11 @@ export interface Task {
   reward_total?: number | null;
   run_analysis?: boolean;
   run_probe?: boolean;
+  review_version_matches?: boolean | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
+  /** Must-fix findings in the completed source audit of the current version. */
+  must_fix_count?: number | null;
   verdict_error?: string | null;
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
@@ -288,7 +291,12 @@ export type ExperimentOpenTask = Omit<
 
 export type PublicExperimentOpenTask = Omit<
   ExperimentOpenTask,
-  "user" | "github_username" | "link" | "experiment_owner" | "experiment_link"
+  | "user"
+  | "github_username"
+  | "link"
+  | "experiment_owner"
+  | "experiment_link"
+  | "must_fix_count"
 >;
 
 export interface ExperimentPageSummary {
@@ -421,6 +429,13 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// GET /api/tasks/browse?count_only=true — how many tasks match the active
+// filters across every page. Fetched separately from the grid and cached per
+// filter set, so paging never re-runs the count.
+export interface TaskBrowseCountResponse {
+  total: number;
+}
+
 // The backend response also carries a deprecated `experiments` field that is
 // always [] (options come from /api/tasks/browse/experiment-options instead);
 // it is deliberately absent here so nothing new codes against it.
@@ -471,6 +486,7 @@ export interface TaskVersionSummary {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   last_run_at?: string | null;
+  retained_findings?: PreTrialFinding[];
   pre_trial_findings?: PreTrialFinding[];
   /** null = never audited. Otherwise "running" | "success" | "failed": empty
    *  findings mean something different for each, so never infer from the list. */
@@ -546,6 +562,7 @@ export interface TaskOpenTask {
   current_version_id?: string | null;
   user_tags: UserTagRef[];
   run_analysis: boolean;
+  review_version_matches?: boolean | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskOpenVerdict | null;
   verdict_error?: string | null;
@@ -592,6 +609,7 @@ export interface TaskOpenResponse {
 
 /** One defect the pre-trial source audit found in a task version. */
 export interface PreTrialFinding {
+  source?: "pre_trial" | "post_trial";
   id?: string | null;
   tier?: string | null;
   dimension?: string | null;
@@ -1131,40 +1149,6 @@ export interface QueueHealthResponse {
   timestamp: string;
 }
 
-export interface ModelEndpointCheckResponse {
-  ok: boolean;
-  model: string;
-  resolved_model: string;
-  provider: string;
-  route: string;
-  credential: string | null;
-  transport: "litellm_completion";
-  failure_kind: "provider" | "configuration" | null;
-  status_code: number | null;
-  latency_ms: number;
-  response: string | null;
-  error: string | null;
-  request_id: string | null;
-}
-
-export interface ModelEndpointSummary {
-  model: string;
-  provider: string;
-  route: string;
-  credential: string | null;
-  testable: boolean;
-  source: "provider_catalog" | "deployment" | "previously_used";
-  credential_configured: boolean | null;
-}
-
-export interface ModelEndpointAccessResponse {
-  allowed: boolean;
-}
-
-export interface ModelEndpointCatalogResponse extends ModelEndpointAccessResponse {
-  models: ModelEndpointSummary[];
-}
-
 export interface CostModelBreakdown {
   model: string;
   provider: string;
@@ -1428,9 +1412,17 @@ export interface DeliveryCheckResult {
 }
 
 interface DeliveryDefect {
+  finding_id?: string | null;
+  file?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
   id: string;
   title: string;
   source: "pre_trial" | "trial" | (string & {});
+  recorded_tier?: string | null;
+  finding?: PreTrialFinding | null;
+  reporting_trial_id?: string | null;
+  review_trial_id?: string | null;
   acknowledged: boolean;
   acknowledged_by_user_id?: string | null;
   acknowledged_by_name?: string | null;
@@ -1485,7 +1477,19 @@ export interface DeliveryTaskBoardRow {
   ready: boolean;
 }
 
+export interface DeliveryProgressPoint {
+  recorded_at: string;
+  task_count: number;
+  ready: number;
+  blocked: number;
+  awaiting_signoff: number;
+  unassigned: number;
+  open_findings: number;
+  acknowledged_findings: number;
+}
+
 export interface DeliveryBoardResponse {
+  progress_history?: DeliveryProgressPoint[];
   qa_as_of: string | null;
   qa_viewer_user_id: string | null;
   delivery: Omit<DeliveryListItem, "task_count">;
@@ -1523,6 +1527,14 @@ interface TaskQAHistoryVersion {
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];
   findings: TaskQAHistoryFinding[];
+  decisions?: Array<{
+    id: string;
+    delivery_id: string;
+    check_key: string;
+    checked_by_user_id: string | null;
+    checked_at: string;
+    note: string;
+  }>;
 }
 
 interface TaskQAHistoryFinding {

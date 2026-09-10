@@ -5,17 +5,19 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
-import type { DeliveryBoardResponse } from "@/lib/types";
-import { DeliveryBoardClient } from "./delivery-board-client";
+import {
+  DeliveryBoardClient,
+  type InitialDeliveryBoard,
+} from "./delivery-board-client";
 
 // Server-render the board so first paint is complete; the client component
 // keeps it fresh via SWR (fallbackData) and drives the mutations.
 async function getInitialBoard(
   deliveryId: string
-): Promise<DeliveryBoardResponse | null> {
+): Promise<InitialDeliveryBoard | null> {
   try {
     const authObj = await auth();
-    if (!authObj?.userId) return null;
+    if (!authObj?.userId || !authObj.orgId) return null;
     const token = await getClerkToken(authObj.getToken);
     if (!token) return null;
     const response = await fetch(
@@ -28,7 +30,12 @@ async function getInitialBoard(
       );
       return null;
     }
-    return (await response.json()) as DeliveryBoardResponse;
+    return {
+      board: await response.json(),
+      userId: authObj.userId,
+      orgId: authObj.orgId,
+      fetchedAt: Date.now(),
+    };
   } catch (error) {
     console.error("[deliveries/[delivery]/page] Initial fetch failed", error);
     return null;

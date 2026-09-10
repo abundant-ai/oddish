@@ -237,3 +237,38 @@ async def test_old_published_snapshot_remains_readable_after_overwrite(storage):
             presign=False,
         )
         assert result["content"] == expected
+
+
+@pytest.mark.asyncio
+async def test_published_empty_code_404_falls_back_to_selected_archive(
+    storage, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    prefix = "tasks/t/v1-expanded/published/"
+    get_object = storage._client.get_object
+
+    async def get_with_empty_missing_code(**kwargs):
+        if kwargs["Key"] == prefix + "instruction.md":
+            raise ClientError(
+                {"Error": {"Code": ""}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+                "GetObject",
+            )
+        return await get_object(**kwargs)
+
+    monkeypatch.setattr(
+        storage._client,
+        "get_object",
+        AsyncMock(side_effect=get_with_empty_missing_code),
+    )
+    result = await storage.get_task_file_content(
+        task_id="t",
+        version=1,
+        task_s3_prefix="tasks/t/v1/",
+        expanded=True,
+        expanded_manifest_key=prefix + ".oddish-manifest.json",
+        file_path="instruction.md",
+        presign=False,
+    )
+    assert result["content"] == "task instruction"
+    assert result["archive_key"] == "tasks/t/v1/.oddish-task.tar.gz"

@@ -1025,6 +1025,7 @@ def _supports_auto_restricted_agent_network(
         EnvironmentType.DAYTONA,
         EnvironmentType.MODAL,
         EnvironmentType.THUNDER,
+        EnvironmentType.ARCHIL,
     ):
         return False
 

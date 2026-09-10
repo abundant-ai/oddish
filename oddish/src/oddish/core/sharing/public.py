@@ -178,6 +178,13 @@ async def get_public_experiment_cost_totals(
         )
 
 
+@router.get("/public/experiments/{public_token}/results")
+async def get_public_experiment_results(public_token: str):
+    from oddish.core.endpoints.experiment_page import experiment_results_response
+
+    return await experiment_results_response(public_token=public_token)
+
+
 @router.get(
     "/public/experiments/{public_token}/open",
     response_model=PublicExperimentOpenResponse,

@@ -304,7 +304,6 @@ def create_app() -> FastAPI:
         github_webhooks,
         imports,
         load,
-        model_endpoints,
         notifications,
         orgs,
         qa_work,
@@ -316,11 +315,13 @@ def create_app() -> FastAPI:
         tags,
         tasks,
         trials,
+        ui_layouts,
     )
 
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(notifications.router)
+    api.include_router(ui_layouts.router)
     api.include_router(api_keys.router)
     api.include_router(byok.router)
     api.include_router(clerk_webhooks.router)
@@ -330,7 +331,6 @@ def create_app() -> FastAPI:
     api.include_router(trials.router)
     api.include_router(imports.router)
     api.include_router(load.router)
-    api.include_router(model_endpoints.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
     api.include_router(feedback.router)
