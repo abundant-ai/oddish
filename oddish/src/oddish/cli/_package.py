@@ -125,7 +125,13 @@ def upgrade_command(
         return [*command, "--upgrade", package]
     command = [python, "-m", "pip", "install"]
     if force:
-        command.extend(["--force-reinstall", "--no-deps"])
+        # pip has no uv-style --reinstall-package. Same-version --force must
+        # use --force-reinstall --no-deps so only oddish is refreshed. A forced
+        # upgrade omits both flags: --upgrade installs the newer release and
+        # resolves newly declared dependencies without thrashing every dep.
+        target = pin_version
+        if target is not None and not is_outdated(info.version, target):
+            command.extend(["--force-reinstall", "--no-deps"])
     return [*command, "--upgrade", package]
 
 

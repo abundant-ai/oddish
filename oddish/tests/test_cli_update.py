@@ -43,7 +43,8 @@ def test_upgrade_command_refusals():
         upgrade_command(_info(manager="uv-pip"), which=lambda _n: None)
 
 
-def test_upgrade_command_force_reinstalls():
+def test_upgrade_command_force_same_version_reinstalls_without_deps():
+    """Same-version --force refreshes oddish only (pip --no-deps / uv reinstall-package)."""
     uv_command = upgrade_command(
         _info(manager="uv-pip"),
         executable="/opt/venv/bin/python",
@@ -63,7 +64,11 @@ def test_upgrade_command_force_reinstalls():
         "oddish==0.1.13",
     ]
     pip_command = upgrade_command(
-        _info(manager="pip"), executable="/opt/venv/bin/python", which=lambda _n: None, force=True
+        _info(manager="pip"),
+        executable="/opt/venv/bin/python",
+        which=lambda _n: None,
+        force=True,
+        pin_version="0.1.13",
     )
     assert pip_command == [
         "/opt/venv/bin/python",
@@ -72,6 +77,61 @@ def test_upgrade_command_force_reinstalls():
         "install",
         "--force-reinstall",
         "--no-deps",
+        "--upgrade",
+        "oddish==0.1.13",
+    ]
+    assert "--no-deps" in pip_command
+
+
+def test_upgrade_command_force_upgrade_resolves_pip_deps():
+    """Forced upgrade must not pass pip --no-deps so new requires are installed."""
+    pip_upgrade = upgrade_command(
+        _info(manager="pip", version="0.1.13"),
+        executable="/opt/venv/bin/python",
+        which=lambda _n: None,
+        force=True,
+    )
+    assert pip_upgrade == [
+        "/opt/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "oddish",
+    ]
+    assert "--no-deps" not in pip_upgrade
+
+    pip_pinned_newer = upgrade_command(
+        _info(manager="pip", version="0.1.13"),
+        executable="/opt/venv/bin/python",
+        which=lambda _n: None,
+        force=True,
+        pin_version="0.2.0",
+    )
+    assert pip_pinned_newer == [
+        "/opt/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        "oddish==0.2.0",
+    ]
+    assert "--no-deps" not in pip_pinned_newer
+
+    uv_upgrade = upgrade_command(
+        _info(manager="uv-pip", version="0.1.13"),
+        executable="/opt/venv/bin/python",
+        which=_which_uv,
+        force=True,
+    )
+    assert uv_upgrade == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "/opt/venv/bin/python",
+        "--reinstall-package",
+        "oddish",
         "--upgrade",
         "oddish",
     ]
@@ -113,6 +173,24 @@ def test_update_force_pins_when_current(monkeypatch):
     result = runner.invoke(app, ["update", "--force", "--dry-run"])
     assert result.exit_code == 0
     assert captured == [{"force": True, "pin_version": None}]
+
+
+def test_update_force_pins_when_pypi_unreachable(monkeypatch):
+    captured: list[dict] = []
+
+    def _capture(_info, **kwargs):
+        captured.append(kwargs)
+        return ["echo", "force-reinstall"]
+
+    def _fail_pypi() -> str:
+        raise PackageError("Could not reach PyPI")
+
+    monkeypatch.setattr("oddish.cli.update.inspect_install", lambda: _info())
+    monkeypatch.setattr("oddish.cli.update.fetch_pypi_latest", _fail_pypi)
+    monkeypatch.setattr("oddish.cli.update.upgrade_command", _capture)
+    result = runner.invoke(app, ["update", "--force", "--dry-run"])
+    assert result.exit_code == 0
+    assert captured == [{"force": True, "pin_version": "0.1.13"}]
 
 
 def test_update_check_and_editable(monkeypatch):

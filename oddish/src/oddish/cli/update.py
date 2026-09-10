@@ -43,7 +43,12 @@ def update_cmd(
         latest = None
         pypi_error = exc
     already_latest = latest is not None and not is_outdated(info.version, latest)
-    pin_version = info.version if force and already_latest else None
+    # Pin the installed version for same-version --force reinstalls. When
+    # PyPI metadata is unavailable, also pin so --force rebuilds the current
+    # release instead of emitting a bare unpinned upgrade.
+    pin_version = (
+        info.version if force and (already_latest or latest is None) else None
+    )
     try:
         command = upgrade_command(info, force=force, pin_version=pin_version)
     except PackageError as exc:
