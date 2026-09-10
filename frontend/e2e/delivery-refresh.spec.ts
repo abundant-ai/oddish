@@ -1102,3 +1102,32 @@ test("history keeps gaps visible and separates equal endpoint labels", async ({
   }
   expect(state.writes).toEqual([]);
 });
+
+test("legacy blocked links include defects and incomplete QA but exclude signoff and ready tasks", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  const defect = reviewTaskRow();
+  defect.task_id = "defect";
+  defect.task_name = "Defect task";
+  const incomplete = taskRow();
+  incomplete.task_name = "Incomplete task";
+  const awaiting = taskRow();
+  awaiting.task_id = "awaiting";
+  awaiting.task_name = "Awaiting task";
+  awaiting.checks[0].status = "pass";
+  const ready = taskRow();
+  ready.task_id = "ready";
+  ready.task_name = "Ready task";
+  ready.checks.forEach((check) => (check.status = "pass"));
+  ready.ready = true;
+  state.board.tasks = [defect, incomplete, awaiting, ready];
+  await page.goto("/?filter=blocked");
+  await expect(page.getByRole("combobox", { name: "State filter" })).toHaveText(
+    "Blocked"
+  );
+  for (const name of ["Defect task", "Incomplete task"])
+    await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
+  for (const name of ["Awaiting task", "Ready task"])
+    await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
+});

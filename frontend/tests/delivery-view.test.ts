@@ -144,3 +144,11 @@ test("changing one view field preserves every other URL parameter", () => {
     source: "slack",
   });
 });
+
+test("legacy blocked links retain their filter when changing pages", () => {
+  const query = deliveryViewQuery("?filter=blocked&owner=mine", { page: "2" });
+  const view = parseDeliveryView(new URLSearchParams(query));
+  assert.equal(view.filter, "blocked");
+  assert.equal(view.ownerFilter, "mine");
+  assert.equal(view.page, 1);
+});

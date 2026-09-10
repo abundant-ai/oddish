@@ -125,7 +125,11 @@ export function deliveryProgressHistory(
 }
 
 /** Shareable delivery view. Page numbers in URLs are one-based. */
-export type DeliveryTaskFilter = DeliveryTaskState | "all" | "outstanding";
+export type DeliveryTaskFilter =
+  | DeliveryTaskState
+  | "all"
+  | "outstanding"
+  | "blocked";
 
 export const DELIVERY_PAGE_SIZES = [10, 25, 50, 100];
 
@@ -144,7 +148,9 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
         ? page - 1
         : 0,
     filter: (filter &&
-    (Object.hasOwn(DELIVERY_STATES, filter) || filter === "outstanding")
+    (Object.hasOwn(DELIVERY_STATES, filter) ||
+      filter === "outstanding" ||
+      filter === "blocked")
       ? filter
       : "all") as DeliveryTaskFilter,
     issueFilter: issue && Object.hasOwn(QA_ISSUE_LABELS, issue) ? issue : "all",

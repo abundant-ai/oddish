@@ -109,3 +109,17 @@ test("owner history preserves missing observations and zero counts after reassig
   data.progress_history = [data.progress_history[0]];
   assert.deepEqual(deliveryProgressHistory(data, "maya"), []);
 });
+
+test("rejected reviews require both finding acknowledgments and a verdict waiver", () => {
+  const row = reviewTaskRow();
+  row.qa.status = "needs_fixes";
+  row.checks.find((check) => check.key === "verdict_ok")!.status = "fail";
+  row.defects.forEach((finding) => (finding.acknowledged = true));
+  row.checks.find((check) => check.key === "no_must_fix")!.status = "pass";
+  assert.equal(deliveryTaskState(row), "needs_work");
+  row.checks.find((check) => check.key === "verdict_ok")!.status = "waived";
+  row.ready = false;
+  assert.equal(deliveryTaskState(row), "awaiting_signoff");
+  row.ready = true;
+  assert.equal(deliveryTaskState(row), "ready");
+});
