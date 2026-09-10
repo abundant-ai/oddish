@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +12,7 @@ from importlib import metadata
 from typing import Any, Literal
 
 import httpx
+from packaging.version import InvalidVersion, Version
 
 PACKAGE_NAME = "oddish"
 PYPI_JSON_URL = "https://pypi.org/pypi/oddish/json"
@@ -141,7 +141,10 @@ def fetch_pypi_latest() -> str:
 
 
 def is_outdated(current: str, latest: str) -> bool:
-    return _version_key(latest) > _version_key(current)
+    try:
+        return Version(latest) > Version(current)
+    except InvalidVersion:
+        return False
 
 
 def query_installed_version(executable: str) -> str:
@@ -173,16 +176,9 @@ def _source_from_direct_url(raw_direct: str | None) -> tuple[Source, str | None]
     dir_info = parsed.get("dir_info")
     if isinstance(dir_info, dict) and dir_info.get("editable"):
         return "editable", url_text
-    if parsed.get("vcs_info") or (url_text and url_text.startswith("file:")):
+    # PEP 610 direct_url.json is only written for direct references (VCS,
+    # local path, or archive URL). Index installs leave it absent, so any
+    # recorded URL or vcs_info means this is not a normal PyPI install.
+    if parsed.get("vcs_info") or url_text:
         return "other", None
     return "pypi", None
-
-
-def _version_key(value: str) -> tuple[int, ...]:
-    numbers: list[int] = []
-    for part in value.split("."):
-        match = re.match(r"\d+", part)
-        if not match:
-            break
-        numbers.append(int(match.group()))
-    return tuple(numbers) or (0,)

@@ -53,7 +53,15 @@ def test_inspect_install_sources(monkeypatch):
             {"url": "https://files.pythonhosted.org/packages/od/oddish.whl", "archive_info": {}},
         ),
     )
-    assert wheel.source == "pypi"
+    assert wheel.source == "other"
+    http_archive = inspect_install(
+        which=_which_uv,
+        distribution=_FakeDist(
+            "uv",
+            {"url": "https://example.com/oddish-0.1.13.tar.gz", "archive_info": {}},
+        ),
+    )
+    assert http_archive.source == "other"
     git = inspect_install(
         which=_which_uv,
         distribution=_FakeDist(
@@ -88,6 +96,14 @@ def test_is_outdated():
     assert is_outdated("0.1.13", "0.1.14")
     assert not is_outdated("0.1.13", "0.1.13")
     assert not is_outdated("0.1.14", "0.1.13")
+    # Pre-releases are older than the matching final release (PEP 440).
+    assert is_outdated("0.2.0rc1", "0.2.0")
+    assert is_outdated("0.2.0a1", "0.2.0")
+    assert not is_outdated("0.2.0", "0.2.0rc1")
+    # Post-releases are newer than the base release.
+    assert is_outdated("0.2.0", "0.2.0.post1")
+    assert not is_outdated("0.2.0.post1", "0.2.0")
+    assert not is_outdated("not-a-version", "0.2.0")
 
 
 def test_version_command(monkeypatch):
