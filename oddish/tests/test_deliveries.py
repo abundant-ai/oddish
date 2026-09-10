@@ -2,6 +2,9 @@
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from test_statement_budgets import count_statements
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -173,6 +176,75 @@ async def test_green_task_board_is_ready(session):
     )
     assert board.ready and board.ready_task_count == 1
     assert _checks(board, task.id)["signoff"].checked_by_user_id == "u9"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_count", [1, 12])
+async def test_board_read_statement_budget(session, task_count):
+    tasks = [
+        (await _green_task(session, f"board-budget-{i}"))[0] for i in range(task_count)
+    ]
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme", name="board-budget", task_ids=[t.id for t in tasks]
+        ),
+        org_id=ORG,
+        user_id="u1",
+    )
+    # A new identity map includes the delivery/customer reads that an actual
+    # request pays; fixture objects in the write session must not hide them.
+    async with AsyncSession(bind=await session.connection()) as reader:
+        with count_statements() as statements:
+            board = await get_delivery_board_core(
+                reader, delivery_id=delivery.id, org_id=ORG
+            )
+    assert board.task_count == task_count
+    assert all(_checks(board, t.id)["min_rollouts"].status == "pass" for t in tasks)
+    assert all(_checks(board, t.id)["verdict_ok"].status == "pass" for t in tasks)
+    assert all(
+        statement.lstrip().upper().startswith("SELECT") for statement in statements
+    )
+    print(f"board tasks={task_count}: {len(statements)} SQL statements")
+    assert len(statements) <= 11, "\n".join(statements)
+
+
+@pytest.mark.asyncio
+async def test_board_keeps_deleted_tasks_and_missing_versions_but_omits_removed_members(
+    session,
+):
+    from oddish.core.deliveries import remove_delivery_task_core
+    from oddish.db import utcnow
+
+    live, _, _ = await _green_task(session, "board-live")
+    deleted, _, _ = await _green_task(session, "board-deleted")
+    removed, _, _ = await _green_task(session, "board-removed")
+    no_version, _, _ = await _green_task(session, "board-no-version")
+    task_ids = [t.id for t in (live, deleted, removed, no_version)]
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="board-deletions", task_ids=task_ids),
+        org_id=ORG,
+        user_id="u1",
+    )
+    await remove_delivery_task_core(
+        session, delivery_id=delivery.id, org_id=ORG, task_id=removed.id
+    )
+    deleted.deleted_at = utcnow()
+    no_version.current_version_id = None
+    await session.flush()
+
+    async with AsyncSession(bind=await session.connection()) as reader:
+        board = await get_delivery_board_core(
+            reader, delivery_id=delivery.id, org_id=ORG
+        )
+    assert [row.task_id for row in board.tasks] == [live.id, deleted.id, no_version.id]
+    assert not board.ready
+    assert _checks(board, deleted.id)["task_exists"].status == "fail"
+    assert (
+        _checks(board, no_version.id)["pre_trial_passed"].detail
+        == "task has no default version"
+    )
 
 
 @pytest.mark.asyncio
@@ -688,7 +760,8 @@ async def test_finalized_delivery_cannot_be_deleted(session):
 
 
 @pytest.mark.asyncio
-async def test_verdict_freshness_follows_newest_qa_run(session):
+@pytest.mark.parametrize("has_finished_at", [True, False])
+async def test_verdict_freshness_follows_newest_qa_run(session, has_finished_at):
     from datetime import datetime, timezone
 
     task, v1, experiment = await _green_task(session, "deliv-qa-order")
@@ -728,7 +801,8 @@ async def test_verdict_freshness_follows_newest_qa_run(session):
     # A NEWER successful QA on another version overwrote tasks.verdict, so
     # the stored verdict no longer covers the current default.
     qa_newer = _trial(task, experiment, v2.id, kind="qa")
-    qa_newer.finished_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    qa_newer.created_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    qa_newer.finished_at = qa_newer.created_at if has_finished_at else None
     session.add(qa_newer)
     await session.flush()
     board = await get_delivery_board_core(
