@@ -136,16 +136,6 @@ export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   );
 }
 
-/** A published rejection, excluding a withdrawn verdict during replacement QA. */
-export function taskHasRejectedVerdict(task: Task): boolean {
-  return (
-    !taskHasActiveVerdict(task) &&
-    task.verdict_status !== "failed" &&
-    (task.verdict?.verdict === "reject" ||
-      (task.verdict?.verdict == null && task.verdict?.is_good === false))
-  );
-}
-
 /** Short experiment-row copy for a rejected task. */
 export function rejectedMustFixLabel(task: Task): string {
   const count = task.must_fix_count ?? 0;

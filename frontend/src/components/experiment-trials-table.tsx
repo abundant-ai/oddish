@@ -54,6 +54,11 @@ import {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import {
+  EXECUTION_LABELS,
+  REVIEW_LABELS,
+  taskReviewStatus,
+} from "@/lib/review";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
@@ -79,7 +84,6 @@ import {
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
   rejectedMustFixLabel,
-  taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
@@ -320,7 +324,9 @@ function InlineBtn({
   disabled,
   children,
   style,
+  title,
 }: {
+  title?: string;
   onClick?: () => void;
   disabled?: boolean;
   children: React.ReactNode;
@@ -333,6 +339,7 @@ function InlineBtn({
       onClick={onClick}
       disabled={disabled}
       style={style}
+      title={title}
       className="text-paper-ink-2 hover:bg-paper-surface-2 hover:text-paper-ink disabled:text-paper-ink-4 disabled:hover:text-paper-ink-4 h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium transition disabled:cursor-not-allowed disabled:hover:bg-transparent"
     >
       {children}
@@ -353,11 +360,20 @@ const ANALYSIS_CONFIG: Record<
   AnalysisClassification,
   { label: string; dotClass: string }
 > = {
-  GOOD_SUCCESS: { label: "Good success", dotClass: "bg-emerald-400" },
-  GOOD_FAILURE: { label: "Good failure", dotClass: "bg-emerald-400" },
-  BAD_SUCCESS: { label: "Bad success", dotClass: "bg-red-400" },
-  BAD_FAILURE: { label: "Bad failure", dotClass: "bg-red-400" },
-  HARNESS_ERROR: { label: "Harness error", dotClass: "bg-yellow-400" },
+  GOOD_SUCCESS: {
+    label: EXECUTION_LABELS.GOOD_SUCCESS,
+    dotClass: "bg-emerald-400",
+  },
+  GOOD_FAILURE: {
+    label: EXECUTION_LABELS.GOOD_FAILURE,
+    dotClass: "bg-emerald-400",
+  },
+  BAD_SUCCESS: { label: EXECUTION_LABELS.BAD_SUCCESS, dotClass: "bg-red-400" },
+  BAD_FAILURE: { label: EXECUTION_LABELS.BAD_FAILURE, dotClass: "bg-red-400" },
+  HARNESS_ERROR: {
+    label: EXECUTION_LABELS.HARNESS_ERROR,
+    dotClass: "bg-yellow-400",
+  },
 };
 
 const ANALYSIS_LEGEND_ITEMS: Array<{
@@ -368,31 +384,30 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "Analyzing",
+    label: "Review running",
     dotClass: "bg-blue-400",
     animate: true,
   },
   {
     key: "good",
-    label: "Pass",
+    label: "Valid evaluation",
     dotClass: ANALYSIS_CONFIG.GOOD_SUCCESS.dotClass,
   },
   {
     key: "bad",
-    label: "Fail",
+    label: "Task affected evaluation",
     dotClass: ANALYSIS_CONFIG.BAD_SUCCESS.dotClass,
   },
   {
     key: "analysis-failed",
-    label: "QA failed",
+    label: REVIEW_LABELS.error,
     dotClass: "bg-yellow-400",
   },
 ];
 
 // QA is task-scoped: a verdict can come from a run that did not cover this
-// experiment's trials. When settled trials here carry no grade the chip goes
-// dashed ("earlier run"). Clicking opens the task overview, which lists the
-// full graded set.
+// experiment's trials. Report that coverage gap in the tooltip without
+// replacing the verdict or treating the reviewed task version as outdated.
 function TaskVerdictChip({
   task,
   ungradedSettled,
@@ -402,54 +417,25 @@ function TaskVerdictChip({
   ungradedSettled: number;
   onOpen?: () => void;
 }) {
-  const running = taskHasActiveVerdict(task);
-  // Rows stored before the accept/reject label existed only carry is_good.
-  const verdict = task.verdict
-    ? (task.verdict.verdict ?? (task.verdict.is_good ? "accept" : "reject"))
-    : null;
-  const failed =
-    !running && verdict == null && task.verdict_status === "failed";
-  if (!running && verdict == null && !failed) return null;
+  const status = taskReviewStatus(task);
+  const running = status === "queued" || status === "running";
+  const chipClass =
+    status === "error" || status === "outdated"
+      ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+      : status === "accepted"
+        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+        : status === "needs_fixes"
+          ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+          : running
+            ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+            : "bg-muted text-muted-foreground";
+  const label = REVIEW_LABELS[status];
+  let tip =
+    status === "error"
+      ? `This review did not establish task quality. ${task.verdict_error ?? "Inspect review evidence."}`
+      : `${label}. Human delivery sign-off is separate`;
 
-  const stale = !running && verdict != null && ungradedSettled > 0;
-
-  let chipClass: string;
-  let label: React.ReactNode;
-  let tip: string;
-  if (running) {
-    chipClass =
-      "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
-    label = (
-      <>
-        <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        QA
-      </>
-    );
-    tip = "QA is running";
-  } else if (verdict === "accept") {
-    chipClass = stale
-      ? "border border-dashed border-emerald-500/60 bg-transparent text-emerald-700 dark:text-emerald-400"
-      : "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300";
-    label = "Accepted";
-    tip = task.verdict?.confidence
-      ? `QA accepted this task (${task.verdict.confidence} confidence)`
-      : "QA accepted this task";
-  } else if (verdict === "reject") {
-    chipClass = stale
-      ? "border border-dashed border-red-500/60 bg-transparent text-red-700 dark:text-red-400"
-      : "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300";
-    label = "Rejected";
-    tip = task.verdict?.confidence
-      ? `QA rejected this task (${task.verdict.confidence} confidence)`
-      : "QA rejected this task";
-  } else {
-    chipClass = "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
-    label = "QA failed";
-    tip = task.verdict_error
-      ? `QA failed: ${task.verdict_error}`
-      : "QA failed to produce a verdict";
-  }
-  if (stale) {
+  if (!running && status !== "error" && task.verdict && ungradedSettled > 0) {
     tip += `. From an earlier QA run: ${ungradedSettled} settled trial${
       ungradedSettled === 1 ? "" : "s"
     } in this experiment ${ungradedSettled === 1 ? "was" : "were"} not part of it`;
@@ -630,7 +616,7 @@ export function ExperimentTrialsTable({
   const rejectedOnly = rejectedOnlyProp ?? rejectedOnlyState;
   const setRejectedOnly = onRejectedOnlyChange ?? setRejectedOnlyState;
   const rejectedTasks = useMemo(
-    () => tasks.filter(taskHasRejectedVerdict),
+    () => tasks.filter((task) => taskReviewStatus(task) === "needs_fixes"),
     [tasks]
   );
   const rejectedCount = rejectedTasks.length;
@@ -654,8 +640,7 @@ export function ExperimentTrialsTable({
       onTaskSelect?.(task, {
         ...context,
         taskNavScope:
-          context.taskNavScope ??
-          (rejectedOnly ? "rejected" : "experiment"),
+          context.taskNavScope ?? (rejectedOnly ? "rejected" : "experiment"),
       });
     },
     [onTaskSelect, rejectedOnly]
@@ -1828,7 +1813,7 @@ export function ExperimentTrialsTable({
             {showAnalysis && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-                QA result
+                Execution review
               </span>
             )}
           </span>
@@ -2157,12 +2142,13 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleCancelQAForSelectedTasks}
+                        title="Cancels active source and execution reviews for the selected tasks."
                         disabled={
                           isCancellingQA ||
                           selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
+                        {isCancellingQA ? "Cancelling" : "Cancel reviews"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>
@@ -2171,13 +2157,14 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunQAForSelectedTasks}
+                        title="Reviews recorded runs for each selected task's default version; does not rerun solver trials."
                         disabled={
                           isRunningQA ||
                           isCancellingQA ||
                           selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningQA ? "Queueing" : "Run QA"}
+                        {isRunningQA ? "Queueing" : "Run execution review"}
                         <InlineCount>
                           {selectedQARunnableTasks.length}
                         </InlineCount>
@@ -2600,7 +2587,7 @@ export function ExperimentTrialsTable({
                                   }
                                 />
                               )}
-                              {showAnalysis && taskHasRejectedVerdict(task) && (
+                              {showAnalysis && taskReviewStatus(task) === "needs_fixes" && (
                                 <div className="min-w-0">
                                   <Button
                                     type="button"

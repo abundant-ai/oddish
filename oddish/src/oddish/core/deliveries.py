@@ -77,9 +77,9 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Pre-trial audit passed",
+    "pre_trial_passed": "Source review completed",
     "min_rollouts": "Enough rollouts",
-    "verdict_ok": "Verdict accepts",
+    "verdict_ok": "No blocking defects in verdict",
     "no_must_fix": "Every defect resolved or acknowledged",
 }
 
@@ -208,9 +208,7 @@ async def create_customer_core(
         )
     )
     if existing is not None:
-        raise HTTPException(
-            status_code=409, detail=f"customer '{name}' already exists"
-        )
+        raise HTTPException(status_code=409, detail=f"customer '{name}' already exists")
     # Same savepoint guard as _resolve_customer: a concurrent create of
     # the same name is a conflict here, not a 500.
     try:
@@ -470,9 +468,7 @@ def _verdict_qa_clauses() -> list:
         TrialModel.status == TrialStatus.SUCCESS,
         TrialModel.task_version_id.isnot(None),
         func.coalesce(
-            TrialModel.harbor_config["analysis_payload"].op("->>")(
-                "with_verdict"
-            ),
+            TrialModel.harbor_config["analysis_payload"].op("->>")("with_verdict"),
             "true",
         )
         != "false",
@@ -510,8 +506,7 @@ async def _validate_signoff_or_ack(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "acknowledge each must-fix defect on its own "
-                    "with 'ack:<defect-id>'"
+                    "acknowledge each must-fix defect on its own with 'ack:<defect-id>'"
                 ),
             )
         if check_key not in WAIVABLE_CHECKS:
@@ -521,9 +516,7 @@ async def _validate_signoff_or_ack(
             )
         return
     if key.startswith(ACK_CHECK_PREFIX):
-        defects = (await task_defect_items(session, {version.id: version}))[
-            version.id
-        ]
+        defects = (await task_defect_items(session, {version.id: version}))[version.id]
         if key[len(ACK_CHECK_PREFIX) :] not in {d["id"] for d in defects}:
             raise HTTPException(
                 status_code=404,
@@ -534,9 +527,7 @@ async def _validate_signoff_or_ack(
     # drift from the display. Unacked defects and unwaived failing checks
     # both refuse it.
     board = await _compute_board(session, delivery)
-    row = next(
-        (r for r in board.tasks if r.delivery_task_id == member.id), None
-    )
+    row = next((r for r in board.tasks if r.delivery_task_id == member.id), None)
     if row is None:
         raise HTTPException(status_code=404, detail="task not in this delivery")
     unacknowledged = [d.id for d in row.defects if not d.acknowledged]
@@ -605,8 +596,10 @@ async def set_manual_check_core(
         )
         if member is None:
             raise HTTPException(status_code=404, detail="task not in this delivery")
-        if data.checked and is_decision and (
-            data.expected_version_id is None or user_id is None
+        if (
+            data.checked
+            and is_decision
+            and (data.expected_version_id is None or user_id is None)
         ):
             raise HTTPException(
                 status_code=422,
@@ -883,7 +876,9 @@ async def _compute_board(
         )
     ).all()
     task_ticks = {
-        (t.delivery_task_id, t.check_key, t.task_version_id): t for t in ticks if t.delivery_task_id
+        (t.delivery_task_id, t.check_key, t.task_version_id): t
+        for t in ticks
+        if t.delivery_task_id
     }
     delivery_ticks = {t.check_key: t for t in ticks if t.delivery_task_id is None}
     previous_ticks = {(t.delivery_task_id, t.check_key) for t in ticks}
@@ -935,7 +930,9 @@ async def _compute_board(
             if not passed and version is not None and key in WAIVABLE_CHECKS:
                 # A person may ship a red check anyway, but the override is
                 # recorded and bound to the version they looked at.
-                waive = task_ticks.get((member.id, WAIVE_CHECK_PREFIX + key, version.id))
+                waive = task_ticks.get(
+                    (member.id, WAIVE_CHECK_PREFIX + key, version.id)
+                )
                 if waive is not None and waive.task_version_id == version.id:
                     checks.append(
                         DeliveryCheckResult(
@@ -958,13 +955,26 @@ async def _compute_board(
         else:
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
-                ack = task_ticks.get((member.id, ACK_CHECK_PREFIX + item["id"], version.id))
+                ack = task_ticks.get(
+                    (member.id, ACK_CHECK_PREFIX + item["id"], version.id)
+                )
                 acknowledged = ack is not None and ack.task_version_id == version.id
                 defects.append(
                     DeliveryDefect(
                         id=item["id"],
                         title=item["title"],
                         source=item["source"],
+                        finding_id=(
+                            str(
+                                item["finding"].get("links_to") or item["finding"]["id"]
+                            )
+                            if item["finding"].get("links_to")
+                            or item["finding"].get("id") is not None
+                            else None
+                        ),
+                        file=item["finding"].get("file"),
+                        line_start=item["finding"].get("line_start"),
+                        line_end=item["finding"].get("line_end"),
                         recorded_tier=item["recorded_tier"],
                         finding=item["finding"],
                         reporting_trial_id=item.get("reporting_trial_id"),
@@ -981,9 +991,9 @@ async def _compute_board(
             automated(
                 "pre_trial_passed",
                 audited,
-                f"audit passed on {vlabel}"
+                f"source review completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"no successful audit on {vlabel}",
+                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -998,7 +1008,11 @@ async def _compute_board(
 
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
-                automated("verdict_ok", False, "no verdict yet")
+                automated(
+                    "verdict_ok",
+                    False,
+                    f"no completed execution-review verdict on {vlabel}",
+                )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
@@ -1010,23 +1024,21 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     accepted,
-                    "verdict accepts"
+                    "review found no blocking defects; human sign-off is separate"
                     if accepted
-                    else f"verdict rejects: {verdict.get('primary_issue') or ''}",
+                    else f"blocking defect: {verdict.get('primary_issue') or ''}",
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
             if not defects:
-                must_fix_detail = f"no reported task defects on {vlabel}"
+                must_fix_detail = f"no reported task defects on {vlabel}; review completion checked separately"
             elif unacknowledged:
                 must_fix_detail = (
                     f"{unacknowledged} of {len(defects)} task defects "
                     f"unacknowledged on {vlabel}"
                 )
             else:
-                must_fix_detail = (
-                    f"all {len(defects)} task defects acknowledged as exceptions on {vlabel}"
-                )
+                must_fix_detail = f"all {len(defects)} task defects acknowledged as exceptions on {vlabel}"
             historical_unacknowledged = sum(
                 d.recorded_tier != "must_fix" and not d.acknowledged for d in defects
             )
@@ -1040,7 +1052,9 @@ async def _compute_board(
 
         # Every task needs a person's sign-off, bound to the version they
         # looked at. The tick records who signed and when.
-        signoff = task_ticks.get((member.id, SIGNOFF_CHECK_KEY, version.id if version else None))
+        signoff = task_ticks.get(
+            (member.id, SIGNOFF_CHECK_KEY, version.id if version else None)
+        )
         if (
             signoff is not None
             and version is not None
@@ -1062,12 +1076,15 @@ async def _compute_board(
                 _check(
                     SIGNOFF_CHECK_KEY,
                     passed=False,
-                    # An unchecked box already says "not signed off"; only a
-                    # stale tick needs words.
+                    # Name the version still awaiting a human commitment.
                     detail=(
                         "signed off on an older version; sign off again"
                         if (member.id, SIGNOFF_CHECK_KEY) in previous_ticks
-                        else ""
+                        else (
+                            f"awaiting sign-off on v{version.version}"
+                            if version
+                            else "awaiting sign-off"
+                        )
                     ),
                     kind="manual",
                     label="Signed off",
@@ -1077,7 +1094,9 @@ async def _compute_board(
         for definition in config.manual:
             if definition.scope != "task":
                 continue
-            tick = task_ticks.get((member.id, definition.key, version.id if version else None))
+            tick = task_ticks.get(
+                (member.id, definition.key, version.id if version else None)
+            )
             if tick is None:
                 checks.append(
                     _check(
@@ -1085,7 +1104,9 @@ async def _compute_board(
                         passed=False,
                         kind="manual",
                         label=definition.label,
-                        detail="checked on an older version; re-attest" if (member.id, definition.key) in previous_ticks else "",
+                        detail="checked on an older version; re-attest"
+                        if (member.id, definition.key) in previous_ticks
+                        else "",
                     )
                 )
             elif version is not None and tick.task_version_id == version.id:
@@ -1374,9 +1395,7 @@ async def get_task_qa_history_core(
     verdict_version_id = await session.scalar(
         select(TrialModel.task_version_id)
         .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
-        .order_by(
-            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc()
-        )
+        .order_by(func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc())
         .limit(1)
     )
 
@@ -1413,17 +1432,13 @@ async def get_task_qa_history_core(
                 message=version.message,
                 is_current=version.id == task.current_version_id,
                 pre_trial_status=(
-                    version.pre_trial_status.value
-                    if version.pre_trial_status
-                    else None
+                    version.pre_trial_status.value if version.pre_trial_status else None
                 ),
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
                 pre_trial_should_fix=sum(
-                    1
-                    for i in pre_trial_items(version)
-                    if i.get("tier") == "should_fix"
+                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
                 ),
                 rollout_count=count,
                 rollout_agents=agents,

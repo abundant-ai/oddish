@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -680,7 +681,6 @@ export function TaskDetailClient({
     open,
     realAgentCount,
     realTrialCount,
-    recoveryError,
     revalidateReaderResources,
     selectedVersion,
     selectedVersionId,
@@ -792,37 +792,34 @@ export function TaskDetailClient({
   // files drawer, and
   // ?taskFile= / ?taskLines= address the task pane's file and line range
   // (the trial pane's ?file= / ?lines= are handled inside TrialDetailPanel).
-  const [activeTaskPane, setActiveTaskPane] = useState<TaskPane>("overview");
+  const searchParams = useSearchParams();
+  const taskPaneFile = searchParams.get("taskFile");
+  const taskPaneLines = parseLineRange(searchParams.get("taskLines"));
+  const pane = searchParams.get("taskPane");
+  const activeTaskPane: TaskPane =
+    pane === "overview"
+      ? "overview"
+      : pane === "file" || taskPaneFile
+        ? "file"
+        : "overview";
   const selectTaskPane = useCallback((pane: TaskPane) => {
-    setActiveTaskPane(pane);
     const params = new URLSearchParams(window.location.search);
-    if (pane === "overview") params.delete("taskPane");
-    else params.set("taskPane", pane);
-    window.history.pushState(
-      window.history.state,
-      "",
-      urlWithSearch(params.toString())
-    );
+    params.set("taskPane", pane);
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
   }, []);
-  useEffect(() => {
-    const restoreTaskPane = () => {
-      const params = new URLSearchParams(window.location.search);
-      const pane = params.get("taskPane");
-      setActiveTaskPane(
-        pane === "file" ? pane : params.has("taskFile") ? "file" : "overview"
-      );
-    };
-    window.addEventListener("popstate", restoreTaskPane);
-    return () => window.removeEventListener("popstate", restoreTaskPane);
-  }, []);
-  const [taskPaneFile, setTaskPaneFile] = useState<string | null>(null);
-  const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(null);
-  const taskPaneFileRef = useRef<string | null>(null);
   const handleTaskPaneFileChange = useCallback((path: string | null) => {
-    // A different file makes the old line anchor meaningless — drop it.
-    if (!sameFilePath(taskPaneFileRef.current, path)) setTaskPaneLines(null);
-    taskPaneFileRef.current = path;
-    setTaskPaneFile(path);
+    const params = new URLSearchParams(window.location.search);
+    if (sameFilePath(params.get("taskFile"), path)) return;
+    if (path) params.set("taskFile", path);
+    else params.delete("taskFile");
+    params.delete("taskLines");
+    window.history.replaceState(null, "", urlWithSearch(params.toString()));
+  }, []);
+  const handleTaskPaneLinesChange = useCallback((lines: LineRange | null) => {
+    const params = new URLSearchParams(window.location.search);
+    if (lines) params.set("taskLines", formatLineRange(lines));
+    else params.delete("taskLines");
+    window.history.replaceState(null, "", urlWithSearch(params.toString()));
   }, []);
 
   // Hydrate the drawer from the URL once the version's trials are known.
@@ -852,16 +849,7 @@ export function TaskDetailClient({
     if (urlTrialId && selectedVersionId == null) return;
 
     const urlTaskFile = params.get("taskFile");
-    const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
-    setActiveTaskPane(
-      urlTaskPane === "file" ? urlTaskPane : urlTaskFile ? "file" : "overview"
-    );
-    if (urlTaskFile) {
-      taskPaneFileRef.current = urlTaskFile;
-      setTaskPaneFile(urlTaskFile);
-      if (urlTaskLines) setTaskPaneLines(urlTaskLines);
-    }
 
     if (urlTrialId) {
       const previewTrial = drawerOrderedTrials.find(
@@ -935,41 +923,8 @@ export function TaskDetailClient({
     }
   }, [drawerOrderedTrials, handleSelectTrial, task?.id]);
 
-  // Closing the drawer retires the task pane address along with the URL
-  // params the sync effect strips — otherwise reopening would write the
-  // dismissed file straight back into the address bar.
-  const wasDrawerOpenRef = useRef(false);
-  useEffect(() => {
-    if (drawer) {
-      wasDrawerOpenRef.current = true;
-      return;
-    }
-    if (wasDrawerOpenRef.current) {
-      wasDrawerOpenRef.current = false;
-      taskPaneFileRef.current = null;
-      setActiveTaskPane("overview");
-      setTaskPaneFile(null);
-      setTaskPaneLines(null);
-    }
-  }, [drawer]);
-
-  // Switching task versions keeps the pane's file (versions share their
-  // file layout, mirroring trial navigation) but drops the line anchor —
-  // it addressed the previous version's content.
-  const lastVersionIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (selectedVersionId == null) return;
-    if (
-      lastVersionIdRef.current !== null &&
-      lastVersionIdRef.current !== selectedVersionId
-    ) {
-      setTaskPaneLines(null);
-    }
-    lastVersionIdRef.current = selectedVersionId;
-  }, [selectedVersionId]);
-
   // Sync the drawer back to the URL. Based on the live URL, not the
-  // useSearchParams snapshot: replaceState never refreshes that hook, and
+  // useSearchParams snapshot: sibling effects may have already changed it, and
   // TrialDetailPanel keeps its own params (tab/file/lines) current the
   // same way — a stale base would silently wipe them.
   useEffect(() => {
@@ -1007,29 +962,11 @@ export function TaskDetailClient({
         next.delete("taskPane");
       }
     }
-    if (drawer) {
-      if (activeTaskPane === "overview") {
-        next.delete("taskPane");
-      } else {
-        next.set("taskPane", activeTaskPane);
-      }
-      if (activeTaskPane === "file" && taskPaneFile) {
-        next.set("taskFile", taskPaneFile);
-      } else {
-        next.delete("taskFile");
-      }
-      if (activeTaskPane === "file" && taskPaneLines) {
-        next.set("taskLines", formatLineRange(taskPaneLines));
-      } else {
-        next.delete("taskLines");
-      }
-    }
-
     if (next.toString() !== current.toString()) {
       const url = urlWithSearch(next.toString());
-      window.history.replaceState(window.history.state, "", url);
+      window.history.replaceState(null, "", url);
     }
-  }, [activeTaskPane, drawer, taskPaneFile, taskPaneLines]);
+  }, [drawer]);
 
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
@@ -1083,11 +1020,24 @@ export function TaskDetailClient({
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
       : null;
 
-  if (
-    error &&
-    (!open || isBrowseSnapshot) &&
-    (!explicitVersionMissing || recoveryError !== undefined)
-  ) {
+  if (explicitVersionMissing) {
+    return (
+      <Alert>
+        <AlertTitle>Historical version unavailable</AlertTitle>
+        <AlertDescription>
+          The requested version and its evidence could not be found. Current
+          content has not been substituted.{" "}
+          <a
+            className="underline"
+            href={`/tasks/${encodeURIComponent(taskId)}`}
+          >
+            Open the current version
+          </a>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (error && (!open || isBrowseSnapshot)) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load task</AlertTitle>
@@ -1279,7 +1229,13 @@ export function TaskDetailClient({
             <VersionSwitcher
               versions={versions}
               selectedVersionId={selectedVersionId}
-              onSelect={handleSelectVersion}
+              onSelect={(versionId) => {
+                if (versionId === selectedVersionId) return;
+                // Only a new selection retires the old version's line anchor.
+                // Back/Forward restores the address saved for that version.
+                handleSelectVersion(versionId);
+                handleTaskPaneLinesChange(null);
+              }}
               onOpen={() => setLoadVersionHistory(true)}
             />
             {versions.length > 1 ? (
@@ -1398,7 +1354,7 @@ export function TaskDetailClient({
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
-                onSelectLinesChange={setTaskPaneLines}
+                onSelectLinesChange={handleTaskPaneLinesChange}
                 onSelectedFileChange={handleTaskPaneFileChange}
                 apiBaseUrl="/api"
                 contentOnly={true}
@@ -1417,7 +1373,7 @@ export function TaskDetailClient({
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
-                onSelectLinesChange={setTaskPaneLines}
+                onSelectLinesChange={handleTaskPaneLinesChange}
                 onSelectedFileChange={handleTaskPaneFileChange}
                 onRetryComplete={revalidateReaderResources}
                 allowRetry={true}

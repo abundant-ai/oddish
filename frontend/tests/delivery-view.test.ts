@@ -76,3 +76,10 @@ test("defaults produce a clean URL and history entries can restore prior views",
   assert.equal(parseDeliveryView(new URLSearchParams(first)).focusTask, "abc");
   assert.equal(deliveryViewQuery(second, { page: "1", qa: "all" }), "");
 });
+
+test("default prioritizes outstanding work and complete inventory has an explicit URL", () => {
+  assert.equal(parseDeliveryView(new URLSearchParams()).filter, "outstanding");
+  const inventory = deliveryViewQuery("", { filter: "all" });
+  assert.equal(inventory, "?filter=all");
+  assert.equal(parseDeliveryView(new URLSearchParams(inventory)).filter, "all");
+});

@@ -18,7 +18,7 @@ const QA_PRESENTATION = {
     tone: "text-emerald-700 dark:text-emerald-400",
   },
   needs_fixes: { Icon: XCircle, tone: "text-red-700 dark:text-red-400" },
-  error: { Icon: AlertCircle, tone: "text-red-700 dark:text-red-400" },
+  error: { Icon: AlertCircle, tone: "text-amber-700 dark:text-amber-400" },
   outdated: { Icon: Clock, tone: "text-amber-700 dark:text-amber-400" },
   running: { Icon: Loader2, tone: "text-blue-700 dark:text-blue-400" },
   queued: { Icon: Clock, tone: "text-blue-700 dark:text-blue-400" },
@@ -53,8 +53,10 @@ export function DeliveryStatusBadge({ status }: { status: string }) {
 }
 
 export function CheckChip({ check }: { check: DeliveryCheckResult }) {
-  const Icon =
-    check.status === "pass"
+  const pendingSignoff = check.kind === "manual" && check.status === "fail";
+  const Icon = pendingSignoff
+    ? Clock
+    : check.status === "pass"
       ? CheckCircle2
       : check.status === "fail"
         ? XCircle
@@ -66,7 +68,7 @@ export function CheckChip({ check }: { check: DeliveryCheckResult }) {
       title={`${check.label}${check.detail ? ` — ${check.detail}` : ""}`}
       className={cn(
         "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
-        checkTone(check.status)
+        checkTone(pendingSignoff ? "waived" : check.status)
       )}
     >
       <Icon className="h-3 w-3" />

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
@@ -30,7 +30,9 @@ function ActionItemDetail({
   itemKey,
   onFeedback,
   renderItemFooter,
+  findingLink,
 }: {
+  findingLink?: (item: PreTrialFinding, file?: boolean) => string;
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
@@ -60,13 +62,25 @@ function ActionItemDetail({
 
       {item.title ? (
         <h4 className="text-foreground text-sm leading-snug font-medium text-pretty">
-          {item.title}
+          {findingLink ? (
+            <a className="hover:underline" href={findingLink(item)}>
+              {item.title}
+            </a>
+          ) : (
+            item.title
+          )}
         </h4>
       ) : null}
 
       {where ? (
         <p className="text-muted-foreground font-mono text-[10.5px] break-all">
-          {where}
+          {findingLink ? (
+            <a className="underline" href={findingLink(item, true)}>
+              Open {where}
+            </a>
+          ) : (
+            where
+          )}
         </p>
       ) : null}
 
@@ -118,7 +132,11 @@ export function SeverityGroups({
   className,
   tierEffects,
   renderItemFooter,
+  selectedFinding,
+  findingLink,
 }: {
+  selectedFinding?: string | null;
+  findingLink?: (item: PreTrialFinding, file?: boolean) => string;
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
@@ -127,6 +145,16 @@ export function SeverityGroups({
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!selectedFinding) return;
+    const item = Array.from(
+      root.current?.querySelectorAll<HTMLElement>("[data-finding]") ?? []
+    ).find((node) => node.dataset.finding === selectedFinding);
+    const group = item?.closest("details");
+    if (group) group.open = true;
+    item?.scrollIntoView({ block: "center" });
+  }, [selectedFinding, items]);
   const groups = TIER_ORDER.map((tier) => {
     const tierItems = items.filter((i) => (i.tier ?? "optional") === tier);
     const previews = tierItems
@@ -143,7 +171,7 @@ export function SeverityGroups({
   if (!groups.length) return null;
 
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
+    <div ref={root} className={cn("flex flex-col gap-2", className)}>
       {groups.map((group) => (
         <TierDetails
           key={group.tier}
@@ -190,9 +218,18 @@ export function SeverityGroups({
             {group.items.map((item, index) => {
               const key = item.id ?? `${group.tier}-${item.title ?? index}`;
               return (
-                <li key={key} className="px-3 py-3">
+                <li
+                  key={key}
+                  data-finding={item.id}
+                  className={cn(
+                    "px-3 py-3",
+                    item.id === selectedFinding &&
+                      "bg-amber-500/10 ring-1 ring-amber-500/40"
+                  )}
+                >
                   <ActionItemDetail
                     item={item}
+                    findingLink={findingLink}
                     itemKey={key}
                     onFeedback={onFeedback}
                     renderItemFooter={renderItemFooter}

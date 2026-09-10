@@ -1,7 +1,7 @@
 import { CircleCheck, ShieldAlert, TriangleAlert, Unplug } from "lucide-react";
 
-// Colour carries good/bad, not success/failure: green = valid signal,
-// amber = task needs fixing, red = false positive, orange = infrastructure.
+// Green = valid evaluation; red = task defect affected evaluation;
+// amber = execution could not receive a valid evaluation.
 export type VerdictToken = {
   icon: typeof CircleCheck;
   accent: string;
@@ -24,9 +24,9 @@ export const VERDICT_TOKENS: Record<string, VerdictToken> = {
   },
   BAD_FAILURE: {
     icon: TriangleAlert,
-    accent: "text-amber-600 dark:text-amber-400",
-    card: "border-amber-500/30 bg-amber-500/5",
-    chip: "border-amber-500/40",
+    accent: "text-red-600 dark:text-red-400",
+    card: "border-red-500/30 bg-red-500/5",
+    chip: "border-red-500/40",
   },
   BAD_SUCCESS: {
     icon: ShieldAlert,
@@ -36,9 +36,9 @@ export const VERDICT_TOKENS: Record<string, VerdictToken> = {
   },
   HARNESS_ERROR: {
     icon: Unplug,
-    accent: "text-orange-600 dark:text-orange-400",
-    card: "border-orange-500/30 bg-orange-500/5",
-    chip: "border-orange-500/40",
+    accent: "text-amber-600 dark:text-amber-400",
+    card: "border-amber-500/30 bg-amber-500/5",
+    chip: "border-amber-500/40",
   },
 };
 

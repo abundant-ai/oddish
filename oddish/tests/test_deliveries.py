@@ -164,7 +164,7 @@ async def test_green_task_board_is_ready(session):
     }
     # Every task needs a person's sign-off before the board is ready.
     assert checks["signoff"].status == "fail"
-    assert checks["signoff"].detail == ""
+    assert checks["signoff"].detail == "awaiting sign-off on v1"
     assert not board.ready
 
     await _sign_off(session, delivery.id, task.id, user="u9")
@@ -1205,3 +1205,82 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
     if not custom_minimum:
         assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
         assert not board.ready
+
+@pytest.mark.asyncio
+async def test_completed_source_review_can_block_a_fair_agent_failure(session):
+    task, version, experiment = await _green_task(session, "review-meaning-defect")
+    version.pre_trial = {
+        "items": [
+            {
+                "id": "empty-answer",
+                "tier": "must_fix",
+                "title": "The verifier accepts an empty answer.",
+                "file": "tests/test.sh",
+                "line_start": 7,
+                "line_end": 7,
+            }
+        ]
+    }
+    session.add(
+        _trial(
+            task,
+            experiment,
+            version.id,
+            analysis={
+                "classification": "GOOD_FAILURE",
+                "action_items": [],
+            },
+        )
+    )
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme",
+            name="review-meaning",
+            task_ids=[task.id],
+        ),
+        org_id=ORG,
+        user_id="maya",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    row = board.tasks[0]
+    checks = {check.key: check for check in row.checks}
+    assert checks["pre_trial_passed"].status == "pass"
+    assert "source review completed" in checks["pre_trial_passed"].detail
+    assert "defect checks are separate" in checks["pre_trial_passed"].detail
+    assert checks["no_must_fix"].status == "fail"
+    assert checks["signoff"].status == "fail"
+    assert not row.ready
+    assert row.defects[0].recorded_tier == "must_fix"
+    assert row.defects[0].finding == version.pre_trial["items"][0]
+    assert row.defects[0].finding_id == "empty-answer"
+    assert row.defects[0].file == "tests/test.sh"
+    assert row.defects[0].line_start == row.defects[0].line_end == 7
+
+
+@pytest.mark.asyncio
+async def test_review_failure_is_unknown_quality_not_a_defect(session):
+    task, version, _ = await _green_task(session, "review-meaning-error")
+    version.pre_trial_status = VerdictStatus.FAILED
+    version.pre_trial_error = "Evidence unavailable; cause not established"
+    task.verdict = None
+    task.verdict_status = VerdictStatus.FAILED
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme",
+            name="review-error",
+            task_ids=[task.id],
+        ),
+        org_id=ORG,
+        user_id="maya",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    checks = _checks(board, task.id)
+    assert checks["pre_trial_passed"].status == "fail"
+    assert "task quality not established" in checks["pre_trial_passed"].detail
+    assert "no reported task defects" in checks["no_must_fix"].detail
+    assert board.tasks[0].defects == []
+    assert not board.tasks[0].ready

@@ -18,6 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 
+import { findingHref } from "@/lib/review";
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -316,6 +317,7 @@ function ManualCheckRow({
     <div className="flex items-start gap-2 py-1">
       <Checkbox
         checked={check.status === "pass"}
+        aria-label={check.label}
         disabled={disabled}
         onCheckedChange={(value) => onToggle(value === true)}
         className="mt-0.5"
@@ -357,6 +359,7 @@ function applyTaskFilter(
       (check) => check.kind === "automated" && check.status === "fail"
     ) || row.defects.some((defect) => !defect.acknowledged);
   return tasks.filter((row) => {
+    if (filter === "outstanding") return !row.ready;
     if (filter === "ready") return row.ready;
     if (filter === "blocked") return isBlocked(row);
     return !row.ready && !isBlocked(row);
@@ -486,7 +489,7 @@ function QAHistoryVersionRow({
         </div>
         <div className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
           <span>
-            audit:{" "}
+            source review:{" "}
             {version.pre_trial_status
               ? version.pre_trial_status.toLowerCase()
               : "not run"}
@@ -514,7 +517,7 @@ function QAHistoryVersionRow({
           {version.pre_trial_error && (
             <p>
               <span className="font-medium text-red-600 dark:text-red-400">
-                audit failed:
+                source review could not complete:
               </span>{" "}
               <span className="text-muted-foreground break-words">
                 {version.pre_trial_error}
@@ -666,6 +669,18 @@ function TaskRow({
   }) => Promise<void>;
 }) {
   const expanded = focused;
+  const blocker = row.defects.find((defect) => !defect.acknowledged);
+  const taskHref = `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}&drawer=task&taskPane=overview` : ""}`;
+  const blockerHref =
+    blocker && row.version != null
+      ? findingHref(row.task_id, row.version, {
+          file: blocker.file,
+          line_start: blocker.line_start,
+          line_end: blocker.line_end,
+          id: blocker.finding_id,
+        })
+      : taskHref;
+  const outstanding = row.checks.find((check) => check.status === "fail");
   const [editingWork, setEditingWork] = useState<DeliveryTaskBoardRow | null>(
     null
   );
@@ -717,7 +732,7 @@ function TaskRow({
         </TableCell>
         <TableCell>
           <Link
-            href={`/tasks/${row.task_id}`}
+            href={taskHref}
             className="font-medium hover:underline"
             onClick={(event) => event.stopPropagation()}
           >
@@ -742,6 +757,26 @@ function TaskRow({
               <Link2 className="h-3.5 w-3.5" />
             )}
           </button>
+          {blocker ? (
+            <a
+              href={blockerHref}
+              className="mt-1 block text-sm text-red-700 hover:underline dark:text-red-400"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {row.task_name} · v{row.version} · {blocker.title}
+            </a>
+          ) : outstanding ? (
+            <p className="text-muted-foreground mt-1 text-xs">
+              {outstanding.key === "signoff"
+                ? `Awaiting sign-off · v${row.version}`
+                : outstanding.detail || outstanding.label}
+            </p>
+          ) : null}
+          {row.defects.some((defect) => defect.acknowledged) && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              Exception acknowledged · v{row.version}
+            </p>
+          )}
           {!row.is_visible && (
             <span className="text-muted-foreground ml-2 text-xs">
               (hidden from customer)
@@ -775,7 +810,28 @@ function TaskRow({
           )}
         </TableCell>
         <TableCell>
-          <p className="text-sm">{deliveryNextAction(row, qa.status)}</p>
+          {!blocker &&
+          deliveryNextAction(row, qa.status) === "Awaiting sign-off" ? (
+            <button
+              className="text-sm underline"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleExpanded();
+              }}
+            >
+              Awaiting sign-off
+            </button>
+          ) : (
+            <a
+              href={blockerHref}
+              className="text-sm underline"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {blocker
+                ? "Open blocking finding"
+                : deliveryNextAction(row, qa.status)}
+            </a>
+          )}
           <p className="text-muted-foreground text-xs">
             {row.qa_work.issue_categories
               .map((key) => QA_ISSUE_LABELS[key])
@@ -814,9 +870,18 @@ function TaskRow({
         </TableCell>
         <TableCell className="text-right">
           {row.ready ? (
-            <CheckCircle2 className="ml-auto h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <span className="inline-flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 className="h-4 w-4" />
+              Signed off · v{row.version}
+            </span>
           ) : (
-            <XCircle className="ml-auto h-4 w-4 text-red-600 dark:text-red-400" />
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              {row.checks.some(
+                (check) => check.kind === "automated" && check.status === "fail"
+              ) || blocker
+                ? "Blocked"
+                : "Awaiting sign-off"}
+            </span>
           )}
         </TableCell>
       </TableRow>
@@ -830,9 +895,9 @@ function TaskRow({
               {qa.trial_id && (
                 <Link
                   className="text-sm underline"
-                  href={`/tasks/${encodeURIComponent(row.task_id)}?trial=${encodeURIComponent(qa.trial_id)}`}
+                  href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(qa.trial_id)}`}
                 >
-                  Open QA run
+                  Open execution-review run
                 </Link>
               )}
               {row.qa_work.note && (
@@ -930,7 +995,21 @@ function TaskRow({
                         {defect.id}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p>{defect.title}</p>
+                        <a
+                          className="underline"
+                          href={
+                            row.version != null
+                              ? findingHref(row.task_id, row.version, {
+                                  file: defect.file,
+                                  line_start: defect.line_start,
+                                  line_end: defect.line_end,
+                                  id: defect.finding_id,
+                                })
+                              : taskHref
+                          }
+                        >
+                          {defect.title}
+                        </a>
                         {defect.recorded_tier && (
                           <p className="text-muted-foreground text-xs">
                             Recorded {defect.recorded_tier} ·{" "}
@@ -1310,6 +1389,14 @@ export function DeliveryBoardClient({
           : row.qa_work.owner_user_id === data.qa_viewer_user_id))
     );
   });
+  // Resolve IDs before legacy task names, against the complete inventory.
+  const focusedTask = focusTask
+    ? (data.tasks.find((row) => row.task_id === focusTask) ??
+      data.tasks.find((row) => row.task_name === focusTask))
+    : undefined;
+  const focusOutsideFilters =
+    focusedTask != null && !filteredTasks.includes(focusedTask);
+  if (focusOutsideFilters) filteredTasks.push(focusedTask);
   const groupLabel = (row: DeliveryTaskBoardRow) =>
     groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
@@ -1352,12 +1439,7 @@ export function DeliveryBoardClient({
     1,
     Math.ceil(filteredTasks.length / TASK_PAGE_SIZE)
   );
-  // Resolve legacy ?task= links after filtering and grouping, before rendering.
-  const focusedIndex = focusTask
-    ? filteredTasks.findIndex(
-        (row) => row.task_name === focusTask || row.task_id === focusTask
-      )
-    : -1;
+  const focusedIndex = focusedTask ? filteredTasks.indexOf(focusedTask) : -1;
   const clampedPage = Math.min(
     focusedIndex >= 0 ? Math.floor(focusedIndex / TASK_PAGE_SIZE) : page,
     pageCount - 1
@@ -1605,8 +1687,8 @@ export function DeliveryBoardClient({
                 </Select>
               </div>
               <p className="text-muted-foreground mb-3 text-xs">
-                Checked includes accepted and rejected results covering the
-                current version and trials.{" "}
+                Checked includes completed reviews with and without blocking
+                defects covering the current version and trials.{" "}
                 {frozen && "Counts are frozen at finalization."}
               </p>
               <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -1698,6 +1780,9 @@ export function DeliveryBoardClient({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="outstanding">
+                      Blockers and outstanding sign-offs
+                    </SelectItem>
                     <SelectItem value="all">All tasks</SelectItem>
                     <SelectItem value="blocked">
                       Blocked (failing checks or defects)
@@ -1803,6 +1888,12 @@ export function DeliveryBoardClient({
                   </div>
                 )}
               </div>
+              {focusOutsideFilters && (
+                <p className="text-muted-foreground mb-2 text-xs">
+                  The linked task is shown even though it does not match the
+                  selected filters.
+                </p>
+              )}
               {filteredTasks.length === 0 ? (
                 <p className="text-muted-foreground text-sm">
                   No tasks match this filter.
@@ -1839,7 +1930,7 @@ export function DeliveryBoardClient({
                       <TableHead className="w-6" />
                       <TableHead>Task</TableHead>
                       <TableHead>Version</TableHead>
-                      <TableHead>Latest QA</TableHead>
+                      <TableHead>Latest review</TableHead>
                       <TableHead>Next action / issues</TableHead>
                       <TableHead>Owner</TableHead>
                       <TableHead className="text-right">Ready</TableHead>
@@ -1885,17 +1976,10 @@ export function DeliveryBoardClient({
                           row={row}
                           frozen={frozen}
                           isAdmin={isAdmin}
-                          focused={
-                            focusTask === row.task_name ||
-                            focusTask === row.task_id
-                          }
+                          focused={row === focusedTask}
                           onToggleExpanded={() =>
                             updateView({
-                              task:
-                                focusTask === row.task_name ||
-                                focusTask === row.task_id
-                                  ? null
-                                  : row.task_id,
+                              task: row === focusedTask ? null : row.task_id,
                               page: String(clampedPage + 1),
                             })
                           }
