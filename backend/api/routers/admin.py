@@ -16,7 +16,6 @@ from oddish.config import (
     settings,
     to_anthropic_api_model_id,
 )
-from fastapi import APIRouter, Depends, HTTPException, Query
 from oddish.core.admin import (
     CostBreakdownResponse,
     ModelConcurrencySetting,
@@ -642,3 +641,90 @@ async def get_qa_model_capacity(auth: Annotated[AuthContext, Depends(require_adm
         if settings.qa_model_routing_enabled
         else [],
     }
+
+
+@router.get("/endpoint-health")
+async def get_endpoint_health(auth: Annotated[AuthContext, Depends(require_admin)]):
+    """Small current-state read; no provider requests or trial-history scans."""
+    from sqlalchemy import text
+    from endpoint_health import STALE_AFTER, monitoring_enabled
+    from oddish.db import utcnow
+
+    require_operator_org(auth)
+    now = utcnow()
+    async with get_read_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    text(
+                        """SELECT id, name, model, credential_ref, alerts_enabled,
+                        last_outcome, last_checked_at, last_success_at, error, status_code,
+                        incident_id, incident_opened_at
+                        FROM endpoint_monitors WHERE enabled ORDER BY name, id"""
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    monitors = [
+        dict(row) | {
+            "stale": row["last_checked_at"] is None
+            or now - row["last_checked_at"] > STALE_AFTER
+        }
+        for row in rows
+    ]
+    return {"enabled": monitoring_enabled(), "timestamp": now, "monitors": monitors}
+
+
+@router.get("/endpoint-health/{monitor_id}/checks")
+async def get_endpoint_checks(
+    monitor_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+):
+    from sqlalchemy import text
+
+    require_operator_org(auth)
+    async with get_read_session() as session:
+        checks = (
+            (
+                await session.execute(
+                    text("""
+            SELECT claim_token AS id, checked_at, outcome, latency_ms, error, status_code, request_id, incident_id
+            FROM endpoint_checks WHERE monitor_id = :id
+              AND checked_at >= now() - interval '30 days'
+            ORDER BY checked_at DESC, claim_token DESC LIMIT 100
+        """),
+                    {"id": monitor_id},
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return {"checks": [dict(row) for row in checks]}
+
+
+@router.post("/endpoint-health/{monitor_id}/check", status_code=202)
+async def request_endpoint_check(
+    monitor_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+):
+    from sqlalchemy import text
+    from endpoint_health import monitoring_enabled
+
+    require_operator_org(auth)
+    if not monitoring_enabled():
+        raise HTTPException(status_code=409, detail="Endpoint monitoring is disabled")
+    async with get_session() as session:
+        found = (
+            await session.execute(
+                text("""
+            UPDATE endpoint_monitors SET next_check_at = least(next_check_at, now())
+            WHERE id = :id AND enabled RETURNING id
+        """),
+                {"id": monitor_id},
+            )
+        ).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(status_code=404, detail="Monitored connection not found")
+    return {"scheduled": True}

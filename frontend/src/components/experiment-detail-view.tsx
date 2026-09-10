@@ -9,16 +9,14 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import type { TaskPane } from "@/components/task-files-panel";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { NotRealSpendBadge } from "@/components/not-real-spend-badge";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -60,8 +58,12 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import {
+  taskReviewFilter,
+  REVIEW_LABELS,
+  type TaskReviewFilter,
+} from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import { taskHasActiveVerdict } from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -103,12 +105,17 @@ function DrawerContentLoading({ label }: { label: string }) {
   );
 }
 
+/** Which tasks next/prev may grow into as /open pages stream in. */
+type TaskNavScope = "experiment" | Exclude<TaskReviewFilter, "all">;
+
 type DrawerState = {
   isOpen: boolean;
   mode: DrawerMode;
   task: Task;
   taskIndex: number;
   orderedTasks: Task[];
+  /** `rejected` keeps review next/prev on rejected rows only. */
+  taskNavScope: TaskNavScope;
   trial: Trial | null;
   trialIndex: number | null;
   orderedTrials: Trial[];
@@ -129,12 +136,7 @@ interface ExperimentDetailViewProps {
   onRetryCostTotals: () => void;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
-  hasMoreTasks?: boolean;
-  hasMoreTrials?: boolean;
-  canLoadTrials?: boolean;
-  loadNextTasks?: () => void;
-  loadNextTrials?: () => void;
+  pagesComplete?: boolean;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -214,9 +216,6 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
-  excludedCostUsd: number;
-  ownedExcludedCostUsd: number;
-  experimentCostExcluded: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -310,9 +309,6 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: false,
     billedTokenCount: 0,
     billedTokenTrialCount: 0,
-    excludedCostUsd: 0,
-    ownedExcludedCostUsd: 0,
-    experimentCostExcluded: false,
   };
 }
 
@@ -618,7 +614,11 @@ function ExperimentSummaryBar({
   // probes that the table below filters out. Drives the tooltip's disclosure.
   costStatus,
   qa,
+  reviewFilter,
+  onReviewFilter,
 }: {
+  reviewFilter: string;
+  onReviewFilter: (value: string) => void;
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
@@ -630,6 +630,7 @@ function ExperimentSummaryBar({
     rejected: number;
     running: number;
     failed: number;
+    unreviewed: number;
   } | null;
 }) {
   if (isInitialLoading) {
@@ -703,7 +704,10 @@ function ExperimentSummaryBar({
           )}
         </span>
       </KpiTile>
-      <KpiTile label="Completion">
+      <KpiTile
+        label="Trials finished"
+        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+      >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {doneTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
@@ -734,39 +738,40 @@ function ExperimentSummaryBar({
       </KpiTile>
       {qa && (
         <KpiTile
-          label="QA verdicts"
-          labelInfo="Task-level QA outcome for every task in this experiment that ran QA. Each task's row carries the same chip."
+          label="Task review"
+          labelInfo="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
         >
-          <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-            {qa.accepted}
-            <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
-              accepted
-            </span>
-          </span>
-          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-            {qa.rejected > 0 && (
-              <span className="text-[color:var(--paper-fail)]">
-                {qa.rejected} rejected
-              </span>
-            )}
-            {qa.running > 0 && (
-              <span className={qa.rejected > 0 ? "ml-1.5" : ""}>
-                {qa.rejected > 0 && "· "}
-                {qa.running} running
-              </span>
-            )}
-            {qa.failed > 0 && (
-              <span
-                className={qa.rejected > 0 || qa.running > 0 ? "ml-1.5" : ""}
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {(
+              [
+                ["accepted", qa.accepted, REVIEW_LABELS.accepted],
+                ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
+                ["running", qa.running, "Review queued / running"],
+                ["failed", qa.failed, REVIEW_LABELS.error],
+                ["unreviewed", qa.unreviewed, "No current review"],
+              ] as const
+            ).map(([value, count, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={reviewFilter === value}
+                className={`rounded border px-1.5 py-1 text-left ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
+                onClick={() =>
+                  onReviewFilter(reviewFilter === value ? "all" : value)
+                }
               >
-                {(qa.rejected > 0 || qa.running > 0) && "· "}
-                {qa.failed} failed
-              </span>
+                {count} {label}
+              </button>
+            ))}
+            {reviewFilter !== "all" && (
+              <button
+                className="underline"
+                onClick={() => onReviewFilter("all")}
+              >
+                Show all tasks
+              </button>
             )}
-            {qa.rejected === 0 && qa.running === 0 && qa.failed === 0 && (
-              <span>all accepted</span>
-            )}
-          </span>
+          </div>
         </KpiTile>
       )}
       <KpiTile
@@ -841,12 +846,6 @@ function ExperimentSummaryBar({
                   ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
                   : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
               }
-            />
-          )}
-          {!costPending && !costUnavailable && (
-            <NotRealSpendBadge
-              excludedCostUsd={summary.excludedCostUsd}
-              totalCostUsd={summary.costUsd}
             />
           )}
         </span>
@@ -936,13 +935,6 @@ function ExperimentSummaryBar({
                 title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
               />
             )}
-            {!costPending && !costUnavailable && (
-              <NotRealSpendBadge
-                excludedCostUsd={summary.ownedExcludedCostUsd}
-                totalCostUsd={summary.ownedCostUsd}
-                wholeSubjectExcluded={summary.experimentCostExcluded}
-              />
-            )}
           </span>
           {!costPending &&
             !costUnavailable &&
@@ -1026,12 +1018,7 @@ export function ExperimentDetailView({
   onRetryCostTotals,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
-  hasMoreTasks = false,
-  hasMoreTrials = false,
-  canLoadTrials = false,
-  loadNextTasks = () => {},
-  loadNextTrials = () => {},
+  pagesComplete = true,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -1050,7 +1037,6 @@ export function ExperimentDetailView({
   onRerun,
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
@@ -1064,6 +1050,32 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  const rawReviewFilter = searchParams.get("verdict");
+  const reviewFilter = [
+    "accepted",
+    "rejected",
+    "running",
+    "failed",
+    "unreviewed",
+  ].includes(rawReviewFilter ?? "")
+    ? (rawReviewFilter as TaskReviewFilter)
+    : "all";
+  // Let Next copy its own history state; passing __NA bypasses hook updates.
+  const setReviewFilter = useCallback((value: string) => {
+    const params = new URLSearchParams(window.location.search);
+    if (value === "all") params.delete("verdict");
+    else params.set("verdict", value);
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
+  }, []);
+  const rejectedOnly = reviewFilter === "rejected";
+  const setRejectedOnly = useCallback(
+    (value: boolean) => setReviewFilter(value ? "rejected" : "all"),
+    [setReviewFilter]
+  );
+  const reviewTasks = tasksForExperiment.filter((task) => {
+    if (reviewFilter === "all" || reviewFilter === "rejected") return true;
+    return taskReviewFilter(task) === reviewFilter;
+  });
   // Task-definition pane addressing. The drawer can show the task's file
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
@@ -1072,6 +1084,7 @@ export function ExperimentDetailView({
   const readTaskPane = useCallback(
     (params: Pick<URLSearchParams, "get" | "has">): TaskPane => {
       const pane = params.get("taskPane");
+      if (pane === "overview") return "overview";
       if (pane === "file") return "file";
       if (params.has("taskFile")) return "file";
       return defaultTaskPane;
@@ -1086,11 +1099,7 @@ export function ExperimentDetailView({
     const params = new URLSearchParams(window.location.search);
     if (pane === "overview") params.delete("taskPane");
     else params.set("taskPane", pane);
-    window.history.pushState(
-      window.history.state,
-      "",
-      urlWithSearch(params.toString())
-    );
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
   }, []);
   useEffect(() => {
     const restoreTaskPane = () => {
@@ -1317,6 +1326,9 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
+      } else if (!pendingUrlTrialId) {
+        // Keep ?trial= while a deep link is still resolving from task mode.
+        next.delete("trial");
       }
       if (activeTaskPane === "overview") {
         next.delete("taskPane");
@@ -1338,12 +1350,13 @@ export function ExperimentDetailView({
     if (next.toString() !== current.toString()) {
       const url = urlWithSearch(next.toString());
       // Keep URL query in sync without triggering app-router navigation work.
-      window.history.replaceState(window.history.state, "", url);
+      window.history.replaceState(null, "", url);
     }
   }, [
     activeTaskPane,
     drawerState,
     hasPendingUrlFocus,
+    pendingUrlTrialId,
     taskPaneFile,
     taskPaneLines,
   ]);
@@ -1383,6 +1396,7 @@ export function ExperimentDetailView({
             task: host,
             taskIndex: tasksForExperiment.indexOf(host),
             orderedTasks: tasksForExperiment,
+            taskNavScope: "experiment",
             trial,
             trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
             orderedTrials,
@@ -1411,6 +1425,7 @@ export function ExperimentDetailView({
       task,
       taskIndex,
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1430,15 +1445,78 @@ export function ExperimentDetailView({
       (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
+    // Preserve open order, then append newly streamed tasks in scope so
+    // next/prev grows with /open pages. Each review group stays in scope,
+    // including dropping rows whose review status changed after a refresh.
+    const liveById = new Map(
+      tasksForExperiment.map((task) => [task.id, task] as const)
+    );
+    const remappedOrderedTasks = drawerState.orderedTasks
+      .map((task) => liveById.get(task.id))
+      .filter((task): task is Task => task != null);
+    const preservedOrderedTasks =
+      drawerState.taskNavScope !== "experiment"
+        ? remappedOrderedTasks.filter(
+            (task) => taskReviewFilter(task) === drawerState.taskNavScope
+          )
+        : remappedOrderedTasks;
+    const seen = new Set(preservedOrderedTasks.map((task) => task.id));
+    const growthPool =
+      drawerState.taskNavScope !== "experiment"
+        ? tasksForExperiment.filter(
+            (task) => taskReviewFilter(task) === drawerState.taskNavScope
+          )
+        : tasksForExperiment;
+    const scopedOrderedTasks = [
+      ...preservedOrderedTasks,
+      ...growthPool.filter((task) => !seen.has(task.id)),
+    ];
+    // An empty review group must leave its scope before falling back to the
+    // experiment list, or the next render would remove those rows again.
+    const leaveReviewNav =
+      drawerState.taskNavScope !== "experiment" &&
+      scopedOrderedTasks.length === 0;
+    const orderedTasks = leaveReviewNav
+      ? tasksForExperiment
+      : scopedOrderedTasks.length > 0
+        ? scopedOrderedTasks
+        : tasksForExperiment;
+    const taskNavScope = leaveReviewNav
+      ? "experiment"
+      : drawerState.taskNavScope;
+    let nextTask = liveTask;
+    let resolvedTaskIndex = orderedTasks.findIndex(
+      (task) => task.id === liveTask.id
+    );
+    if (resolvedTaskIndex < 0 && orderedTasks.length > 0) {
+      // Open task left the nav set (e.g. no longer rejected); snap so
+      // taskIndex and the visible task stay aligned for next/prev.
+      resolvedTaskIndex = Math.min(
+        drawerState.taskIndex,
+        orderedTasks.length - 1
+      );
+      nextTask = orderedTasks[resolvedTaskIndex]!;
+    } else if (resolvedTaskIndex < 0) {
+      resolvedTaskIndex = 0;
+    }
+    const orderedChanged =
+      orderedTasks.length !== drawerState.orderedTasks.length ||
+      taskNavScope !== drawerState.taskNavScope ||
+      nextTask.id !== drawerState.task.id ||
+      orderedTasks.some(
+        (task, index) => task !== drawerState.orderedTasks[index]
+      );
     const liveTrialCount = liveTask.trials?.length ?? 0;
     const snapshotTrialCount = drawerState.task.trials?.length ?? 0;
     if (
       liveTask === drawerState.task &&
-      liveTrialCount === snapshotTrialCount
+      nextTask.id === drawerState.task.id &&
+      liveTrialCount === snapshotTrialCount &&
+      !orderedChanged
     ) {
       return;
     }
-    const { trialGroups, orderedTrials } = buildTrialGroups(liveTask);
+    const { trialGroups, orderedTrials } = buildTrialGroups(nextTask);
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
@@ -1446,20 +1524,32 @@ export function ExperimentDetailView({
     const resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
-        : drawerState.trial;
-    const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
+        : nextTask.id === drawerState.task.id
+          ? drawerState.trial
+          : null;
+    const snappedAway = nextTask.id !== drawerState.task.id;
+    if (leaveReviewNav && reviewFilter === drawerState.taskNavScope) {
+      setReviewFilter("all");
+    }
     setDrawerState({
       ...drawerState,
-      task: liveTask,
-      taskIndex:
-        resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
-      orderedTasks: tasksForExperiment,
+      mode: snappedAway && resolvedTrial == null ? "task" : drawerState.mode,
+      task: nextTask,
+      taskIndex: resolvedTaskIndex,
+      orderedTasks,
+      taskNavScope,
       trial: resolvedTrial,
       trialIndex: resolvedTrialIndex,
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+  }, [
+    tasksForExperiment,
+    drawerState,
+    buildTrialGroups,
+    reviewFilter,
+    setReviewFilter,
+  ]);
 
   const clearPendingDeepLink = useCallback(() => {
     setPendingUrlTaskSelector(null);
@@ -1482,11 +1572,7 @@ export function ExperimentDetailView({
     next.delete("taskLines");
     next.delete("taskPane");
     if (next.toString() !== current.toString()) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        urlWithSearch(next.toString())
-      );
+      window.history.replaceState(null, "", urlWithSearch(next.toString()));
     }
   }, [clearPendingDeepLink]);
 
@@ -1516,6 +1602,7 @@ export function ExperimentDetailView({
         task: host,
         taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
         orderedTasks: tasksForExperiment,
+        taskNavScope: "experiment",
         trial: index >= 0 ? orderedTrials[index] : trial,
         trialIndex: index >= 0 ? index : null,
         orderedTrials,
@@ -1524,16 +1611,12 @@ export function ExperimentDetailView({
       const next = new URLSearchParams(window.location.search);
       next.set("task", host.id);
       next.set("trial", trial.id);
-      router.replace(urlWithSearch(next.toString()), { scroll: false });
+      // This only canonicalizes drawer state in the URL. A route navigation
+      // can suspend the whole experiment and reset its loaded table.
+      window.history.replaceState(null, "", urlWithSearch(next.toString()));
       clearPendingDeepLink();
     },
-    [
-      drawerState,
-      tasksForExperiment,
-      buildTrialGroups,
-      router,
-      clearPendingDeepLink,
-    ]
+    [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
   );
 
   // The trial page can satisfy a pending URL before the focused read returns.
@@ -1602,6 +1685,7 @@ export function ExperimentDetailView({
       task: host,
       taskIndex: tasksForExperiment.findIndex((task) => task.id === host.id),
       orderedTasks: tasksForExperiment,
+      taskNavScope: "experiment",
       trial: null,
       trialIndex: null,
       orderedTrials,
@@ -1675,45 +1759,23 @@ export function ExperimentDetailView({
       billedHasNative: exactCostTotals.billed_has_native,
       billedTokenCount: exactCostTotals.billed_token_count,
       billedTokenTrialCount: exactCostTotals.billed_token_trial_count,
-      excludedCostUsd: exactCostTotals.excluded_cost_usd ?? 0,
-      ownedExcludedCostUsd: exactCostTotals.owned_excluded_cost_usd ?? 0,
-      experimentCostExcluded: exactCostTotals.experiment_cost_excluded ?? false,
     };
   }, [deferredTasksForDerivedData, pageSummary, exactCostTotals]);
 
-  // Task-level QA rollup for the summary bar. Null when no task in the
-  // grid ever ran QA, so non-QA experiments keep their five tiles.
+  // Count the same rows with the same classifier the review filters use.
+  // The server summary does not include the live analysis carried by trials.
   const qaRollup = useMemo(() => {
-    if (pageSummary) {
-      const rollup = {
-        accepted: pageSummary.qa_accepted,
-        rejected: pageSummary.qa_rejected,
-        running: pageSummary.qa_running,
-        failed: pageSummary.qa_failed,
-      };
-      return Object.values(rollup).some(Boolean) ? rollup : null;
-    }
-    let accepted = 0;
-    let rejected = 0;
-    let running = 0;
-    let failed = 0;
-    for (const task of deferredTasksForDerivedData) {
-      if (taskHasActiveVerdict(task)) {
-        running += 1;
-        continue;
-      }
-      const v = task.verdict;
-      if (v) {
-        const label = v.verdict ?? (v.is_good ? "accept" : "reject");
-        if (label === "accept") accepted += 1;
-        else rejected += 1;
-      } else if (task.verdict_status === "failed") {
-        failed += 1;
-      }
-    }
-    if (accepted + rejected + running + failed === 0) return null;
-    return { accepted, rejected, running, failed };
-  }, [deferredTasksForDerivedData, pageSummary]);
+    if (tasksForExperiment.length === 0) return null;
+    const counts = {
+      accepted: 0,
+      rejected: 0,
+      running: 0,
+      failed: 0,
+      unreviewed: 0,
+    };
+    for (const task of tasksForExperiment) counts[taskReviewFilter(task)] += 1;
+    return counts;
+  }, [tasksForExperiment]);
 
   const closeDrawer = () => {
     cancelPendingDeepLink();
@@ -1849,6 +1911,8 @@ export function ExperimentDetailView({
             showNewSpend={!readOnly}
             costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
+            reviewFilter={reviewFilter}
+            onReviewFilter={setReviewFilter}
           />
 
           {!hasError && costTotals.status === "error" && (
@@ -1872,20 +1936,22 @@ export function ExperimentDetailView({
           )}
 
           {hasError ? (
-            <Alert variant="destructive">
-              <AlertTitle>{errorTitle}</AlertTitle>
-              <AlertDescription>{errorDescription}</AlertDescription>
-            </Alert>
+            (inlineAlert ?? (
+              <Alert variant="destructive">
+                <AlertTitle>{errorTitle}</AlertTitle>
+                <AlertDescription>{errorDescription}</AlertDescription>
+              </Alert>
+            ))
           ) : (
             <div className="space-y-3">
               {inlineAlert}
               <ExperimentTrialsTable
-                tasks={tasksForExperiment}
+                tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
-                trialPagesComplete={trialPagesComplete}
+                pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
                 onTaskUnlink={onTaskUnlink}
@@ -1893,17 +1959,20 @@ export function ExperimentDetailView({
                 allowRerun={allowRetry}
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
+                rejectedOnly={rejectedOnly}
+                onRejectedOnlyChange={setRejectedOnly}
                 onTrialSelect={(trial, task, context) => {
                   cancelPendingDeepLink();
-                  const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id
-                  );
                   setDrawerState({
                     isOpen: true,
                     mode: "trial",
                     task,
-                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                    orderedTasks: tasksForExperiment,
+                    taskIndex: context.taskIndex,
+                    orderedTasks: context.orderedTasks,
+                    taskNavScope:
+                      reviewFilter === "all"
+                        ? (context.taskNavScope ?? "experiment")
+                        : reviewFilter,
                     trial,
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
@@ -1927,29 +1996,38 @@ export function ExperimentDetailView({
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
+                    taskNavScope:
+                      reviewFilter === "all"
+                        ? (context.taskNavScope ?? "experiment")
+                        : reviewFilter,
                     trial: null,
                     trialIndex: null,
                     orderedTrials,
                     trialGroups,
                   });
                 }}
-              />
-              {hasMoreTrials && (
-                <div className="flex justify-center">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={loadNextTrials}
-                    disabled={!canLoadTrials}
-                  >
-                    Load next 250 trial results
-                  </Button>
-                </div>
-              )}
-              <ExperimentPaginationSentinel
-                hasMoreTasks={hasMoreTasks}
-                loadNextTasks={loadNextTasks}
+                onTaskNavChange={({ orderedTasks, taskNavScope }) => {
+                  setDrawerState((prev) => {
+                    if (!prev) return prev;
+                    const liveById = new Map(
+                      orderedTasks.map((task) => [task.id, task] as const)
+                    );
+                    const task =
+                      liveById.get(prev.task.id) ??
+                      tasksForExperiment.find((t) => t.id === prev.task.id) ??
+                      prev.task;
+                    const taskIndex = orderedTasks.findIndex(
+                      (candidate) => candidate.id === task.id
+                    );
+                    return {
+                      ...prev,
+                      task,
+                      taskIndex: taskIndex >= 0 ? taskIndex : prev.taskIndex,
+                      orderedTasks,
+                      taskNavScope,
+                    };
+                  });
+                }}
               />
             </div>
           )}

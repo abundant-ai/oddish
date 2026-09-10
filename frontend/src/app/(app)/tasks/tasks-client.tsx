@@ -6,7 +6,10 @@ import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ImportDialog } from "@/components/import-dialog";
 import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
-import { useTaskBrowseRevalidate } from "@/lib/use-task-browse";
+import {
+  useTaskBrowseCount,
+  useTaskBrowseRevalidate,
+} from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
 
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
@@ -18,6 +21,38 @@ export function TasksPageNumber() {
   const searchParams = useSearchParams();
   const offset = Math.max(Number(searchParams.get("offset") ?? "0") || 0, 0);
   return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
+}
+
+// How many tasks match the active filters across every page — the grid shows
+// at most TASKS_PAGE_SIZE of them. Its own request, keyed on the filters
+// alone, so it neither delays the cards nor re-runs when you page.
+export function TasksMatchCount() {
+  const searchParams = useSearchParams();
+  const { total, isStale } = useTaskBrowseCount(
+    new URLSearchParams(searchParams.toString())
+  );
+  // Nothing to claim before the first answer lands: a count guessed from the
+  // page would be wrong for every filter state with more than one page.
+  if (total === null) return null;
+  const label = `${total.toLocaleString()} matching ${
+    total === 1 ? "task" : "tasks"
+  }`;
+  // While the next filter state is in flight — or after it failed — the
+  // number on screen belongs to the PREVIOUS filters. Dim it and say so,
+  // rather than letting a stale total pass as the current answer.
+  return (
+    <>
+      <span
+        className={cn(isStale && "opacity-50")}
+        aria-busy={isStale || undefined}
+        title={isStale ? `${label} (for the previous filters)` : undefined}
+      >
+        {label}
+        {isStale ? "…" : ""}
+      </span>
+      {" · "}
+    </>
+  );
 }
 
 // Every refresh path revalidates the grid's client-side browse fetch only —

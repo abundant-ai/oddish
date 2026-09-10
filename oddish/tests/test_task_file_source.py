@@ -5,7 +5,7 @@ import uuid
 from fastapi import HTTPException
 import pytest
 
-from oddish.core.task_files import resolve_task_file_source
+from oddish.core.task_files import TaskFileSource, resolve_task_file_source
 from oddish.db import TaskModel, TaskVersionModel
 
 
@@ -43,10 +43,10 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
 
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=None
-    ) == (1, current.task_s3_key, False)
+    ) == TaskFileSource(1, current.task_s3_key, None, None)
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=2
-    ) == (2, historical.task_s3_key, False)
+    ) == TaskFileSource(2, historical.task_s3_key, None, None)
 
     # The expand worker's stamp is the reader's answer to "is the per-file
     # tree in sync with this archive?"; an overwrite clears it again.
@@ -54,7 +54,9 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
     await session.flush()
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=2
-    ) == (2, historical.task_s3_key, True)
+    ) == TaskFileSource(
+        2, historical.task_s3_key, historical.expanded_manifest_key, None
+    )
 
     for org_id, version in [("org-2", None), ("org-1", 3)]:
         with pytest.raises(HTTPException) as exc:
@@ -62,3 +64,25 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
                 session, task_id=task.id, org_id=org_id, version=version
             )
         assert exc.value.status_code == 404
+
+    # Missing historical source metadata must not read today's task archive.
+    task.task_s3_key = f"tasks/{task.id}/current/"
+    historical.task_s3_key = None
+    historical.expanded_manifest_key = None
+    await session.flush()
+    source = await resolve_task_file_source(
+        session, task_id=task.id, org_id="org-1", version=2
+    )
+    assert source.task_s3_prefix == f"tasks/{task.id}/v2/"
+
+    from unittest.mock import AsyncMock
+    from oddish.db.storage import StorageClient
+
+    storage = object.__new__(StorageClient)
+    storage.object_exists = AsyncMock(return_value=False)
+    root, archive = await storage._resolve_task_prefix(
+        task.id, source.version, source.task_s3_prefix
+    )
+    assert root == f"tasks/{task.id}/v2/"
+    assert archive.startswith(root)
+    storage.object_exists.assert_not_awaited()

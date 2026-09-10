@@ -13,6 +13,7 @@ from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
 
+from oddish.core.endpoints.task_panel import get_task_panel_core
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_experiment_options_core,
@@ -97,12 +98,14 @@ from oddish.schemas import (
     QARunRequest,
     ExperimentOptionsResponse,
     TaskBatchCancelRequest,
+    TaskBrowseCountResponse,
     TaskBrowseResponse,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskDetailResponse,
+    TaskPanelResponse,
     TaskOpenResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
@@ -490,10 +493,21 @@ async def list_tasks(
         )
 
 
-@api.get("/tasks/browse", response_model=TaskBrowseResponse)
+@api.get(
+    "/tasks/browse",
+    response_model=TaskBrowseResponse | TaskBrowseCountResponse,
+)
 async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    count_only: bool = Query(
+        False,
+        description=(
+            "Return only the number of matching tasks, as {'total': N}, "
+            "instead of a page. Mirrors the hosted route so a self-hosted "
+            "dashboard gets the browser's matching-task count too."
+        ),
+    ),
     query: str | None = None,
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
@@ -508,7 +522,7 @@ async def browse_tasks(
     tool_names: str | None = Query(None),
     tool_count_mins: str | None = Query(None),
     trial_metric_match: str = Query("any", pattern="^(any|all)$"),
-) -> TaskBrowseResponse:
+) -> TaskBrowseResponse | TaskBrowseCountResponse:
     """Browse selected default task versions with aggregated trial stats."""
     async with get_read_session() as session:
         from oddish.filters.trial_metrics import TrialMetricFilter
@@ -528,10 +542,11 @@ async def browse_tasks(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await browse_tasks_core(
+        result = await browse_tasks_core(
             session,
             limit=limit,
             offset=offset,
+            count_only=count_only,
             query=query,
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
@@ -547,6 +562,10 @@ async def browse_tasks(
             tool_count_mins=metric_filter.tool_count_mins,
             trial_metric_match=metric_filter.match.value,
         )
+        if count_only:
+            assert isinstance(result, int)
+            return TaskBrowseCountResponse(total=result)
+        return result
 
 
 @api.get("/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse)
@@ -587,6 +606,12 @@ async def get_task_open(task_id: str, version_id: str | None = None):
     """Bounded task-page header, aggregates, and trial preview."""
     async with get_read_session() as session:
         return await get_task_open_core(session, task_id=task_id, version_id=version_id)
+
+
+@api.get("/tasks/{task_id}/panel", response_model=TaskPanelResponse)
+async def get_task_panel(task_id: str, version: int | None = None):
+    async with get_read_session() as session:
+        return await get_task_panel_core(session, task_id=task_id, version=version)
 
 
 @api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
@@ -882,7 +907,7 @@ async def list_task_files(
 ):
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -895,9 +920,11 @@ async def list_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
-                task_s3_prefix=task_s3_prefix,
-                expanded=expanded,
-                version=version,
+                task_s3_prefix=source.task_s3_prefix,
+                expanded=source.expanded,
+                expanded_manifest_key=source.expanded_manifest_key,
+                source_hash=source.content_hash,
+                version=source.version,
             )
         )
 
@@ -908,9 +935,11 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         inline=inline,
     )
 
@@ -925,7 +954,7 @@ async def get_task_file_content(
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_read_session() as session:
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -933,9 +962,11 @@ async def get_task_file_content(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         max_bytes=max_bytes,
     )
 

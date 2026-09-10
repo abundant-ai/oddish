@@ -26,6 +26,7 @@ from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-d
 
 # Import shared base from OSS oddish
 from oddish.db.models import Base, TimestampedMixin, utcnow
+from oddish.db.soft_delete import register_soft_delete_models
 
 # Re-export API key types and helpers from the shared oddish package so all
 # existing ``from models import ...`` call sites keep resolving unchanged.
@@ -79,6 +80,12 @@ class OrganizationModel(TimestampedMixin, Base):
 
     # Soft delete
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Only platform operators may grant hosted execution. Clerk membership,
+    # organization creation, names, and tenant-admin settings never grant it.
+    execution_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     # Relationships
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
@@ -472,8 +479,68 @@ class UserAlertPreferencesModel(Base):
 # core registers its domain models; the cloud layer registers its auth
 # models here so the filter covers them too without forcing oddish to
 # know about backend-only classes.
-from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     OrganizationModel, UserModel, APIKeyModel, UserProviderKeyModel
 )
+
+
+class EndpointMonitorModel(Base):
+    """Current observation, incident, and expiring check ownership per connection."""
+
+    __tablename__ = "endpoint_monitors"
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    alerts_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    next_check_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    lease_token: Mapped[str | None] = mapped_column(Text)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_outcome: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    incident_id: Mapped[str | None] = mapped_column(Text)
+    incident_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        Index(
+            "ix_endpoint_monitors_due",
+            "next_check_at",
+            postgresql_where=text("enabled"),
+        ),
+    )
+
+
+class EndpointCheckModel(Base):
+    """Bounded history of completed checks; no prompts or credentials are stored."""
+
+    __tablename__ = "endpoint_checks"
+    monitor_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("endpoint_monitors.id", ondelete="CASCADE"), primary_key=True
+    )
+    claim_token: Mapped[str] = mapped_column(Text, primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    request_id: Mapped[str | None] = mapped_column(Text)
+    incident_id: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        Index("ix_endpoint_checks_history", "monitor_id", "checked_at"),
+        Index("ix_endpoint_checks_retention", "checked_at"),
+    )

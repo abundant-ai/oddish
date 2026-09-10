@@ -353,7 +353,7 @@ async def test_same_agent_runs_store_verdict_after_qa(audit_task, tier, run_coun
         assert source.analysis["classification"] == "GOOD_FAILURE"
         assert source.reward == 0.0
         assert source.trajectory_summary["_graded_by"] == qa_id
-        if tier == "must_fix":
+        if tier is not None:
             assert task.verdict["verdict"] == "reject"
             assert task.verdict["is_good"] is False
         else:
@@ -487,7 +487,7 @@ async def test_same_version_audit_rerun_discards_old_qa_and_creates_one_replacem
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         assert task.status == TaskStatus.COMPLETED
-        assert task.verdict["verdict"] == ("reject" if remaining_defect else "accept")
+        assert task.verdict["verdict"] == "reject"  # Re-auditing cannot erase the earlier finding.
         assert (await session.get(TrialModel, source_id)).analysis[
             "_graded_by"
         ] == fresh.id
@@ -687,8 +687,8 @@ async def test_qa_cannot_publish_over_changed_source_or_active_solver(
 
 
 @pytest.mark.asyncio
-async def test_failed_audit_replacement_does_not_restore_old_rejection(audit_task):
-    task_id, _, source_id, artifacts = audit_task
+async def test_failed_audit_retains_prior_defect_without_fabricating_a_new_finding(audit_task):
+    task_id, version_id, source_id, artifacts = audit_task
     qa_id = await create_qa(task_id)
     artifacts[qa_id] = qa_artifact(source_id)
     await settle(qa_id)
@@ -718,7 +718,11 @@ async def test_failed_audit_replacement_does_not_restore_old_rejection(audit_tas
     artifacts[fresh.id] = qa_artifact(source_id, findings=False, with_verdict=False)
     await settle(fresh.id)
     async with get_session() as session:
-        assert (await session.get(TaskModel, task_id)).verdict is None
+        version = await session.get(TaskVersionModel, version_id)
+        assert version.pre_trial_status == VerdictStatus.FAILED
+        assert version.pre_trial is None
+        assert len(version.reported_findings) == 1
+        assert (await session.get(TaskModel, task_id)).verdict["verdict"] == "reject"
 
 
 @pytest.mark.asyncio

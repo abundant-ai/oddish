@@ -823,6 +823,8 @@ class TaskVersionModel(TimestampedMixin, Base):
 
     # Human coordination is shared by every delivery of this version.
     qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Evidence retained when an audit or execution review is replaced.
+    reported_findings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
@@ -1539,7 +1541,10 @@ class ModalCostSpanModel(TimestampedMixin, Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    # Cost ledgers outgrow the collision budget of eight-character entity IDs.
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: uuid4().hex
+    )
     trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -2872,10 +2877,11 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
         # delivery-level ticks (delivery_task_id IS NULL) get their own
         # partial unique index.
         Index(
-            "uq_delivery_manual_checks_task",
+            "uq_delivery_manual_checks_task_version",
             "delivery_id",
             "delivery_task_id",
             "check_key",
+            "task_version_id",
             unique=True,
             postgresql_where=text("delivery_task_id IS NOT NULL"),
         ),

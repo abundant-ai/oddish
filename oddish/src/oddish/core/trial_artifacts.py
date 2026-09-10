@@ -7,11 +7,13 @@ from enum import Enum
 from pathlib import PurePosixPath
 from typing import Never, Protocol
 
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
 from oddish.core.harbor_artifacts import ODDISH_TRIAL_NAME_KEY, validate_trial_name
 from oddish.db.storage import (
     StorageClient,
+    is_missing_object,
     resolve_trial_s3_prefix,
     sanitize_s3_key_chars,
 )
@@ -162,7 +164,11 @@ async def resolve_trial_artifact_layout(
                 )
 
     manifest_key = f"{attempt_prefix}result.json"
-    if not await storage.object_exists(manifest_key):
+    try:
+        manifest_text = await storage.download_text(manifest_key)
+    except ClientError as exc:
+        if not is_missing_object(exc):
+            raise
         if inferred_attempt:
             return TrialArtifactLayout(
                 TrialArtifactMode.UNAVAILABLE,
@@ -180,7 +186,7 @@ async def resolve_trial_artifact_layout(
         )
 
     try:
-        manifest = json.loads(await storage.download_text(manifest_key))
+        manifest = json.loads(manifest_text)
     except (TypeError, json.JSONDecodeError):
         return TrialArtifactLayout(
             TrialArtifactMode.UNAVAILABLE,

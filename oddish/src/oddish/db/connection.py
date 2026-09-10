@@ -67,16 +67,22 @@ def _create_engine() -> AsyncEngine:
             poolclass=pool.NullPool,
         )
 
+    # Keep idle connections in autocommit so asyncpg's pre-ping does not
+    # wrap its empty test command in BEGIN/ROLLBACK. The public engine is a
+    # transactional view of this SAME pool: writes still use READ COMMITTED,
+    # and get_read_session overrides that view for its checkout. Returning a
+    # connection resets it to the pool's AUTOCOMMIT default before reuse.
     return create_async_engine(
         db_url,
         echo=False,
         connect_args=connect_args,
+        isolation_level="AUTOCOMMIT",
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_pool_max_overflow,
         pool_pre_ping=True,
         pool_recycle=300,
         pool_use_lifo=True,
-    )
+    ).execution_options(isolation_level="READ COMMITTED")
 
 
 class _TimedAsyncSession(AsyncSession):

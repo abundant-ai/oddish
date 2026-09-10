@@ -7,6 +7,8 @@ import { defineConfig, devices } from "@playwright/test";
 // needs). Point it at a different origin with E2E_BASE_URL.
 export default defineConfig({
   testDir: "e2e",
+  // Uses its own local app, with controlled responses and no Clerk credentials.
+  testIgnore: "delivery-refresh.spec.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

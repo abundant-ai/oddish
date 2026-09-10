@@ -178,6 +178,13 @@ async def get_public_experiment_cost_totals(
         )
 
 
+@router.get("/public/experiments/{public_token}/results")
+async def get_public_experiment_results(public_token: str):
+    from oddish.core.endpoints.experiment_page import experiment_results_response
+
+    return await experiment_results_response(public_token=public_token)
+
+
 @router.get(
     "/public/experiments/{public_token}/open",
     response_model=PublicExperimentOpenResponse,
@@ -478,7 +485,7 @@ async def list_public_task_files(
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -491,9 +498,11 @@ async def list_public_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
-                task_s3_prefix=task_s3_prefix,
-                expanded=expanded,
-                version=version,
+                task_s3_prefix=source.task_s3_prefix,
+                expanded=source.expanded,
+                expanded_manifest_key=source.expanded_manifest_key,
+                source_hash=source.content_hash,
+                version=source.version,
             )
         )
 
@@ -504,9 +513,11 @@ async def list_public_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
     )
 
 
@@ -524,7 +535,7 @@ async def get_public_task_file_content(
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix, expanded = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -532,8 +543,10 @@ async def get_public_task_file_content(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         max_bytes=max_bytes,
     )

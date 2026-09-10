@@ -6,7 +6,7 @@ This is the Next.js App Router frontend for Oddish. It provides the authenticate
 
 Current app surface:
 
-- `/` public landing page for signed-out users; signed-in users are redirected to `/dashboard`
+- `/` public landing page for signed-out users; signed-in users are redirected to `/orgs/{orgSlug}/dashboard`
 - `/dashboard` main dashboard and experiment entrypoint
 - `/tasks` authenticated task browser with search, pagination, per-task version summaries, and links back to experiments
 - `/experiments` base page directing users to select an experiment
@@ -144,9 +144,6 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and task-level QA retry/cancel actions
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
-- `/api/models/access` for navigation access discovery without loading the catalog
-- `/api/models` for the operator-org model catalog
-- `/api/models/check` for direct provider completion checks; the path matches the backend in direct API mode
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
 - `/api/public/*` for public experiment, dataset, task-file, and trial artifact access
@@ -162,7 +159,6 @@ frontend/
 │   │   │   ├── dashboard/
 │   │   │   ├── tasks/
 │   │   │   ├── experiments/
-│   │   │   ├── models/
 │   │   │   ├── settings/
 │   │   │   └── admin/
 │   │   ├── share/[token]/        # Public experiment page

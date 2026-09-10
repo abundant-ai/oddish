@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deliveryQAStatus, deliveryNextAction } from "../src/lib/deliveries.ts";
+import { deliveryQAStatus, isDeliveryBlocked } from "../src/lib/deliveries.ts";
 import type { DeliveryTaskBoardRow } from "../src/lib/types.ts";
 
 const cutoff = Date.parse("2026-09-01T00:00:00Z");
@@ -49,14 +49,45 @@ test("recent timestamps do not turn errors, in-flight runs or stale evidence int
   }
 });
 
-test("QA acceptance does not imply delivery signoff", () => {
-  assert.equal(deliveryNextAction(row, "accepted"), "Review checks / sign off");
+test("delivery blockers come from outstanding checks and findings, not review status or sign-off", () => {
+  const base = { ...row, checks: [], defects: [] };
+  for (const status of ["accepted", "error", "needs_fixes"] as const) {
+    assert.equal(
+      isDeliveryBlocked({ ...base, qa: { ...row.qa, status } }),
+      false
+    );
+  }
+  const finding = {
+    id: "historical",
+    acknowledged: false,
+    recorded_tier: "should_fix",
+  };
   assert.equal(
-    deliveryNextAction({ ...row, ready: true }, "accepted"),
-    "Ready to deliver"
+    isDeliveryBlocked({ ...base, defects: [finding] } as DeliveryTaskBoardRow),
+    true
   );
   assert.equal(
-    deliveryNextAction({ ...row, ready: true }, "outdated"),
-    "Rerun QA"
+    isDeliveryBlocked({
+      ...base,
+      defects: [{ ...finding, acknowledged: true }],
+    } as DeliveryTaskBoardRow),
+    false
+  );
+  for (const status of ["fail", "waived", "pass", "off"] as const) {
+    const checks = [
+      { key: "min_rollouts", kind: "automated", status },
+      { key: "signoff", kind: "manual", status: "pass" },
+    ];
+    assert.equal(
+      isDeliveryBlocked({ ...base, checks } as DeliveryTaskBoardRow),
+      status === "fail"
+    );
+  }
+  assert.equal(
+    isDeliveryBlocked({
+      ...base,
+      checks: [{ key: "signoff", kind: "manual", status: "fail" }],
+    } as DeliveryTaskBoardRow),
+    false
   );
 });
