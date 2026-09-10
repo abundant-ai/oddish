@@ -103,7 +103,7 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
         ? qa
         : "all",
     issueFilter: issue && Object.hasOwn(QA_ISSUE_LABELS, issue) ? issue : "all",
-    ownerFilter: owner === "mine" || owner === "unassigned" ? owner : "all",
+    ownerFilter: owner && owner !== "all" ? owner : "all",
     groupBy: group === "owner" || group === "issue" ? group : "none",
     focusTask: params.get("task") || null,
   };
@@ -114,7 +114,15 @@ export function deliveryViewQuery(
   current: string,
   patch: Partial<
     Record<
-      "page" | "filter" | "days" | "qa" | "issue" | "owner" | "group" | "task",
+      | "page"
+      | "filter"
+      | "days"
+      | "qa"
+      | "issue"
+      | "owner"
+      | "group"
+      | "task"
+      | "panels",
       string | null
     >
   >

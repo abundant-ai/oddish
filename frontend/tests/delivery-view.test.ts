@@ -46,7 +46,6 @@ test("invalid external URL values fall back to the default view", () => {
           days: "-7",
           qa: "constructor",
           issue: "__proto__",
-          owner: "stranger",
           group: "invalid",
           task: "",
         })
@@ -82,4 +81,18 @@ test("default prioritizes outstanding work and complete inventory has an explici
   const inventory = deliveryViewQuery("", { filter: "all" });
   assert.equal(inventory, "?filter=all");
   assert.equal(parseDeliveryView(new URLSearchParams(inventory)).filter, "all");
+});
+
+test("named owners and review panels survive shared links", () => {
+  const query = deliveryViewQuery("?task=abc", {
+    owner: "user_someone_else",
+    panels: "history,all-versions,version-v1,finding-f1,!decisions",
+  });
+  const params = new URLSearchParams(query);
+  assert.equal(parseDeliveryView(params).ownerFilter, "user_someone_else");
+  assert.equal(
+    params.get("panels"),
+    "history,all-versions,version-v1,finding-f1,!decisions"
+  );
+  assert.equal(parseDeliveryView(params).focusTask, "abc");
 });
