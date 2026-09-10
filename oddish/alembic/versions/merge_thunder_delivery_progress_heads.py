@@ -3,7 +3,7 @@
 from typing import Sequence, Union
 
 
-revision: str = "merge_thunder_delivery_progress_001"
+revision: str = "merge_thunder_delivery_001"
 down_revision: Union[str, Sequence[str], None] = (
     "delivery_progress_001",
     "thunder_fallback_001",
