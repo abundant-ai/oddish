@@ -1963,6 +1963,20 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 
 ## `frontend/` — Next.js Dashboard
 
+Task and experiment drawers share the `experiment.trial-drawer` layout saved
+through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).
+The hosted `user_ui_layouts` table keys versioned JSON by authenticated
+organization-membership user ID and layout key. Only Clerk user sessions may
+access it. Apply backend migration `user_ui_layouts_001` before deployment.
+`use-user-ui-layout.ts` owns an account-specific store; it loads once per mounted
+page, merges gestures made while loading, and serializes coalesced writes.
+Only gestures save: viewport clamping and restoration never write a preference.
+The preferred expanded width survives maximizing; hidden panes preserve the
+last noncollapsed split. Public pages use local state without preference API
+requests. The old browser-global keys are not imported because they have no
+account ownership. A read failure leaves the drawer usable and exposes Retry;
+it must not overwrite an unread server preference with defaults.
+
 The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,

@@ -420,6 +420,21 @@ class SlackAlertSettingsModel(Base):
     updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class UserUiLayoutModel(Base):
+    """One named layout per user membership; the JSON value carries its version."""
+
+    __tablename__ = "user_ui_layouts"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    layout_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 class UserAlertPreferencesModel(Base):
     """A user's own choice of which Slack DM alerts to receive, and at what
     cutoffs. One row per user, keyed by user id; a missing row means the
