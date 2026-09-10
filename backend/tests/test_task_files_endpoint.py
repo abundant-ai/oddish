@@ -60,7 +60,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -112,7 +112,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -162,7 +162,7 @@ def test_selected_file_forwards_preview_limit(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get(
@@ -222,7 +222,7 @@ def test_selected_file_http_error_handling(
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get("/tasks/task-1/files/test.sh?version=3")
@@ -247,13 +247,14 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
         active = False
 
     async def resolve(*_, **kwargs):
-        assert active
-        assert kwargs == {"task_id": "task-1", "org_id": "org-1", "version": 7}
-        return TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
+        assert kwargs == {"task_id": "task-1", "version": 7}
+        async with session():
+            return TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
 
     async def list_directories(**kwargs):
         assert not active
         assert kwargs["directories"] == ["", "tests"]
+        assert kwargs["previews"] is True
         assert kwargs["version"] == 7
         assert kwargs["limit"] == 100
         return {
@@ -264,13 +265,13 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
     from types import SimpleNamespace
 
     monkeypatch.setattr("auth.get_read_session", session)
-    monkeypatch.setattr("api.routers.tasks.resolve_task_file_source", resolve)
+    monkeypatch.setattr("api.routers.tasks.resolve_authorized_task_file_source", resolve)
     monkeypatch.setattr(
         "oddish.core.sharing.helpers.get_storage_client",
         lambda: SimpleNamespace(list_task_directories=list_directories),
     )
     response = client.get(
-        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0"
+        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0&previews=true"
     )
     assert response.status_code == 200, response.text
     assert response.json()["source_hash"] == "hash-7"
@@ -296,7 +297,7 @@ def test_batch_rejects_incompatible_listing_modes(client, monkeypatch, extra):
 
     monkeypatch.setattr("auth.get_read_session", session)
     monkeypatch.setattr(
-        "api.routers.tasks.resolve_task_file_source",
+        "api.routers.tasks.resolve_authorized_task_file_source",
         AsyncMock(return_value=TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")),
     )
     storage = AsyncMock()

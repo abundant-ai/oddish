@@ -27,7 +27,7 @@ interface TaskFileTree {
   fetchedAt: number;
 }
 
-// Only metadata for likely next views, never a recursive walk or file bodies.
+// Bounded directory pages and small previews; never a recursive walk.
 const INITIAL_DIRECTORIES = ["", "solution", "tests", "environment"];
 const FRESH_MS = 30_000;
 type TreeKey = readonly [
@@ -56,9 +56,10 @@ function listingUrl(key: TreeKey, path?: string, cursor?: string | null) {
   });
   if (key[3] !== null) params.set("version", String(key[3]));
   if (key[4]) params.set("source_hash", key[4]);
-  if (path === undefined)
+  if (path === undefined) {
     INITIAL_DIRECTORIES.forEach((dir) => params.append("directories", dir));
-  else if (path) params.set("prefix", path);
+    params.set("previews", "true");
+  } else if (path) params.set("prefix", path);
   if (cursor) params.set("cursor", cursor);
   return `${key[2]}?${params}`;
 }

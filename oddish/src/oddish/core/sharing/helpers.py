@@ -363,6 +363,7 @@ async def list_task_files_s3(
     expanded_manifest_key: str | None = None,
     source_hash: str | None = None,
     directories: list[str] | None = None,
+    previews: bool = False,
 ) -> dict:
     """List files in a task's S3 directory."""
     if directories is not None and (
@@ -373,12 +374,15 @@ async def list_task_files_s3(
             "Batched directories require recursive=false, inline=false, "
             "presign=false, and no prefix or cursor",
         )
+    if previews and directories is None:
+        raise HTTPException(400, "Previews require a bounded directory batch")
     storage = get_storage_client()
     try:
         if directories is not None:
             result = await storage.list_task_directories(
                 task_id=task_id,
                 directories=directories,
+                **({"previews": True} if previews else {}),
                 limit=limit,
                 version=version,
                 task_s3_prefix=task_s3_prefix,
