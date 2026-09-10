@@ -420,14 +420,23 @@ export function useOpenLatencySpan({
     }
     ensureUnloadHandler();
 
+    // Claim the page-load latch before deciding whether to measure. The latch
+    // means the document's load time has been ACCOUNTED FOR, which includes
+    // forfeiting it: a landing that arrives hidden can never legitimately be
+    // backdated, because by the time anyone looks, `performance.timeOrigin` is
+    // however long the tab sat in the background. Leaving the latch free would
+    // let a later remount on that same path claim it and file that idle time
+    // as page-load latency.
+    const firstOpenOnPage = claimsPageLoad && !pageLoadClaimed;
+    if (claimsPageLoad) pageLoadClaimed = true;
+
     // Mounted while the tab is hidden. Two different situations arrive here
     // and they are told apart by whether a click was recorded.
     //
     // No click: a cmd-clicked or middle-clicked tab, which nobody is waiting
     // on. It also cannot be measured -- `requestAnimationFrame` is frozen so
     // it can never reach `ready`, and `visibilitychange` will not fire because
-    // the tab was born hidden rather than changing. Skip it, and leave the
-    // page-load latch unclaimed since nothing was measured.
+    // the tab was born hidden rather than changing. Skip it.
     //
     // A click: someone asked for this in this tab and switched away while it
     // loaded. That is a real wait, and an abandoned one. It can never reach
@@ -457,8 +466,6 @@ export function useOpenLatencySpan({
       return;
     }
 
-    const firstOpenOnPage = claimsPageLoad && !pageLoadClaimed;
-    if (claimsPageLoad) pageLoadClaimed = true;
     const navigation = documentNavigation();
     const { startTime, source } = resolveStartTime({
       now: Date.now(),
