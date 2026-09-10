@@ -1882,6 +1882,16 @@ because the backend can hard-require new schema on its hot paths.
 deploy; `modal-deploy.yml` (production) additionally orders the Vercel frontend
 after the backend, so a new frontend never reaches an old backend.
 
+Staging allows 400 worker containers and up to 400 starts per dispatcher poll.
+Its `STAGING_DATABASE_URL` GitHub secret remains a session-pool connection on
+port 5432 for migrations and bootstrap. Both staging workflows use
+`.github/scripts/staging/publish_runtime_db.py` to publish the same credentials
+on transaction-pool port 6543 to the `oddish-staging-db` Modal runtime secret.
+The runtime must not use session mode: its 20-connection pool rejected worker
+starts during the September 9 load test. Transaction pooling shares database
+backends across brief API and worker transactions; the 400-worker setting is
+an execution cap, not a claim of 400 simultaneous database transactions.
+
 ### Key Files
 
 | Path | Purpose |
