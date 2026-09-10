@@ -34,6 +34,7 @@ import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
+import { EndpointHealthCard } from "@/components/endpoint-health-card";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { UsagePanel } from "@/components/usage-panel";
 import {
@@ -796,6 +797,7 @@ function AdminPageContent() {
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
+          {canManagePlatform && <EndpointHealthCard />}
           <QueueHealthOverviewCard canManageConcurrency={canManagePlatform} />
         </TabsContent>
 

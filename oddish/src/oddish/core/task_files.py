@@ -64,7 +64,14 @@ async def resolve_task_file_source(
     row = (await session.execute(query)).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    prefix = row.version_s3_key if row.version is not None else row.legacy_task_s3_key
+    # A version without a stored archive pointer may use its canonical version
+    # directory. Never let storage's legacy fallback substitute the task-wide
+    # archive: it does not prove which version those bytes belong to.
+    prefix = (
+        row.version_s3_key or f"tasks/{task_id}/v{row.version}/"
+        if row.version is not None
+        else row.legacy_task_s3_key
+    )
     return TaskFileSource(
         row.version,
         str(prefix) if prefix else None,

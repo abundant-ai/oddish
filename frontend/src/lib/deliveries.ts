@@ -1,6 +1,5 @@
 import type {
   DeliveryBoardResponse,
-  DeliveryCheckStatus,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -15,13 +14,13 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 };
 
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "Accepted",
-  needs_fixes: "Needs fixes",
-  outdated: "Outdated",
-  queued: "Queued",
-  running: "Running",
-  error: "QA error",
-  never: "Never run",
+  accepted: "No blocking defects found",
+  needs_fixes: "Blocking defects found",
+  outdated: "Review needs refresh",
+  queued: "Review queued",
+  running: "Review running",
+  error: "Review could not complete",
+  never: "Not reviewed",
 };
 
 export function deliveryQAStatus(
@@ -42,39 +41,13 @@ export function deliveryQAStatus(
   return qa;
 }
 
-export function deliveryNextAction(
-  row: DeliveryTaskBoardRow,
-  status: DeliveryQAStatus["status"]
-): string {
-  switch (status) {
-    case "never":
-      return "Run QA";
-    case "outdated":
-      return "Rerun QA";
-    case "queued":
-    case "running":
-      return "Wait for QA";
-    case "error":
-      return "Retry QA job";
-    case "needs_fixes":
-      return "Review and fix";
-    case "accepted":
-      return row.ready ? "Ready to deliver" : "Review checks / sign off";
-  }
-}
-
-/** Tailwind classes for one check-status dot/chip. */
-export function checkTone(status: DeliveryCheckStatus): string {
-  switch (status) {
-    case "pass":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400";
-    case "fail":
-      return "bg-red-500/15 text-red-700 dark:text-red-400";
-    case "waived":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
+/** Delivery blockers remain separate from review completion and recorded sign-off. */
+export function isDeliveryBlocked(row: DeliveryTaskBoardRow): boolean {
+  return (
+    row.checks.some(
+      (check) => check.kind === "automated" && check.status === "fail"
+    ) || row.defects.some((defect) => !defect.acknowledged)
+  );
 }
 
 /** One-line readiness summary for a board header. */
@@ -94,6 +67,7 @@ export function readySummary(board: DeliveryBoardResponse): string {
 /** Shareable delivery view. Page numbers in URLs are one-based. */
 export type DeliveryTaskFilter =
   | "all"
+  | "outstanding"
   | "blocked"
   | "awaiting_signoff"
   | "ready";
@@ -111,9 +85,15 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
       /^\d+$/.test(rawPage) && Number.isSafeInteger(page) && page > 0
         ? page - 1
         : 0,
-    filter: (["blocked", "awaiting_signoff", "ready"].includes(filter ?? "")
+    filter: ([
+      "all",
+      "outstanding",
+      "blocked",
+      "awaiting_signoff",
+      "ready",
+    ].includes(filter ?? "")
       ? filter
-      : "all") as DeliveryTaskFilter,
+      : "outstanding") as DeliveryTaskFilter,
     qaDays: params.get("days") === "1" ? "1" : "7",
     qaFilter:
       qa &&
@@ -142,7 +122,7 @@ export function deliveryViewQuery(
   const params = new URLSearchParams(current);
   const defaults: Record<string, string> = {
     page: "1",
-    filter: "all",
+    filter: "outstanding",
     days: "7",
     qa: "all",
     issue: "all",

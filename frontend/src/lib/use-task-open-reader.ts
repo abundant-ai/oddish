@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
+import { expandVersionParam } from "@/lib/version-url";
 import { fetcher } from "@/lib/api";
 import { buildTaskOpenAgentGroups } from "@/lib/task-open-agent-groups";
 import {
@@ -21,18 +22,15 @@ import type {
   Trial,
 } from "@/lib/types";
 
-function writeVersionToQuery(
-  versionId: string | null,
-  defaultId: string | null
-) {
+function writeVersionToQuery(versionId: string | null) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
-  if (versionId == null || versionId === defaultId) {
+  if (versionId == null) {
     url.searchParams.delete("version");
   } else {
     url.searchParams.set("version", versionId);
   }
-  window.history.replaceState(window.history.state, "", url.toString());
+  window.history.pushState(null, "", url.toString());
 }
 
 function trialFromOpenRef(
@@ -106,10 +104,17 @@ export function useTaskOpenReader(
   initialVersionId?: string | null
 ) {
   const { mutate: mutateCache } = useSWRConfig();
-  const skipNextDefaultRevalidationRef = useRef(false);
   const [requestedVersionId, setRequestedVersionId] = useState<string | null>(
     () => initialVersionId ?? null
   );
+  useEffect(() => {
+    const restore = () => {
+      const raw = new URLSearchParams(window.location.search).get("version");
+      setRequestedVersionId(expandVersionParam(raw, taskId));
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, [taskId]);
   const openKey = taskOpenKey(taskId, requestedVersionId);
   const {
     data: openResource,
@@ -130,13 +135,7 @@ export function useTaskOpenReader(
         : 0;
     },
     revalidateOnFocus: false,
-    keepPreviousData: true,
-    revalidateOnMount: !(
-      requestedVersionId === null && skipNextDefaultRevalidationRef.current
-    ),
-    revalidateIfStale: !(
-      requestedVersionId === null && skipNextDefaultRevalidationRef.current
-    ),
+    keepPreviousData: false,
   });
   const open = taskOpenValue(openResource) ?? null;
   const isBrowseSnapshot = isBrowseTaskOpen(openResource);
@@ -146,48 +145,9 @@ export function useTaskOpenReader(
   const selectedVersionId = selectedVersion?.id ?? null;
   const defaultVersionId = open?.default_version?.id ?? null;
 
-  useEffect(() => {
-    if (
-      requestedVersionId === null &&
-      skipNextDefaultRevalidationRef.current &&
-      openResource
-    ) {
-      skipNextDefaultRevalidationRef.current = false;
-    }
-  }, [openResource, requestedVersionId]);
-
   const explicitVersionMissing =
     requestedVersionId !== null &&
     (error as (Error & { status?: number }) | undefined)?.status === 404;
-  const recoveryVersionId = explicitVersionMissing ? requestedVersionId : null;
-  const { data: recoveryOpen, error: recoveryError } = useSWR<TaskOpenResponse>(
-    recoveryVersionId
-      ? ["task-open-default-proof", taskId, recoveryVersionId]
-      : null,
-    () => fetcher<TaskOpenResponse>(taskOpenKey(taskId)),
-    {
-      revalidateOnFocus: false,
-      onSuccess: (provedOpen) => {
-        void mutateCache(taskOpenKey(taskId), provedOpen, {
-          revalidate: false,
-        });
-      },
-    }
-  );
-  useEffect(() => {
-    if (
-      recoveryVersionId === null ||
-      requestedVersionId !== recoveryVersionId ||
-      recoveryError ||
-      !recoveryOpen
-    ) {
-      return;
-    }
-    skipNextDefaultRevalidationRef.current = true;
-    setRequestedVersionId(null);
-    writeVersionToQuery(null, recoveryOpen.default_version?.id ?? null);
-  }, [recoveryError, recoveryOpen, recoveryVersionId, requestedVersionId]);
-
   const [loadVersionHistory, setLoadVersionHistory] = useState(false);
   const { data: versionHistory, mutate: mutateVersionHistory } = useSWR<
     TaskOpenVersionRef[]
@@ -224,14 +184,11 @@ export function useTaskOpenReader(
     null
   );
 
-  const handleSelectVersion = useCallback(
-    (id: string) => {
-      setRequestedVersionId(id === defaultVersionId ? null : id);
-      setDefaultVersionError(null);
-      writeVersionToQuery(id, defaultVersionId);
-    },
-    [defaultVersionId]
-  );
+  const handleSelectVersion = useCallback((id: string) => {
+    setRequestedVersionId(id);
+    setDefaultVersionError(null);
+    writeVersionToQuery(id);
+  }, []);
 
   // Agent trials drive the cards/matrix; the platform's own QA/audit trials
   // render separately as the QA strip.
@@ -296,8 +253,8 @@ export function useTaskOpenReader(
           })),
         { revalidate: false }
       );
-      setRequestedVersionId(null);
-      writeVersionToQuery(null, versionId);
+      setRequestedVersionId(versionId);
+      writeVersionToQuery(versionId);
       void mutateCache(
         (key) =>
           typeof key === "string" &&
@@ -354,7 +311,6 @@ export function useTaskOpenReader(
     openResource,
     realAgentCount,
     realTrialCount,
-    recoveryError,
     revalidateReaderResources,
     selectedVersion,
     selectedVersionId,

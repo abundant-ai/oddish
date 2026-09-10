@@ -662,7 +662,7 @@ test.describe("critical task and trial subtree", () => {
 
     trialDetailGate.release();
     await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+      page.getByRole("heading", { name: "Fair agent failure", exact: true })
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Re-run analysis" })

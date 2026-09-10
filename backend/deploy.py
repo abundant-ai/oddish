@@ -8,6 +8,7 @@ import modal
 
 from modal_app import (
     ENABLE_BACKGROUND_WORKERS,
+    ENABLE_ENDPOINT_MONITORING,
     ENABLE_SLACK_EXPENSE_NOTIFICATIONS,
     app,
     assert_gke_cluster_exists,
@@ -18,6 +19,9 @@ import endpoints  # noqa: F401
 
 if ENABLE_BACKGROUND_WORKERS:
     import worker  # noqa: F401
+
+if ENABLE_ENDPOINT_MONITORING:
+    import endpoint_health_worker  # noqa: F401
 
 if ENABLE_SLACK_EXPENSE_NOTIFICATIONS:
     import slack_notifications  # noqa: F401

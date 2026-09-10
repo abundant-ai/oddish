@@ -70,7 +70,13 @@ function renderPanel({
       FileRenderer: box,
       isBinaryRendererFile: () => false,
     },
-    "@/components/task-overview-panel": { TaskOverviewPanel: box },
+    "@/components/task-overview-panel": {
+      TaskOverviewPanel: ({
+        executionReviewAction,
+      }: {
+        executionReviewAction?: React.ReactNode;
+      }) => React.createElement("div", null, executionReviewAction),
+    },
     "@/lib/api": {
       fetcher: () => {
         throw new Error("Unexpected request during render");
@@ -111,6 +117,7 @@ function renderPanel({
   return renderToStaticMarkup(
     React.createElement(TaskFilesPanel, {
       isOpen: true,
+      activePane: "overview",
       onClose: () => {},
       taskId: task.id,
       task,
@@ -130,7 +137,7 @@ function enabledButtons(html: string) {
 test("experiment retry and QA remain available while Overview runs load", () => {
   const buttons = enabledButtons(renderPanel());
   assert.ok(buttons.includes("Rerun trials"));
-  assert.ok(buttons.includes("Run QA"));
+  assert.ok(buttons.includes("Run execution review"));
   assert.deepEqual(buttons, enabledButtons(renderPanel({ loading: false })));
 });
 
@@ -140,23 +147,29 @@ test("experiment cancellation uses available running rows while Overview loads",
   );
   assert.ok(buttons.includes("Cancel (1)"));
   assert.ok(buttons.includes("Rerun trials"));
-  assert.ok(!buttons.includes("Run QA"));
+  assert.ok(!buttons.includes("Run execution review"));
 });
 
 test("unknown panel metadata still disables mutations", () => {
   const buttons = enabledButtons(
     renderPanel({ panelReady: false, statuses: ["running", "success"] })
   );
-  assert.ok(!buttons.some((label) => /Cancel|Rerun trials|Run QA/.test(label)));
+  assert.ok(
+    !buttons.some((label) =>
+      /Cancel|Rerun trials|Run execution review/.test(label)
+    )
+  );
 });
 
 test("active QA and read-only panels retain their action guards", () => {
   assert.ok(
-    !enabledButtons(renderPanel({ qaActive: true })).includes("Run QA")
+    !enabledButtons(renderPanel({ qaActive: true })).includes(
+      "Run execution review"
+    )
   );
   assert.ok(
     !enabledButtons(renderPanel({ allowRetry: false })).some((label) =>
-      /Cancel|Rerun trials|Run QA/.test(label)
+      /Cancel|Rerun trials|Run execution review/.test(label)
     )
   );
 });
@@ -165,6 +178,6 @@ test("task-wide actions use panel availability instead of experiment rows", () =
   assert.ok(
     !enabledButtons(
       renderPanel({ experiment: false, statuses: ["running", "success"] })
-    ).some((label) => /Cancel|Rerun trials|Run QA/.test(label))
+    ).some((label) => /Cancel|Rerun trials|Run execution review/.test(label))
   );
 });
