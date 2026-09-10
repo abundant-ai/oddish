@@ -76,10 +76,10 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Pre-trial audit passed",
+    "pre_trial_passed": "Source review completed",
     "min_rollouts": "Enough rollouts",
-    "verdict_ok": "Verdict accepts",
-    "no_must_fix": "No must-fix defects",
+    "verdict_ok": "No blocking defects in verdict",
+    "no_must_fix": "Must-fix findings resolved or acknowledged",
 }
 
 
@@ -531,6 +531,12 @@ async def _must_fix_items(
                 "id": defect_id,
                 "title": str(item.get("title") or "untitled defect"),
                 "source": source,
+                "finding_id": str(item.get("links_to") or item["id"])
+                if item.get("links_to") or item.get("id") is not None
+                else None,
+                "file": item.get("file"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
             }
         )
 
@@ -1048,6 +1054,10 @@ async def _compute_board(
                         id=item["id"],
                         title=item["title"],
                         source=item["source"],
+                        finding_id=item.get("finding_id"),
+                        file=item.get("file"),
+                        line_start=item.get("line_start"),
+                        line_end=item.get("line_end"),
                         acknowledged=acknowledged,
                         acknowledged_by_user_id=(
                             ack.checked_by_user_id if acknowledged else None
@@ -1060,9 +1070,9 @@ async def _compute_board(
             automated(
                 "pre_trial_passed",
                 audited,
-                f"audit passed on {vlabel}"
+                f"source review completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"no successful audit on {vlabel}",
+                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -1077,7 +1087,11 @@ async def _compute_board(
 
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
-                automated("verdict_ok", False, "no verdict yet")
+                automated(
+                    "verdict_ok",
+                    False,
+                    f"no completed execution-review verdict on {vlabel}",
+                )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
@@ -1089,14 +1103,14 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     accepted,
-                    "verdict accepts"
+                    "review found no blocking defects; human sign-off is separate"
                     if accepted
-                    else f"verdict rejects: {verdict.get('primary_issue') or ''}",
+                    else f"blocking defect: {verdict.get('primary_issue') or ''}",
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
             if not defects:
-                must_fix_detail = f"no must-fix defects on {vlabel}"
+                must_fix_detail = f"no recorded must-fix defects on {vlabel}; review completion checked separately"
             elif unacknowledged:
                 must_fix_detail = (
                     f"{unacknowledged} of {len(defects)} must-fix "
@@ -1132,10 +1146,13 @@ async def _compute_board(
                 _check(
                     SIGNOFF_CHECK_KEY,
                     passed=False,
-                    # An unchecked box already says "not signed off"; only a
-                    # stale tick needs words.
+                    # Name the version still awaiting a human commitment.
                     detail=(
-                        ""
+                        (
+                            f"awaiting sign-off on v{version.version}"
+                            if version
+                            else "awaiting sign-off"
+                        )
                         if signoff is None
                         else "signed off on an older version; sign off again"
                     ),

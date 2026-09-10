@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 
+import { EXECUTION_LABELS, findingHref } from "@/lib/review";
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,13 +28,14 @@ import type {
 
 export type StaticCheckState =
   | "unaudited"
+  | "queued"
   | "running"
   | "failed"
   | "clean"
   | "findings";
 
 /**
- * What to say for a task's source audit. Empty findings mean three
+ * What to say for a task's source review. Empty findings mean three
  * different things depending on status: only `success` with no items is
  * genuinely "we looked and found nothing".
  */
@@ -43,7 +45,8 @@ export function staticCheckState(
 ): StaticCheckState {
   if (!status) return "unaudited";
   const normalized = status.toLowerCase();
-  if (normalized === "running" || normalized === "queued") return "running";
+  if (normalized === "pending" || normalized === "queued") return "queued";
+  if (normalized === "running") return "running";
   if (normalized === "success") return findingCount > 0 ? "findings" : "clean";
   return "failed";
 }
@@ -57,15 +60,7 @@ const CLASSIFICATION_ORDER: AnalysisClassification[] = [
   "GOOD_SUCCESS",
 ];
 
-const CLASSIFICATION_LABELS: Record<AnalysisClassification, string> = {
-  BAD_SUCCESS: "Bad success",
-  BAD_FAILURE: "Bad failure",
-  HARNESS_ERROR: "Harness error",
-  GOOD_FAILURE: "Good failure",
-  GOOD_SUCCESS: "Good success",
-};
-
-/** A finding plus where it came from: the source audit, trial QA, or both. */
+/** A finding plus where it came from: the source review, execution review, or both. */
 interface SourcedFinding extends PreTrialFinding {
   fromAudit: boolean;
   trials: Trial[];
@@ -91,7 +86,7 @@ function trialLabel(trial: Trial): string {
 }
 
 /**
- * The task overview: the task's own QA (verdict + the source-audit findings)
+ * The task overview: the task's own QA (verdict + the source-review findings)
  * merged with the trial-level QA aggregated across the shown version's
  * trials, each finding and classification linking back to the trial that
  * surfaced it.
@@ -113,8 +108,12 @@ export function TaskOverviewPanel({
   checksLoadError,
   qaActive,
   onOpenTrial,
+  executionReviewAction,
+  executionReviewError,
   className,
 }: {
+  executionReviewAction?: ReactNode;
+  executionReviewError?: string | null;
   taskId: string | null;
   apiBaseUrl?: string;
   /** Version the pane is scoped to: a number pins, null deliberately
@@ -152,6 +151,7 @@ export function TaskOverviewPanel({
   className?: string;
 }) {
   const router = useRouter();
+  const selectedFinding = useSearchParams().get("finding");
   const versionKnown = version !== undefined;
   // Probes are excluded at the query: they are internal instruction-overlay
   // runs, not attempts, and their `analysis` is a different shape entirely.
@@ -359,10 +359,10 @@ export function TaskOverviewPanel({
         {sourced.fromAudit ? (
           <span
             className="border-border text-muted-foreground inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]"
-            title="Found by the pre-trial audit of the task's source"
+            title="Found by the source review of the task"
           >
             <SearchCode className="h-3 w-3 shrink-0" aria-hidden="true" />
-            Source audit
+            Source review
           </span>
         ) : null}
         {(sourced.trials ?? []).map((trial) => {
@@ -408,17 +408,19 @@ export function TaskOverviewPanel({
     ? "Loading…"
     : checksLoadError
       ? "Unavailable"
-      : checkState === "running"
-        ? "Audit running…"
-        : mergedFindings.length > 0
-          ? `${mergedFindings.length} finding${mergedFindings.length === 1 ? "" : "s"}${
-              checkState === "unaudited" ? " · audit not run" : ""
-            }`
+      : checkState === "queued"
+        ? "Source review queued"
+        : checkState === "running"
+          ? "Source review running…"
           : checkState === "failed"
-            ? "Audit failed"
-            : checkState === "unaudited"
-              ? "Audit not run"
-              : "Clean";
+            ? "Source review could not complete"
+            : mergedFindings.length > 0
+              ? `${mergedFindings.length} finding${mergedFindings.length === 1 ? "" : "s"}${
+                  checkState === "unaudited" ? " · source not reviewed" : ""
+                }`
+              : checkState === "unaudited"
+                ? "Source not reviewed"
+                : "No blocking source defects found";
 
   const findingsBody = () => {
     if (checksLoading) {
@@ -436,9 +438,15 @@ export function TaskOverviewPanel({
       findingItems.length > 0 ? (
         <SeverityGroups
           items={findingItems}
+          selectedFinding={selectedFinding}
+          findingLink={
+            taskId && version != null
+              ? (item, file) => findingHref(taskId, version, item, file)
+              : undefined
+          }
           tierEffects={{
             must_fix:
-              "The defect can decide trials — QA marks the task bad until it is fixed.",
+              "Blocks task acceptance. A fair agent failure can coexist with an unrelated task defect.",
             should_fix: "Does not change the verdict.",
             optional: "Does not change the verdict.",
           }}
@@ -461,7 +469,7 @@ export function TaskOverviewPanel({
       <>
         {checkState === "failed" ? (
           <p className="font-mono text-[11px] break-all text-red-500">
-            {checksError || "The source audit failed."}
+            {checksError || "The source review failed."}
           </p>
         ) : checkState === "running" && findingItems.length === 0 ? (
           <div className="flex flex-col gap-2">
@@ -475,12 +483,12 @@ export function TaskOverviewPanel({
         ) : checkState === "clean" ? (
           <p className="text-muted-foreground text-sm leading-relaxed">
             {analyzedCount > 0
-              ? "The source audit and trial QA found no defects in this task."
-              : "The source audit found no defects in this task's source."}
+              ? "The source review and execution review found no defects in this task."
+              : "The source review found no defects in this task's source."}
           </p>
         ) : checkState === "unaudited" ? (
           <p className="text-muted-foreground text-sm leading-relaxed">
-            The source audit has not run on this version yet.
+            The source review has not run on this version yet.
           </p>
         ) : null}
       </>
@@ -552,8 +560,8 @@ export function TaskOverviewPanel({
       }
       return (
         <p className="text-muted-foreground text-sm leading-relaxed">
-          Trial QA has not run yet. Run QA to classify this task&apos;s trials
-          and synthesize a verdict.
+          Execution review has not run yet. Run QA to classify this task&apos;s
+          trials and synthesize a verdict.
         </p>
       );
     }
@@ -582,7 +590,7 @@ export function TaskOverviewPanel({
                 )}
               >
                 <Icon className="h-3 w-3" aria-hidden="true" />
-                {count} {CLASSIFICATION_LABELS[classification].toLowerCase()}
+                {count} {EXECUTION_LABELS[classification].toLowerCase()}
               </span>
             );
           })}
@@ -625,9 +633,20 @@ export function TaskOverviewPanel({
       ) : null}
 
       <div className="border-border flex flex-col gap-3 border-b p-4">
+        {selectedFinding &&
+        !checksLoading &&
+        !trialsError &&
+        trials &&
+        !findingItems.some((item) => item.id === selectedFinding) ? (
+          <p role="alert" className="text-sm text-amber-700">
+            Finding {selectedFinding} is unavailable for v{version}. The review
+            may have been replaced or its historical evidence removed. This page
+            has not substituted another finding.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Findings
+            Source review and findings
           </h2>
           <span className="text-muted-foreground font-mono text-[11px]">
             {findingsSummary}
@@ -644,13 +663,13 @@ export function TaskOverviewPanel({
               disabled={checksRerunning || auditRunning || checksStateUnknown}
               onClick={onRerunChecks}
               className="text-muted-foreground hover:text-foreground border-border rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              title="Runs the source audit on the task's current version"
+              title="Reviews the default version’s source. Completion can automatically queue execution review."
             >
               {checksRerunning
                 ? "Queuing…"
                 : checkState === "unaudited"
-                  ? "Run audit"
-                  : "Re-run audit"}
+                  ? "Run source review"
+                  : "Rerun source review"}
             </button>
           </div>
         </div>
@@ -659,14 +678,21 @@ export function TaskOverviewPanel({
           <p className="text-[11px] text-red-500">{checksQueueError}</p>
         ) : null}
 
+        <p className="text-muted-foreground text-xs">
+          Inspects task instructions, environment, and verifier source. Findings
+          also include linked execution evidence. Reruns review default v
+          {verdictTask?.current_version ?? "?"} and can automatically queue
+          execution review.
+        </p>
         {findingsBody()}
       </div>
 
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Trial QA
+            Execution review
           </h2>
+          <div className="ml-auto">{executionReviewAction}</div>
           <span className="text-muted-foreground font-mono text-[11px]">
             {!versionKnown
               ? checksLoadError
@@ -687,6 +713,36 @@ export function TaskOverviewPanel({
                     }`}
           </span>
         </div>
+        <p className="text-muted-foreground text-xs">
+          Inspects recorded agent runs, verifier results, and trajectories. A
+          fair agent failure does not clear unrelated task defects. Reruns
+          review the default version’s recorded runs; they do not rerun solver
+          trials.
+        </p>
+        {(checksError ||
+          qaTrials.some(
+            (trial) =>
+              trial.analysis?.classification === "HARNESS_ERROR" ||
+              trial.analysis_error
+          )) && (
+          <details className="text-muted-foreground text-xs">
+            <summary className="cursor-pointer">
+              Missing access: choose the remedy from evidence
+            </summary>
+            <p className="mt-2">
+              Access omitted from the task requires a task fix. Broken execution
+              infrastructure requires repair and a new execution. Access
+              unavailable to the reviewer requires restoring evidence access and
+              rerunning the review. The stored error alone may not establish
+              which happened.
+            </p>
+          </details>
+        )}
+        {executionReviewError && (
+          <p role="alert" className="text-xs text-amber-700">
+            {executionReviewError}
+          </p>
+        )}
         {trialQaBody()}
       </div>
     </div>
@@ -725,7 +781,7 @@ function TrialQaRow({
         <Icon
           className={cn(
             "h-3.5 w-3.5 shrink-0",
-            failed ? "text-red-500" : token.accent
+            failed ? "text-amber-600" : token.accent
           )}
           aria-hidden="true"
         />
@@ -733,16 +789,16 @@ function TrialQaRow({
       <span
         className={cn(
           "shrink-0 font-mono text-[10px] font-semibold tracking-wider",
-          running ? "text-blue-500" : failed ? "text-red-500" : token.accent
+          running ? "text-blue-500" : failed ? "text-amber-600" : token.accent
         )}
       >
         {running
-          ? "ANALYZING"
+          ? "REVIEW RUNNING"
           : failed
-            ? "QA FAILED"
+            ? "REVIEW COULD NOT COMPLETE"
             : analysis
-              ? CLASSIFICATION_LABELS[analysis.classification].toUpperCase()
-              : "PENDING"}
+              ? EXECUTION_LABELS[analysis.classification].toUpperCase()
+              : "NOT REVIEWED"}
       </span>
       {analysis?.subtype ? (
         <span

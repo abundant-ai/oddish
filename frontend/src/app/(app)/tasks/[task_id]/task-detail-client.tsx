@@ -680,7 +680,6 @@ export function TaskDetailClient({
     open,
     realAgentCount,
     realTrialCount,
-    recoveryError,
     revalidateReaderResources,
     selectedVersion,
     selectedVersionId,
@@ -796,21 +795,24 @@ export function TaskDetailClient({
   const selectTaskPane = useCallback((pane: TaskPane) => {
     setActiveTaskPane(pane);
     const params = new URLSearchParams(window.location.search);
-    if (pane === "overview") params.delete("taskPane");
-    else params.set("taskPane", pane);
-    window.history.pushState(
-      window.history.state,
-      "",
-      urlWithSearch(params.toString())
-    );
+    params.set("taskPane", pane);
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
   }, []);
   useEffect(() => {
     const restoreTaskPane = () => {
       const params = new URLSearchParams(window.location.search);
       const pane = params.get("taskPane");
       setActiveTaskPane(
-        pane === "file" ? pane : params.has("taskFile") ? "file" : "overview"
+        pane === "overview"
+          ? "overview"
+          : pane === "file" || params.has("taskFile")
+            ? "file"
+            : "overview"
       );
+      const file = params.get("taskFile");
+      taskPaneFileRef.current = file;
+      setTaskPaneFile(file);
+      setTaskPaneLines(parseLineRange(params.get("taskLines")));
     };
     window.addEventListener("popstate", restoreTaskPane);
     return () => window.removeEventListener("popstate", restoreTaskPane);
@@ -855,7 +857,11 @@ export function TaskDetailClient({
     const urlTaskLines = parseLineRange(params.get("taskLines"));
     const urlTaskPane = params.get("taskPane");
     setActiveTaskPane(
-      urlTaskPane === "file" ? urlTaskPane : urlTaskFile ? "file" : "overview"
+      urlTaskPane === "overview"
+        ? "overview"
+        : urlTaskPane === "file" || urlTaskFile
+          ? "file"
+          : "overview"
     );
     if (urlTaskFile) {
       taskPaneFileRef.current = urlTaskFile;
@@ -969,7 +975,7 @@ export function TaskDetailClient({
   }, [selectedVersionId]);
 
   // Sync the drawer back to the URL. Based on the live URL, not the
-  // useSearchParams snapshot: replaceState never refreshes that hook, and
+  // useSearchParams snapshot: sibling effects may have already changed it, and
   // TrialDetailPanel keeps its own params (tab/file/lines) current the
   // same way — a stale base would silently wipe them.
   useEffect(() => {
@@ -1009,16 +1015,16 @@ export function TaskDetailClient({
     }
     if (drawer) {
       if (activeTaskPane === "overview") {
-        next.delete("taskPane");
+        next.set("taskPane", "overview");
       } else {
         next.set("taskPane", activeTaskPane);
       }
-      if (activeTaskPane === "file" && taskPaneFile) {
+      if (taskPaneFile) {
         next.set("taskFile", taskPaneFile);
       } else {
         next.delete("taskFile");
       }
-      if (activeTaskPane === "file" && taskPaneLines) {
+      if (taskPaneLines) {
         next.set("taskLines", formatLineRange(taskPaneLines));
       } else {
         next.delete("taskLines");
@@ -1027,7 +1033,7 @@ export function TaskDetailClient({
 
     if (next.toString() !== current.toString()) {
       const url = urlWithSearch(next.toString());
-      window.history.replaceState(window.history.state, "", url);
+      window.history.replaceState(null, "", url);
     }
   }, [activeTaskPane, drawer, taskPaneFile, taskPaneLines]);
 
@@ -1083,11 +1089,24 @@ export function TaskDetailClient({
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
       : null;
 
-  if (
-    error &&
-    (!open || isBrowseSnapshot) &&
-    (!explicitVersionMissing || recoveryError !== undefined)
-  ) {
+  if (explicitVersionMissing) {
+    return (
+      <Alert>
+        <AlertTitle>Historical version unavailable</AlertTitle>
+        <AlertDescription>
+          The requested version and its evidence could not be found. Current
+          content has not been substituted.{" "}
+          <a
+            className="underline"
+            href={`/tasks/${encodeURIComponent(taskId)}`}
+          >
+            Open the current version
+          </a>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (error && (!open || isBrowseSnapshot)) {
     return (
       <Alert variant="destructive">
         <AlertTitle>Failed to load task</AlertTitle>

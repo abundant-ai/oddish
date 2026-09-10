@@ -2011,6 +2011,37 @@ edits remain local. Frozen delivery boards disable periodic refreshes.
 Backend filtering/pagination is not implemented yet; the full task collection
 still supplies bulk actions and delivery-wide readiness checks.
 
+Review presentation distinguishes task defects, execution classifications,
+review progress, and version-specific human sign-off. Shared review words live
+in `frontend/src/lib/review.ts` and `frontend/src/lib/deliveries.ts`; a failed
+review does not establish a task defect, and favorable automation does not sign
+off a delivery. `pre_trial_passed` means the source review completed; the
+existing verdict and must-fix checks still decide whether defects block delivery.
+Do not change severity policy as part of presentation changes.
+
+Task open/panel and experiment task rows carry `review_version_matches`, derived
+from the saved verdict's QA trial and the displayed version. An older verdict
+must remain distinguishable from a review of the selected version. The shared
+bounded provenance query does not fetch trial artifacts or enqueue work.
+Experiment summary selections use `verdict=accepted|rejected|running|failed|unreviewed`;
+unreviewed includes missing and outdated reviews. Delivery `filter` defaults to
+`outstanding`; `filter=all` restores the complete inventory.
+
+Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
+on `/tasks/{id}`. Overview preserves the file and line address for sharing.
+A missing explicit version, finding, or historical file must explain its
+absence without substituting current content or removing that address. Switching
+versions is browser history, including selecting today's default. Native history
+updates pass `null` as state so Next updates `useSearchParams` itself; passing
+Next's internal history marker bypasses that update.
+
+Source and execution reruns reuse the existing task-panel handlers. Source
+reruns target the default version, withdraw its published verdict, and can
+automatically trigger execution review after import through
+`maybe_start_task_qa_stage`. Execution reruns review recorded eligible runs and
+synthesize a verdict; they do not rerun the solver. Reading pages or findings
+and changing view filters must not call either operation.
+
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production
 deployment.

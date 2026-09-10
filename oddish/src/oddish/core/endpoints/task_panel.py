@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.schemas import TaskPanelResponse, TaskStatusResponse, TaskVersionSummary
 
 
@@ -15,7 +16,7 @@ async def get_task_panel_core(
     org_id: str | None = None,
 ) -> TaskPanelResponse:
     result = await session.execute(
-        text("""
+        text(f"""
         SELECT t.id, t.name, lower(t.status::text) AS status,
           lower(t.priority::text) AS priority, t."user", t.task_path,
           t.verdict, lower(t.verdict_status::text) AS verdict_status,
@@ -23,7 +24,8 @@ async def get_task_panel_core(
           dv.version AS current_version, v.id AS version_id, v.version,
           v.content_hash, v.created_at AS version_created_at,
           v.pre_trial, lower(v.pre_trial_status::text) AS pre_trial_status,
-          v.pre_trial_error
+          v.pre_trial_error,
+          COALESCE({VERDICT_VERSION_SQL.format(task_id="t.id", verdict="t.verdict")} = v.id, false) AS review_version_matches
         FROM tasks t
         LEFT JOIN task_versions dv ON dv.id = t.current_version_id
           AND dv.task_id = t.id AND dv.deleted_at IS NULL

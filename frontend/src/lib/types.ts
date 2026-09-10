@@ -264,6 +264,7 @@ export interface Task {
   reward_total?: number | null;
   run_analysis?: boolean;
   run_probe?: boolean;
+  review_version_matches?: boolean | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   /** Must-fix findings in the completed source audit of the current version. */
@@ -560,6 +561,7 @@ export interface TaskOpenTask {
   current_version_id?: string | null;
   user_tags: UserTagRef[];
   run_analysis: boolean;
+  review_version_matches?: boolean | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskOpenVerdict | null;
   verdict_error?: string | null;
@@ -1408,6 +1410,10 @@ export interface DeliveryCheckResult {
 }
 
 interface DeliveryDefect {
+  finding_id?: string | null;
+  file?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
   id: string;
   title: string;
   source: "pre_trial" | "trial" | (string & {});

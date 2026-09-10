@@ -15,13 +15,13 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 };
 
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "Accepted",
-  needs_fixes: "Needs fixes",
-  outdated: "Outdated",
-  queued: "Queued",
-  running: "Running",
-  error: "QA error",
-  never: "Never run",
+  accepted: "No blocking defects found",
+  needs_fixes: "Blocking defects found",
+  outdated: "Review outdated",
+  queued: "Review queued",
+  running: "Review running",
+  error: "Review could not complete",
+  never: "Not reviewed",
 };
 
 export function deliveryQAStatus(
@@ -48,18 +48,24 @@ export function deliveryNextAction(
 ): string {
   switch (status) {
     case "never":
-      return "Run QA";
+      return "Open reviews";
     case "outdated":
-      return "Rerun QA";
+      return "Inspect outdated review";
     case "queued":
     case "running":
-      return "Wait for QA";
+      return "Inspect review progress";
     case "error":
-      return "Retry QA job";
+      return "Inspect review error";
     case "needs_fixes":
-      return "Review and fix";
+      return "Open blocking finding";
     case "accepted":
-      return row.ready ? "Ready to deliver" : "Review checks / sign off";
+      return row.ready
+        ? "Ready to deliver"
+        : row.checks?.some(
+              (check) => check.kind === "automated" && check.status === "fail"
+            )
+          ? "Inspect outstanding checks"
+          : "Awaiting sign-off";
   }
 }
 
@@ -94,6 +100,7 @@ export function readySummary(board: DeliveryBoardResponse): string {
 /** Shareable delivery view. Page numbers in URLs are one-based. */
 export type DeliveryTaskFilter =
   | "all"
+  | "outstanding"
   | "blocked"
   | "awaiting_signoff"
   | "ready";
@@ -111,9 +118,15 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
       /^\d+$/.test(rawPage) && Number.isSafeInteger(page) && page > 0
         ? page - 1
         : 0,
-    filter: (["blocked", "awaiting_signoff", "ready"].includes(filter ?? "")
+    filter: ([
+      "all",
+      "outstanding",
+      "blocked",
+      "awaiting_signoff",
+      "ready",
+    ].includes(filter ?? "")
       ? filter
-      : "all") as DeliveryTaskFilter,
+      : "outstanding") as DeliveryTaskFilter,
     qaDays: params.get("days") === "1" ? "1" : "7",
     qaFilter:
       qa &&
@@ -142,7 +155,7 @@ export function deliveryViewQuery(
   const params = new URLSearchParams(current);
   const defaults: Record<string, string> = {
     page: "1",
-    filter: "all",
+    filter: "outstanding",
     days: "7",
     qa: "all",
     issue: "all",

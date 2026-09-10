@@ -1084,6 +1084,7 @@ class PublicExperimentTaskRow(BaseModel):
     reward_sum: float = 0.0
     reward_total: int = 0
     run_analysis: bool = False
+    review_version_matches: bool | None = None
     verdict_status: VerdictStatus | None = None
     verdict: ExperimentPageVerdict | None = None
     verdict_error: str | None = None
@@ -1788,6 +1789,7 @@ class TaskStatusResponse(BaseModel):
     reward_total: int | None = None
     run_analysis: bool = False
     run_probe: bool = False
+    review_version_matches: bool | None = None
     verdict_status: VerdictStatus | None = None
     verdict: dict | None = None
     verdict_error: str | None = Field(
@@ -1929,6 +1931,7 @@ class TaskOpenTask(BaseModel):
     current_version_id: str | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     run_analysis: bool = False
+    review_version_matches: bool | None = None
     verdict_status: VerdictStatus | None = None
     verdict: TaskOpenVerdict | None = None
     verdict_error: str | None = None
@@ -2689,6 +2692,10 @@ class DeliveryDefect(BaseModel):
     id: str
     title: str
     source: str  # "pre_trial" | "trial"
+    finding_id: str | None = None
+    file: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
     acknowledged: bool
     acknowledged_by_user_id: str | None = None
     acknowledged_by_name: str | None = None

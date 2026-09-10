@@ -241,7 +241,6 @@ function getNodeName(path: string): string {
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
-const FILE_LOAD_ERROR = "Error loading file content";
 
 /**
  * Build the full nested tree from a recursive listing in one pass.
@@ -796,7 +795,12 @@ export function TaskFilesPanel({
         );
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to fetch file content");
+        if (!res.ok)
+          throw new Error(
+            res.status === 404
+              ? `${selectedFile.path}${currentVersion != null ? ` on v${currentVersion}` : ""} is unavailable. Historical evidence may have been removed; current content has not been substituted.`
+              : `Could not read ${selectedFile.path} (HTTP ${res.status}). Retry loading the evidence.`
+          );
         if (fileRouteServesBytes) {
           content = await res.text();
         } else {
@@ -918,8 +922,8 @@ export function TaskFilesPanel({
     (task?.trials ?? []).some(
       (trial) => trial.analysis_status || trial.analysis
     )
-      ? "Rerun QA"
-      : "Run QA";
+      ? "Rerun execution review"
+      : "Run execution review";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1093,13 +1097,7 @@ export function TaskFilesPanel({
     } finally {
       setChecksRerunning(false);
     }
-  }, [
-    baseUrl,
-    effectiveChecksTaskId,
-    panel,
-    checksRerunning,
-    mutateChecks,
-  ]);
+  }, [baseUrl, effectiveChecksTaskId, panel, checksRerunning, mutateChecks]);
 
   const loadDirectoryPage = useCallback(
     async (path: string | null, cursor?: string | null) => {
@@ -1683,7 +1681,9 @@ export function TaskFilesPanel({
     if (previewError || !selectedPreview) {
       return (
         <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          {FILE_LOAD_ERROR}
+          {previewError instanceof Error
+            ? previewError.message
+            : "File evidence unavailable"}
         </div>
       );
     }
@@ -2095,6 +2095,32 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  executionReviewAction={
+                    showAnalysis &&
+                    task && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRunQA}
+                        disabled={!canRunQA || isRunningQA}
+                        title={
+                          actionsReady
+                            ? "Reviews recorded runs and synthesizes the verdict for the default version; does not rerun solver trials."
+                            : "Loading latest task state."
+                        }
+                        className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                      >
+                        {isRunningQA ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Microscope className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {isRunningQA ? "Queueing..." : qaActionLabel}
+                      </Button>
+                    )
+                  }
+                  executionReviewError={qaActionError}
                 />
               ) : (
                 renderFileContent()
@@ -2237,7 +2263,9 @@ export function TaskFilesPanel({
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
                     title={
-                      actionsReady ? undefined : "Loading latest task state."
+                      actionsReady
+                        ? "Reruns solver trials in this task or experiment."
+                        : "Loading latest task state."
                     }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
@@ -2247,26 +2275,6 @@ export function TaskFilesPanel({
                       }`}
                     />
                     {isRerunning ? "Rerunning..." : "Rerun trials"}
-                  </Button>
-                )}
-                {showAnalysis && task && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRunQA}
-                    disabled={!canRunQA || isRunningQA}
-                    title={
-                      actionsReady ? undefined : "Loading latest task state."
-                    }
-                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                  >
-                    {isRunningQA ? (
-                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Microscope className="mr-1 h-3.5 w-3.5" />
-                    )}
-                    {isRunningQA ? "Queueing..." : qaActionLabel}
                   </Button>
                 )}
               </div>

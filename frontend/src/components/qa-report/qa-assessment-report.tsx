@@ -1,3 +1,5 @@
+import { EXECUTION_LABELS } from "@/lib/review";
+import type { AnalysisClassification } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
@@ -58,7 +60,8 @@ export function QaAssessmentReport({
             token.accent
           )}
         >
-          {classification.replace(/_/g, " ")}
+          {EXECUTION_LABELS[classification as AnalysisClassification] ??
+            classification.replace(/_/g, " ")}
         </h2>
         {subtype && !isNa(subtype) ? (
           <span
@@ -108,7 +111,7 @@ export function QaAssessmentReport({
 
         {onFeedback ? (
           <FeedbackControl
-            label={`the ${classification.replace(/_/g, " ")} verdict`}
+            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} verdict`}
             className="mt-3"
             onSubmit={(vote, note) =>
               onFeedback({

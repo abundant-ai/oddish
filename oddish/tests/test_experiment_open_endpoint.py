@@ -774,8 +774,10 @@ def test_results_stream_exceeds_both_page_limits_without_cursor_requests(monkeyp
     assert session.closed and all(cursor.closed for cursor in session.cursors)
     assert len(session.stream_queries) == 2
     for query in session.stream_queries:
-        assert " LIMIT " not in _sql(query)
-        assert " OFFSET " not in _sql(query)
+        # The stream itself is unbounded; a scalar review-provenance lookup
+        # may select its newest matching QA run with LIMIT 1.
+        assert query._limit_clause is None
+        assert query._offset_clause is None
         assert "org-1" in _sql(query)
 
 

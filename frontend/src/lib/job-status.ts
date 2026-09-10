@@ -141,6 +141,7 @@ export function taskHasRejectedVerdict(task: Task): boolean {
   return (
     !taskHasActiveVerdict(task) &&
     task.verdict_status !== "failed" &&
+    task.review_version_matches !== false &&
     (task.verdict?.verdict === "reject" ||
       (task.verdict?.verdict == null && task.verdict?.is_good === false))
   );

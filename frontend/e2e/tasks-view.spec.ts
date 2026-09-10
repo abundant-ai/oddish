@@ -834,7 +834,7 @@ test.describe("authenticated task view", () => {
     expect(detailRequests).toBe(0);
   });
 
-  test("invalid explicit version proves the default and clears only version state", async ({
+  test("missing explicit version preserves evidence address until current version is explicitly opened", async ({
     page,
   }) => {
     await signIn(page);
@@ -860,15 +860,19 @@ test.describe("authenticated task view", () => {
       `/tasks/${READER_TASK_ID}?version=missing-version&drawer=task&taskFile=README.txt&taskLines=L1-L2`
     );
     await expect(
+      page.getByText("Historical version unavailable", { exact: true })
+    ).toBeVisible();
+    await expect(page).toHaveURL(/version=missing-version/);
+    await expect(page).toHaveURL(/taskFile=README.txt/);
+    await expect(page).toHaveURL(/taskLines=L1-L2/);
+    expect(openUrls.filter((url) => !url.includes("version_id"))).toHaveLength(
+      0
+    );
+    await page.getByRole("link", { name: "Open the current version" }).click();
+    await expect(
       page.getByRole("heading", { name: "Bounded task reader", exact: true })
     ).toBeVisible();
     await expect(page).not.toHaveURL(/version=/);
-    await expect(page).toHaveURL(/drawer=task/);
-    await expect(page).toHaveURL(/taskFile=README.txt/);
-    await expect(page).toHaveURL(/taskLines=L1-L2/);
-    expect(openUrls.filter((url) => !url.includes("version_id")).length).toBe(
-      1
-    );
   });
 
   test("a missing default remains a genuine task failure", async ({ page }) => {

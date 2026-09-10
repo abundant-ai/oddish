@@ -58,11 +58,9 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import { taskReviewStatus, REVIEW_LABELS } from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
-import {
-  taskHasActiveVerdict,
-  taskHasRejectedVerdict,
-} from "@/lib/job-status";
+import { taskHasRejectedVerdict } from "@/lib/job-status";
 import {
   formatLineRange,
   parseLineRange,
@@ -613,7 +611,11 @@ function ExperimentSummaryBar({
   // probes that the table below filters out. Drives the tooltip's disclosure.
   costStatus,
   qa,
+  reviewFilter,
+  onReviewFilter,
 }: {
+  reviewFilter: string;
+  onReviewFilter: (value: string) => void;
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
@@ -732,39 +734,51 @@ function ExperimentSummaryBar({
       </KpiTile>
       {qa && (
         <KpiTile
-          label="QA verdicts"
-          labelInfo="Task-level QA outcome for every task in this experiment that ran QA. Each task's row carries the same chip."
+          label="Task review"
+          labelInfo="Automated findings and review progress. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
         >
-          <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-            {qa.accepted}
-            <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
-              accepted
-            </span>
-          </span>
-          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-            {qa.rejected > 0 && (
-              <span className="text-[color:var(--paper-fail)]">
-                {qa.rejected} rejected
-              </span>
-            )}
-            {qa.running > 0 && (
-              <span className={qa.rejected > 0 ? "ml-1.5" : ""}>
-                {qa.rejected > 0 && "· "}
-                {qa.running} running
-              </span>
-            )}
-            {qa.failed > 0 && (
-              <span
-                className={qa.rejected > 0 || qa.running > 0 ? "ml-1.5" : ""}
+          <div className="flex flex-wrap gap-1.5 text-xs">
+            {(
+              [
+                ["accepted", qa.accepted, REVIEW_LABELS.accepted],
+                ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
+                ["running", qa.running, "Review queued / running"],
+                ["failed", qa.failed, REVIEW_LABELS.error],
+                [
+                  "unreviewed",
+                  Math.max(
+                    0,
+                    taskCount -
+                      qa.accepted -
+                      qa.rejected -
+                      qa.running -
+                      qa.failed
+                  ),
+                  "No current review",
+                ],
+              ] as const
+            ).map(([value, count, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={reviewFilter === value}
+                className={`rounded border px-1.5 py-1 text-left ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
+                onClick={() =>
+                  onReviewFilter(reviewFilter === value ? "all" : value)
+                }
               >
-                {(qa.rejected > 0 || qa.running > 0) && "· "}
-                {qa.failed} failed
-              </span>
+                {count} {label}
+              </button>
+            ))}
+            {reviewFilter !== "all" && (
+              <button
+                className="underline"
+                onClick={() => onReviewFilter("all")}
+              >
+                Show all tasks
+              </button>
             )}
-            {qa.rejected === 0 && qa.running === 0 && qa.failed === 0 && (
-              <span>all accepted</span>
-            )}
-          </span>
+          </div>
         </KpiTile>
       )}
       <KpiTile
@@ -1043,7 +1057,37 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
-  const [rejectedOnly, setRejectedOnly] = useState(false);
+  const rawReviewFilter = searchParams.get("verdict");
+  const reviewFilter = [
+    "accepted",
+    "rejected",
+    "running",
+    "failed",
+    "unreviewed",
+  ].includes(rawReviewFilter ?? "")
+    ? rawReviewFilter!
+    : "all";
+  // Let Next copy its own history state; passing __NA bypasses hook updates.
+  const setReviewFilter = useCallback((value: string) => {
+    const params = new URLSearchParams(window.location.search);
+    if (value === "all") params.delete("verdict");
+    else params.set("verdict", value);
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
+  }, []);
+  const rejectedOnly = reviewFilter === "rejected";
+  const setRejectedOnly = useCallback(
+    (value: boolean) => setReviewFilter(value ? "rejected" : "all"),
+    [setReviewFilter]
+  );
+  const reviewTasks = tasksForExperiment.filter((task) => {
+    if (reviewFilter === "all" || reviewFilter === "rejected") return true;
+    const status = taskReviewStatus(task);
+    if (reviewFilter === "accepted") return status === "accepted";
+    if (reviewFilter === "failed") return status === "error";
+    if (reviewFilter === "running")
+      return status === "queued" || status === "running";
+    return status === "never" || status === "outdated";
+  });
   // Task-definition pane addressing. The drawer can show the task's file
   // tree beside the trial view, so the two panes address independently:
   // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
@@ -1052,6 +1096,7 @@ export function ExperimentDetailView({
   const readTaskPane = useCallback(
     (params: Pick<URLSearchParams, "get" | "has">): TaskPane => {
       const pane = params.get("taskPane");
+      if (pane === "overview") return "overview";
       if (pane === "file") return "file";
       if (params.has("taskFile")) return "file";
       return defaultTaskPane;
@@ -1066,11 +1111,7 @@ export function ExperimentDetailView({
     const params = new URLSearchParams(window.location.search);
     if (pane === "overview") params.delete("taskPane");
     else params.set("taskPane", pane);
-    window.history.pushState(
-      window.history.state,
-      "",
-      urlWithSearch(params.toString())
-    );
+    window.history.pushState(null, "", urlWithSearch(params.toString()));
   }, []);
   useEffect(() => {
     const restoreTaskPane = () => {
@@ -1321,7 +1362,7 @@ export function ExperimentDetailView({
     if (next.toString() !== current.toString()) {
       const url = urlWithSearch(next.toString());
       // Keep URL query in sync without triggering app-router navigation work.
-      window.history.replaceState(window.history.state, "", url);
+      window.history.replaceState(null, "", url);
     }
   }, [
     activeTaskPane,
@@ -1500,8 +1541,7 @@ export function ExperimentDetailView({
     }
     setDrawerState({
       ...drawerState,
-      mode:
-        snappedAway && resolvedTrial == null ? "task" : drawerState.mode,
+      mode: snappedAway && resolvedTrial == null ? "task" : drawerState.mode,
       task: nextTask,
       taskIndex: resolvedTaskIndex,
       orderedTasks,
@@ -1516,6 +1556,7 @@ export function ExperimentDetailView({
     drawerState,
     buildTrialGroups,
     rejectedOnly,
+    setRejectedOnly,
   ]);
 
   const clearPendingDeepLink = useCallback(() => {
@@ -1539,11 +1580,7 @@ export function ExperimentDetailView({
     next.delete("taskLines");
     next.delete("taskPane");
     if (next.toString() !== current.toString()) {
-      window.history.replaceState(
-        window.history.state,
-        "",
-        urlWithSearch(next.toString())
-      );
+      window.history.replaceState(null, "", urlWithSearch(next.toString()));
     }
   }, [clearPendingDeepLink]);
 
@@ -1584,11 +1621,7 @@ export function ExperimentDetailView({
       next.set("trial", trial.id);
       // This only canonicalizes drawer state in the URL. A route navigation
       // can suspend the whole experiment and reset its loaded table.
-      window.history.replaceState(
-        window.history.state,
-        "",
-        urlWithSearch(next.toString())
-      );
+      window.history.replaceState(null, "", urlWithSearch(next.toString()));
       clearPendingDeepLink();
     },
     [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
@@ -1754,18 +1787,14 @@ export function ExperimentDetailView({
     let running = 0;
     let failed = 0;
     for (const task of deferredTasksForDerivedData) {
-      if (taskHasActiveVerdict(task)) {
+      const review = taskReviewStatus(task);
+      if (review === "queued" || review === "running") {
         running += 1;
         continue;
       }
-      const v = task.verdict;
-      if (v) {
-        const label = v.verdict ?? (v.is_good ? "accept" : "reject");
-        if (label === "accept") accepted += 1;
-        else rejected += 1;
-      } else if (task.verdict_status === "failed") {
-        failed += 1;
-      }
+      if (review === "accepted") accepted += 1;
+      else if (review === "needs_fixes") rejected += 1;
+      else if (review === "error") failed += 1;
     }
     if (accepted + rejected + running + failed === 0) return null;
     return { accepted, rejected, running, failed };
@@ -1905,6 +1934,8 @@ export function ExperimentDetailView({
             showNewSpend={!readOnly}
             costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
+            reviewFilter={reviewFilter}
+            onReviewFilter={setReviewFilter}
           />
 
           {!hasError && costTotals.status === "error" && (
@@ -1938,7 +1969,7 @@ export function ExperimentDetailView({
             <div className="space-y-3">
               {inlineAlert}
               <ExperimentTrialsTable
-                tasks={tasksForExperiment}
+                tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
                 modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}

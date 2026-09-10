@@ -50,13 +50,13 @@ test("recent timestamps do not turn errors, in-flight runs or stale evidence int
 });
 
 test("QA acceptance does not imply delivery signoff", () => {
-  assert.equal(deliveryNextAction(row, "accepted"), "Review checks / sign off");
+  assert.equal(deliveryNextAction(row, "accepted"), "Awaiting sign-off");
   assert.equal(
     deliveryNextAction({ ...row, ready: true }, "accepted"),
     "Ready to deliver"
   );
   assert.equal(
     deliveryNextAction({ ...row, ready: true }, "outdated"),
-    "Rerun QA"
+    "Inspect outdated review"
   );
 });

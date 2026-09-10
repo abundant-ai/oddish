@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, cast, column, func, or_, select, text
+from sqlalchemy import and_, case, cast, column, func, literal_column, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
@@ -17,6 +17,7 @@ from oddish.config import settings
 from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.core.experiment_membership import experiment_trial_scope
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.core.helpers import (
     SLIM_TRIAL_RESPONSE_COLUMNS,
     _parse_github_meta,
@@ -250,6 +251,13 @@ def _experiment_task_rows(
         stats.c.trial_version,
         TaskModel.run_analysis,
         TaskModel.verdict_status,
+        func.coalesce(
+            literal_column(
+                VERDICT_VERSION_SQL.format(task_id="tasks.id", verdict="tasks.verdict")
+            )
+            == func.coalesce(stats.c.trial_version_id, TaskModel.current_version_id),
+            False,
+        ).label("review_version_matches"),
         TaskModel.verdict["verdict"].astext.label("verdict_label"),
         TaskModel.verdict["is_good"].astext.label("verdict_is_good"),
         TaskModel.verdict["confidence"].astext.label("verdict_confidence"),
@@ -377,9 +385,9 @@ async def _experiment_summary(
     )
     active_scope = experiment_trial_scope(experiment_id, org_id=org_id)
     active_trials = active_scope.trials
-    inactive_verdict = or_(
+    published_verdict = or_(
         tasks.c.verdict_status.is_(None),
-        tasks.c.verdict_status.not_in(_ACTIVE_VERDICT_STATUSES),
+        tasks.c.verdict_status.not_in((*_ACTIVE_VERDICT_STATUSES, VerdictStatus.FAILED)),
     )
     summary_result = await session.execute(
         select(
@@ -401,7 +409,8 @@ async def _experiment_summary(
             func.avg(tasks.c.average_score).label("average_score"),
             func.count()
             .filter(
-                inactive_verdict,
+                published_verdict,
+                tasks.c.review_version_matches,
                 or_(
                     tasks.c.verdict_label == "accept",
                     tasks.c.verdict_is_good == "true",
@@ -410,7 +419,8 @@ async def _experiment_summary(
             .label("qa_accepted"),
             func.count()
             .filter(
-                inactive_verdict,
+                published_verdict,
+                tasks.c.review_version_matches,
                 or_(
                     tasks.c.verdict_label == "reject",
                     tasks.c.verdict_is_good == "false",
@@ -423,8 +433,6 @@ async def _experiment_summary(
             func.count()
             .filter(
                 tasks.c.verdict_status == VerdictStatus.FAILED,
-                tasks.c.verdict_label.is_(None),
-                tasks.c.verdict_is_good.is_(None),
             )
             .label("qa_failed"),
             select(1)
