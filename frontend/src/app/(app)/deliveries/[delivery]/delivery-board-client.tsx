@@ -2060,113 +2060,128 @@ function DeliveryBoardContent({
                   selected filters.
                 </p>
               )}
-              {filteredTasks.length === 0 ? (
-                <p className="text-muted-foreground text-sm">
-                  No tasks match this filter.
-                </p>
-              ) : (
-                <Table className="min-w-[720px] table-fixed">
-                  <TableHeader>
-                    <TableRow>
-                      {bulkable && (
-                        <TableHead className="w-8">
-                          <Checkbox
-                            checked={
-                              allFilteredSelected
-                                ? true
-                                : selectedRows.length > 0
-                                  ? "indeterminate"
-                                  : false
-                            }
-                            onCheckedChange={(value) =>
-                              setSelected(
-                                value === true
-                                  ? new Set(
-                                      filteredTasks.map(
-                                        (row) => row.delivery_task_id
+              <div
+                key={`task-page-${clampedPage}`}
+                role={pageCount > 1 ? "region" : undefined}
+                aria-label={pageCount > 1 ? "Delivery tasks" : undefined}
+                tabIndex={pageCount > 1 ? 0 : undefined}
+                className={
+                  pageCount > 1
+                    ? "h-[min(68vh,48rem)] overflow-y-auto overscroll-y-none"
+                    : undefined
+                }
+              >
+                {filteredTasks.length === 0 ? (
+                  <p className="text-muted-foreground text-sm">
+                    No tasks match this filter.
+                  </p>
+                ) : (
+                  <Table className="min-w-[720px] table-fixed">
+                    <TableHeader>
+                      <TableRow>
+                        {bulkable && (
+                          <TableHead className="w-8">
+                            <Checkbox
+                              checked={
+                                allFilteredSelected
+                                  ? true
+                                  : selectedRows.length > 0
+                                    ? "indeterminate"
+                                    : false
+                              }
+                              onCheckedChange={(value) =>
+                                setSelected(
+                                  value === true
+                                    ? new Set(
+                                        filteredTasks.map(
+                                          (row) => row.delivery_task_id
+                                        )
                                       )
-                                    )
-                                  : new Set()
-                              )
-                            }
-                            aria-label="Select all tasks in this view"
-                          />
+                                    : new Set()
+                                )
+                              }
+                              aria-label="Select all tasks in this view"
+                            />
+                          </TableHead>
+                        )}
+                        <TableHead className="w-10" />
+                        <TableHead>Task</TableHead>
+                        <TableHead className="w-44">Delivery status</TableHead>
+                        <TableHead className="w-28">Owner</TableHead>
+                        <TableHead className="w-40 text-right">
+                          Next action
                         </TableHead>
-                      )}
-                      <TableHead className="w-10" />
-                      <TableHead>Task</TableHead>
-                      <TableHead className="w-44">Delivery status</TableHead>
-                      <TableHead className="w-28">Owner</TableHead>
-                      <TableHead className="w-40 text-right">
-                        Next action
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pagedTasks.map((row, index) => (
-                      <Fragment key={row.delivery_task_id}>
-                        {groupBy !== "none" &&
-                          (index === 0 ||
-                            groupLabel(pagedTasks[index - 1]) !==
-                              groupLabel(row)) && (
-                            <TableRow>
-                              <TableCell
-                                colSpan={bulkable ? 6 : 5}
-                                className="bg-muted text-xs font-medium"
-                              >
-                                {groupLabel(row)}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        <TaskRow
-                          qa={statuses.get(row.delivery_task_id)!}
-                          busy={busy}
-                          canEditWork={
-                            !frozen &&
-                            (isAdmin ||
-                              (!!data.qa_viewer_user_id &&
-                                row.qa_work.owner_user_id ===
-                                  data.qa_viewer_user_id))
-                          }
-                          onClaim={() => claimWork([row], 1)}
-                          onRelease={() =>
-                            void run(() => patchWork(row, { release: true }))
-                          }
-                          onSaveWork={async (patch) => {
-                            await patchWork(row, patch);
-                            await mutate(undefined, {
-                              populateCache: false,
-                              throwOnError: false,
-                            });
-                          }}
-                          row={row}
-                          frozen={frozen}
-                          isAdmin={isAdmin}
-                          focused={row === focusedTask}
-                          onToggleExpanded={() =>
-                            updateView({
-                              task: row === focusedTask ? null : row.task_id,
-                              page: String(clampedPage + 1),
-                            })
-                          }
-                          link={`${pathname}${deliveryViewQuery(searchParams.toString(), { task: row.task_id, page: String(clampedPage + 1) })}`}
-                          selectable={bulkable}
-                          selected={selected.has(row.delivery_task_id)}
-                          onToggleSelect={() =>
-                            toggleSelect(row.delivery_task_id)
-                          }
-                          onSetCheck={(checkKey, deliveryTaskId, checked) =>
-                            setCheck(checkKey, deliveryTaskId, checked)
-                          }
-                          onRemove={() => removeTask(row.task_id)}
-                        />
-                      </Fragment>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pagedTasks.map((row, index) => (
+                        <Fragment key={row.delivery_task_id}>
+                          {groupBy !== "none" &&
+                            (index === 0 ||
+                              groupLabel(pagedTasks[index - 1]) !==
+                                groupLabel(row)) && (
+                              <TableRow>
+                                <TableCell
+                                  colSpan={bulkable ? 6 : 5}
+                                  className="bg-muted text-xs font-medium"
+                                >
+                                  {groupLabel(row)}
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          <TaskRow
+                            qa={statuses.get(row.delivery_task_id)!}
+                            busy={busy}
+                            canEditWork={
+                              !frozen &&
+                              (isAdmin ||
+                                (!!data.qa_viewer_user_id &&
+                                  row.qa_work.owner_user_id ===
+                                    data.qa_viewer_user_id))
+                            }
+                            onClaim={() => claimWork([row], 1)}
+                            onRelease={() =>
+                              void run(() => patchWork(row, { release: true }))
+                            }
+                            onSaveWork={async (patch) => {
+                              await patchWork(row, patch);
+                              await mutate(undefined, {
+                                populateCache: false,
+                                throwOnError: false,
+                              });
+                            }}
+                            row={row}
+                            frozen={frozen}
+                            isAdmin={isAdmin}
+                            focused={row === focusedTask}
+                            onToggleExpanded={() =>
+                              updateView({
+                                task: row === focusedTask ? null : row.task_id,
+                                page: String(clampedPage + 1),
+                              })
+                            }
+                            link={`${pathname}${deliveryViewQuery(searchParams.toString(), { task: row.task_id, page: String(clampedPage + 1) })}`}
+                            selectable={bulkable}
+                            selected={selected.has(row.delivery_task_id)}
+                            onToggleSelect={() =>
+                              toggleSelect(row.delivery_task_id)
+                            }
+                            onSetCheck={(checkKey, deliveryTaskId, checked) =>
+                              setCheck(checkKey, deliveryTaskId, checked)
+                            }
+                            onRemove={() => removeTask(row.task_id)}
+                          />
+                        </Fragment>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
               {pageCount > 1 && (
-                <div className="text-muted-foreground mt-3 flex items-center justify-between text-sm">
+                <nav
+                  aria-label="Task pages"
+                  className="text-muted-foreground mt-3 flex items-center justify-between text-sm"
+                >
                   <span>
                     Page {clampedPage + 1} of {pageCount} ·{" "}
                     {filteredTasks.length} tasks
@@ -2196,7 +2211,7 @@ function DeliveryBoardContent({
                       Next
                     </Button>
                   </div>
-                </div>
+                </nav>
               )}
             </>
           )}

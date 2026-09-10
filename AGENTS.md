@@ -2197,9 +2197,16 @@ Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
 
 
-Delivery overview uses the full board for current readiness, outstanding owner
-workload, and open/acknowledged finding counts; table filters never change these
-counts. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
+Delivery overview uses the full board for current readiness, owner review
+outcomes (including completed tasks), and open/acknowledged finding counts;
+table filters never change these counts. Owner bars derive disjoint outcomes
+through `deliveryOwnerOutcome`: red for unresolved findings or rejected QA,
+green for accepted QA, grey only for rejected QA with at least one finding,
+all findings acknowledged, and human sign-off on the displayed version. Amber
+means QA is incomplete, missing, failed, or outdated. Sign-off totals are
+shown separately from QA outcomes and do not imply every delivery check passes.
+Selecting an owner shows all their tasks, including completed work. The daily
+history remains delivery-readiness history; it does not infer past owner outcomes. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
 preserves disclosure state as comma-separated panel IDs, with `!` for explicit
 collapse of a default-open section; drafts, dialogs, and bulk selection stay local.
 The board response includes `progress_history`: at most 30 daily observations
