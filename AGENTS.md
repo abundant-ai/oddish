@@ -1666,6 +1666,43 @@ Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
 within the existing 64-character column; high-volume ledger inserts must not
 truncate UUIDs to the eight-character IDs used by some other entities.
 
+### Worker resource comparison
+
+`process_single_job_candidate` shares `_run_one_job` with the base worker. Its
+initial reservation is `cpu=(0.6, 17)`, scalar `memory=3072`, non-preemptible,
+with no warm containers and a two-container maximum. Deployment controls are
+`ODDISH_MODAL_WORKER_CANDIDATE_CPU`, `ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB`,
+and `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS`. The base remains 1 core /
+3072 MiB. Deployment-owned secret values keep declared and recorded resources
+identical when Modal imports the image.
+
+Apply core migration `worker_resources_001` before this worker deploy. It seeds
+`worker_resource_rollout` with fraction zero, max_workers two, and configuration
+`candidate-cpu0.6-mem3072`. Change the row through `backend/worker_resource_rollout.py`
+or SQL; it is read before every hosted claim, including batch continuations.
+The candidate cohort is the first fraction of the 32-bit MD5 buckets of worker
+job IDs, restricted to ordinary agent trials (not probes), non-positive priority,
+default Harbor image, and default execution lane. Retries keep their bucket.
+Base workers exclude the cohort only while the matching configuration is enabled;
+standalone workers retain unscoped behavior. Organization authorization and the
+existing fair-share planner still apply.
+
+`queue_slots.resource_candidate` survives the first claim so pending and running
+candidate workers share the cap across dispatcher processes. These are the same
+model-capacity slots, not additional capacity. A candidate-only backlog at the cap
+does not launch base workers. The candidate must own a candidate reservation to
+claim. Setting fraction or max_workers to zero stops new candidate claims; the
+short claim transaction takes a shared rollout-row lock, so the stop commits only
+after in-flight claims complete. Running jobs finish normally. Configuration
+changes also fence old candidates. Stop and drain before changing resource requests.
+
+`worker_resource_attempts` records configuration, CPU request/limit, scalar memory,
+non-preemptibility, and Modal invocation ID atomically with each hosted claim,
+independently of best-effort cost recording. Join it to `modal_costs` on
+`worker_job_id` and attempt for historical cost attribution. One invocation can
+appear in several attempt records; do not put it in the cost ledger's unique
+`external_id` column. See `docs/worker-resource-canary.md` for commands and evidence.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively
