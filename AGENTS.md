@@ -505,6 +505,13 @@ result, so a rejected draft cannot leave a stale accepted artifact.
 
 ### Worker job kinds
 
+Tag projection workers must write the task browse projection before any
+version projection, including VERSION-scope jobs. The task UPDATE holds the
+task row lock through commit, matching sweep and QA's task-then-version order.
+Writing the version first can deadlock an audit claim or QA start that already
+holds the task lock. Keep the PostgreSQL concurrency regression in
+`test_audit_claim_concurrency.py` passing without worker retries.
+
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution — including `qa`, `qa_eval`,
