@@ -555,6 +555,28 @@ async def test_harbor_event_ignores_superseded_trial(monkeypatch):
     assert trial.harbor_stage is None
 
 
+def test_capacity_error_end_hook_remains_eligible_for_fallback():
+    event = SimpleNamespace(
+        environment_provider="thunder",
+        result=SimpleNamespace(
+            exception_info=SimpleNamespace(exception_type="CapacityError")
+        ),
+    )
+
+    assert trial_handler_mod._is_thunder_capacity_hook_error(event) is True
+
+
+def test_non_capacity_end_hook_is_not_fallback():
+    event = SimpleNamespace(
+        environment_provider="thunder",
+        result=SimpleNamespace(
+            exception_info=SimpleNamespace(exception_type="EnvironmentStartError")
+        ),
+    )
+
+    assert trial_handler_mod._is_thunder_capacity_hook_error(event) is False
+
+
 @pytest.mark.asyncio
 async def test_store_trial_results_ignores_superseded_trial(monkeypatch):
     events = []

@@ -385,6 +385,21 @@ def thunder_capacity_fallback_provider(
     return settings.thunder_fallback_provider
 
 
+def _is_thunder_capacity_hook_error(
+    hook_event: TrialHookEvent, *, environment: str | None = None
+) -> bool:
+    """Identify a capacity miss before the END hook closes the trial."""
+    result = getattr(hook_event, "result", None)
+    exception_info = getattr(result, "exception_info", None)
+    return (
+        (
+            getattr(hook_event, "environment_provider", None) or environment or ""
+        ).strip().lower()
+        == EnvironmentType.THUNDER.value
+        and getattr(exception_info, "exception_type", None) == "CapacityError"
+    )
+
+
 def _expects_no_reward(trial: object) -> bool:
     harbor_config = getattr(trial, "harbor_config", None)
     verifier = (
@@ -1526,6 +1541,9 @@ async def _handle_harbor_event(
 
                 extracted_reward = None
                 has_error = False
+                capacity_handoff = _is_thunder_capacity_hook_error(
+                    hook_event, environment=trial.environment
+                )
                 if hook_event.result:
                     result = hook_event.result
                     if result.verifier_result and result.verifier_result.rewards:
@@ -1555,9 +1573,16 @@ async def _handle_harbor_event(
                             else:
                                 trial.error_message = str(error_msg)
                                 has_error = True
-                        else:
+                        elif not capacity_handoff:
                             trial.error_message = str(error_msg)
                             has_error = True
+
+                # Capacity fallback is settled by the worker-job outcome layer.
+                # Harbor's END hook must not turn the still-owned trial terminal
+                # before that atomic handoff runs.
+                if capacity_handoff:
+                    trial.error_message = None
+                    has_error = False
 
                 if extracted_reward is not None:
                     trial.status = TrialStatus.SUCCESS
