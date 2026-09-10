@@ -7,8 +7,15 @@ only add auth and transaction boundaries.
 
 from typing import Annotated
 
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from fastapi import APIRouter, Depends, HTTPException
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
+from fastapi import APIRouter, Depends, HTTPException, Request
 from models import UserModel, UserRole
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -150,11 +157,12 @@ async def _fill_user_names(
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
 async def get_delivery_board(
+    request: Request,
     delivery_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DeliveryBoardResponse:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
         board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=auth.org_id
         )
@@ -252,11 +260,12 @@ async def finalize_delivery(
 
 @router.get("/tasks/{task_id}/qa-history", response_model=TaskQAHistoryResponse)
 async def get_task_qa_history(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TaskQAHistoryResponse:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
         return await get_task_qa_history_core(
             session, task_id=task_id, org_id=auth.org_id
         )
