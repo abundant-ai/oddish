@@ -89,8 +89,13 @@ The browser suite runs real components against a local fixture app on port 3217;
 it needs no Clerk credentials or production API. It covers batch reuse, hover/focus,
 missing historical files, Back/Forward/reload, line selection, account/org isolation,
 late continuation pages, overwrite invalidation, and older server responses.
+The dashboard CI workflow runs `file-loading.spec.ts` and `user-ui-layout.spec.ts`
+separately with `E2E_REVIEW_FIXTURES=1` and `playwright.files.config.ts`.
+The default authenticated-app configuration
+excludes `file-loading.spec.ts`, whose `/file-cache` route and seeded task IDs
+exist only in the fixture app. CI uploads this suite's `fixture-test-results`.
 
-Observed on 2026-09-10 against this worktree:
+Observed on 2026-09-10 against implementation commit `fd40bf898`:
 
 | Check | Result |
 | --- | --- |
