@@ -251,11 +251,10 @@ whose chunk is slow to load looks fast. A rising share of `mount` means click
 sites are missing `markOpenIntent` (`frontend/src/lib/open-intent.ts`), not
 that the app got faster.
 
-Only `ui.task.open` can be a `page-load`. A file preview or a trajectory is
-reached by clicking, so its wait begins at the click however the page was
-reached; both pass `claimsPageLoad: false` (the default) and are always
-`interaction`. Set the opt-in only on an open that represents a route someone
-can land on directly.
+Only `ui.task.open` can be a `page-load`. A trajectory is reached by clicking,
+so its wait begins at the click however the page was reached; it passes
+`claimsPageLoad: false` (the default) and is always `interaction`. Set the
+opt-in only on an open that represents a route someone can land on directly.
 
 These are spans, not metrics, so the dimension rules above do not apply:
 each is an individual record and may carry task, trial, and file identifiers.
@@ -278,7 +277,7 @@ SELECT
 FROM records
 WHERE service_name = 'oddish-frontend'
   AND deployment_environment = 'production'
-  AND span_name IN ('ui.task.open', 'ui.files.open', 'ui.trajectory.open')
+  AND span_name IN ('ui.task.open', 'ui.trajectory.open')
   AND attributes->>'outcome' = 'ready'
 GROUP BY week, span_name
 ORDER BY week
