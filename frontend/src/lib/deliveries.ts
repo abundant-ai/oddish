@@ -17,7 +17,7 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
   accepted: "No blocking defects found",
   needs_fixes: "Blocking defects found",
-  outdated: "Review outdated",
+  outdated: "Review needs refresh",
   queued: "Review queued",
   running: "Review running",
   error: "Review could not complete",
@@ -50,7 +50,7 @@ export function deliveryNextAction(
     case "never":
       return "Open reviews";
     case "outdated":
-      return "Inspect outdated review";
+      return "Inspect review to refresh";
     case "queued":
     case "running":
       return "Inspect review progress";

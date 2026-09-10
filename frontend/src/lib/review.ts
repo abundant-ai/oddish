@@ -14,11 +14,17 @@ export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
   HARNESS_ERROR: "Execution not evaluated",
 };
 
-export { QA_STATUS_LABELS as REVIEW_LABELS } from "@/lib/deliveries";
 import { QA_STATUS_LABELS } from "@/lib/deliveries";
 
+// Task reviews use outdated only for a version mismatch; deliveries also use it
+// for evidence outside the selected time window or missing required evidence.
+export const REVIEW_LABELS = {
+  ...QA_STATUS_LABELS,
+  outdated: "Review outdated",
+};
+
 /** Review progress and task quality; solver failure never determines this. */
-export function taskReviewStatus(task: Task): keyof typeof QA_STATUS_LABELS {
+export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {
   const verdict =
     task.verdict?.verdict ??
     (task.verdict?.is_good === true

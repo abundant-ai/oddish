@@ -57,6 +57,6 @@ test("QA acceptance does not imply delivery signoff", () => {
   );
   assert.equal(
     deliveryNextAction({ ...row, ready: true }, "outdated"),
-    "Inspect outdated review"
+    "Inspect review to refresh"
   );
 });
