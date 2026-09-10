@@ -706,8 +706,18 @@ async def set_manual_check_core(
         # The tick attests to the content the human looked at: the task's
         # current default version. A later version change un-ticks it.
         task_version_id = await session.scalar(
-            select(TaskModel.current_version_id).where(TaskModel.id == member.task_id)
+            select(TaskModel.current_version_id)
+            .where(TaskModel.id == member.task_id)
+            .with_for_update()
         )
+        if (
+            "expected_version_id" in data.model_fields_set
+            and data.expected_version_id != task_version_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="The selected task version changed. Refresh the delivery and review the new version.",
+            )
         if data.checked and (
             key == SIGNOFF_CHECK_KEY
             or key.startswith(ACK_CHECK_PREFIX)
