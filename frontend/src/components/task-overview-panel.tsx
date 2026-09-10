@@ -239,7 +239,12 @@ export function TaskOverviewPanel({
     };
     for (const item of checksFindings ?? []) {
       const key = findingKey(item);
-      byKey.set(key, { ...item, id: key, fromAudit: true, trials: [] });
+      byKey.set(key, {
+        ...item,
+        id: key,
+        fromAudit: item.source !== "post_trial",
+        trials: [],
+      });
     }
     const counts = new Map<AnalysisClassification, number>();
     const withQa: Trial[] = [];
@@ -401,9 +406,7 @@ export function TaskOverviewPanel({
   // that never got picked up.
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
-  const mustFixCount = findingItems.filter(
-    (item) => item.tier === "must_fix"
-  ).length;
+  const mustFixCount = findingItems.length;
   const findingsSummary = checksLoading
     ? "Loading…"
     : checksLoadError
@@ -436,12 +439,6 @@ export function TaskOverviewPanel({
       findingItems.length > 0 ? (
         <SeverityGroups
           items={findingItems}
-          tierEffects={{
-            must_fix:
-              "The defect can decide trials — QA marks the task bad until it is fixed.",
-            should_fix: "Does not change the verdict.",
-            optional: "Does not change the verdict.",
-          }}
           renderItemFooter={renderFindingSources}
         />
       ) : null;

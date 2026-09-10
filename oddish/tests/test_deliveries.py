@@ -80,7 +80,7 @@ def _trial(
     )
 
 
-async def _green_task(session, name: str):
+async def _green_task(session, name: str, version_number: int = 1):
     """A task whose current version passes every default automated check."""
     experiment = ExperimentModel(name=f"exp-{name}", org_id=ORG)
     task = _task(name)
@@ -88,7 +88,7 @@ async def _green_task(session, name: str):
     await session.flush()
     version = _version(
         task,
-        1,
+        version_number,
         pre_trial_status=VerdictStatus.SUCCESS,
         pre_trial={"items": []},
     )
@@ -126,6 +126,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
                 data=ManualCheckSet(
                     check_key=f"ack:{defect.id}",
                     delivery_task_id=row.delivery_task_id,
+                    expected_version_id=row.version_id,
                     checked=True,
                 ),
                 user_id=user,
@@ -137,6 +138,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id=user,
@@ -162,6 +164,7 @@ async def test_green_task_board_is_ready(session):
     }
     # Every task needs a person's sign-off before the board is ready.
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == ""
     assert not board.ready
 
     await _sign_off(session, delivery.id, task.id, user="u9")
@@ -197,6 +200,9 @@ async def test_version_bump_resets_board(session):
     assert checks["verdict_ok"].status == "fail"
     assert "does not cover" in checks["verdict_ok"].detail
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == "signed off on an older version; sign off again"
+    assert checks["signoff"].checked_by_user_id is None
+    assert checks["signoff"].checked_at is None
     assert not board.ready
 
 
@@ -206,7 +212,7 @@ async def test_must_fix_defects_block(session):
     version.pre_trial = {
         "items": [
             {"tier": "must_fix", "title": "leak"},
-            {"tier": "should_fix", "title": "nit"},
+            {"tier": "should_fix", "title": "The verifier misses invalid input"},
         ]
     }
     cheat_trial = _trial(
@@ -236,9 +242,30 @@ async def test_must_fix_defects_block(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "2 of 2 must-fix unacknowledged" in check.detail
+    assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
-    assert len(row.defects) == 2 and not any(d.acknowledged for d in row.defects)
+    assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
+    assert "1 historically lower-severity findings still require" in check.detail
+
+    historical_defect = next(d for d in row.defects if d.recorded_tier == "should_fix")
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key=f"ack:{historical_defect.id}",
+            delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
+            checked=True,
+        ),
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["no_must_fix"]
+    assert check.status == "fail"
+    assert check.detail == "2 of 3 task defects unacknowledged on v1"
 
     # Deleting the trial that reported a defect must not clear it: only an
     # acknowledgement or a new version does.
@@ -250,7 +277,7 @@ async def test_must_fix_defects_block(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     row = next(r for r in board.tasks if r.task_id == task.id)
-    assert len(row.defects) == 2
+    assert len(row.defects) == 3
 
 
 @pytest.mark.asyncio
@@ -289,7 +316,7 @@ async def test_same_title_defects_stay_distinct(session):
     assert len(row.defects) == 3
     assert len({d.id for d in row.defects}) == 3
     assert {d.source for d in row.defects} == {"pre_trial", "trial"}
-    assert "3 of 3 must-fix unacknowledged" in (
+    assert "3 of 3 task defects unacknowledged" in (
         _checks(board, task.id)["no_must_fix"].detail
     )
 
@@ -322,7 +349,7 @@ async def test_manual_tick_and_version_reset(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="proofread", delivery_task_id=member_id, checked=True
+            check_key="proofread", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u2",
     )
@@ -535,6 +562,40 @@ async def test_qa_history(session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["pre_trial", "trial", "preserved"])
+@pytest.mark.parametrize(
+    "tiers, expected",
+    [
+        ({"tier": None, "severity": "must_fix"}, "must_fix"),
+        ({"severity": "must_fix"}, "must_fix"),
+        ({"tier": "should_fix", "severity": "must_fix"}, "should_fix"),
+    ],
+)
+async def test_qa_history_legacy_severity(session, source, tiers, expected):
+    task, version, experiment = await _green_task(session, "legacy-severity")
+    finding = {"id": "legacy", "title": "Legacy finding", **tiers}
+    if source == "pre_trial":
+        version.pre_trial = {"items": [finding]}
+    elif source == "trial":
+        session.add(
+            _trial(
+                task,
+                experiment,
+                version.id,
+                analysis={"action_items": [finding]},
+            )
+        )
+    else:
+        version.reported_findings = [{"finding": finding, "source": "trial"}]
+    await session.flush()
+
+    history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+    assert [(f.tier, f.title, f.source) for f in history.versions[0].findings] == [
+        (expected, "Legacy finding", "pre_trial" if source == "pre_trial" else "trial")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_deleted_task_blocks_readiness(session):
     task, _, _ = await _green_task(session, "deliv-deleted")
     delivery = await create_delivery_core(
@@ -740,14 +801,15 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "1 of 1 must-fix unacknowledged" in check.detail
+    assert "1 of 1 task defects unacknowledged" in check.detail
 
 
 @pytest.mark.asyncio
-async def test_signoff_requires_defect_acknowledgement(session):
+@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {
-        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+        "items": [{"id": "def-1", "tier": tier, "title": "leaky check"}]
     }
     await session.flush()
     delivery = await create_delivery_core(
@@ -771,6 +833,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="signoff",
                 delivery_task_id=row.delivery_task_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -787,6 +850,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="ack:not-a-defect",
                 delivery_task_id=row.delivery_task_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -801,6 +865,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="ack:def-1",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u5",
@@ -812,6 +877,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u6",
@@ -825,6 +891,9 @@ async def test_signoff_requires_defect_acknowledgement(session):
     assert row.defects[0].acknowledged_by_user_id == "u5"
     assert _checks(board, task.id)["signoff"].checked_by_user_id == "u6"
     assert _checks(board, task.id)["no_must_fix"].status == "pass"
+    assert _checks(board, task.id)["no_must_fix"].detail == (
+        "all 1 task defects acknowledged as exceptions on v1"
+    )
 
     # A reserved key cannot be redefined in check_config.
     from oddish.schemas import DeliveryCheckConfig as _Config
@@ -913,7 +982,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key="signoff", delivery_task_id=member_id, checked=True
+                check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -928,7 +997,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
                 delivery_id=delivery.id,
                 org_id=ORG,
                 data=ManualCheckSet(
-                    check_key=bad_key, delivery_task_id=member_id, checked=True
+                    check_key=bad_key, delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
                 ),
                 user_id="u5",
             )
@@ -940,7 +1009,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key=f"waive:{key}", delivery_task_id=member_id, checked=True
+                check_key=f"waive:{key}", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -949,7 +1018,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="signoff", delivery_task_id=member_id, checked=True
+            check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u6",
     )

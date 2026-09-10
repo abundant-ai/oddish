@@ -546,7 +546,10 @@ export function TaskFilesPanel({
     checksLoadError && !panel
       ? "Unable to load the static checks state."
       : null;
-  const checksFindings = checksVersion?.pre_trial_findings ?? [];
+  const checksFindings = [
+    ...(checksVersion?.retained_findings ?? []),
+    ...(checksVersion?.pre_trial_findings ?? []),
+  ];
   const taskQaActive = panel?.qa_active ?? false;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a

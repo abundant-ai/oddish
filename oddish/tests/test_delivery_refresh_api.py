@@ -37,6 +37,12 @@ async def delivery_api(monkeypatch):
         monkeypatch.setattr(server, "get_session", get_session)
         monkeypatch.setattr(routes, "get_session", get_session)
         async with get_session() as session:
+            trial_count = await session.scalar(
+                select(func.count()).select_from(TrialModel)
+            )
+            job_count = await session.scalar(
+                select(func.count()).select_from(WorkerJobModel)
+            )
             task = TaskModel(
                 name="refresh-api-task", task_path="s3://test/v7", user="tester"
             )
@@ -53,8 +59,23 @@ async def delivery_api(monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=server.api), base_url="http://test"
         ) as client:
-            yield client, get_session, task_id, version_id
-        await transaction.rollback()
+            try:
+                yield client, get_session, task_id, version_id
+                async with get_session() as session:
+                    assert (
+                        await session.scalar(
+                            select(func.count()).select_from(TrialModel)
+                        )
+                        == trial_count
+                    )
+                    assert (
+                        await session.scalar(
+                            select(func.count()).select_from(WorkerJobModel)
+                        )
+                        == job_count
+                    )
+            finally:
+                await transaction.rollback()
 
 
 async def read_board(client, delivery_id):
@@ -152,12 +173,14 @@ async def test_delivery_reads_follow_selected_version_without_qa(delivery_api):
             assert response.status_code == 409, response.text
             assert "selected task version changed" in response.json()["detail"]
     async with sessions() as session:
-        saved = (await session.scalars(select(DeliveryManualCheckModel))).all()
+        saved = (
+            await session.scalars(
+                select(DeliveryManualCheckModel).where(
+                    DeliveryManualCheckModel.delivery_id == delivery_id
+                )
+            )
+        ).all()
         assert saved and all(tick.task_version_id == v7 for tick in saved)
-        assert await session.scalar(select(func.count()).select_from(TrialModel)) == 0
-        assert (
-            await session.scalar(select(func.count()).select_from(WorkerJobModel)) == 0
-        )
 
     # Assignment writes, membership removal and re-addition appear on the next
     # read; no analysis event is involved.
@@ -267,8 +290,3 @@ async def test_defect_acknowledgment_and_assignment_refresh_without_qa(delivery_
     assert (await read_board(client, delivery_id))["tasks"][0]["qa_work"][
         "owner_user_id"
     ] is None
-    async with sessions() as session:
-        assert await session.scalar(select(func.count()).select_from(TrialModel)) == 0
-        assert (
-            await session.scalar(select(func.count()).select_from(WorkerJobModel)) == 0
-        )
