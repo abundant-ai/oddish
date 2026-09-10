@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+"""Run one isolated Oddish development cell for the current worktree."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import NoReturn
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+STATE_DIR = REPO_ROOT / ".oddish" / "dev"
+STATE_PATH = STATE_DIR / "state.json"
+LOCK_PATH = STATE_DIR / "lifecycle.lock"
+LOG_DIR = STATE_DIR / "logs"
+COMPOSE_FILE = REPO_ROOT / "deploy" / "dev" / "docker-compose.yml"
+DEFAULT_ENV_FILE = Path.home() / ".config" / "oddish" / "dev.env"
+REQUIRED_ENV = (
+    "E2E_CLERK_EMAIL",
+    "E2E_CLERK_ORG_ID",
+    "CLERK_SECRET_KEY",
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "CLERK_DOMAIN",
+)
+STATE_STATUSES = {"starting", "running", "failed", "stopped"}
+ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class DevError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Ports:
+    postgres: int
+    minio: int
+    minio_console: int
+    backend: int
+    frontend: int
+
+
+@dataclass(frozen=True)
+class Cell:
+    id: str
+    branch: str
+    compose_project: str
+    ports: Ports
+
+    @property
+    def host(self) -> str:
+        return f"{self.id}.localhost"
+
+
+@dataclass(frozen=True)
+class ProcessRecord:
+    pid: int
+    pgid: int
+    started_at: str
+
+
+@dataclass(frozen=True)
+class State:
+    schema_version: int
+    cell_id: str
+    repo_root: str
+    branch: str
+    compose_project: str
+    status: str
+    ports: Ports
+    processes: dict[str, ProcessRecord]
+
+
+def _fail(message: str) -> NoReturn:
+    raise DevError(message)
+
+
+def _git_branch(repo_root: Path) -> str:
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        _fail("scripts/dev requires a named branch; detached HEAD is not supported")
+    return result.stdout.strip()
+
+
+def derive_ports(identity: str) -> Ports:
+    slot = int(hashlib.sha256(identity.encode()).hexdigest()[8:16], 16) % 5000
+    return Ports(
+        postgres=20000 + slot,
+        minio=25000 + slot,
+        minio_console=30000 + slot,
+        backend=35000 + slot,
+        frontend=40000 + slot,
+    )
+
+
+def discover_cell(repo_root: Path = REPO_ROOT) -> Cell:
+    root = repo_root.resolve()
+    branch = _git_branch(root)
+    digest = hashlib.sha256(str(root).encode()).hexdigest()
+    slug = re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-") or "oddish"
+    cell_id = f"{slug[:32]}-{digest[:8]}"
+    return Cell(
+        id=cell_id,
+        branch=branch,
+        compose_project=f"oddish-{cell_id}",
+        ports=derive_ports(digest),
+    )
+
+
+def env_file_path() -> Path:
+    configured = os.environ.get("ODDISH_DEV_ENV_FILE")
+    return Path(configured).expanduser().resolve() if configured else DEFAULT_ENV_FILE
+
+
+def load_dev_env(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        _fail(
+            f"development credential file not found: {path}\n"
+            "Create it from deploy/dev/dev.env.example or set ODDISH_DEV_ENV_FILE."
+        )
+    if path.stat().st_mode & 0o077:
+        _fail(f"development credential file must be private: chmod 600 {path}")
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            _fail(f"{path}:{line_number}: expected KEY=VALUE")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not ENV_KEY.fullmatch(key):
+            _fail(f"{path}:{line_number}: invalid environment key {key!r}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+
+    missing = [name for name in REQUIRED_ENV if not values.get(name, "").strip()]
+    if missing:
+        _fail(f"{path}: missing required values: {', '.join(missing)}")
+    if not re.fullmatch(r"sk_test_.+", values["CLERK_SECRET_KEY"]):
+        _fail(f"{path}: CLERK_SECRET_KEY must belong to a Clerk development instance")
+    if not re.fullmatch(r"pk_test_.+", values["NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"]):
+        _fail(
+            f"{path}: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must belong to a Clerk "
+            "development instance"
+        )
+    domain = values["CLERK_DOMAIN"]
+    if "://" in domain or "/" in domain or domain.endswith("$"):
+        _fail(f"{path}: CLERK_DOMAIN must be a bare hostname without scheme or path")
+    return values
+
+
+def _parse_process(name: str, raw: object) -> ProcessRecord:
+    if not isinstance(raw, dict):
+        _fail(f"invalid state: processes.{name} must be an object")
+    try:
+        pid = raw["pid"]
+        pgid = raw["pgid"]
+        started_at = raw["started_at"]
+    except KeyError as exc:
+        _fail(f"invalid state: processes.{name} missing {exc.args[0]}")
+    if not isinstance(pid, int) or pid <= 1:
+        _fail(f"invalid state: processes.{name}.pid must be an integer greater than 1")
+    if not isinstance(pgid, int) or pgid <= 1:
+        _fail(f"invalid state: processes.{name}.pgid must be an integer greater than 1")
+    if not isinstance(started_at, str) or not started_at:
+        _fail(f"invalid state: processes.{name}.started_at must be a string")
+    return ProcessRecord(pid=pid, pgid=pgid, started_at=started_at)
+
+
+def load_state(path: Path = STATE_PATH) -> State | None:
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        _fail(f"cannot read development state {path}: {exc}")
+    if not isinstance(raw, dict):
+        _fail(f"invalid development state {path}: expected a JSON object")
+
+    expected_strings = ("cell_id", "repo_root", "branch", "compose_project", "status")
+    for key in expected_strings:
+        if not isinstance(raw.get(key), str) or not raw[key]:
+            _fail(f"invalid state: {key} must be a non-empty string")
+    if raw.get("schema_version") != 1:
+        _fail(
+            f"invalid state: unsupported schema_version {raw.get('schema_version')!r}"
+        )
+    if raw["status"] not in STATE_STATUSES:
+        _fail(f"invalid state: unsupported status {raw['status']!r}")
+
+    raw_ports = raw.get("ports")
+    if not isinstance(raw_ports, dict):
+        _fail("invalid state: ports must be an object")
+    port_values: dict[str, int] = {}
+    for name in ("postgres", "minio", "minio_console", "backend", "frontend"):
+        value = raw_ports.get(name)
+        if not isinstance(value, int) or not 1024 <= value <= 65535:
+            _fail(f"invalid state: ports.{name} must be an integer from 1024 to 65535")
+        port_values[name] = value
+
+    raw_processes = raw.get("processes")
+    if not isinstance(raw_processes, dict):
+        _fail("invalid state: processes must be an object")
+    unknown_processes = set(raw_processes).difference({"backend", "frontend"})
+    if unknown_processes:
+        _fail(
+            f"invalid state: unknown processes: {', '.join(sorted(unknown_processes))}"
+        )
+    processes = {
+        name: _parse_process(name, value) for name, value in raw_processes.items()
+    }
+    return State(
+        schema_version=1,
+        cell_id=raw["cell_id"],
+        repo_root=raw["repo_root"],
+        branch=raw["branch"],
+        compose_project=raw["compose_project"],
+        status=raw["status"],
+        ports=Ports(**port_values),
+        processes=processes,
+    )
+
+
+def save_state(state: State, path: Path = STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(asdict(state), indent=2, sort_keys=True) + "\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+@contextmanager
+def lifecycle_lock(path: Path = LOCK_PATH) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _fail("another scripts/dev lifecycle command is already running")
+        yield
+
+
+def state_for(cell: Cell, status: str, processes: dict[str, ProcessRecord]) -> State:
+    return State(
+        schema_version=1,
+        cell_id=cell.id,
+        repo_root=str(REPO_ROOT),
+        branch=cell.branch,
+        compose_project=cell.compose_project,
+        status=status,
+        ports=cell.ports,
+        processes=processes,
+    )
+
+
+def assert_state_owner(state: State, cell: Cell) -> None:
+    if Path(state.repo_root).resolve() != REPO_ROOT or state.cell_id != cell.id:
+        _fail(
+            f"state at {STATE_PATH} belongs to {state.repo_root} / {state.cell_id}, "
+            f"not {REPO_ROOT} / {cell.id}; refusing to operate"
+        )
+    if state.compose_project != cell.compose_project:
+        _fail("state Compose project does not match this worktree; refusing to operate")
+
+
+def process_signature(pid: int) -> str | None:
+    result = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    signature = result.stdout.strip()
+    return signature if result.returncode == 0 and signature else None
+
+
+def process_is_owned(record: ProcessRecord) -> bool:
+    try:
+        os.kill(record.pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return process_signature(record.pid) == record.started_at
+
+
+def stop_process(name: str, record: ProcessRecord) -> None:
+    if not process_is_owned(record):
+        print(
+            f"{name}: process {record.pid} is gone or has been reused; not signaling it"
+        )
+        return
+    try:
+        current_pgid = os.getpgid(record.pid)
+    except ProcessLookupError:
+        return
+    if record.pgid != record.pid or current_pgid != record.pgid:
+        _fail(
+            f"{name}: process group ownership changed for PID {record.pid}; not signaling it"
+        )
+    os.killpg(record.pgid, signal.SIGTERM)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if not process_is_owned(record):
+            return
+        time.sleep(0.1)
+    if process_is_owned(record):
+        os.killpg(record.pgid, signal.SIGKILL)
+
+
+def _port_owner(port: int) -> str:
+    if not shutil.which("lsof"):
+        return "unknown listener (lsof unavailable)"
+    result = subprocess.run(
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    lines = [line.strip() for line in result.stdout.splitlines()[1:] if line.strip()]
+    return lines[0] if lines else "unknown listener"
+
+
+def assert_ports_available(ports: Ports) -> None:
+    conflicts: list[str] = []
+    for name, port in asdict(ports).items():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                listener.bind(("127.0.0.1", port))
+            except OSError:
+                conflicts.append(f"{name} port {port}: {_port_owner(port)}")
+    if conflicts:
+        _fail("development cell ports are occupied:\n  " + "\n  ".join(conflicts))
+
+
+def check_dependencies() -> None:
+    missing = [
+        name
+        for name in ("git", "docker", "uv", "node", "pnpm")
+        if not shutil.which(name)
+    ]
+    if missing:
+        _fail(f"missing required executables: {', '.join(missing)}")
+
+    compose = subprocess.run(
+        ["docker", "compose", "version"], text=True, capture_output=True, check=False
+    )
+    if compose.returncode != 0:
+        _fail("Docker Compose v2 is required (`docker compose version` failed)")
+    daemon = subprocess.run(
+        ["docker", "info"],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if daemon.returncode != 0:
+        _fail(f"Docker daemon is unavailable: {daemon.stderr.strip()}")
+
+    node = subprocess.run(
+        ["node", "--version"], text=True, capture_output=True, check=True
+    )
+    match = re.fullmatch(r"v(\d+).*", node.stdout.strip())
+    if not match or int(match.group(1)) < 20:
+        _fail(f"Node.js 20+ is required; found {node.stdout.strip() or 'unknown'}")
+    python = subprocess.run(
+        ["uv", "python", "find", "3.13"], text=True, capture_output=True, check=False
+    )
+    if python.returncode != 0:
+        _fail("Python 3.13 is required; `uv python find 3.13` could not locate it")
+
+
+def compose_env(cell: Cell) -> dict[str, str]:
+    return {
+        **os.environ,
+        "ODDISH_DEV_POSTGRES_PORT": str(cell.ports.postgres),
+        "ODDISH_DEV_MINIO_PORT": str(cell.ports.minio),
+        "ODDISH_DEV_MINIO_CONSOLE_PORT": str(cell.ports.minio_console),
+    }
+
+
+def compose_base(cell: Cell) -> list[str]:
+    return ["docker", "compose", "-p", cell.compose_project, "-f", str(COMPOSE_FILE)]
+
+
+def cell_is_running(state: State, cell: Cell) -> bool:
+    if set(state.processes) != {"backend", "frontend"} or not all(
+        process_is_owned(record) for record in state.processes.values()
+    ):
+        return False
+    result = subprocess.run(
+        compose_base(cell) + ["ps", "--status", "running", "--services"],
+        cwd=REPO_ROOT,
+        env=compose_env(cell),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0 and {"postgres", "minio"}.issubset(
+        result.stdout.splitlines()
+    )
+
+
+def runtime_env(cell: Cell, credentials: dict[str, str]) -> dict[str, str]:
+    backend_url = f"http://api-{cell.host}:{cell.ports.backend}"
+    frontend_url = f"http://{cell.host}:{cell.ports.frontend}"
+    ambient = {
+        name: value
+        for name, value in {**os.environ, **credentials}.items()
+        if not name.startswith("MODAL_")
+    }
+    return {
+        **ambient,
+        "ODDISH_DEV_CELL_ID": cell.id,
+        "ODDISH_DATABASE_URL": (
+            f"postgresql+asyncpg://oddish:oddish@127.0.0.1:{cell.ports.postgres}/oddish"
+        ),
+        "ODDISH_S3_ENDPOINT_URL": f"http://127.0.0.1:{cell.ports.minio}",
+        "ODDISH_S3_ACCESS_KEY": "oddish",
+        "ODDISH_S3_SECRET_KEY": "oddish-local-development",
+        "ODDISH_S3_BUCKET": "oddish",
+        "ODDISH_S3_REGION": "us-east-1",
+        "ODDISH_AUTO_START_WORKERS": "false",
+        "ODDISH_CLOUD_CONTROL_PLANE_ENABLED": "false",
+        "ODDISH_ENABLE_MODAL_WORKERS": "false",
+        "ODDISH_QUOTA_MODE": "off",
+        "CORS_ALLOWED_ORIGINS": frontend_url,
+        "PORT": str(cell.ports.backend),
+        "NEXT_PUBLIC_API_URL": backend_url,
+        "NEXT_PUBLIC_APP_URL": frontend_url,
+        "CLERK_JWT_TEMPLATE": "oddish",
+    }
+
+
+def start_process(
+    name: str, command: list[str], cwd: Path, env: dict[str, str]
+) -> ProcessRecord:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"{name}.log"
+    with log_path.open("ab", buffering=0) as log:
+        log.write(
+            f"\n--- scripts/dev start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n".encode()
+        )
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    signature = None
+    for _ in range(20):
+        signature = process_signature(process.pid)
+        if signature:
+            break
+        if process.poll() is not None:
+            _fail(f"{name} exited during startup; inspect {log_path}")
+        time.sleep(0.05)
+    if not signature:
+        process.terminate()
+        _fail(f"could not record process ownership for {name} PID {process.pid}")
+    return ProcessRecord(
+        pid=process.pid, pgid=os.getpgid(process.pid), started_at=signature
+    )
+
+
+def wait_for_url(name: str, url: str, record: ProcessRecord, timeout: int) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = "no response"
+    while time.monotonic() < deadline:
+        if not process_is_owned(record):
+            _fail(
+                f"{name} exited before becoming ready; inspect {LOG_DIR / f'{name}.log'}"
+            )
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if 200 <= response.status < 400:
+                    return
+                last_error = f"HTTP {response.status}"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    _fail(
+        f"{name} did not become ready at {url} within {timeout}s ({last_error}); "
+        f"inspect {LOG_DIR / f'{name}.log'}"
+    )
+
+
+def print_status(state: State | None, cell: Cell) -> None:
+    print(f"cell:       {cell.id}")
+    print(f"branch:     {cell.branch}")
+    print(f"worktree:   {REPO_ROOT}")
+    if state is None:
+        print("status:     not started")
+        return
+    assert_state_owner(state, cell)
+    running = cell_is_running(state, cell)
+    status = (
+        "running" if running else "stale" if state.status == "running" else state.status
+    )
+    print(f"status:     {status}")
+    print(f"app:        http://{cell.host}:{state.ports.frontend}")
+    print(f"api:        http://api-{cell.host}:{state.ports.backend}")
+    print(f"postgres:   127.0.0.1:{state.ports.postgres}")
+    print(f"minio:      http://127.0.0.1:{state.ports.minio}")
+    print(f"minio ui:   http://127.0.0.1:{state.ports.minio_console}")
+    for name, record in state.processes.items():
+        status = "running" if process_is_owned(record) else "stale"
+        print(f"{name:11} PID {record.pid} ({status})")
+
+
+def doctor() -> None:
+    cell = discover_cell()
+    check_dependencies()
+    path = env_file_path()
+    load_dev_env(path)
+    state = load_state()
+    if state is not None:
+        assert_state_owner(state, cell)
+    running = state is not None and cell_is_running(state, cell)
+    if (
+        state is not None
+        and not running
+        and any(process_is_owned(record) for record in state.processes.values())
+    ):
+        _fail("development cell is only partially running; run scripts/dev down")
+    if not running:
+        assert_ports_available(state.ports if state else cell.ports)
+    print(f"doctor: ready for {cell.id}")
+    print(f"credentials: {path}")
+    print(f"ports: {asdict(state.ports if state else cell.ports)}")
+
+
+def up() -> None:
+    cell = discover_cell()
+    existing = load_state()
+    if existing is not None:
+        assert_state_owner(existing, cell)
+        live = [
+            name
+            for name, record in existing.processes.items()
+            if process_is_owned(record)
+        ]
+        if live:
+            _fail(
+                f"cell already has live processes ({', '.join(live)}); run scripts/dev status"
+            )
+        ports = existing.ports
+        cell = Cell(cell.id, cell.branch, cell.compose_project, ports)
+
+    check_dependencies()
+    credentials = load_dev_env(env_file_path())
+    assert_ports_available(cell.ports)
+    processes: dict[str, ProcessRecord] = {}
+    save_state(state_for(cell, "starting", processes))
+    environment = runtime_env(cell, credentials)
+
+    try:
+        subprocess.run(
+            compose_base(cell) + ["up", "-d", "--wait", "postgres", "minio"],
+            cwd=REPO_ROOT,
+            env=compose_env(cell),
+            check=True,
+        )
+        subprocess.run(
+            compose_base(cell) + ["run", "--rm", "minio-init"],
+            cwd=REPO_ROOT,
+            env=compose_env(cell),
+            check=True,
+        )
+
+        subprocess.run(
+            ["uv", "sync", "--frozen", "--extra", "dev"],
+            cwd=REPO_ROOT / "backend",
+            check=True,
+        )
+        backend_python = REPO_ROOT / "backend" / ".venv" / "bin" / "python"
+        backend_alembic = REPO_ROOT / "backend" / ".venv" / "bin" / "alembic"
+        subprocess.run(
+            [str(backend_alembic), "upgrade", "head"],
+            cwd=REPO_ROOT / "oddish",
+            env=environment,
+            check=True,
+        )
+        subprocess.run(
+            [str(backend_alembic), "upgrade", "head"],
+            cwd=REPO_ROOT / "backend",
+            env=environment,
+            check=True,
+        )
+        subprocess.run(
+            ["pnpm", "install", "--frozen-lockfile"],
+            cwd=REPO_ROOT / "frontend",
+            check=True,
+        )
+
+        processes["backend"] = start_process(
+            "backend",
+            [str(backend_python), "serve.py"],
+            REPO_ROOT / "backend",
+            environment,
+        )
+        save_state(state_for(cell, "starting", processes))
+        wait_for_url(
+            "backend",
+            f"http://127.0.0.1:{cell.ports.backend}/public/experiments",
+            processes["backend"],
+            60,
+        )
+
+        next_binary = REPO_ROOT / "frontend" / "node_modules" / ".bin" / "next"
+        processes["frontend"] = start_process(
+            "frontend",
+            [
+                str(next_binary),
+                "dev",
+                "--hostname",
+                "127.0.0.1",
+                "--port",
+                str(cell.ports.frontend),
+            ],
+            REPO_ROOT / "frontend",
+            environment,
+        )
+        save_state(state_for(cell, "starting", processes))
+        wait_for_url(
+            "frontend",
+            f"http://{cell.host}:{cell.ports.frontend}/",
+            processes["frontend"],
+            90,
+        )
+        running = state_for(cell, "running", processes)
+        save_state(running)
+        print_status(running, cell)
+    except BaseException:
+        for name, record in reversed(processes.items()):
+            try:
+                stop_process(name, record)
+            except DevError as cleanup_error:
+                print(f"scripts/dev: cleanup warning: {cleanup_error}", file=sys.stderr)
+        subprocess.run(
+            compose_base(cell) + ["down", "--remove-orphans"],
+            cwd=REPO_ROOT,
+            env=compose_env(cell),
+            check=False,
+        )
+        save_state(state_for(cell, "failed", {}))
+        raise
+
+
+def down() -> None:
+    cell = discover_cell()
+    state = load_state()
+    cleanup_errors: list[str] = []
+    if state is not None:
+        assert_state_owner(state, cell)
+        cell = Cell(cell.id, cell.branch, cell.compose_project, state.ports)
+        for name, record in reversed(state.processes.items()):
+            try:
+                stop_process(name, record)
+            except DevError as exc:
+                cleanup_errors.append(str(exc))
+    subprocess.run(
+        compose_base(cell) + ["down", "--remove-orphans"],
+        cwd=REPO_ROOT,
+        env=compose_env(cell),
+        check=True,
+    )
+    remaining = (
+        {
+            name: record
+            for name, record in state.processes.items()
+            if process_is_owned(record)
+        }
+        if state
+        else {}
+    )
+    save_state(state_for(cell, "failed" if cleanup_errors else "stopped", remaining))
+    if cleanup_errors:
+        _fail(
+            "could not safely stop every owned process:\n  "
+            + "\n  ".join(cleanup_errors)
+        )
+    print(f"stopped {cell.id}; data volumes were preserved")
+
+
+def logs(service: str | None, follow: bool) -> None:
+    names = [service] if service else ["backend", "frontend"]
+    paths = [LOG_DIR / f"{name}.log" for name in names]
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        _fail("log files do not exist: " + ", ".join(missing))
+    if follow:
+        subprocess.run(["tail", "-f", *map(str, paths)], check=False)
+        return
+    for path in paths:
+        print(f"==> {path} <==")
+        lines = path.read_text(errors="replace").splitlines()
+        print("\n".join(lines[-200:]))
+
+
+def open_app() -> None:
+    cell = discover_cell()
+    state = load_state()
+    if state is None:
+        _fail("development cell has not been started")
+    assert_state_owner(state, cell)
+    if not cell_is_running(state, cell):
+        _fail("development cell is not running")
+    url = f"http://{cell.host}:{state.ports.frontend}"
+    if not webbrowser.open(url):
+        _fail(f"could not open a browser; navigate to {url}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("doctor", help="validate tools, credentials, and cell ports")
+    commands.add_parser("up", help="start this worktree's development cell")
+    commands.add_parser("status", help="show this worktree's cell state")
+    commands.add_parser("down", help="stop only this worktree's cell")
+    commands.add_parser("open", help="open this worktree's frontend")
+    logs_parser = commands.add_parser("logs", help="show backend/frontend logs")
+    logs_parser.add_argument("service", choices=("backend", "frontend"), nargs="?")
+    logs_parser.add_argument("-f", "--follow", action="store_true")
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    try:
+        if args.command == "doctor":
+            doctor()
+        elif args.command == "up":
+            with lifecycle_lock():
+                up()
+        elif args.command == "status":
+            cell = discover_cell()
+            print_status(load_state(), cell)
+        elif args.command == "down":
+            with lifecycle_lock():
+                down()
+        elif args.command == "open":
+            open_app()
+        elif args.command == "logs":
+            logs(args.service, args.follow)
+    except (DevError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"scripts/dev: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()
