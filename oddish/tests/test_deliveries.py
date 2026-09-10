@@ -164,6 +164,7 @@ async def test_green_task_board_is_ready(session):
     }
     # Every task needs a person's sign-off before the board is ready.
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == ""
     assert not board.ready
 
     await _sign_off(session, delivery.id, task.id, user="u9")
@@ -199,6 +200,9 @@ async def test_version_bump_resets_board(session):
     assert checks["verdict_ok"].status == "fail"
     assert "does not cover" in checks["verdict_ok"].detail
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == "signed off on an older version; sign off again"
+    assert checks["signoff"].checked_by_user_id is None
+    assert checks["signoff"].checked_at is None
     assert not board.ready
 
 

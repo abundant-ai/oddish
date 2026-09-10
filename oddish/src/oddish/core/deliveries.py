@@ -1062,9 +1062,9 @@ async def _compute_board(
                     # An unchecked box already says "not signed off"; only a
                     # stale tick needs words.
                     detail=(
-                        ""
-                        if signoff is None
-                        else "signed off on an older version; sign off again"
+                        "signed off on an older version; sign off again"
+                        if (member.id, SIGNOFF_CHECK_KEY) in previous_ticks
+                        else ""
                     ),
                     kind="manual",
                     label="Signed off",
