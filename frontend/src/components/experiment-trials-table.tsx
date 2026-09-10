@@ -2256,7 +2256,7 @@ export function ExperimentTrialsTable({
           </div>
           <div
             ref={tableContainerRef}
-            className={`max-h-[70vh] overflow-x-auto overflow-y-auto ${isResizing ? "select-none" : ""}`}
+            className={`max-h-[70vh] overflow-x-auto overflow-y-auto overscroll-none ${isResizing ? "select-none" : ""}`}
           >
             <table
               className="w-full min-w-[960px] caption-bottom text-sm"
