@@ -606,11 +606,11 @@ async def set_manual_check_core(
         if member is None:
             raise HTTPException(status_code=404, detail="task not in this delivery")
         if data.checked and is_decision and (
-            data.task_version_id is None or user_id is None
+            data.expected_version_id is None or user_id is None
         ):
             raise HTTPException(
                 status_code=422,
-                detail="task_version_id and an authenticated person are required for acknowledgment or sign-off",
+                detail="expected_version_id and an authenticated person are required for acknowledgment or sign-off",
             )
         # The tick attests to the content the human looked at: the task's
         # current default version. A later version change un-ticks it.
@@ -619,10 +619,13 @@ async def set_manual_check_core(
             .where(TaskModel.id == member.task_id)
             .with_for_update()
         )
-        if data.task_version_id is not None and data.task_version_id != task_version_id:
+        if (
+            "expected_version_id" in data.model_fields_set
+            and data.expected_version_id != task_version_id
+        ):
             raise HTTPException(
                 status_code=409,
-                detail="task version changed; review the current version before acknowledging or signing off",
+                detail="The selected task version changed. Refresh the delivery and review the new version.",
             )
         if data.checked and is_decision:
             await _validate_signoff_or_ack(

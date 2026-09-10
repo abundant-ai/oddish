@@ -153,7 +153,7 @@ async def test_v7_exception_retains_evidence_person_and_version(session, tier, s
             data=ManualCheckSet(
                 check_key=key,
                 delivery_task_id=row.delivery_task_id,
-                task_version_id=version_id,
+                expected_version_id=version_id,
                 checked=True,
                 note="Reviewed verifier evidence; accept this exception.",
             ),
@@ -170,7 +170,7 @@ async def test_v7_exception_retains_evidence_person_and_version(session, tier, s
                     check_key="signoff",
                     delivery_task_id=row.delivery_task_id,
                     checked=True,
-                    task_version_id=reviewed_version,
+                    expected_version_id=reviewed_version,
                 ),
             )
         assert missing_identity.value.status_code == 422

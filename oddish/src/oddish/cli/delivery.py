@@ -348,7 +348,7 @@ def set_check(
             json={
                 "check_key": check_key,
                 "delivery_task_id": delivery_task_id,
-                "task_version_id": row["version_id"] if row else None,
+                "expected_version_id": row["version_id"] if row else None,
                 "checked": not off,
                 "note": note,
             },
@@ -442,7 +442,7 @@ def signoff(
                     json={
                         "check_key": "signoff",
                         "delivery_task_id": row["delivery_task_id"],
-                        "task_version_id": row["version_id"],
+                        "expected_version_id": row["version_id"],
                         "checked": True,
                         "note": note,
                     },
@@ -487,7 +487,7 @@ def signoff(
                         json={
                             "check_key": f"waive:{check['key']}",
                             "delivery_task_id": row["delivery_task_id"],
-                            "task_version_id": row["version_id"],
+                            "expected_version_id": row["version_id"],
                             "checked": True,
                         },
                     )
@@ -499,7 +499,7 @@ def signoff(
                         json={
                             "check_key": f"ack:{defect['id']}",
                             "delivery_task_id": row["delivery_task_id"],
-                            "task_version_id": row["version_id"],
+                            "expected_version_id": row["version_id"],
                             "checked": True,
                         },
                     )
@@ -510,7 +510,7 @@ def signoff(
             json={
                 "check_key": "signoff",
                 "delivery_task_id": row["delivery_task_id"],
-                "task_version_id": row["version_id"],
+                "expected_version_id": row["version_id"],
                 "checked": not off,
                 "note": note,
             },
@@ -556,7 +556,7 @@ def ack(
             json={
                 "check_key": f"{prefix}:{defect}",
                 "delivery_task_id": row["delivery_task_id"],
-                "task_version_id": row["version_id"],
+                "expected_version_id": row["version_id"],
                 "checked": not off,
                 "note": note,
             },

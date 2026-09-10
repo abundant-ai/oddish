@@ -2634,10 +2634,11 @@ class ManualCheckSet(BaseModel):
     """Tick or untick one manual check."""
 
     check_key: str = Field(min_length=1, max_length=64)
-    # Optimistic concurrency: reject a decision made from an older board.
-    task_version_id: str | None = None
     # Required for task-scoped checks; must be omitted for delivery-scoped.
     delivery_task_id: str | None = None
+    # Required for positive sign-off/exception decisions; otherwise optional.
+    # When supplied (including null), reject changes to the displayed version.
+    expected_version_id: str | None = None
     checked: bool
     note: str = Field(default="", max_length=4000)
 

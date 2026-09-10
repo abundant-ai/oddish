@@ -10,3 +10,10 @@
 - [x] Validate Task A v7 acknowledgment and v8 reset through the inline Codex browser.
 - [x] Review the final diff and run relevant checks (248 backend tests, 97 frontend tests, TypeScript, ESLint, focused Ruff checks).
 - [x] Commit and open [draft PR #1569](https://github.com/abundant-ai/oddish/pull/1569) against `staging`.
+
+## Merge update
+
+- [x] Merge staging and resolve conflicts with delivery history refresh.
+- [x] Use the shared `expected_version_id` request field for reviewed-version enforcement.
+- [x] Run backend and frontend regression checks, including delivery refresh browser tests.
+- [x] Push the merge to PR #1569 and verify GitHub reports no conflicts.

@@ -126,7 +126,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
                 data=ManualCheckSet(
                     check_key=f"ack:{defect.id}",
                     delivery_task_id=row.delivery_task_id,
-                    task_version_id=row.version_id,
+                    expected_version_id=row.version_id,
                     checked=True,
                 ),
                 user_id=user,
@@ -138,7 +138,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
-            task_version_id=row.version_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id=user,
@@ -324,7 +324,7 @@ async def test_manual_tick_and_version_reset(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="proofread", delivery_task_id=member_id, task_version_id=board.tasks[0].version_id, checked=True
+            check_key="proofread", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u2",
     )
@@ -773,7 +773,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="signoff",
                 delivery_task_id=row.delivery_task_id,
-                task_version_id=row.version_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -790,7 +790,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="ack:not-a-defect",
                 delivery_task_id=row.delivery_task_id,
-                task_version_id=row.version_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -805,7 +805,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="ack:def-1",
             delivery_task_id=row.delivery_task_id,
-            task_version_id=row.version_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u5",
@@ -817,7 +817,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
-            task_version_id=row.version_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u6",
@@ -919,7 +919,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key="signoff", delivery_task_id=member_id, task_version_id=board.tasks[0].version_id, checked=True
+                check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -934,7 +934,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
                 delivery_id=delivery.id,
                 org_id=ORG,
                 data=ManualCheckSet(
-                    check_key=bad_key, delivery_task_id=member_id, task_version_id=board.tasks[0].version_id, checked=True
+                    check_key=bad_key, delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
                 ),
                 user_id="u5",
             )
@@ -946,7 +946,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key=f"waive:{key}", delivery_task_id=member_id, task_version_id=board.tasks[0].version_id, checked=True
+                check_key=f"waive:{key}", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -955,7 +955,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="signoff", delivery_task_id=member_id, task_version_id=board.tasks[0].version_id, checked=True
+            check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u6",
     )

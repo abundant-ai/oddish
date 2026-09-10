@@ -465,8 +465,15 @@ candidate version IDs from the displayed filters, so stale browsers cannot
 silently claim a newer version. New versions start unassigned. Finalized boards
 retain their QA state and time cutoff in the existing snapshot. Hosted user-name
 resolution stays in the delivery router; standalone coordination uses `local`.
-The board's task rows are keyed by version so a version change closes any open
-QA-work draft before it can be saved against the replacement version.
+The board preserves task rows and expanded history across selected-version
+changes. QA-work drafts retain the version and notes from when they opened;
+a changed version disables saving and keeps the notes available to copy.
+Task-scoped `PUT /deliveries/{id}/checks` requests may include
+`expected_version_id` (including explicit null). The core locks the task and
+returns HTTP 409 if its selected default differs before writing or deleting a
+sign-off, acknowledgment, waiver, or manual check. Positive sign-off and exception decisions require a non-null expected version
+and an authenticated person. Other checks retain optional version matching for
+older clients; the delivery board always supplies the displayed version.
 
 `oddish assign` calls `POST /tasks/qa-work/assign` with up to 1,000 task IDs,
 an assignee, and optional `replace`. Hosted assignment requires admin access
@@ -2007,7 +2014,13 @@ Delivery board view state lives in URL parameters: `page` (one-based),
 reads these directly with `useSearchParams`; native history updates preserve
 Back/Forward behavior without refetching the already-loaded full board.
 Filter/group changes reset the page and task focus. Bulk selections and draft
-edits remain local. Frozen delivery boards disable periodic refreshes.
+edits remain local. The board owns the existing 15-second SWR refresh: each
+successful read also revalidates the expanded task's QA history, including
+reads after page mutations. History has no separate timer. Refresh errors
+retain loaded data with a stale warning and adjacent retry; revalidation never
+clears cached data or starts analysis. Frozen delivery boards disable periodic
+refreshes and label separately fetched history as live task history rather than
+the shipped snapshot.
 Backend filtering/pagination is not implemented yet; the full task collection
 still supplies bulk actions and delivery-wide readiness checks.
 
@@ -2082,7 +2095,7 @@ Read paths never write this column or enqueue analysis. Newly published verdicts
 reject established task defects; historical stored verdicts are not rewritten.
 
 The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
-and exception requests require the reviewed `task_version_id` and the actor
+and exception requests require the reviewed `expected_version_id` and the actor
 from authentication. Delivery manual-check uniqueness includes version, and
 history exposes each retained version decision. New versions inherit neither
 findings nor decisions. Finalized delivery snapshots are never recomputed.

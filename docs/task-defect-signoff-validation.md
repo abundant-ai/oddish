@@ -73,3 +73,27 @@ The browser observations were:
 No paid analysis was run. Review artifacts used by regression tests were
 fixtures. Deploying the migration and reading/acknowledging the delivery do not
 create analysis jobs, as asserted by the backend tests.
+
+## Merge validation
+
+Merged staging `fa4089265` and reused its `expected_version_id` check-request
+field instead of adding a second reviewed-version field. Positive sign-off,
+acknowledgment, and waiver requests require a non-null expected version and
+authenticated person. Other checks keep staging's optional comparison, including
+explicit null; stale requests still fail before writing or deleting a decision.
+The dashboard retains staging's history refresh and captured-version bulk dialogs.
+
+The affected backend suites above, plus `test_delivery_refresh_api.py`, reported
+`251 passed in 13.63s`. The imported HTTP tests initially assumed a globally empty
+database; their assertions now scope decisions to the tested delivery and compare
+execution/worker counts before and after each test. This also verifies that
+finalized-delivery reads do not enqueue analysis.
+
+Frontend unit tests reported 97 passing tests; TypeScript, ESLint on the merged
+delivery component, focused Ruff checks, and `git diff --check` passed. The 12
+delivery-refresh Playwright tests passed in 14.1 seconds against this exact
+worktree on isolated port 31569. The default port 3109 belonged to a different
+checkout, so that initial browser result was not used. A temporary config
+explicitly selected the delivery suite and launched this worktree's fixture app.
+Its API responses and authentication are test fixtures. The Codex inline browser
+also loaded the merged board with expanded v7 history.

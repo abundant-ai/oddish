@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import {
   AlertCircle,
   Check,
@@ -363,21 +363,38 @@ function applyTaskFilter(
   });
 }
 
-function QAHistoryPanel({ taskId }: { taskId: string }) {
-  const { data, error, isLoading } = useSWR<TaskQAHistoryResponse>(
+function QAHistoryPanel({
+  taskId,
+  versionId,
+  frozen,
+}: {
+  taskId: string;
+  versionId: string | null | undefined;
+  frozen: boolean;
+}) {
+  const { data, error, isValidating, mutate } = useSWR<TaskQAHistoryResponse>(
     `/api/tasks/${encodeURIComponent(taskId)}/qa-history`,
     fetcher,
     { keepPreviousData: true }
   );
   const [showAll, setShowAll] = useState(false);
-  if (error) {
-    return (
-      <p className="text-destructive text-xs">
-        Failed to load QA history: {error.message}
-      </p>
-    );
-  }
-  if (isLoading || !data) {
+  const refreshError = error && (
+    <div role="alert" className="text-destructive text-xs">
+      Failed to refresh QA history: {error.message}. Previously loaded history
+      may be out of date.
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          void mutate(undefined, { populateCache: false, throwOnError: false })
+        }
+      >
+        Retry history
+      </Button>
+    </div>
+  );
+  if (!data && error) return refreshError;
+  if (!data) {
     return (
       <div className="space-y-2">
         <Skeleton className="h-10 w-full" />
@@ -391,10 +408,21 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
   const unversioned = data.unversioned_runs ?? [];
   return (
     <div className="space-y-2">
+      {refreshError}
+      {!error &&
+        (isValidating ||
+          (!frozen && data.current_version_id !== versionId)) && (
+          <p role="status" className="text-muted-foreground text-xs">
+            Refreshing history; previously loaded details may be out of date.
+          </p>
+        )}
       {versions.map((version) => (
         <QAHistoryVersionRow
           key={version.version_id}
           version={version}
+          isCurrent={
+            frozen ? version.is_current : version.version_id === versionId
+          }
           verdict={
             version.version_id === data.verdict_version_id
               ? (data.verdict ?? null)
@@ -425,8 +453,10 @@ function QAHistoryPanel({ taskId }: { taskId: string }) {
 
 function QAHistoryVersionRow({
   version,
+  isCurrent,
   verdict,
 }: {
+  isCurrent: boolean;
   version: TaskQAHistoryResponse["versions"][number];
   verdict: TaskQAHistoryResponse["verdict"];
 }) {
@@ -445,7 +475,7 @@ function QAHistoryVersionRow({
             <ChevronRight className="text-muted-foreground h-3 w-3" />
           )}
           <span className="font-medium">v{version.version}</span>
-          {version.is_current && (
+          {isCurrent && (
             <span className="bg-secondary rounded-full px-1.5 py-0.5">
               current
             </span>
@@ -636,7 +666,9 @@ function TaskRow({
   }) => Promise<void>;
 }) {
   const expanded = focused;
-  const [editingWork, setEditingWork] = useState(false);
+  const [editingWork, setEditingWork] = useState<DeliveryTaskBoardRow | null>(
+    null
+  );
   const [copied, setCopied] = useState(false);
   const rowRef = useRef<HTMLTableRowElement>(null);
   const manuallyToggled = useRef(false);
@@ -813,7 +845,7 @@ function TaskRow({
                   variant="outline"
                   size="sm"
                   disabled={busy}
-                  onClick={() => setEditingWork(true)}
+                  onClick={() => setEditingWork(row)}
                 >
                   Edit QA work
                 </Button>
@@ -821,8 +853,9 @@ function TaskRow({
               {editingWork && (
                 <DeliveryQAWorkEditor
                   taskName={row.task_name}
-                  work={row.qa_work}
-                  onClose={() => setEditingWork(false)}
+                  work={editingWork.qa_work}
+                  versionChanged={editingWork.version_id !== row.version_id}
+                  onClose={() => setEditingWork(null)}
                   onSave={onSaveWork}
                 />
               )}
@@ -977,9 +1010,15 @@ function TaskRow({
             <div>
               <p className="text-muted-foreground mb-1 flex items-center gap-1 text-xs font-medium uppercase">
                 <History className="h-3 w-3" />
-                QA history
+                {frozen
+                  ? `Live task history · delivery shipped v${row.version}`
+                  : "QA history"}
               </p>
-              <QAHistoryPanel taskId={row.task_id} />
+              <QAHistoryPanel
+                taskId={row.task_id}
+                versionId={row.version_id}
+                frozen={frozen}
+              />
             </div>
             {isAdmin && !frozen && (
               <AlertDialog>
@@ -1024,6 +1063,7 @@ export function DeliveryBoardClient({
   deliveryId: string;
   initialBoard: DeliveryBoardResponse | null;
 }) {
+  const { mutate: mutateResource } = useSWRConfig();
   const { orgRole } = useAuth();
   const isAdmin = isOrgAdminRole(orgRole);
   const { data, error, mutate } = useSWR<DeliveryBoardResponse>(
@@ -1035,6 +1075,20 @@ export function DeliveryBoardClient({
       revalidateOnReconnect: !initialBoard?.frozen,
       revalidateIfStale: !initialBoard?.frozen,
       fallbackData: initialBoard ?? undefined,
+      onSuccess: (board) => {
+        // One polling owner: revalidate only the expanded history after each
+        // successful board read, including reads following local mutations.
+        const expanded = board.tasks.find(
+          (row) => row.task_id === focusTask || row.task_name === focusTask
+        );
+        if (expanded && !board.frozen) {
+          void mutateResource(
+            `/api/tasks/${encodeURIComponent(expanded.task_id)}/qa-history`,
+            undefined,
+            { populateCache: false, throwOnError: false }
+          );
+        }
+      },
     }
   );
 
@@ -1043,6 +1097,9 @@ export function DeliveryBoardClient({
   const [busy, setBusy] = useState(false);
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
+  const [bulkSignoffRows, setBulkSignoffRows] = useState<
+    DeliveryTaskBoardRow[]
+  >([]);
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const {
@@ -1076,7 +1133,7 @@ export function DeliveryBoardClient({
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
       try {
-        await mutate();
+        await mutate(undefined, { populateCache: false, throwOnError: false });
       } finally {
         setBusy(false);
       }
@@ -1087,9 +1144,7 @@ export function DeliveryBoardClient({
     checkKey: string,
     deliveryTaskId: string | null,
     checked: boolean,
-    versionId = data?.tasks.find(
-      (row) => row.delivery_task_id === deliveryTaskId
-    )?.version_id
+    expectedVersionId?: string | null
   ) =>
     postJson(
       `/api/deliveries/${encodeURIComponent(deliveryId)}/checks`,
@@ -1097,8 +1152,8 @@ export function DeliveryBoardClient({
       {
         check_key: checkKey,
         delivery_task_id: deliveryTaskId,
-        task_version_id: versionId,
         checked,
+        expected_version_id: expectedVersionId,
       }
     );
 
@@ -1119,7 +1174,17 @@ export function DeliveryBoardClient({
         }
       }
     }
-    void run(() => putCheck(checkKey, deliveryTaskId, checked));
+    const row = data?.tasks.find(
+      (row) => row.delivery_task_id === deliveryTaskId
+    );
+    void run(() =>
+      putCheck(
+        checkKey,
+        deliveryTaskId,
+        checked,
+        row ? (row.version_id ?? null) : undefined
+      )
+    );
   };
 
   const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
@@ -1131,7 +1196,7 @@ export function DeliveryBoardClient({
           `waive:${check.key}`,
           row.delivery_task_id,
           true,
-          row.version_id
+          row.version_id ?? null
         );
       }
       for (const defect of defects) {
@@ -1139,10 +1204,15 @@ export function DeliveryBoardClient({
           `ack:${defect.id}`,
           row.delivery_task_id,
           true,
-          row.version_id
+          row.version_id ?? null
         );
       }
-      await putCheck("signoff", row.delivery_task_id, true, row.version_id);
+      await putCheck(
+        "signoff",
+        row.delivery_task_id,
+        true,
+        row.version_id ?? null
+      );
     });
   };
 
@@ -1166,17 +1236,27 @@ export function DeliveryBoardClient({
     });
   };
 
-  if (error) {
-    return (
-      <Card>
-        <CardContent className="py-6">
-          <p className="text-destructive text-sm">
-            Failed to load delivery: {error.message}
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
+  const refreshError = error && (
+    <div
+      role="alert"
+      className="text-destructive flex items-center gap-2 text-sm"
+    >
+      <p>
+        Failed to refresh delivery: {error.message}. Previously loaded delivery
+        details may be out of date.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          void mutate(undefined, { populateCache: false, throwOnError: false })
+        }
+      >
+        Retry delivery
+      </Button>
+    </div>
+  );
+  if (!data && error) return refreshError;
   if (!data) {
     return (
       <div className="space-y-4">
@@ -1267,7 +1347,6 @@ export function DeliveryBoardClient({
       "PATCH",
       { version_id: row.version_id, ...patch }
     );
-    await mutate();
   };
   const pageCount = Math.max(
     1,
@@ -1346,10 +1425,15 @@ export function DeliveryBoardClient({
       }
       return next;
     });
-  const signOffSelected = () =>
+  const signOffRows = () =>
     void run(async () => {
-      for (const row of selectedClean) {
-        await putCheck("signoff", row.delivery_task_id, true, row.version_id);
+      for (const row of bulkSignoffRows) {
+        await putCheck(
+          "signoff",
+          row.delivery_task_id,
+          true,
+          row.version_id ?? null
+        );
       }
       setSelected(new Set());
     });
@@ -1365,6 +1449,7 @@ export function DeliveryBoardClient({
     });
   return (
     <div className="space-y-4">
+      {refreshError}
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
@@ -1396,7 +1481,11 @@ export function DeliveryBoardClient({
                 onAdd={addTasks}
               />
               {cleanUnsigned.length > 0 && (
-                <AlertDialog>
+                <AlertDialog
+                  onOpenChange={(open) => {
+                    if (open) setBulkSignoffRows(cleanUnsigned);
+                  }}
+                >
                   <AlertDialogTrigger asChild>
                     <Button variant="outline" size="sm" disabled={busy}>
                       Sign off all ({cleanUnsigned.length})
@@ -1405,8 +1494,8 @@ export function DeliveryBoardClient({
                   <AlertDialogContent>
                     <AlertDialogHeader>
                       <AlertDialogTitle>
-                        Sign off {cleanUnsigned.length} task
-                        {cleanUnsigned.length === 1 ? "" : "s"}?
+                        Sign off {bulkSignoffRows.length} task
+                        {bulkSignoffRows.length === 1 ? "" : "s"}?
                       </AlertDialogTitle>
                       <AlertDialogDescription>
                         Every check passes on these tasks. Each sign-off is
@@ -1416,19 +1505,7 @@ export function DeliveryBoardClient({
                     </AlertDialogHeader>
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() =>
-                          void run(async () => {
-                            for (const row of cleanUnsigned) {
-                              await putCheck(
-                                "signoff",
-                                row.delivery_task_id,
-                                true
-                              );
-                            }
-                          })
-                        }
-                      >
+                      <AlertDialogAction onClick={signOffRows}>
                         Sign off all
                       </AlertDialogAction>
                     </AlertDialogFooter>
@@ -1649,7 +1726,11 @@ export function DeliveryBoardClient({
                     >
                       Rerun QA ({runnableRows.length})
                     </Button>
-                    <AlertDialog>
+                    <AlertDialog
+                      onOpenChange={(open) => {
+                        if (open) setBulkSignoffRows(selectedClean);
+                      }}
+                    >
                       <AlertDialogTrigger asChild>
                         <Button
                           variant="outline"
@@ -1662,20 +1743,20 @@ export function DeliveryBoardClient({
                       <AlertDialogContent>
                         <AlertDialogHeader>
                           <AlertDialogTitle>
-                            Sign off {selectedClean.length} task
-                            {selectedClean.length === 1 ? "" : "s"}?
+                            Sign off {bulkSignoffRows.length} task
+                            {bulkSignoffRows.length === 1 ? "" : "s"}?
                           </AlertDialogTitle>
                           <AlertDialogDescription>
-                            {selectedClean.length} of the {selectedRows.length}{" "}
-                            selected tasks have no open blockers and are not
-                            signed off; each sign-off is recorded in your name.
-                            The rest are skipped — sign those off from their
-                            row.
+                            {bulkSignoffRows.length} of the{" "}
+                            {selectedRows.length} selected tasks have no open
+                            blockers and are not signed off; each sign-off is
+                            recorded in your name. The rest are skipped — sign
+                            those off from their row.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={signOffSelected}>
+                          <AlertDialogAction onClick={signOffRows}>
                             Sign off
                           </AlertDialogAction>
                         </AlertDialogFooter>
@@ -1781,7 +1862,6 @@ export function DeliveryBoardClient({
                             </TableRow>
                           )}
                         <TaskRow
-                          key={row.version_id}
                           qa={statuses.get(row.delivery_task_id)!}
                           busy={busy}
                           canEditWork={
@@ -1795,7 +1875,13 @@ export function DeliveryBoardClient({
                           onRelease={() =>
                             void run(() => patchWork(row, { release: true }))
                           }
-                          onSaveWork={(patch) => patchWork(row, patch)}
+                          onSaveWork={async (patch) => {
+                            await patchWork(row, patch);
+                            await mutate(undefined, {
+                              populateCache: false,
+                              throwOnError: false,
+                            });
+                          }}
                           row={row}
                           frozen={frozen}
                           isAdmin={isAdmin}

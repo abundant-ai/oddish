@@ -315,7 +315,7 @@ artifacts are never edited or re-analyzed to obtain a new severity label.
 
 Acknowledgments and sign-offs keep the existing manual-check mechanism. A
 positive `signoff`, `ack:<finding-id>`, or `waive:<check>` request must include
-`task_version_id` and an authenticated person. The server locks the task and
+`expected_version_id` and an authenticated person. The server locks the task and
 rejects stale version IDs with HTTP 409, or missing identity/version with HTTP
 422. The CLI and dashboard send the version they reviewed. Standalone operation
 uses its existing local identity convention, `local`. No caller-supplied person
