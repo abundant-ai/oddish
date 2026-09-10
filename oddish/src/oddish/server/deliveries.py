@@ -10,6 +10,7 @@ from fastapi import APIRouter
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
+    claim_delivery_qa_core,
     create_customer_core,
     create_delivery_core,
     delete_delivery_core,
@@ -19,6 +20,7 @@ from oddish.core.deliveries import (
     list_customers_core,
     list_deliveries_core,
     patch_delivery_core,
+    patch_delivery_qa_work_core,
     remove_delivery_task_core,
     set_manual_check_core,
 )
@@ -33,6 +35,8 @@ from oddish.schemas import (
     DeliveryResponse,
     DeliveryTasksAdd,
     ManualCheckSet,
+    QAWorkClaim,
+    QAWorkPatch,
     TaskQAHistoryResponse,
 )
 
@@ -73,9 +77,11 @@ async def create_customer(data: CustomerCreate) -> CustomerResponse:
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
 async def get_delivery_board(delivery_id: str) -> DeliveryBoardResponse:
     async with get_session() as session:
-        return await get_delivery_board_core(
+        board = await get_delivery_board_core(
             session, delivery_id=delivery_id, org_id=None
         )
+        board.qa_viewer_user_id = "local"
+        return board
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)
@@ -126,9 +132,7 @@ async def set_manual_check(delivery_id: str, data: ManualCheckSet) -> dict:
         return {"check_key": data.check_key, "checked": data.checked}
 
 
-@router.post(
-    "/deliveries/{delivery_id}/finalize", response_model=DeliveryBoardResponse
-)
+@router.post("/deliveries/{delivery_id}/finalize", response_model=DeliveryBoardResponse)
 async def finalize_delivery(delivery_id: str) -> DeliveryBoardResponse:
     async with get_session() as session:
         board = await finalize_delivery_core(
@@ -142,3 +146,32 @@ async def finalize_delivery(delivery_id: str) -> DeliveryBoardResponse:
 async def get_task_qa_history(task_id: str) -> TaskQAHistoryResponse:
     async with get_session() as session:
         return await get_task_qa_history_core(session, task_id=task_id, org_id=None)
+
+
+@router.post("/deliveries/{delivery_id}/qa-work/claim")
+async def claim_qa_work(delivery_id: str, data: QAWorkClaim) -> dict:
+    async with get_session() as session:
+        claimed = await claim_delivery_qa_core(
+            session,
+            delivery_id=delivery_id,
+            org_id=None,
+            user_id="local",
+            data=data,
+        )
+        await session.commit()
+        return {"claimed_version_ids": claimed}
+
+
+@router.patch("/deliveries/{delivery_id}/qa-work")
+async def patch_qa_work(delivery_id: str, data: QAWorkPatch) -> dict:
+    async with get_session() as session:
+        await patch_delivery_qa_work_core(
+            session,
+            delivery_id=delivery_id,
+            org_id=None,
+            user_id="local",
+            is_admin=True,
+            data=data,
+        )
+        await session.commit()
+        return {"updated": data.version_id}

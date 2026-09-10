@@ -75,6 +75,7 @@ import {
   Loader2,
   Star,
 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -1039,7 +1040,7 @@ export function TaskDetailClient({
     setJudgeError(null);
     // force:false keeps stored trial analyses; only the verdict is redone.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
+      const res = await apiFetch(`/api/tasks/${task.id}/qa/backfill`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: false, enable_analysis: true }),
@@ -1062,7 +1063,7 @@ export function TaskDetailClient({
     setIsCancellingJudge(true);
     setJudgeError(null);
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
+      const res = await apiFetch(`/api/tasks/${task.id}/qa/cancel`, {
         method: "POST",
       });
       if (!res.ok) {
@@ -1127,6 +1128,22 @@ export function TaskDetailClient({
             />
           }
         />
+
+        {!isBrowseSnapshot ? (
+          <TaskVerdictBadge
+            task={task}
+            variant="summary"
+            onViewFindings={() => {
+              selectTaskPane("overview");
+              handleOpenTaskFiles();
+            }}
+            onRunJudge={handleRunJudge}
+            onCancelJudge={handleCancelJudge}
+            isRunning={isRunningJudge}
+            isCancelling={isCancellingJudge}
+            error={judgeError}
+          />
+        ) : null}
 
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
           <KpiTile
@@ -1309,18 +1326,6 @@ export function TaskDetailClient({
             </div>
           ) : null}
         </div>
-
-        {!isBrowseSnapshot ? (
-          <TaskVerdictBadge
-            task={task}
-            variant="inline"
-            onRunJudge={handleRunJudge}
-            onCancelJudge={handleCancelJudge}
-            isRunning={isRunningJudge}
-            isCancelling={isCancellingJudge}
-            error={judgeError}
-          />
-        ) : null}
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">

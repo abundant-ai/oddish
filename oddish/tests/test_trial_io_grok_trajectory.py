@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from oddish.core import trial_io
 
 
@@ -15,7 +17,7 @@ class _FakeStorage:
     async def download_text(self, key: str) -> str:
         if key.endswith("/agent/grok-build.json"):
             return self.grok_text
-        raise FileNotFoundError(key)
+        raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
     async def object_exists(self, _key: str) -> bool:
         return False
@@ -88,6 +90,8 @@ def test_exact_attempt_converts_only_its_selected_grok_build_artifact(monkeypatc
 
         async def download_text(self, key):
             self.downloaded.append(key)
+            if key not in self.objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
             return self.objects[key]
 
         async def list_keys(self, _prefix):
@@ -111,6 +115,59 @@ def test_exact_attempt_converts_only_its_selected_grok_build_artifact(monkeypatc
     assert trajectory["session_id"] == "exact-grok-session"
     assert trajectory["agent"]["name"] == "grok-build"
     assert stale_key not in storage.downloaded
+
+
+def test_exact_attempt_uses_grok_build_when_trajectory_json_is_malformed(monkeypatch):
+    prefix = "tasks/task-1/trials/trial-fallback/attempt-2/"
+    selected_prefix = f"{prefix}current-run/"
+    manifest_key = f"{prefix}result.json"
+    trajectory_key = f"{selected_prefix}agent/trajectory.json"
+    grok_key = f"{selected_prefix}agent/grok-build.json"
+    grok_text = "\n".join(
+        [
+            json.dumps({"type": "thought", "data": "Recover the evidence. "}),
+            json.dumps({"type": "text", "data": "Recovered."}),
+            json.dumps({"type": "end", "sessionId": "fallback-session"}),
+        ]
+    )
+
+    class ExactStorage:
+        def __init__(self):
+            self.objects = {
+                manifest_key: json.dumps(
+                    {"trial_results": [{"trial_name": "current-run"}]}
+                ),
+                trajectory_key: "{malformed",
+                grok_key: grok_text,
+            }
+
+        async def object_exists(self, key):
+            return key in self.objects
+
+        async def download_text(self, key):
+            if key not in self.objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+            return self.objects[key]
+
+        async def list_keys(self, _prefix):
+            raise AssertionError("exact reads must not scan sibling directories")
+
+    monkeypatch.setattr(trial_io, "get_storage_client", ExactStorage)
+    trial = SimpleNamespace(
+        id="trial-fallback",
+        name="trial-fallback",
+        model="xai/redacted-model",
+        trial_s3_key=prefix,
+        attempts=2,
+        harbor_result_path=None,
+        finished_at=datetime.now(timezone.utc),
+    )
+
+    trajectory = asyncio.run(trial_io.read_trial_trajectory(trial))
+
+    assert trajectory is not None
+    assert trajectory["session_id"] == "fallback-session"
+    assert trajectory["agent"]["name"] == "grok-build"
 
 
 def test_read_trial_trajectory_marks_tool_results_as_user_observations(monkeypatch):

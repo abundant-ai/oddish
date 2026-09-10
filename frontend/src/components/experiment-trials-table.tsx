@@ -72,11 +72,13 @@ import {
   PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import { loadHiddenAgents, saveHiddenAgents } from "@/lib/experiment-columns";
 import {
   isActivePipelineStatus,
   isActiveTrialStatus,
   taskHasActiveAnalysis,
   taskHasActiveVerdict,
+  taskHasRejectedVerdict,
   taskHasCancellableWork,
   taskHasLiveAnalysisTrial,
 } from "@/lib/job-status";
@@ -105,7 +107,7 @@ import {
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
-import { NotRealSpendBadge } from "./not-real-spend-badge";
+import { apiFetch } from "@/lib/api";
 
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
@@ -130,7 +132,7 @@ type ExperimentTrialsTableProps = {
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   isLoadingTrials?: boolean;
-  trialPagesComplete?: boolean;
+  pagesComplete?: boolean;
   showPassAtK?: boolean;
   /** Scope bulk cancel to this experiment so shared tasks stay intact elsewhere. */
   experimentId?: string;
@@ -410,8 +412,7 @@ function TaskVerdictChip({
       ? `QA rejected this task (${task.verdict.confidence} confidence)`
       : "QA rejected this task";
   } else {
-    chipClass =
-      "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
+    chipClass = "bg-[color:var(--paper-bg-2)] text-[color:var(--paper-ink-3)]";
     label = "QA failed";
     tip = task.verdict_error
       ? `QA failed: ${task.verdict_error}`
@@ -573,7 +574,7 @@ export function ExperimentTrialsTable({
   modelScopedAgents,
   isLoading,
   isLoadingTrials = false,
-  trialPagesComplete = true,
+  pagesComplete = true,
   showPassAtK = false,
   experimentId,
   onTaskUnlink,
@@ -590,7 +591,13 @@ export function ExperimentTrialsTable({
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
   const DEFAULT_AGENT_WIDTH = 180;
-  const DEFAULT_TASK_WIDTH = 240;
+  const DEFAULT_TASK_WIDTH = 320;
+  const [rejectedOnly, setRejectedOnly] = useState(false);
+  const rejectedTasks = useMemo(
+    () => tasks.filter(taskHasRejectedVerdict),
+    [tasks]
+  );
+  const rejectedCount = rejectedTasks.length;
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -625,6 +632,7 @@ export function ExperimentTrialsTable({
   // then synthesize the verdict), so the toolbar exposes one Run QA / Cancel
   // QA action rather than separate analysis + verdict controls.
   const [isRunningQA, setIsRunningQA] = useState(false);
+  const [qaEnvironment, setQAEnvironment] = useState("");
   const [isCancellingQA, setIsCancellingQA] = useState(false);
   const [qaError, setQAError] = useState<string | null>(null);
   const [tagBulkOpen, setTagBulkOpen] = useState(false);
@@ -657,6 +665,25 @@ export function ExperimentTrialsTable({
     taskSearch: "",
   });
   const isFirstFilterSync = useRef(true);
+  const didHydrateHiddenAgents = useRef(false);
+
+  useEffect(() => {
+    if (didHydrateHiddenAgents.current) return;
+    if (!experimentId || searchParams.get("hide")) return;
+
+    const stored = loadHiddenAgents(experimentId);
+    if (stored.length > 0) setHiddenAgents(new Set(stored));
+  }, [experimentId, searchParams]);
+
+  useEffect(() => {
+    if (!experimentId) return;
+    if (!didHydrateHiddenAgents.current) {
+      didHydrateHiddenAgents.current = true;
+      return;
+    }
+
+    saveHiddenAgents(experimentId, Array.from(hiddenAgents));
+  }, [experimentId, hiddenAgents]);
 
   useEffect(() => {
     const urlHide = searchParams.get("hide") || "";
@@ -743,7 +770,9 @@ export function ExperimentTrialsTable({
       // Drawer and detail panels update their own query fields through
       // replaceState, which does not refresh useSearchParams. Start from the
       // live address so a delayed filter write cannot erase task/trial/tab.
-      const currentQuery = new URLSearchParams(window.location.search).toString();
+      const currentQuery = new URLSearchParams(
+        window.location.search
+      ).toString();
       const params = new URLSearchParams(currentQuery);
       const hidden = Array.from(hiddenAgents).sort();
       const dimmed = Array.from(dimmedStatuses).sort();
@@ -881,9 +910,10 @@ export function ExperimentTrialsTable({
   }, [visibleAgents]);
 
   const filteredTasks = useMemo(() => {
+    const reviewTasks = showAnalysis && rejectedOnly ? rejectedTasks : tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
     const searchFiltered = query
-      ? tasks.filter((task) => {
+      ? reviewTasks.filter((task) => {
           // Comma-separated queries use OR logic (any substring matches).
           const terms = query
             .split(",")
@@ -896,7 +926,7 @@ export function ExperimentTrialsTable({
             .toLowerCase();
           return terms.some((term) => haystack.includes(term));
         })
-      : tasks;
+      : reviewTasks;
 
     // Apply row-level filter using visible non-baseline agents.
     const rowFiltered =
@@ -944,6 +974,9 @@ export function ExperimentTrialsTable({
   }, [
     tasks,
     deferredTaskSearch,
+    rejectedTasks,
+    rejectedOnly,
+    showAnalysis,
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
@@ -1276,7 +1309,7 @@ export function ExperimentTrialsTable({
     try {
       const results = await Promise.allSettled(
         selectedRetryableTrials.map(async (trial) => {
-          const res = await fetch(`/api/trials/${trial.id}/retry`, {
+          const res = await apiFetch(`/api/trials/${trial.id}/retry`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1313,14 +1346,12 @@ export function ExperimentTrialsTable({
         selectedCancellableTasks.find((task) => task.experiment_id)
           ?.experiment_id ||
         undefined;
-      const res = await fetch(`/api/tasks/cancel`, {
+      const res = await apiFetch(`/api/tasks/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           task_ids: taskIds,
-          ...(scopedExperimentId
-            ? { experiment_id: scopedExperimentId }
-            : {}),
+          ...(scopedExperimentId ? { experiment_id: scopedExperimentId } : {}),
         }),
       });
       if (!res.ok) {
@@ -1352,7 +1383,7 @@ export function ExperimentTrialsTable({
         selectedQACancellableTasks.map(async (task) => {
           // One task-level QA job; cancelling it stops both in-flight
           // classification and verdict synthesis.
-          const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
+          const res = await apiFetch(`/api/tasks/${task.id}/qa/cancel`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1391,8 +1422,10 @@ export function ExperimentTrialsTable({
         selectedQARunnableTasks.map(async (task) => {
           // One task-level QA job: (re)classify every trial, then synthesize
           // the task verdict.
-          const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
+          const res = await apiFetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ environment: qaEnvironment || null }),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
@@ -1424,7 +1457,7 @@ export function ExperimentTrialsTable({
       if (tagBulkMode === "snapshot") {
         const results = await Promise.allSettled(
           selectedTaskList.map(async (task) => {
-            const res = await fetch(`/api/tags/assign`, {
+            const res = await apiFetch(`/api/tags/assign`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1459,7 +1492,7 @@ export function ExperimentTrialsTable({
           );
           return;
         }
-        const res = await fetch(`/api/tags/assign`, {
+        const res = await apiFetch(`/api/tags/assign`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1910,8 +1943,40 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
+        {showAnalysis && (rejectedCount > 0 || rejectedOnly) && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
+            <div>
+              <p className="text-base font-semibold text-red-700 dark:text-red-300">
+                {rejectedCount} loaded {rejectedCount === 1 ? "task" : "tasks"}{" "}
+                rejected by QA
+              </p>
+              <p className="mt-1 text-sm">
+                Review the rejection reasons before including these tasks in a
+                delivery.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              aria-pressed={rejectedOnly}
+              onClick={() => {
+                setRejectedOnly(!rejectedOnly);
+                setTaskSearch("");
+                setRowFilterMode("none");
+                clearSelection();
+              }}
+            >
+              {rejectedOnly ? "Show all tasks" : "Review rejected tasks"}
+            </Button>
+          </div>
+        )}
         {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
-        {showPassAtK ? (
+        {showPassAtK && !pagesComplete && (
+          <p role="status" className="text-muted-foreground text-sm">
+            Graphs will appear once all task and trial results have loaded.
+          </p>
+        )}
+        {showPassAtK && pagesComplete ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <div className="h-full min-w-0">
               <PassAtKGraph
@@ -2030,19 +2095,34 @@ export function ExperimentTrialsTable({
                       </InlineBtn>
                     )}
                     {canRerun && (
-                      <InlineBtn
-                        onClick={handleRunQAForSelectedTasks}
-                        disabled={
-                          isRunningQA ||
-                          isCancellingQA ||
-                          selectedQARunnableTasks.length === 0
-                        }
-                      >
-                        {isRunningQA ? "Queueing" : "Run QA"}
-                        <InlineCount>
-                          {selectedQARunnableTasks.length}
-                        </InlineCount>
-                      </InlineBtn>
+                      <>
+                        <select
+                          aria-label="QA sandbox provider"
+                          value={qaEnvironment}
+                          onChange={(event) =>
+                            setQAEnvironment(event.target.value)
+                          }
+                          disabled={isRunningQA}
+                          className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
+                        >
+                          <option value="">QA: Worker default</option>
+                          <option value="modal">QA: Modal</option>
+                          <option value="daytona">QA: Daytona</option>
+                        </select>
+                        <InlineBtn
+                          onClick={handleRunQAForSelectedTasks}
+                          disabled={
+                            isRunningQA ||
+                            isCancellingQA ||
+                            selectedQARunnableTasks.length === 0
+                          }
+                        >
+                          {isRunningQA ? "Queueing" : "Run QA"}
+                          <InlineCount>
+                            {selectedQARunnableTasks.length}
+                          </InlineCount>
+                        </InlineBtn>
+                      </>
                     )}
                     {canUnlinkTasks && (
                       <>
@@ -2329,7 +2409,7 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
-                  const isTrialDataPending = !trialPagesComplete;
+                  const isTrialDataPending = !pagesComplete;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
@@ -2354,7 +2434,7 @@ export function ExperimentTrialsTable({
                           width: getDisplayedWidth("task"),
                         }}
                       >
-                        <div className="flex min-w-0 items-center gap-2">
+                        <div className="flex min-w-0 items-start gap-2">
                           <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px]">
                             {index + 1}
                           </span>
@@ -2375,8 +2455,8 @@ export function ExperimentTrialsTable({
                               className="h-4 w-4"
                             />
                           )}
-                          <div className="flex min-w-0 flex-1 items-center gap-2">
-                            <div className="group/task-name flex min-w-0 flex-1 items-center gap-1.5">
+                          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                            <div className="group/task-name flex w-full min-w-0 items-start gap-1.5">
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
@@ -2388,7 +2468,7 @@ export function ExperimentTrialsTable({
                                         taskIndex: index,
                                       })
                                     }
-                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
+                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start bg-transparent p-0 text-left font-mono text-[11.5px] leading-snug font-normal break-all whitespace-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
                                   >
                                     {task.name}
                                   </Button>
@@ -2432,109 +2512,132 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
-                            {showAnalysis && (
-                              <TaskVerdictChip
-                                task={task}
-                                // Settled agent trials this verdict's run
-                                // did not grade (baselines/probes never are).
-                                ungradedSettled={
-                                  orderedTrials.filter(
-                                    (t) =>
-                                      !t.is_probe &&
-                                      (t.kind ?? "agent") === "agent" &&
-                                      !isBaselineAgentName(t.agent) &&
-                                      (t.status === "success" ||
-                                        t.status === "failed") &&
-                                      !t.analysis?._graded_by &&
-                                      !t.analysis?.classification
-                                  ).length
-                                }
-                                onOpen={
-                                  onTaskSelect
-                                    ? () =>
-                                        onTaskSelect(task, {
-                                          orderedTasks: filteredTasks,
-                                          taskIndex: index,
-                                        })
-                                    : undefined
-                                }
-                              />
-                            )}
-                            {(() => {
-                              const showVersion =
-                                showAnalysis && task.current_version != null;
-                              const cost = sumTaskTrialCost(orderedTrials);
-                              const showCost =
-                                !readOnly &&
-                                cost.pricedCount > 0 &&
-                                hasDisplayableCostUsd(cost.costUsd);
+                            <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
+                              {showAnalysis && (
+                                <TaskVerdictChip
+                                  task={task}
+                                  // Settled agent trials this verdict's run
+                                  // did not grade (baselines/probes never are).
+                                  ungradedSettled={
+                                    orderedTrials.filter(
+                                      (t) =>
+                                        !t.is_probe &&
+                                        (t.kind ?? "agent") === "agent" &&
+                                        !isBaselineAgentName(t.agent) &&
+                                        (t.status === "success" ||
+                                          t.status === "failed") &&
+                                        !t.analysis?._graded_by &&
+                                        !t.analysis?.classification
+                                    ).length
+                                  }
+                                  onOpen={
+                                    onTaskSelect
+                                      ? () =>
+                                          onTaskSelect(task, {
+                                            orderedTasks: filteredTasks,
+                                            taskIndex: index,
+                                          })
+                                      : undefined
+                                  }
+                                />
+                              )}
+                              {showAnalysis && taskHasRejectedVerdict(task) && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    onTaskSelect?.(task, {
+                                      orderedTasks: filteredTasks,
+                                      taskIndex: index,
+                                    })
+                                  }
+                                  className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
+                                  title={
+                                    task.verdict?.primary_issue ||
+                                    "Open findings"
+                                  }
+                                  aria-label={`Open findings for ${task.name}`}
+                                >
+                                  {task.must_fix_count != null &&
+                                  task.must_fix_count > 0
+                                    ? `${task.must_fix_count} must-fix`
+                                    : "View findings"}
+                                </Button>
+                              )}
+                              {(() => {
+                                const showVersion =
+                                  showAnalysis && task.current_version != null;
+                                const cost = sumTaskTrialCost(orderedTrials);
+                                const showCost =
+                                  !readOnly &&
+                                  cost.pricedCount > 0 &&
+                                  hasDisplayableCostUsd(cost.costUsd);
 
-                              if (!showVersion && !showCost) return null;
+                                if (!showVersion && !showCost) return null;
 
-                              const marks = costEstimateMarks(
-                                cost.hasEstimated,
-                                cost.hasNative
-                              );
-                              const costTone = cost.hasEstimated
-                                ? "text-amber-700 dark:text-amber-400"
-                                : "text-[color:var(--paper-ink-3)]";
+                                const marks = costEstimateMarks(
+                                  cost.hasEstimated,
+                                  cost.hasNative
+                                );
+                                const costTone = cost.hasEstimated
+                                  ? "text-amber-700 dark:text-amber-400"
+                                  : "text-[color:var(--paper-ink-3)]";
 
-                              return (
-                                <div className="flex shrink-0 flex-col items-end gap-0.5 leading-none">
-                                  {showVersion && (
-                                    <span className="inline-flex items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
-                                      v{task.current_version}
-                                    </span>
-                                  )}
-                                  {showCost && (
-                                    <span className="inline-flex items-center gap-1">
-                                      <Tooltip>
-                                        <TooltipTrigger asChild>
-                                          <span
-                                            className={`inline-flex items-center font-mono text-[9px] leading-none font-medium tabular-nums ${costTone}`}
-                                          >
-                                            {marks.prefix}
-                                            {formatCostUsd(cost.costUsd)}
-                                            {marks.suffix}
-                                          </span>
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                          Total cost across {cost.pricedCount}{" "}
-                                          priced trial
-                                          {cost.pricedCount === 1 ? "" : "s"}
-                                          {cost.hasEstimated && cost.hasNative
-                                            ? " · * mixes native + token-estimated pricing"
-                                            : cost.hasEstimated
-                                              ? " · ~ token-estimated pricing"
-                                              : ""}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                      <NotRealSpendBadge
-                                        excludedCostUsd={cost.excludedCostUsd}
-                                        totalCostUsd={cost.costUsd}
-                                      />
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                            {/* Jump from the experiment to this task's own
+                                return (
+                                  <div className="ml-auto flex shrink-0 items-center gap-1.5 leading-none">
+                                    {showVersion && (
+                                      <span className="inline-flex items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
+                                        v{task.current_version}
+                                      </span>
+                                    )}
+                                    {showCost && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <span
+                                              className={`inline-flex items-center font-mono text-[9px] leading-none font-medium tabular-nums ${costTone}`}
+                                            >
+                                              {marks.prefix}
+                                              {formatCostUsd(cost.costUsd)}
+                                              {marks.suffix}
+                                            </span>
+                                          </TooltipTrigger>
+                                          <TooltipContent>
+                                            Total cost across {cost.pricedCount}{" "}
+                                            priced trial
+                                            {cost.pricedCount === 1 ? "" : "s"}
+                                            {cost.hasEstimated && cost.hasNative
+                                              ? " · * mixes native + token-estimated pricing"
+                                              : cost.hasEstimated
+                                                ? " · ~ token-estimated pricing"
+                                                : ""}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {/* Jump from the experiment to this task's own
                                 page. Hidden on the read-only share view since
                                 /tasks/[id] is an authenticated route. */}
-                            {!readOnly && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Link
-                                    href={`/tasks/${encodeURIComponent(task.id)}`}
-                                    aria-label={`Open task page for ${task.name}`}
-                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
-                                  >
-                                    <ArrowUpRight className="h-3.5 w-3.5" />
-                                  </Link>
-                                </TooltipTrigger>
-                                <TooltipContent>Open task page</TooltipContent>
-                              </Tooltip>
-                            )}
+                              {!readOnly && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Link
+                                      href={`/tasks/${encodeURIComponent(task.id)}`}
+                                      aria-label={`Open task page for ${task.name}`}
+                                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
+                                    >
+                                      <ArrowUpRight className="h-3.5 w-3.5" />
+                                    </Link>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Open task page
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </TableCell>

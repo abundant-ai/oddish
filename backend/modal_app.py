@@ -111,7 +111,7 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
+POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 30)
 # The dispatcher (poll_queue) now only discovers active queue keys and spawns
 # job workers -- it no longer runs the heavy reconciliation sweep inline, so it
 # stays well under this timeout. Kept comfortably above 60s so spawning a large
@@ -209,11 +209,7 @@ RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 # per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
 # real safety bounds; this just stops the dispatcher from starving them.
 #
-# 256 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
-# per-poll spawn burst is also the per-poll claim burst (each spawned worker
-# runs one claim query), but claims are short and the 4XL box (16 dedicated
-# cores, transaction pool ~150) absorbs ~256 concurrent short claims per
-# 180s tick comfortably.
+# Launch reservations include workers still starting in the model limit.
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
@@ -254,9 +250,7 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
 _NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
-_NUMINOUS_SECRET_NAME = os.environ.get(
-    "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
-)
+_NUMINOUS_SECRET_NAME = os.environ.get("ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous")
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
 _EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
 _EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
@@ -723,8 +717,7 @@ def assert_gke_cluster_exists() -> None:
         )
     except subprocess.TimeoutExpired:
         print(
-            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
-            "continuing"
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; continuing"
         )
         return
     if result.returncode == 0:
@@ -849,6 +842,8 @@ ENV_VARS = {
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
+    "ODDISH_MODAL_MAX_WORKERS_PER_POLL": str(MAX_WORKERS_PER_POLL),
+    "ODDISH_MODAL_WORKER_MAX_CONTAINERS": str(WORKER_MAX_CONTAINERS),
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
@@ -889,6 +884,26 @@ ENV_VARS = {
     # this "false" and GPU trials stay on Modal.
     _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
 }
+
+
+# Named provider secrets can also carry old concurrency settings and override
+# image ENV. Capture the deploy's limits last so container imports and the
+# dispatcher use the same values as the deployed Modal function definitions.
+# Always append: Modal requires identical dependency counts on container import.
+runtime_secrets.append(
+    modal.Secret.from_dict(
+        {
+            name: ENV_VARS[name]
+            for name in (
+                "ODDISH_MODAL_MAX_WORKERS_PER_POLL",
+                "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
+                "ODDISH_DEFAULT_MODEL_CONCURRENCY",
+                "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+                "ODDISH_NOP_ORACLE_CONCURRENCY",
+            )
+        }
+    )
+)
 
 
 def _lookup_env(name: str) -> str | None:
@@ -1060,6 +1075,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "modal_runtime",
             "models",
             "observability",
+            "org_access",
             "pg_errors",
             "slack_alert_settings",
             "slack_notifications",

@@ -125,11 +125,11 @@ async function listFiles(prefix) {
   return (data && data.files) || [];
 }
 
-async function fetchUrl(url) {
+async function fetchUrlBytes(url) {
   let r;
   try { r = await fetch(url); } catch (e) { die(String(e), 0); }
   if (!r.ok) die(r.statusText || `HTTP ${r.status}`, r.status);
-  return r.text();
+  return Buffer.from(await r.arrayBuffer());
 }
 
 // Download every file under `prefix` into destDir, preserving the path tail
@@ -144,9 +144,13 @@ async function materializeFiles(prefix, destDir) {
     const dest = path.join(destDir, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     let body;
-    if (f.url) body = await fetchUrl(f.url);
+    if (f.url) body = await fetchUrlBytes(f.url);
     else if (typeof f.content === 'string') body = f.content;
     else body = await fetchFileContent(f.path);
+    const actualSize = Buffer.isBuffer(body) ? body.length : Buffer.byteLength(body);
+    if (Number.isInteger(f.size) && actualSize !== f.size) {
+      die(`task file size mismatch: ${f.path} (expected ${f.size}, got ${actualSize})`, 5);
+    }
     fs.writeFileSync(dest, body);
     n += 1;
   }

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { fetcher } from "@/lib/api";
 import { buildTaskOpenAgentGroups } from "@/lib/task-open-agent-groups";
-import { taskDetailKey } from "@/lib/task-detail-resource";
 import {
   isBrowseTaskOpen,
   isTaskOpenKeyForTask,
@@ -106,7 +105,7 @@ export function useTaskOpenReader(
   taskId: string,
   initialVersionId?: string | null
 ) {
-  const { cache, mutate: mutateCache } = useSWRConfig();
+  const { mutate: mutateCache } = useSWRConfig();
   const skipNextDefaultRevalidationRef = useRef(false);
   const [requestedVersionId, setRequestedVersionId] = useState<string | null>(
     () => initialVersionId ?? null
@@ -299,10 +298,11 @@ export function useTaskOpenReader(
       );
       setRequestedVersionId(null);
       writeVersionToQuery(null, versionId);
-      const detailKey = taskDetailKey(task.id);
-      if (cache.get(detailKey) !== undefined) {
-        void mutateCache(detailKey);
-      }
+      void mutateCache(
+        (key) =>
+          typeof key === "string" &&
+          key.startsWith(`/api/tasks/${encodeURIComponent(task.id)}/panel`)
+      );
       void mutateCache(matchesTaskOpenKey);
     } catch (caught) {
       setDefaultVersionError(
@@ -313,7 +313,7 @@ export function useTaskOpenReader(
     } finally {
       setIsSettingDefaultVersion(false);
     }
-  }, [cache, mutateCache, mutateVersionHistory, open, selectedVersion, task]);
+  }, [mutateCache, mutateVersionHistory, open, selectedVersion, task]);
 
   const exactAgentModels = useMemo(
     () => selectedVersion?.agent_models ?? [],
@@ -324,13 +324,16 @@ export function useTaskOpenReader(
       () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
       [exactAgentModels, trialsForVersion]
     );
-  const detailKey = taskDetailKey(taskId);
   const revalidateReaderResources = useCallback(async () => {
     await Promise.all([
       mutate(),
-      cache.get(detailKey) !== undefined ? mutateCache(detailKey) : undefined,
+      mutateCache(
+        (key) =>
+          typeof key === "string" &&
+          key.startsWith(`/api/tasks/${encodeURIComponent(taskId)}/panel`)
+      ),
     ]);
-  }, [cache, detailKey, mutate, mutateCache]);
+  }, [taskId, mutate, mutateCache]);
 
   return {
     agentCards,

@@ -643,8 +643,8 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
-class PreTrialAuditRequest(BaseModel):
-    """Optional execution settings for a fresh source audit."""
+class QARunRequest(BaseModel):
+    """Optional sandbox selection for a QA or pre-trial audit rerun."""
 
     environment: Literal["modal", "daytona"] | None = Field(
         None,
@@ -1091,8 +1091,14 @@ class PublicExperimentTaskRow(BaseModel):
     updated_at: datetime
 
 
+class ExperimentTaskVerdict(ExperimentPageVerdict):
+    primary_issue: str | None = None
+
+
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    must_fix_count: int | None = None
+    verdict: ExperimentTaskVerdict | None = None
 
 
 class ExperimentPageSummary(BaseModel):
@@ -1696,6 +1702,19 @@ class TaskBrowseResponse(BaseModel):
     has_more: bool
 
 
+class TaskBrowseCountResponse(BaseModel):
+    """Tasks matching a filter set across every page.
+
+    Served by ``GET /tasks/browse?count_only=true`` on both the hosted and
+    self-hosted routes -- the dashboard reaches it through its own
+    ``/api/tasks/browse/count`` proxy. Kept separate from the page because the
+    count is the same for every page of one filter set, so pairing the two
+    would re-run the (expensive) filtered count on each pager click.
+    """
+
+    total: int
+
+
 class AgentModelFacet(BaseModel):
     """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
     rows with no recorded model."""
@@ -1787,6 +1806,17 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class TaskPanelResponse(BaseModel):
+    task: TaskStatusResponse
+    version: TaskVersionSummary | None = None
+    can_retry: bool
+    cancel: Literal["task", "qa"] | None = None
+    active_trials: int = 0
+    qa_active: bool = False
+    can_run_qa: bool = False
+    has_analysis: bool = False
 
 
 class PublicTaskStatusResponse(BaseModel):
@@ -2665,6 +2695,52 @@ class DeliveryDefect(BaseModel):
     acknowledged_at: datetime | None = None
 
 
+QAIssueCategory = Literal[
+    "instructions", "verifier", "environment", "evidence", "qa_execution"
+]
+
+
+class QAWorkMetadata(BaseModel):
+    owner_user_id: str | None = None
+    claimed_at: datetime | None = None
+    issue_categories: list[QAIssueCategory] = Field(default_factory=list, max_length=5)
+    note: str = Field(default="", max_length=4000)
+
+
+class QAWorkPatch(BaseModel):
+    version_id: str
+    release: bool = False
+    issue_categories: list[QAIssueCategory] | None = Field(default=None, max_length=5)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class QAWorkClaim(BaseModel):
+    version_ids: list[str] = Field(min_length=1, max_length=5000)
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class QAWorkAssign(BaseModel):
+    task_ids: list[str] = Field(min_length=1, max_length=1000)
+    assignee: str = Field(min_length=1, max_length=320)
+    replace: bool = False
+
+
+class QAWorkAssignResponse(BaseModel):
+    owner_user_id: str
+    assigned_task_ids: list[str] = Field(default_factory=list)
+    unchanged_task_ids: list[str] = Field(default_factory=list)
+    skipped_task_ids: list[str] = Field(default_factory=list)
+
+
+class DeliveryQAStatus(BaseModel):
+    status: Literal[
+        "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
+    ] = "never"
+    trial_id: str | None = None
+    finished_at: datetime | None = None
+    detail: str = "No QA result recorded"
+
+
 class DeliveryTaskBoardRow(BaseModel):
     delivery_task_id: str
     task_id: str
@@ -2679,10 +2755,15 @@ class DeliveryTaskBoardRow(BaseModel):
     internal_note: str | None
     checks: list[DeliveryCheckResult]
     defects: list[DeliveryDefect] = Field(default_factory=list)
+    qa: DeliveryQAStatus = Field(default_factory=DeliveryQAStatus)
+    qa_work: QAWorkMetadata = Field(default_factory=QAWorkMetadata)
+    qa_owner_name: str | None = None
     ready: bool
 
 
 class DeliveryBoardResponse(BaseModel):
+    qa_as_of: datetime | None = None
+    qa_viewer_user_id: str | None = None
     delivery: DeliveryResponse
     check_config: DeliveryCheckConfig
     tasks: list[DeliveryTaskBoardRow]

@@ -5,28 +5,32 @@ trials / trial-analyses / task-verdicts. Active kinds share the same
 ``DISTINCT queue_key`` / ``GROUP BY queue_key`` queries; historical enum-only
 kinds are excluded by the shared ``ACTIVE_WORKER_JOB_KINDS`` definition.
 
-Fairness model
---------------
-``build_spawn_plan`` applies **org-first** fair-share so a single org
-with queued work across many models cannot monopolise the per-poll
-spawn budget. Within one org the planner round-robins across that
-org's queue_keys -- heavier models naturally keep receiving spawns
-(they never run dry), but lighter models still get at least one spawn
-per org-turn so they don't starve entirely. Starvation between a
-single org's models is tolerated; starvation between orgs is not.
-
-Per-queue_key global concurrency caps (``queue_slots`` leases) are
-still enforced on top: even if an org has budget left, we won't spawn
-beyond ``limit - running`` for that queue_key.
+The planner rotates organizations, then gives positive-priority analysis jobs
+three turns for each ordinary turn within an organization. Hosted dispatch
+persists those turns and reserves the existing queue_slots before calling Modal.
+All priority classes, organizations, variants, and lanes share the model cap.
 """
 
 from __future__ import annotations
 
+import json
 from collections import Counter
-from typing import Any
+from typing import Any, NamedTuple
 
 from oddish.config import settings
 from oddish.db import ACTIVE_WORKER_JOB_KINDS, get_pool
+
+
+# Positive priorities include QA, audit, QA-eval and summarize trials.
+QueueDemandKey = tuple[str | None, str, str, str, bool]
+
+
+class DispatchUnit(NamedTuple):
+    queue_key: str
+    harbor_variant_id: str
+    execution_lane: str
+    priority_class: bool
+    org_id: str | None
 
 
 _ACTIVE_KIND_VALUES = tuple(kind.value for kind in ACTIVE_WORKER_JOB_KINDS)
@@ -175,12 +179,12 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str],
 async def get_worker_job_org_queue_counts(
     queue_keys: tuple[str, ...],
 ) -> tuple[
-    dict[tuple[str | None, str, str, str], int],
+    dict[QueueDemandKey, int],
     dict[tuple[str, str, str], int],
 ]:
     """Queued + RUNNING counts by Harbor variant and execution lane.
 
-    Returns ``(queued_by_(org, queue_key, variant, lane),
+    Returns ``(queued_by_(org, queue_key, variant, lane, priority_class),
     running_by_(queue_key, variant, lane))``. Variant and lane are both part of
     the effective dispatch key:
 
@@ -199,19 +203,19 @@ async def get_worker_job_org_queue_counts(
         return {}, {}
 
     pool = await get_pool()
-    queued_by_org_queue: dict[tuple[str | None, str, str, str], int] = {}
+    queued_by_org_queue: dict[QueueDemandKey, int] = {}
     running_by_queue: dict[tuple[str, str, str], int] = {}
 
     queued_rows = await pool.fetch(
         """
         SELECT org_id, queue_key, harbor_variant_id, execution_lane,
-               COUNT(*) AS queued
+               (priority > 0) AS priority_class, COUNT(*) AS queued
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text IN ('QUEUED', 'RETRYING')
           AND  available_after <= NOW()
           AND  kind::text = ANY($2::text[])
-        GROUP BY org_id, queue_key, harbor_variant_id, execution_lane
+        GROUP BY org_id, queue_key, harbor_variant_id, execution_lane, (priority > 0)
         """,
         list(queue_keys),
         _ACTIVE_KIND_VALUES,
@@ -222,7 +226,9 @@ async def get_worker_job_org_queue_counts(
             continue
         variant = str(row["harbor_variant_id"] or "default")
         lane = str(row["execution_lane"] or "default")
-        queued_by_org_queue[(row["org_id"], row["queue_key"], variant, lane)] = count
+        queued_by_org_queue[
+            (row["org_id"], row["queue_key"], variant, lane, row["priority_class"])
+        ] = count
 
     running_rows = await pool.fetch(
         """
@@ -245,19 +251,19 @@ async def get_worker_job_org_queue_counts(
 
 
 def select_job_function(
-    unit: tuple[str, str, str],
+    unit: DispatchUnit,
     *,
     default_fn: Any,
     variant_fns: dict[str, Any],
     ec2_fn: Any | None = None,
     ec2_variant_fns: dict[str, Any] | None = None,
-) -> tuple[Any, dict[str, str]]:
-    """Pick the worker Function for one ``(queue_key, variant, lane)``.
+) -> tuple[Any, dict[str, Any]]:
+    """Pick the worker Function and retain the allocated organization/class.
 
     The execution lane chooses the credential topology first; Harbor variant
     then chooses the image within that topology.
     """
-    queue_key, variant, lane = unit
+    queue_key, variant, lane, priority_class, org_id = unit
     if lane == "ec2_trial":
         if ec2_fn is None:
             raise RuntimeError("EC2 dispatch unit has no EC2 worker Function")
@@ -268,6 +274,8 @@ def select_job_function(
         "queue_key": queue_key,
         "harbor_variant_id": variant,
         "execution_lane": lane,
+        "priority_class": priority_class,
+        "org_id": org_id,
     }
 
 
@@ -277,53 +285,41 @@ def _org_sort_key(org_id: str | None) -> tuple[int, str]:
 
 
 def build_spawn_plan(
-    queued_by_org_queue: dict[tuple[str | None, str, str, str], int],
+    queued_by_org_queue: dict[QueueDemandKey, int],
     running_by_queue: dict[tuple[str, str, str], int],
     concurrency_limits: dict[str, int],
     max_workers: int,
     held_by_queue_key: dict[str, int] | None = None,
     capacity_limits_by_lane: dict[str, int] | None = None,
     held_by_lane: dict[str, int] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Decide which ``(queue_key, harbor_variant_id, lane)`` workers to spawn.
+    fairness_cursors: dict[str, int] | None = None,
+) -> list[DispatchUnit]:
+    """Allocate org turns round-robin, with a 3:1 analysis/ordinary preference.
 
-    Two-level round-robin:
-
-    1. **Outer (orgs)** — strict round-robin across ``org_id`` so no
-       single org can consume the whole per-poll spawn budget just
-       because they enqueue across more models than their neighbour.
-    2. **Inner (``(queue_key, variant)`` units within an org)** —
-       round-robin across that org's units using a per-org cursor.
-       Heavier units keep getting spawns turn after turn because their
-       queued count never drops to zero, but lighter units still receive
-       at least one spawn per org-turn -- the "leeway" that prevents a
-       small secondary unit from being completely starved.
-
-    Per-queue_key capacity is ``limit - in_flight`` where ``in_flight`` is
-    ``max(running, held)``. ``running`` SUMS across that queue_key's variants
-    (for v1 the default and any variants share one ``queue_slots`` concurrency
-    pool -- the variant split is dispatch-only); ``held_by_queue_key`` (when
-    supplied) is that queue_key's live ``queue_slots`` lease count. A lease is
-    taken at spawn/claim, *before* the job shows RUNNING, so on a fast dispatch
-    re-fire (before freshly-spawned workers register as RUNNING) held is the
-    authoritative in-flight number -- folding it in stops over-spawning past the
-    limit. Omitted (Modal ``poll_queue``) -> RUNNING-only, unchanged. Capacity is
-    decremented across orgs and across variants of the same queue_key, so the
-    global cap continues to dominate.
-
-    Optional lane limits apply the same rule across queue keys. This lets a
-    provider-wide sandbox cap suppress only that execution lane without using
-    up the per-poll budget that other lanes can consume.
+    Each org's fourth turn prefers priority <= 0; the other three prefer > 0.
+    If that class has no eligible capacity, the other class borrows the turn.
+    Units within a class rotate too. Hosted dispatch persists the cursors with
+    its launch reservations, including polls that can allocate only one worker.
+    Claimers retain priority/user/FIFO ordering within the selected org/class.
+    All classes and variants share max(RUNNING, held) model capacity.
     """
     if max_workers <= 0 or not queued_by_org_queue:
         return []
 
     # Bucket queued work by org -> {(queue_key, variant, lane): queued}.
-    org_to_unit_queued: dict[str | None, dict[tuple[str, str, str], int]] = {}
-    for (org_id, queue_key, variant, lane), queued in queued_by_org_queue.items():
+    org_to_unit_queued: dict[str | None, dict[tuple[str, str, str, bool], int]] = {}
+    for (
+        org_id,
+        queue_key,
+        variant,
+        lane,
+        priority,
+    ), queued in queued_by_org_queue.items():
         if queued <= 0:
             continue
-        org_to_unit_queued.setdefault(org_id, {})[(queue_key, variant, lane)] = queued
+        org_to_unit_queued.setdefault(org_id, {})[
+            (queue_key, variant, lane, priority)
+        ] = queued
 
     if not org_to_unit_queued:
         return []
@@ -337,13 +333,14 @@ def build_spawn_plan(
 
     # In-flight per queue_key is max(RUNNING, held queue_slots leases). A lease is
     # acquired at spawn/claim, before the job shows RUNNING, so when the caller
-    # supplies held-lease counts (the off-Modal event-trigger cycle) they are the
-    # authoritative in-flight concurrency. Omitted -> RUNNING-only (Modal).
+    # supplies held-lease counts they include both launches and running workers.
     held = held_by_queue_key or {}
 
     global_capacity: dict[str, int] = {}
     all_queue_keys = set(concurrency_limits.keys()) | {
-        qk for bucket in org_to_unit_queued.values() for (qk, _v, _lane) in bucket
+        qk
+        for bucket in org_to_unit_queued.values()
+        for (qk, _v, _lane, _priority) in bucket
     }
     for queue_key in all_queue_keys:
         limit = concurrency_limits.get(queue_key, 0)
@@ -358,52 +355,45 @@ def build_spawn_plan(
         in_flight = max(running_by_lane.get(lane, 0), (held_by_lane or {}).get(lane, 0))
         lane_capacity[lane] = max(limit - in_flight, 0)
 
-    ordered_orgs = sorted(org_to_unit_queued.keys(), key=_org_sort_key)
-    per_org_units: dict[str | None, list[tuple[str, str, str]]] = {
-        org_id: sorted(org_to_unit_queued[org_id].keys()) for org_id in ordered_orgs
-    }
-    per_org_cursor: dict[str | None, int] = {org_id: 0 for org_id in ordered_orgs}
-
-    spawn_plan: list[tuple[str, str, str]] = []
+    cursors = fairness_cursors if fairness_cursors is not None else {}
+    ordered_orgs = sorted(org_to_unit_queued, key=_org_sort_key)
+    offset = cursors.get("org_offset", 0) % len(ordered_orgs)
+    orgs = ordered_orgs[offset:] + ordered_orgs[:offset]
+    spawn_plan: list[DispatchUnit] = []
     while len(spawn_plan) < max_workers:
         progressed = False
-        for org_id in ordered_orgs:
+        for org_id in orgs:
             if len(spawn_plan) >= max_workers:
                 break
-            units = per_org_units[org_id]
-            if not units:
+            cursor_key = json.dumps(org_id)
+            turn = cursors.get(cursor_key, 0)
+            preferred = turn % 4 != 3
+            eligible = sorted(
+                unit
+                for unit, queued in org_to_unit_queued[org_id].items()
+                if queued > 0
+                and global_capacity.get(unit[0], 0) > 0
+                and lane_capacity.get(unit[2], 1) > 0
+            )
+            candidates = [unit for unit in eligible if unit[3] == preferred]
+            if not candidates:
+                candidates = eligible
+            if not candidates:
                 continue
-
-            # Advance the cursor at most one full cycle looking for a
-            # (queue_key, variant) unit with both org-level queued work and
-            # global (shared per-queue_key) capacity remaining. Stopping after
-            # one cycle avoids a spin when none of this org's units are
-            # spawnable right now (the outer while-loop breaks on no-progress).
-            picked: tuple[str, str, str] | None = None
-            for _ in range(len(units)):
-                idx = per_org_cursor[org_id] % len(units)
-                candidate = units[idx]
-                per_org_cursor[org_id] = (per_org_cursor[org_id] + 1) % len(units)
-                if (
-                    org_to_unit_queued[org_id].get(candidate, 0) > 0
-                    and global_capacity.get(candidate[0], 0) > 0
-                    and (
-                        candidate[2] not in lane_capacity
-                        or lane_capacity[candidate[2]] > 0
-                    )
-                ):
-                    picked = candidate
-                    break
-
-            if picked is not None:
-                spawn_plan.append(picked)
-                org_to_unit_queued[org_id][picked] -= 1
-                global_capacity[picked[0]] -= 1
-                if picked[2] in lane_capacity:
-                    lane_capacity[picked[2]] -= 1
-                progressed = True
-
+            # Separate class cursors prevent a three-turn analysis burst from
+            # resetting the ordinary model rotation on the next poll.
+            class_key = f"{cursor_key}:{candidates[0][3]}"
+            unit_turn = cursors.get(class_key, 0)
+            picked = candidates[unit_turn % len(candidates)]
+            spawn_plan.append(DispatchUnit(*picked, org_id))
+            org_to_unit_queued[org_id][picked] -= 1
+            global_capacity[picked[0]] -= 1
+            if picked[2] in lane_capacity:
+                lane_capacity[picked[2]] -= 1
+            cursors[cursor_key] = turn + 1
+            cursors[class_key] = unit_turn + 1
+            cursors["org_offset"] = ordered_orgs.index(org_id) + 1
+            progressed = True
         if not progressed:
             break
-
     return spawn_plan

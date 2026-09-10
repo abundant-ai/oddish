@@ -376,6 +376,11 @@
     overflow-x: clip;
     scrollbar-gutter: stable;
   }
+  /* Drawers only mount while open. Lock the page, including wheel gestures
+     over the backdrop, until the last drawer closes or unmounts. */
+  html:has([data-slot="resizable-drawer"]) {
+    overflow-y: hidden !important;
+  }
   body {
     @apply bg-background text-foreground;
     background:

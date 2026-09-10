@@ -3,13 +3,11 @@
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
-import { ExperimentPaginationSentinel } from "@/components/experiment-pagination-sentinel";
-import { ExperimentTrialLoadAlert } from "@/components/experiment-trial-load-alert";
+import { ExperimentResultsStatus } from "@/components/experiment-results-status";
 import { Nav } from "@/components/nav";
-import { Button } from "@/components/ui/button";
 import type { PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { useExperimentPages } from "@/lib/use-experiment-pages";
+import { useExperimentResults } from "@/lib/use-experiment-results";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicDatasetPage() {
@@ -27,21 +25,14 @@ export default function PublicDatasetPage() {
   const {
     experiment,
     tasks,
-    openError,
+    error: openError,
     isLoading,
-    hasMoreTasks,
-    hasMoreTrials,
-    canLoadTrials,
-    loadNextTasks,
-    loadNextTrials,
-    retryTrials,
+    isLoadingTrials,
+    refreshResults,
     trialsLoaded,
-    totalTrials,
-    trialsStalled,
-    isValidatingTrials,
-  } = useExperimentPages({
-    openUrl: publicBase ? `${publicBase}/open` : null,
-    trialPageUrl: publicBase ? `${publicBase}/trial-page` : null,
+    pagesComplete,
+  } = useExperimentResults({
+    url: publicBase ? `${publicBase}/results` : null,
     publicView: true,
   });
 
@@ -60,32 +51,25 @@ export default function PublicDatasetPage() {
           isLoading={isLoading}
           hasError={hasFatalError}
           inlineAlert={
-            trialsStalled ? (
-              <ExperimentTrialLoadAlert
-                loaded={trialsLoaded}
-                total={totalTrials}
-                isRetrying={isValidatingTrials}
-                onRetry={retryTrials}
-              />
-            ) : null
+            <ExperimentResultsStatus
+              summary={experiment?.summary}
+              tasksLoaded={tasks.length}
+              trialsLoaded={trialsLoaded}
+              complete={pagesComplete}
+              isLoading={isLoadingTrials}
+              hasError={Boolean(openError)}
+              fatalError={
+                hasFatalError
+                  ? {
+                      title: "Failed to load dataset",
+                      description:
+                        "The dataset token may be invalid, or this experiment is not public.",
+                    }
+                  : undefined
+              }
+              onRetry={() => void refreshResults()}
+            />
           }
-        />
-        {hasMoreTrials && (
-          <div className="flex justify-center py-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={loadNextTrials}
-              disabled={!canLoadTrials}
-            >
-              Load next 250 trial results
-            </Button>
-          </div>
-        )}
-        <ExperimentPaginationSentinel
-          hasMoreTasks={hasMoreTasks}
-          loadNextTasks={loadNextTasks}
         />
       </main>
     </>

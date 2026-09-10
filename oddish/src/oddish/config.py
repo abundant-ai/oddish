@@ -1331,6 +1331,9 @@ class Settings(BaseSettings):
     # ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0 to restore Bedrock routing once the
     # credentials are fixed.
     claude_code_force_direct_api: bool = True
+    # Opt-in per-request QA routing. Pool quotas are explicit deployment config;
+    # workers never infer independent capacity from the number of API keys.
+    qa_model_routing_enabled: bool = False
 
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set
@@ -1614,6 +1617,13 @@ class Settings(BaseSettings):
     # pre-expansion versions and legacy tasks don't re-download the
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
+
+    # Per-process cache for the admin cost-exclusion lists (excluded LLM keys,
+    # models and experiments), which every task, trial and experiment read
+    # consults. The admin routers invalidate locally on each edit; this bounds
+    # how long other containers keep labelling spend with the old lists. 0
+    # disables the cache (three statements per request again).
+    cost_exclusions_cache_seconds: float = 60.0
 
     # OpenAI-family routing. Azure is the enterprise default; public OpenAI
     # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.

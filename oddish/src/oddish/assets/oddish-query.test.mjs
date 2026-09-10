@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -102,6 +103,36 @@ test('task fetch downloads the complete source tree into --into', () => {
   assert.match(out, /PROBE-ONLY/);
   assert.equal(fs.readFileSync(path.join(dest, 'instruction.md'), 'utf8'), 'TASK-INSTRUCTIONS');
   assert.equal(fs.readFileSync(path.join(dest, 'tests/test.sh'), 'utf8'), 'VERIFIER');
+});
+
+test('task fetch preserves presigned binary bytes and their sha256', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-binary-dest-'));
+  const original = Buffer.from([0x00, 0x7f, 0x80, 0xff, 0x41, 0xc3, 0x28]);
+  const url = `data:application/octet-stream;base64,${original.toString('base64')}`;
+  const out = runApi(['task', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'solution/engine_core.bin', size: original.length, url } ] } });
+
+  const downloaded = fs.readFileSync(path.join(dest, 'solution/engine_core.bin'));
+  const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+  assert.match(out, /PROBE-ONLY/);
+  assert.deepEqual(downloaded, original);
+  assert.equal(sha256(downloaded), sha256(original));
+});
+
+test('task fetch rejects a downloaded file whose size changed in transit', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-corrupt-dest-'));
+  const original = Buffer.from([0x80, 0xff]);
+  const url = `data:application/octet-stream;base64,${original.toString('base64')}`;
+  const out = runApi(['task', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'solution/engine_core.bin', size: original.length + 1, url } ] } });
+
+  assert.deepEqual(JSON.parse(out), {
+    error: 'task file size mismatch: solution/engine_core.bin (expected 3, got 2)',
+    status: 5,
+  });
+  assert.ok(!fs.existsSync(path.join(dest, 'solution/engine_core.bin')));
 });
 
 test('verifier source resolves tests/test.sh from the task listing', () => {

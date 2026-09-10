@@ -27,6 +27,8 @@ from oddish.db import (
     utcnow,
 )
 
+_QA_EVIDENCE_READ_CONCURRENCY = 2
+
 
 def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
     modal_fc_ids: list[str] = []
@@ -249,12 +251,13 @@ async def rerun_task_qa_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """Create a replacement qa-kind trial for a finished task.
 
     Resets every live agent trial's classification, then creates one QA trial
-    that reclassifies the eligible set and synthesizes a verdict when the
-    evidence bar is met. Queuing the replacement withdraws the old verdict.
+    that reclassifies all eligible trials and requests a verdict once at least
+    one exists. Queuing the replacement withdraws the old verdict.
     """
     return await backfill_task_analysis_core(
         session,
@@ -262,6 +265,7 @@ async def rerun_task_qa_core(
         org_id=org_id,
         trial_ids=None,
         force=True,
+        environment=environment,
     )
 
 
@@ -272,6 +276,7 @@ async def backfill_task_analysis_core(
     org_id: str | None = None,
     trial_ids: list[str] | None = None,
     force: bool = False,
+    environment: str | None = None,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA for a task.
 
@@ -354,11 +359,14 @@ async def backfill_task_analysis_core(
         task_version_id=task.current_version_id,
     )
     trials_by_id = {trial.id: trial for trial in live_trials}
+    evidence_read_slots = asyncio.Semaphore(_QA_EVIDENCE_READ_CONCURRENCY)
+
+    async def check_source_evidence(trial: TrialModel) -> tuple[str, ...]:
+        async with evidence_read_slots:
+            return await qa_source_evidence_errors(trial)
+
     evidence_checks = await asyncio.gather(
-        *(
-            qa_source_evidence_errors(trials_by_id[trial_id])
-            for trial_id in eligible_ids
-        )
+        *(check_source_evidence(trials_by_id[trial_id]) for trial_id in eligible_ids)
     )
     blocked = [
         f"{trial_id}: {'; '.join(errors)}"
@@ -386,7 +394,7 @@ async def backfill_task_analysis_core(
             reset_count += 1
 
     task.finished_at = None
-    await start_qa_for_task(session, task)
+    await start_qa_for_task(session, task, environment=environment)
 
     await session.commit()
     return {
