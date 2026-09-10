@@ -2778,7 +2778,19 @@ class DeliveryTaskBoardRow(BaseModel):
     ready: bool
 
 
+class DeliveryProgressPoint(BaseModel):
+    recorded_at: datetime
+    task_count: int
+    ready: int
+    blocked: int
+    awaiting_signoff: int
+    unassigned: int
+    open_findings: int
+    acknowledged_findings: int
+
+
 class DeliveryBoardResponse(BaseModel):
+    progress_history: list[DeliveryProgressPoint] = Field(default_factory=list)
     qa_as_of: datetime | None = None
     qa_viewer_user_id: str | None = None
     delivery: DeliveryResponse

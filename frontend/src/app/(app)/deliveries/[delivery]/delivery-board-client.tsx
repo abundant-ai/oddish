@@ -27,6 +27,8 @@ import {
   QA_ISSUE_LABELS,
   QA_STATUS_LABELS,
 } from "@/lib/deliveries";
+import { DeliveryDisclosure } from "@/components/delivery-disclosure";
+import { DeliveryOverview } from "@/components/delivery-overview";
 import { DeliveryQAWorkEditor } from "@/components/delivery-qa-work-editor";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
@@ -373,7 +375,11 @@ function QAHistoryPanel({
     fetcher,
     { keepPreviousData: true }
   );
-  const [showAll, setShowAll] = useState(false);
+  const historyParams = useSearchParams();
+  const historyPathname = usePathname();
+  const showAll = (historyParams.get("panels") ?? "")
+    .split(",")
+    .includes("all-versions");
   const refreshError = error && (
     <div role="alert" className="text-destructive text-xs">
       Failed to refresh QA history: {error.message}. Previously loaded history
@@ -430,7 +436,13 @@ function QAHistoryPanel({
         <button
           type="button"
           className="text-muted-foreground cursor-pointer text-xs hover:underline"
-          onClick={() => setShowAll(true)}
+          onClick={() =>
+            window.history.pushState(
+              null,
+              "",
+              `${historyPathname}${deliveryViewQuery(window.location.search, { panels: [...(historyParams.get("panels") ?? "").split(",").filter(Boolean), "all-versions"].join(",") })}${window.location.hash}`
+            )
+          }
         >
           Show all {data.versions.length} versions
         </button>
@@ -457,7 +469,10 @@ function QAHistoryVersionRow({
   verdict: TaskQAHistoryResponse["verdict"];
 }) {
   return (
-    <details className="rounded-md border p-3 text-sm">
+    <DeliveryDisclosure
+      panel={`version-${version.version_id}`}
+      className="rounded-md border p-3 text-sm"
+    >
       <summary className="cursor-pointer">
         <span className="inline-flex flex-wrap items-center gap-2">
           <span className="font-medium">v{version.version}</span>
@@ -597,7 +612,7 @@ function QAHistoryVersionRow({
             </p>
           )}
       </div>
-    </details>
+    </DeliveryDisclosure>
   );
 }
 
@@ -853,7 +868,11 @@ function TaskRow({
                 );
                 if (defects.length + checks.length === 0) return null;
                 return (
-                  <details key={String(acknowledged)} open={!acknowledged}>
+                  <DeliveryDisclosure
+                    key={String(acknowledged)}
+                    panel={acknowledged ? "acknowledged" : "decisions"}
+                    defaultOpen={!acknowledged}
+                  >
                     <summary className="cursor-pointer py-2 text-base font-medium">
                       {acknowledged ? "Acknowledged" : "Needs a decision"}
                       {" · "}
@@ -897,7 +916,10 @@ function TaskRow({
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>
-                          <details className="text-sm sm:col-start-1">
+                          <DeliveryDisclosure
+                            panel={`finding-${defect.id}`}
+                            className="text-sm sm:col-start-1"
+                          >
                             <summary className="cursor-pointer py-1 underline underline-offset-4">
                               {defect.finding
                                 ? "Review evidence"
@@ -923,7 +945,7 @@ function TaskRow({
                                   ` · Execution: ${defect.reporting_trial_id}`}
                               </p>
                             </div>
-                          </details>
+                          </DeliveryDisclosure>
                           {acknowledged ? (
                             <p className="text-muted-foreground text-sm sm:col-start-1">
                               Acknowledged by{" "}
@@ -1004,7 +1026,7 @@ function TaskRow({
                         </li>
                       ))}
                     </ul>
-                  </details>
+                  </DeliveryDisclosure>
                 );
               })}
               {manualChecks.length > 0 && (
@@ -1061,7 +1083,7 @@ function TaskRow({
                   onSave={onSaveWork}
                 />
               )}
-              <details>
+              <DeliveryDisclosure panel="checks">
                 <summary className="cursor-pointer py-2 text-sm">
                   Review status and checks
                 </summary>
@@ -1106,8 +1128,8 @@ function TaskRow({
                     </p>
                   )}
                 </div>
-              </details>
-              <details>
+              </DeliveryDisclosure>
+              <DeliveryDisclosure panel="history">
                 <summary className="cursor-pointer py-2 text-sm">
                   {frozen
                     ? `Live task history · delivery shipped v${row.version}`
@@ -1118,9 +1140,9 @@ function TaskRow({
                   versionId={row.version_id}
                   frozen={frozen}
                 />
-              </details>
+              </DeliveryDisclosure>
               {isAdmin && !frozen && (
-                <details>
+                <DeliveryDisclosure panel="actions">
                   <summary className="cursor-pointer py-2 text-sm">
                     Task actions
                   </summary>
@@ -1153,7 +1175,7 @@ function TaskRow({
                       </AlertDialogFooter>
                     </AlertDialogContent>
                   </AlertDialog>
-                </details>
+                </DeliveryDisclosure>
               )}
             </div>
           </TableCell>
@@ -1473,7 +1495,8 @@ function DeliveryBoardContent({
       (ownerFilter === "all" ||
         (ownerFilter === "unassigned"
           ? !row.qa_work.owner_user_id
-          : row.qa_work.owner_user_id === data.qa_viewer_user_id))
+          : row.qa_work.owner_user_id ===
+            (ownerFilter === "mine" ? data.qa_viewer_user_id : ownerFilter)))
     );
   });
   // Resolve IDs before legacy task names, against the complete inventory.
@@ -1742,6 +1765,22 @@ function DeliveryBoardContent({
         )}
       </Card>
 
+      <DeliveryOverview
+        board={data}
+        filter={filter}
+        ownerFilter={ownerFilter}
+        onFilter={(nextFilter, owner) =>
+          updateView({
+            filter: nextFilter,
+            owner,
+            qa: null,
+            issue: null,
+            page: null,
+            task: null,
+          })
+        }
+      />
+
       <Card>
         <CardContent className="pt-4">
           {data.tasks.length === 0 ? (
@@ -1874,9 +1913,10 @@ function DeliveryBoardContent({
                   </div>
                 )}
               </div>
-              <details
+              <DeliveryDisclosure
+                panel="filters"
                 className="mb-4"
-                open={
+                defaultOpen={
                   qaFilter !== "all" ||
                   issueFilter !== "all" ||
                   ownerFilter !== "all" ||
@@ -1973,6 +2013,28 @@ function DeliveryBoardContent({
                       <SelectItem value="all">All owners</SelectItem>
                       <SelectItem value="unassigned">Unassigned</SelectItem>
                       <SelectItem value="mine">Mine</SelectItem>
+                      {[
+                        ...new Map(
+                          data.tasks
+                            .filter((row) => row.qa_work.owner_user_id)
+                            .map((row) => [
+                              row.qa_work.owner_user_id!,
+                              row.qa_owner_name ?? row.qa_work.owner_user_id!,
+                            ])
+                        ).entries(),
+                      ].map(([id, name]) => (
+                        <SelectItem key={id} value={id}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                      {!["all", "mine", "unassigned"].includes(ownerFilter) &&
+                        !data.tasks.some(
+                          (row) => row.qa_work.owner_user_id === ownerFilter
+                        ) && (
+                          <SelectItem value={ownerFilter}>
+                            {ownerFilter} (no assigned tasks)
+                          </SelectItem>
+                        )}
                     </SelectContent>
                   </Select>
                   <Select
@@ -1991,7 +2053,7 @@ function DeliveryBoardContent({
                     </SelectContent>
                   </Select>
                 </div>
-              </details>
+              </DeliveryDisclosure>
               {focusOutsideFilters && (
                 <p className="text-muted-foreground mb-2 text-xs">
                   The linked task is shown even though it does not match the
