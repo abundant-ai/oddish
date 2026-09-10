@@ -1040,6 +1040,7 @@ interface OrphanedTaskSample {
 
 interface OrphanedStateCounts {
   running_stale_heartbeat: number;
+  retrying_without_worker?: number;
   active_tasks_without_active_trials: number;
 }
 

@@ -8,8 +8,8 @@ per-kind claim SQLs. Kind-agnostic: claims one row with
 All scheduling-state transitions (``QUEUED`` / ``RETRYING`` →
 ``RUNNING`` → ``SUCCESS`` / ``RETRYING`` / ``FAILED``) happen here.
 Handlers still do their own domain writes (``trials.status``,
-``tasks.verdict`` ...) inside ``JobHandler.run``; the runner only
-touches ``worker_jobs``.
+``tasks.verdict`` ...) inside ``JobHandler.run``. The runner also mirrors
+retry and terminal failure outcomes to trials in the same transaction.
 """
 
 from __future__ import annotations
@@ -504,153 +504,221 @@ async def _record_outcome(
     def row_was_updated(command: str) -> bool:
         return command.endswith(" 1")
 
+    mirrored_failure = False
     connection = await _open_connection()
     try:
-        if outcome.success is not None:
-            import json
-
-            summary = outcome.success.result_summary
-            command = await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'SUCCESS',
-                       result_summary = $2::jsonb,
-                       finished_at = NOW(),
-                       heartbeat_at = NOW(),
-                       next_retry_at = NULL,
-                       error_message = NULL,
-                       payload = payload - 'registry_auth_enc'
-                WHERE  id = $1
-                  AND  status = 'RUNNING'::worker_job_status
-                  AND  current_worker_id = $3
-                """,
-                job_id,
-                json.dumps(summary) if summary is not None else None,
-                worker_id,
-            )
-            if not row_was_updated(command):
-                console.print(
-                    f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
-                )
-                return None
-            return WorkerJobStatus.SUCCESS
-
-        assert outcome.failure is not None
-        # Decide against the CURRENT row, not the claim-time snapshot: an
-        # operator capping max_attempts (or a reaper racing) mid-attempt must
-        # bind at this decision, or a surgically-capped trial schedules yet
-        # another attempt from the worker's stale in-memory values.
-        current = await connection.fetchrow(
-            "SELECT attempts, max_attempts FROM worker_jobs WHERE id = $1",
-            job_id,
-        )
-        if current is not None:
-            attempts = int(current["attempts"])
-            max_attempts = int(current["max_attempts"])
-        retry = outcome.failure.retryable and attempts < max_attempts
-        if retry:
-            retry_at: datetime | None = None
-            retry_reason = classify_retry_reason(outcome.failure.error_message)
-            delay_seconds: float | None = None
-            if kind == WorkerJobKind.TRIAL:
-                delay_seconds = calculate_trial_retry_delay_seconds(
-                    attempts=attempts,
-                    error_message=outcome.failure.error_message,
-                    retry_after_seconds=outcome.failure.retry_after_seconds,
-                )
-                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
-
-            # RETRYING is a scheduling state, not a terminal one. Leave
-            # finished_at NULL so the claim SQL can clear it on the
-            # next attempt without special-casing; the duration query
-            # already filters to SUCCESS/FAILED so it doesn't observe
-            # RETRYING rows either way.
-            command = await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'RETRYING',
-                       error_message = $2,
-                       next_retry_at = $3,
-                       available_after = COALESCE($3::timestamptz, NOW()),
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL,
-                       -- The retry starts UNLINKED (mirrors the reaper's retry
-                       -- transition): a carried-over handle can point at a pod
-                       -- that still exists, which blinds the orphan sweeper's
-                       -- live-unlinked guard while the next attempt's pod is
-                       -- unreferenced. This worker's own teardown already ran.
-                       external_id = NULL,
-                       provider = NULL
-                WHERE  id = $1
-                  AND  status = 'RUNNING'::worker_job_status
-                  AND  current_worker_id = $4
-                """,
-                job_id,
-                outcome.failure.error_message,
-                retry_at,
-                worker_id,
-            )
-            if not row_was_updated(command):
-                console.print(
-                    f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
-                )
-                return None
-            if (
-                kind == WorkerJobKind.TRIAL
-                and subject_table == "trials"
-                and subject_id
-                and retry_at is not None
-            ):
+        async with connection.transaction():
+            if kind == WorkerJobKind.TRIAL and subject_table == "trials" and subject_id:
+                # Match manual retry/cancel's Task → Trial → WorkerJob lock order.
                 await connection.execute(
+                    "SELECT t.id FROM tasks t JOIN trials tr ON tr.task_id = t.id "
+                    "WHERE tr.id = $1 FOR UPDATE OF t",
+                    subject_id,
+                )
+                await connection.execute(
+                    "SELECT id FROM trials WHERE id = $1 FOR UPDATE",
+                    subject_id,
+                )
+            if outcome.success is not None:
+                import json
+
+                summary = outcome.success.result_summary
+                command = await connection.execute(
                     """
-                    UPDATE trials
+                    UPDATE worker_jobs
+                    SET    status = 'SUCCESS',
+                           result_summary = $2::jsonb,
+                           finished_at = NOW(),
+                           heartbeat_at = NOW(),
+                           next_retry_at = NULL,
+                           error_message = NULL,
+                           payload = payload - 'registry_auth_enc'
+                    WHERE  id = $1
+                      AND  status = 'RUNNING'::worker_job_status
+                      AND  current_worker_id = $3
+                    """,
+                    job_id,
+                    json.dumps(summary) if summary is not None else None,
+                    worker_id,
+                )
+                if not row_was_updated(command):
+                    console.print(
+                        f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
+                    )
+                    return None
+                return WorkerJobStatus.SUCCESS
+
+            assert outcome.failure is not None
+            # Decide against the CURRENT row, not the claim-time snapshot: an
+            # operator capping max_attempts (or a reaper racing) mid-attempt must
+            # bind at this decision, or a surgically-capped trial schedules yet
+            # another attempt from the worker's stale in-memory values.
+            current = await connection.fetchrow(
+                "SELECT attempts, max_attempts FROM worker_jobs WHERE id = $1 FOR UPDATE",
+                job_id,
+            )
+            if current is not None:
+                attempts = int(current["attempts"])
+                max_attempts = int(current["max_attempts"])
+            retry = outcome.failure.retryable and attempts < max_attempts
+            if retry:
+                retry_at: datetime | None = None
+                retry_reason = classify_retry_reason(outcome.failure.error_message)
+                delay_seconds: float | None = None
+                if kind == WorkerJobKind.TRIAL:
+                    delay_seconds = calculate_trial_retry_delay_seconds(
+                        attempts=attempts,
+                        error_message=outcome.failure.error_message,
+                        retry_after_seconds=outcome.failure.retry_after_seconds,
+                    )
+                    retry_at = datetime.now(timezone.utc) + timedelta(
+                        seconds=delay_seconds
+                    )
+
+                # RETRYING is a scheduling state, not a terminal one. Leave
+                # finished_at NULL so the claim SQL can clear it on the
+                # next attempt without special-casing; the duration query
+                # already filters to SUCCESS/FAILED so it doesn't observe
+                # RETRYING rows either way.
+                command = await connection.execute(
+                    """
+                    UPDATE worker_jobs
                     SET    status = 'RETRYING',
                            error_message = $2,
                            next_retry_at = $3,
+                           available_after = COALESCE($3::timestamptz, NOW()),
                            current_worker_id = NULL,
                            current_queue_slot = NULL,
-                           heartbeat_at = NOW()
+                           modal_function_call_id = NULL,
+                           -- The retry starts UNLINKED (mirrors the reaper's retry
+                           -- transition): a carried-over handle can point at a pod
+                           -- that still exists, which blinds the orphan sweeper's
+                           -- live-unlinked guard while the next attempt's pod is
+                           -- unreferenced. This worker's own teardown already ran.
+                           external_id = NULL,
+                           provider = NULL
                     WHERE  id = $1
-                      AND  deleted_at IS NULL
-                      AND  superseded_by_trial_id IS NULL
+                      AND  status = 'RUNNING'::worker_job_status
+                      AND  current_worker_id = $4
                     """,
-                    subject_id,
+                    job_id,
                     outcome.failure.error_message,
                     retry_at,
+                    worker_id,
                 )
-            console.print(
-                f"metric=worker_job_retry_requeued id={job_id} "
-                f"attempts={attempts}/{max_attempts} "
-                f"retry_reason={retry_reason} "
-                f"retry_delay_seconds={delay_seconds or 0:.2f}"
-            )
-            return WorkerJobStatus.RETRYING
-        else:
-            command = await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'FAILED',
-                       error_message = $2,
-                       finished_at = NOW(),
-                       next_retry_at = NULL,
-                       payload = payload - 'registry_auth_enc'
-                WHERE  id = $1
-                  AND  status = 'RUNNING'::worker_job_status
-                  AND  current_worker_id = $3
-                """,
-                job_id,
-                outcome.failure.error_message,
-                worker_id,
-            )
-            if not row_was_updated(command):
+                if not row_was_updated(command):
+                    console.print(
+                        f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
+                    )
+                    return None
+                if (
+                    kind == WorkerJobKind.TRIAL
+                    and subject_table == "trials"
+                    and subject_id
+                    and retry_at is not None
+                ):
+                    await connection.execute(
+                        """
+                        UPDATE trials
+                        SET    status = 'RETRYING',
+                               error_message = $2,
+                               next_retry_at = $3,
+                               current_worker_id = NULL,
+                               current_queue_slot = NULL,
+                               heartbeat_at = NOW(),
+                               finished_at = NULL,
+                               attempts = GREATEST(attempts, $4),
+                               updated_at = NOW()
+                        WHERE  id = $1
+                          AND  deleted_at IS NULL
+                          AND  superseded_by_trial_id IS NULL
+                          AND  status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
+                        """,
+                        subject_id,
+                        outcome.failure.error_message,
+                        retry_at,
+                        attempts,
+                    )
                 console.print(
-                    f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
+                    f"metric=worker_job_retry_requeued id={job_id} "
+                    f"attempts={attempts}/{max_attempts} "
+                    f"retry_reason={retry_reason} "
+                    f"retry_delay_seconds={delay_seconds or 0:.2f}"
                 )
-                return None
-            return WorkerJobStatus.FAILED
+                return WorkerJobStatus.RETRYING
+            else:
+                command = await connection.execute(
+                    """
+                    UPDATE worker_jobs
+                    SET    status = 'FAILED',
+                           error_message = $2,
+                           finished_at = NOW(),
+                           next_retry_at = NULL,
+                           payload = payload - 'registry_auth_enc'
+                    WHERE  id = $1
+                      AND  status = 'RUNNING'::worker_job_status
+                      AND  current_worker_id = $3
+                    """,
+                    job_id,
+                    outcome.failure.error_message,
+                    worker_id,
+                )
+                if not row_was_updated(command):
+                    console.print(
+                        f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
+                    )
+                    return None
+                if (
+                    kind == WorkerJobKind.TRIAL
+                    and subject_table == "trials"
+                    and subject_id
+                ):
+                    # A handler may have failed before updating its trial, or
+                    # the job's attempt budget may have ended before the mirror's.
+                    command = await connection.execute(
+                        """
+                        UPDATE trials
+                        SET status = 'FAILED', error_message = $2,
+                            attempts = GREATEST(attempts, $3), finished_at = NOW(),
+                            next_retry_at = NULL, current_worker_id = NULL,
+                            current_queue_slot = NULL, updated_at = NOW()
+                        WHERE id = $1 AND deleted_at IS NULL
+                          AND superseded_by_trial_id IS NULL
+                          AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')
+                        """,
+                        subject_id,
+                        outcome.failure.error_message,
+                        attempts,
+                    )
+                    mirrored_failure = row_was_updated(command)
+                return WorkerJobStatus.FAILED
+    except BaseException:
+        # A failed commit must not trigger settlement for an uncommitted outcome.
+        mirrored_failure = False
+        raise
     finally:
         await connection.close()
+        if mirrored_failure:
+            # Handler-raised failures never ran settlement hooks. Do this only
+            # after the atomic outcome commit releases its row locks.
+            from sqlalchemy import select
+            from oddish.db import TrialModel, get_session
+            from oddish.core.task_browse_summary import refresh_task_browse_summaries
+            from oddish.workers.queue.trial_handler import _run_post_trial_hooks
+
+            try:
+                async with get_session() as session:
+                    version_id = await session.scalar(
+                        select(TrialModel.task_version_id).where(
+                            TrialModel.id == subject_id
+                        )
+                    )
+                    await refresh_task_browse_summaries(session, [version_id])
+                await _run_post_trial_hooks(subject_id)
+            except Exception:
+                logger.exception(
+                    "Post-failure settlement failed for trial %s", subject_id
+                )
 
 
 async def run_single_worker_job(

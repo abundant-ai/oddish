@@ -1601,6 +1601,22 @@ truncate UUIDs to the eight-character IDs used by some other entities.
 
 ### Worker Runtime Invariants & Pitfalls
 
+Retry scheduling must commit the worker job and trial mirror in one transaction.
+`_record_outcome` locks Task → Trial → WorkerJob, mirrors exhausted/permanent
+failures as well as delayed retries, and preserves cancellation/supersession.
+The reconciler repairs stale RETRYING mirrors only when the latest worker job
+is FAILED/CANCELLED and no active job exists. It does not grant attempts,
+infer a successful result, or recreate missing work. Orphan diagnostics expose
+`retrying_without_worker` so missing or ambiguous work remains actionable.
+`backend/scripts/reconcile_retry_trials.py` previews an explicit org-scoped ID
+list by default; `--apply` commits bounded, locked batches and saves the changes.
+
+Dashboard `job_usage` live counts include active worker jobs of every age;
+the requested usage window applies only to historical counts and durations.
+`usage-rows.ts` uses those worker counts for live badges, never historical trial
+status fallbacks. Queue positions also require an active worker job. Raw trial
+queue aggregates exclude superseded attempts.
+
 Load-bearing properties, several learned from incidents. Changing them naively
 silently breaks throughput or correctness — read before touching
 `worker/functions.py`, `slots.py`, `cleanup.py`, or the dispatcher.

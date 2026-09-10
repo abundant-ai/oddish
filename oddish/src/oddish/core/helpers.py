@@ -24,6 +24,7 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
     is_worker_owned_trial_status,
@@ -105,12 +106,6 @@ def _has_fetchable_trajectory(trial: TrialModel) -> bool:
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
 _QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
-_QUEUE_ACTIVE_STATUSES = {
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.PAUSED,
-    TrialStatus.RETRYING,
-}
 _VISIBLE_ACTIVE_WORKER_JOB_STATUSES = {
     WorkerJobStatus.QUEUED,
     WorkerJobStatus.RUNNING,
@@ -241,18 +236,33 @@ async def fetch_trial_queue_info(
     result = await session.execute(
         select(
             TrialModel.id,
-            TrialModel.queue_key,
-            TrialModel.status,
-            TrialModel.created_at,
+            WorkerJobModel.queue_key,
+            WorkerJobModel.status,
+            WorkerJobModel.created_at,
             TaskModel.priority,
             func.coalesce(TaskModel.created_by_user_id, TaskModel.user).label(
                 "fairness_key"
             ),
         )
+        .select_from(WorkerJobModel)
+        .join(
+            TrialModel,
+            and_(
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.subject_id == TrialModel.id,
+            ),
+        )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(
-            TrialModel.queue_key.in_(queue_keys),
-            TrialModel.status.in_(tuple(_QUEUE_ACTIVE_STATUSES)),
+            WorkerJobModel.kind == WorkerJobKind.TRIAL,
+            WorkerJobModel.queue_key.in_(queue_keys),
+            WorkerJobModel.status.in_(
+                (
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RUNNING,
+                    WorkerJobStatus.RETRYING,
+                )
+            ),
             # Superseded trials are abandoned -- their worker_jobs are
             # already cancelled by ``retry_trial_core``. Don't count
             # them against fairness or claim position.
@@ -264,7 +274,7 @@ async def fetch_trial_queue_info(
         _QueueSnapshotTrial(
             trial_id=row.id,
             queue_key=str(row.queue_key),
-            status=row.status,
+            status=TrialStatus(row.status.value.lower()),
             created_at=row.created_at,
             priority=row.priority,
             fairness_key=str(row.fairness_key),

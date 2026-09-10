@@ -18,6 +18,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1843,15 +1844,31 @@ async def get_worker_job_usage_core(
     filters = []
     if org_id is not None:
         filters.append(WorkerJobModel.org_id == org_id)
+    in_window = true()
     if usage_minutes is not None:
         since = datetime.now(timezone.utc) - timedelta(minutes=usage_minutes)
-        filters.append(WorkerJobModel.created_at >= since)
+        in_window = WorkerJobModel.created_at >= since
+        # Spend/history use the requested window; live scheduling state does
+        # not. A two-day-old running or delayed job must remain visible.
+        filters.append(
+            or_(
+                in_window,
+                WorkerJobModel.status.in_(
+                    [
+                        WorkerJobStatus.QUEUED,
+                        WorkerJobStatus.RUNNING,
+                        WorkerJobStatus.RETRYING,
+                        WorkerJobStatus.BLOCKED,
+                    ]
+                ),
+            )
+        )
 
     query = (
         select(
             WorkerJobModel.kind,
             WorkerJobModel.queue_key,
-            func.count(WorkerJobModel.id).label("job_count"),
+            func.count(WorkerJobModel.id).filter(in_window).label("job_count"),
             func.count(
                 case((WorkerJobModel.status == WorkerJobStatus.QUEUED, 1))
             ).label("queued"),
@@ -1861,15 +1878,15 @@ async def get_worker_job_usage_core(
             func.count(
                 case((WorkerJobModel.status == WorkerJobStatus.RETRYING, 1))
             ).label("retrying"),
-            func.count(
-                case((WorkerJobModel.status == WorkerJobStatus.SUCCESS, 1))
-            ).label("succeeded"),
-            func.count(
-                case((WorkerJobModel.status == WorkerJobStatus.FAILED, 1))
-            ).label("failed"),
-            func.count(
-                case((WorkerJobModel.status == WorkerJobStatus.CANCELLED, 1))
-            ).label("cancelled"),
+            func.count(case((WorkerJobModel.status == WorkerJobStatus.SUCCESS, 1)))
+            .filter(in_window)
+            .label("succeeded"),
+            func.count(case((WorkerJobModel.status == WorkerJobStatus.FAILED, 1)))
+            .filter(in_window)
+            .label("failed"),
+            func.count(case((WorkerJobModel.status == WorkerJobStatus.CANCELLED, 1)))
+            .filter(in_window)
+            .label("cancelled"),
             func.count(
                 case((WorkerJobModel.status == WorkerJobStatus.BLOCKED, 1))
             ).label("blocked"),
@@ -1883,7 +1900,9 @@ async def get_worker_job_usage_core(
                         ),
                     )
                 )
-            ).label("avg_duration_s"),
+            )
+            .filter(in_window)
+            .label("avg_duration_s"),
         )
         .group_by(WorkerJobModel.kind, WorkerJobModel.queue_key)
         .order_by(WorkerJobModel.kind, WorkerJobModel.queue_key)
