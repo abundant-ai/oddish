@@ -1027,10 +1027,13 @@ async def _compute_board(
                 must_fix_detail = (
                     f"all {len(defects)} task defects acknowledged as exceptions on {vlabel}"
                 )
-            historical = sum(d.recorded_tier != "must_fix" for d in defects)
-            if historical:
+            historical_unacknowledged = sum(
+                d.recorded_tier != "must_fix" and not d.acknowledged for d in defects
+            )
+            if historical_unacknowledged:
                 must_fix_detail += (
-                    f"; {historical} historically lower-severity findings now require "
+                    f"; {historical_unacknowledged} historically lower-severity findings "
+                    "still require "
                     "individual acknowledgment; the recorded review is unchanged"
                 )
             automated("no_must_fix", unacknowledged == 0, must_fix_detail)

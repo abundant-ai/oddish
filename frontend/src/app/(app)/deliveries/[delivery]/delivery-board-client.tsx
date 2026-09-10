@@ -954,7 +954,7 @@ function TaskRow({
                             <p>{defect.finding.recommendation}</p>
                           </details>
                         )}
-                        {!frozen && (
+                        {!frozen && !defect.acknowledged && (
                           <p className="text-muted-foreground text-xs">
                             Requires resolution or acknowledgment for v
                             {row.version}.

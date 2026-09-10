@@ -245,6 +245,27 @@ async def test_must_fix_defects_block(session):
     assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
     assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
+    assert "1 historically lower-severity findings still require" in check.detail
+
+    historical_defect = next(d for d in row.defects if d.recorded_tier == "should_fix")
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key=f"ack:{historical_defect.id}",
+            delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
+            checked=True,
+        ),
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["no_must_fix"]
+    assert check.status == "fail"
+    assert check.detail == "2 of 3 task defects unacknowledged on v1"
 
     # Deleting the trial that reported a defect must not clear it: only an
     # acknowledgement or a new version does.
@@ -784,10 +805,11 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
 
 
 @pytest.mark.asyncio
-async def test_signoff_requires_defect_acknowledgement(session):
+@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {
-        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+        "items": [{"id": "def-1", "tier": tier, "title": "leaky check"}]
     }
     await session.flush()
     delivery = await create_delivery_core(
@@ -869,6 +891,9 @@ async def test_signoff_requires_defect_acknowledgement(session):
     assert row.defects[0].acknowledged_by_user_id == "u5"
     assert _checks(board, task.id)["signoff"].checked_by_user_id == "u6"
     assert _checks(board, task.id)["no_must_fix"].status == "pass"
+    assert _checks(board, task.id)["no_must_fix"].detail == (
+        "all 1 task defects acknowledged as exceptions on v1"
+    )
 
     # A reserved key cannot be redefined in check_config.
     from oddish.schemas import DeliveryCheckConfig as _Config
