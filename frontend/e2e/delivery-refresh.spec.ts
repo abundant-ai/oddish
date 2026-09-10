@@ -214,7 +214,9 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
     delivery_task_id: `member-${i}`,
   }));
   state.board.tasks[25] = taskRow();
-  await page.goto("/?page=2&filter=blocked&task=task-a");
+  await page.goto(
+    "/?page=2&per_page=25&filter=blocked&task=task-a&source=agent"
+  );
   await page.getByText("QA history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await page.getByRole("button", { name: "Show all 7 versions" }).click();
