@@ -481,8 +481,9 @@ a changed version disables saving and keeps the notes available to copy.
 Task-scoped `PUT /deliveries/{id}/checks` requests may include
 `expected_version_id` (including explicit null). The core locks the task and
 returns HTTP 409 if its selected default differs before writing or deleting a
-sign-off, acknowledgment, waiver, or manual check. Omission preserves older
-clients; the delivery board always supplies the displayed version.
+sign-off, acknowledgment, waiver, or manual check. Positive sign-off and exception decisions require a non-null expected version
+and an authenticated person. Other checks retain optional version matching for
+older clients; the delivery board always supplies the displayed version.
 
 `oddish assign` calls `POST /tasks/qa-work/assign` with up to 1,000 task IDs,
 an assignee, and optional `replace`. Hosted assignment requires admin access
@@ -743,7 +744,9 @@ land at a unique staging key, copy to an immutable
 version row atomically switches `task_s3_key`. Expanded-file readers accept a
 manifest only when its `archive_key` matches that selected source, so failed
 cleanup cannot expose the prior expansion. The replacement clears derived-file
-bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
+bookkeeping, retained `reported_findings`, and pre-trial audit state before
+re-enqueuing expansion. Same-content upload retries preserve those findings.
+Existing
 trials pinned to that version resolve to the replacement content.
 
 Sweep appends resolve their own version through `resolve_append_version_id`
@@ -2137,3 +2140,29 @@ never replay a partially streamed request or log provider keys/prompts.
 
 See `docs/qa-model-routing.md` for configuration, accounting conservatism,
 protocol scope, operator metrics, tests, and staging rollout prerequisites.
+
+### Mandatory task-defect delivery policy
+
+New source and execution findings use only `must_fix`; the shared
+`analysis_check_payload`/`check_analysis_result` contract enforces this at
+submission, verification, and import. `ActionTier` retains historical enum
+values for reading existing reports. Severity does not establish execution
+causation: unrelated findings leave `GOOD_FAILURE` unchanged.
+
+`oddish.core.task_findings` owns collection and retention. All recorded tiers
+on a current task version require individual delivery acknowledgment, including
+findings from superseded/deleted executions. Before clearing or replacing
+review state, call `preserve_task_findings` under the existing mutation
+transaction; it retains original evidence in `task_versions.reported_findings`.
+Read paths never write this column or enqueue analysis. Newly published verdicts
+reject established task defects; historical stored verdicts are not rewritten.
+In-place source overwrite clears retained findings in the transaction replacing
+the source bytes; re-analysis of unchanged source continues to retain them.
+
+The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
+and exception requests require the reviewed `expected_version_id` and the actor
+from authentication. Delivery manual-check uniqueness includes version, and
+history exposes each retained version decision. New versions inherit neither
+findings nor decisions. Finalized delivery snapshots are never recomputed.
+Apply `task_defects_001` before deploying this code. See
+`docs/delivery-design.md` for compatibility and forward-only migration policy.

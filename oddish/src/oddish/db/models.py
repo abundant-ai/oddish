@@ -823,6 +823,8 @@ class TaskVersionModel(TimestampedMixin, Base):
 
     # Human coordination is shared by every delivery of this version.
     qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Evidence retained when an audit or execution review is replaced.
+    reported_findings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
@@ -2875,10 +2877,11 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
         # delivery-level ticks (delivery_task_id IS NULL) get their own
         # partial unique index.
         Index(
-            "uq_delivery_manual_checks_task",
+            "uq_delivery_manual_checks_task_version",
             "delivery_id",
             "delivery_task_id",
             "check_key",
+            "task_version_id",
             unique=True,
             postgresql_where=text("delivery_task_id IS NOT NULL"),
         ),

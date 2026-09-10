@@ -236,7 +236,12 @@ export function TaskOverviewPanel({
     };
     for (const item of checksFindings ?? []) {
       const key = findingKey(item);
-      byKey.set(key, { ...item, id: key, fromAudit: true, trials: [] });
+      byKey.set(key, {
+        ...item,
+        id: key,
+        fromAudit: item.source !== "post_trial",
+        trials: [],
+      });
     }
     const counts = new Map<AnalysisClassification, number>();
     const withQa: Trial[] = [];
@@ -398,9 +403,7 @@ export function TaskOverviewPanel({
   // that never got picked up.
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
-  const mustFixCount = findingItems.filter(
-    (item) => item.tier === "must_fix"
-  ).length;
+  const mustFixCount = findingItems.length;
   const findingsSummary = checksLoading
     ? "Loading…"
     : checksLoadError
@@ -441,12 +444,6 @@ export function TaskOverviewPanel({
               ? (item, file) => findingHref(taskId, version, item, file)
               : undefined
           }
-          tierEffects={{
-            must_fix:
-              "Blocks task acceptance. A fair agent failure can coexist with an unrelated task defect.",
-            should_fix: "Does not change the verdict.",
-            optional: "Does not change the verdict.",
-          }}
           renderItemFooter={renderFindingSources}
         />
       ) : null;
@@ -621,7 +618,8 @@ export function TaskOverviewPanel({
             variant="inline"
             qaActive={qaActive}
             detail={
-              taskReviewStatus(verdictTask) === "needs_fixes" && mustFixCount > 0
+              taskReviewStatus(verdictTask) === "needs_fixes" &&
+              mustFixCount > 0
                 ? `${mustFixCount} Must Fix`
                 : undefined
             }

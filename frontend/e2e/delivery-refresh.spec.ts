@@ -153,6 +153,11 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
   await expect(page.getByText("Teammate", { exact: true })).toBeVisible();
   await expect(page.getByText("Known defect")).toBeVisible();
   await expect(
+    page.getByText("Requires resolution or acknowledgment for v7.", {
+      exact: true,
+    })
+  ).toHaveCount(0);
+  await expect(
     page
       .getByRole("listitem")
       .filter({ hasText: "Known defect" })
@@ -164,6 +169,11 @@ test("external membership, sign-off, acknowledgment and assignment appear withou
   state.board.tasks[0].qa_work.owner_user_id = null;
   state.board.tasks[0].defects[0].acknowledged = false;
   await tick(page);
+  await expect(
+    page.getByText("Requires resolution or acknowledgment for v7.", {
+      exact: true,
+    })
+  ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Task B", exact: true })
   ).toHaveCount(0);

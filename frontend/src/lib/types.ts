@@ -486,6 +486,7 @@ export interface TaskVersionSummary {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   last_run_at?: string | null;
+  retained_findings?: PreTrialFinding[];
   pre_trial_findings?: PreTrialFinding[];
   /** null = never audited. Otherwise "running" | "success" | "failed": empty
    *  findings mean something different for each, so never infer from the list. */
@@ -608,6 +609,7 @@ export interface TaskOpenResponse {
 
 /** One defect the pre-trial source audit found in a task version. */
 export interface PreTrialFinding {
+  source?: "pre_trial" | "post_trial";
   id?: string | null;
   tier?: string | null;
   dimension?: string | null;
@@ -1417,6 +1419,10 @@ interface DeliveryDefect {
   id: string;
   title: string;
   source: "pre_trial" | "trial" | (string & {});
+  recorded_tier?: string | null;
+  finding?: PreTrialFinding | null;
+  reporting_trial_id?: string | null;
+  review_trial_id?: string | null;
   acknowledged: boolean;
   acknowledged_by_user_id?: string | null;
   acknowledged_by_name?: string | null;
@@ -1509,6 +1515,14 @@ interface TaskQAHistoryVersion {
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];
   findings: TaskQAHistoryFinding[];
+  decisions?: Array<{
+    id: string;
+    delivery_id: string;
+    check_key: string;
+    checked_by_user_id: string | null;
+    checked_at: string;
+    note: string;
+  }>;
 }
 
 interface TaskQAHistoryFinding {
