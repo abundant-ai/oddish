@@ -1478,6 +1478,7 @@ export interface DeliveryTaskBoardRow {
 }
 
 export interface DeliveryProgressPoint {
+  owners?: Record<string, { task_count: number; ready: number }> | null;
   recorded_at: string;
   task_count: number;
   ready: number;

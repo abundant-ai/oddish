@@ -5,9 +5,7 @@ import { parseDeliveryView, deliveryViewQuery } from "../src/lib/deliveries.ts";
 test("shared links restore every delivery filter and the focused task", () => {
   const query = deliveryViewQuery("?source=slack", {
     page: "3",
-    filter: "blocked",
-    days: "1",
-    qa: "needs_fixes",
+    filter: "needs_work",
     issue: "verifier",
     owner: "mine",
     group: "owner",
@@ -16,9 +14,7 @@ test("shared links restore every delivery filter and the focused task", () => {
   assert.deepEqual(parseDeliveryView(new URLSearchParams(query)), {
     page: 2,
     pageSize: 25,
-    filter: "blocked",
-    qaDays: "1",
-    qaFilter: "needs_fixes",
+    filter: "needs_work",
     issueFilter: "verifier",
     ownerFilter: "mine",
     groupBy: "owner",
@@ -57,24 +53,27 @@ test("invalid external URL values fall back to the default view", () => {
 });
 
 test("filter changes reset pagination and task focus without losing other filters", () => {
-  const next = deliveryViewQuery("?page=8&task=old&owner=mine&qa=never", {
-    qa: "accepted",
-    page: null,
-    task: null,
-  });
+  const next = deliveryViewQuery(
+    "?page=8&task=old&owner=mine&filter=qa_incomplete",
+    {
+      filter: "ready",
+      page: null,
+      task: null,
+    }
+  );
   const view = parseDeliveryView(new URLSearchParams(next));
   assert.equal(view.page, 0);
   assert.equal(view.focusTask, null);
   assert.equal(view.ownerFilter, "mine");
-  assert.equal(view.qaFilter, "accepted");
+  assert.equal(view.filter, "ready");
 });
 
 test("defaults produce a clean URL and history entries can restore prior views", () => {
-  const first = "?page=2&qa=never&task=abc";
+  const first = "?page=2&filter=qa_incomplete&task=abc";
   const second = deliveryViewQuery(first, { page: "3", task: null });
   assert.equal(parseDeliveryView(new URLSearchParams(second)).page, 2);
   assert.equal(parseDeliveryView(new URLSearchParams(first)).focusTask, "abc");
-  assert.equal(deliveryViewQuery(second, { page: "1", qa: "all" }), "");
+  assert.equal(deliveryViewQuery(second, { page: "1", filter: "all" }), "");
 });
 
 test("page sizes survive shared links and history without losing filters", () => {
@@ -107,10 +106,10 @@ test("unsupported page sizes fall back to 25 rows", () => {
   }
 });
 
-test("default prioritizes outstanding work and complete inventory has an explicit URL", () => {
-  assert.equal(parseDeliveryView(new URLSearchParams()).filter, "outstanding");
+test("default shows the complete inventory", () => {
+  assert.equal(parseDeliveryView(new URLSearchParams()).filter, "all");
   const inventory = deliveryViewQuery("", { filter: "all" });
-  assert.equal(inventory, "?filter=all");
+  assert.equal(inventory, "");
   assert.equal(parseDeliveryView(new URLSearchParams(inventory)).filter, "all");
 });
 
@@ -130,15 +129,13 @@ test("named owners and review panels survive shared links", () => {
 
 test("changing one view field preserves every other URL parameter", () => {
   const current =
-    "?page=2&per_page=50&filter=blocked&days=1&qa=needs_fixes&issue=verifier&owner=user_42&group=owner&task=task_7&panels=history%2Call-versions&source=slack";
+    "?page=2&per_page=50&filter=needs_work&issue=verifier&owner=user_42&group=owner&task=task_7&panels=history%2Call-versions&source=slack";
   const params = new URLSearchParams(deliveryViewQuery(current, { page: "3" }));
 
   assert.deepEqual(Object.fromEntries(params), {
     page: "3",
     per_page: "50",
-    filter: "blocked",
-    days: "1",
-    qa: "needs_fixes",
+    filter: "needs_work",
     issue: "verifier",
     owner: "user_42",
     group: "owner",

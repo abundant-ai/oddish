@@ -2062,7 +2062,7 @@ Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
 `per_page` (10, 25, 50, or 100 rows; defaults to 25),
-`filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
+`filter`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
 reads these directly with `useSearchParams`; native history updates preserve
 Back/Forward behavior without refetching the already-loaded full board.
@@ -2102,14 +2102,14 @@ review counts and filters both classify the loaded task rows with
 `taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
 trials. Drawer navigation retains the selected review group. Unreviewed includes
 missing and outdated reviews, and remains visible when every task is unreviewed.
-Delivery `filter` defaults to `outstanding`; `filter=all` restores the complete
-inventory. A `task` link resolves against the inventory (ID before legacy name)
+Delivery `filter` defaults to `all`; state counts filter the task queue using
+`needs_work`, `qa_incomplete`, `awaiting_signoff`, and `ready`. A `task` link resolves against the inventory (ID before legacy name)
 and keeps that row visible across filters, pagination, and sign-off refreshes.
 Expanded delivery tasks show unresolved findings and failed checks first;
 acknowledged findings and waived checks share a collapsed record. Individual
 findings replace the duplicate `no_must_fix` explanation when findings exist.
 The board derives delivery blockers independently of review status and recorded
-sign-off. Review filters, passed checks, and history use native disclosures;
+sign-off. Passed checks and history use native disclosures;
 history remains mounted so board refreshes preserve its open versions.
 
 Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
@@ -2212,20 +2212,27 @@ Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
 
 
-Delivery overview uses the full board for current readiness, owner review
-outcomes (including completed tasks), and open/acknowledged finding counts;
-table filters never change these counts. Owner bars derive disjoint outcomes
-through `deliveryOwnerOutcome`: red for unresolved findings or rejected QA,
-green for accepted QA, grey only for rejected QA with at least one finding,
-all findings acknowledged, and human sign-off on the displayed version. Amber
-means QA is incomplete, missing, failed, or outdated. Sign-off totals are
-shown separately from QA outcomes and do not imply every delivery check passes.
-Selecting an owner shows all their tasks, including completed work. The daily
-history remains delivery-readiness history; it does not infer past owner outcomes. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
-preserves disclosure state as comma-separated panel IDs, with `!` for explicit
-collapse of a default-open section; drafts, dialogs, and bulk selection stay local.
-The board response includes `progress_history`: at most 30 daily observations
-(latest per UTC day). The page adds no request or polling timer for this chart.
+Delivery overview and task rows use `deliveryTaskState` for one exclusive state:
+open findings or a failed rejection/task-existence check need work; other failing
+automated requirements mean QA incomplete; tasks with remaining human checks need
+sign-off; ready requires the board's version-specific readiness. Recorded QA age
+does not override delivery requirements, and approved exceptions can satisfy them.
+The owner selector scopes current counts, the task queue, and recorded progress;
+state and category filters narrow only the queue. Finalize always uses the full
+board's `ready`, including delivery-level checks. Grouping by owner or state omits
+the corresponding repeated table column. Bulk sign-off lives in task selection.
+
+The single step-line chart shows total and ready tasks. `progress_history` contains
+at most 30 daily observations (latest per UTC day), with no extra browser request
+or polling timer. New observations include `owners`, a map of user IDs (or
+`unassigned`) to `{task_count, ready}` covering all tasks, including ready tasks.
+It is stored inside the existing JSON counts column; no migration is needed.
+A null/missing `owners` means owner history was not recorded, while an absent user
+inside a recorded map means zero tasks. Never reconstruct past owners from today's
+assignments. Missing dates stay gaps; no observations show "No history yet".
+`owner` accepts a user ID, `mine`, or `unassigned`. `panels` preserves disclosure
+state as comma-separated panel IDs, with `!` for explicit collapse of a default-open
+section; drafts, dialogs, and bulk selection stay local.
 
 Apply core migration `delivery_progress_001` before deploying. The hosted
 `record_delivery_history` function samples active deliveries hourly through the
