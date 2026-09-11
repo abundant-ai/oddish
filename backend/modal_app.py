@@ -53,6 +53,9 @@ SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
 API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-api"
+# Keep database-heavy API reads near the hosted PostgreSQL database in US East.
+# This is a deploy-time setting; other deployments can select their DB's region.
+API_REGION = os.environ.get("ODDISH_MODAL_API_REGION", "us-east")
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"

@@ -96,6 +96,15 @@ async function tick(page: Page) {
   await page.clock.fastForward(15000);
 }
 
+test("streams the delivery placeholder while awaiting server data", async ({ page }) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?seed=slow", { waitUntil: "commit" });
+  await expect(page.getByRole("status", { name: "Loading deliveries" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "Loading deliveries" })).toBeHidden();
+  await expect(page.getByText("Task A", { exact: true })).toBeVisible();
+  expect(state.reads.board).toBe(0);
+});
+
 test("expanded history sees completed review on the board refresh", async ({
   page,
 }) => {
