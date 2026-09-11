@@ -456,8 +456,8 @@ preserving published verdicts, newer audits, and work in other experiments.
 
 Delivery boards expose the latest QA run's evidence coverage and completion time.
 `oddish.core.delivery_qa` compares its pinned solver/baseline evidence and source
-audit with the current default version, using the same eligibility clauses and
-evidence serialization as QA admission. A recent timestamp alone does not make
+audit with the current default version, using the same eligibility clauses,
+setup-failure-without-work filter, and evidence serialization as QA admission. A recent timestamp alone does not make
 a result current. The board's seven-day/24-hour counter includes current accepted
 and rejected results, excluding execution failures and in-flight runs; it does
 not change the existing delivery sign-off requirements.
@@ -1187,7 +1187,7 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   a bare `glm-5.3` keeps routing to z.ai and selecting Geometric takes an
   explicit `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule
   Fireworks uses to take over GLM/MiniMax/Kimi ids.
-- Geometric is also the one provider with a **served-model allowlist**
+- Geometric also has a **served-model allowlist**
   (`_GEOMETRIC_SERVED_MODELS`), because a vLLM process serves exactly one
   `--served-model-name`, and because `geometric/<foreign-id>` would otherwise
   reach litellm as `openai/<foreign-id>`, whose default route is public OpenAI.
@@ -1195,6 +1195,29 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`require_geometric_served_model_id`), never in `normalize_trial_model`,
   which must stay total for reads over stored rows whose model has since left
   the set. Keep the set in sync with `--served-model-name`.
+- Fireworks and DeepSeek are **curated** at sweep submit: unknown short ids
+  422 unless `allow_unknown_model` / `--allow-unknown-model`. Aliases live in
+  `_FIREWORKS_SHORT_MODEL_IDS` / `_DEEPSEEK_MODEL_ALIASES`, with optional
+  private overlays via `ODDISH_MODEL_CATALOG_OVERLAY`. A bare curated id
+  (e.g. `deepseek-v4-flash`) auto-pins to Fireworks when listed there, else
+  DeepSeek. Provider NotFound/auth with no real agent work settles FAILED (not
+  SUCCESS) and is excluded from QA. List spellings with `oddish models`.
+  Self-host may set `ODDISH_ENFORCE_MODEL_CREDENTIALS=1` to 422 when the API
+  process lacks the provider key; hosted API containers leave it off.
+- **The API owns model resolution, and resolution is credential-independent.**
+  `auto_resolve_curated_model` is a pure function of
+  `(agent, model, explicit_provider)` plus the curated alias tables. It must
+  never consult `has_provider_credential` or any other environment read: it
+  runs on whichever API container serves the request, and hosted containers do
+  not all carry the same provider secrets, so a credential-dependent answer
+  makes both the stored model and the sweep's idempotency fingerprint depend on
+  where the request landed (an honest retry then 409s). Credential visibility
+  belongs only in reporting (`list_curated_models`) and in the opt-in
+  `ODDISH_ENFORCE_MODEL_CREDENTIALS` *rejection* — neither rewrites an id.
+  The CLI correspondingly submits the model spelling the user typed and never
+  pins a provider prefix of its own; `--provider` / YAML `provider:` remain the
+  deliberate pin. `POST /tasks/sweep` fingerprints the raw client body with
+  `compute_request_hash` **before** `validate_sweep_submission` mutates it.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
