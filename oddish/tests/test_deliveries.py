@@ -1431,3 +1431,72 @@ async def test_verdict_timestamp_ties_agree_between_board_and_history(session, s
         assert _checks(board, task.id)["verdict_ok"].status == ("pass" if version == v2 else "fail")
         history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
         assert history.verdict_version_id == v2.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "newer_run",
+    [
+        "deleted",
+        "failed",
+        "classification",
+        "unversioned",
+        "audit",
+        "superseded",
+        "unfinished_timestamp",
+    ],
+)
+async def test_member_verdict_lookup_preserves_eligibility(session, newer_run):
+    from datetime import timedelta
+    from sqlalchemy import select
+    from oddish.db import utcnow
+
+    task, v1, experiment = await _green_task(session, "member-verdict")
+    first = await session.scalar(
+        select(TrialModel).where(TrialModel.task_id == task.id, TrialModel.kind == "qa")
+    )
+    first.created_at = utcnow() - timedelta(days=3)
+    first.finished_at = utcnow() - timedelta(days=2)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    newer = _trial(task, experiment, v2.id, kind="qa")
+    # Completion takes precedence even when creation is older than the first.
+    newer.created_at = utcnow() - timedelta(days=4)
+    newer.finished_at = utcnow() - timedelta(days=1)
+    if newer_run == "deleted":
+        newer.deleted_at = utcnow()
+    elif newer_run == "failed":
+        newer.status = TrialStatus.FAILED
+    elif newer_run == "classification":
+        newer.harbor_config = {"analysis_payload": {"with_verdict": False}}
+    elif newer_run == "unversioned":
+        newer.task_version_id = None
+    elif newer_run == "audit":
+        newer.kind = "audit"
+    elif newer_run == "superseded":
+        # Historical verdict provenance still includes superseded QA runs.
+        newer.superseded_by_trial_id = first.id
+    elif newer_run == "unfinished_timestamp":
+        newer.created_at = utcnow() - timedelta(days=1)
+        newer.finished_at = None
+    session.add(newer)
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="member-verdict", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    expected = v2 if newer_run in {"superseded", "unfinished_timestamp"} else v1
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery.id, org_id=ORG
+        )
+        assert _checks(board, task.id)["verdict_ok"].status == (
+            "pass" if version == expected else "fail"
+        )
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == expected.id

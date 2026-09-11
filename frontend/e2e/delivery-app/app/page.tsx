@@ -12,6 +12,7 @@ export default async function Page({
 }) {
   const search = await searchParams;
   const { seed } = search;
+  if (seed === "slow") await new Promise((resolve) => setTimeout(resolve, 3000));
   const params = new URLSearchParams(
     Object.entries(search).filter(
       (entry): entry is [string, string] => entry[1] !== undefined
