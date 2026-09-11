@@ -1274,14 +1274,27 @@ function DeliveryBoardContent({
       `${pathname}${nextSearch}${window.location.hash}`
     );
   }
+  // Bulk selection, keyed by delivery_task_id.
+  const [selected, setSelected] = useState<Map<string, DeliverySelectionItem>>(
+    new Map()
+  );
   const query = deliveryPageQuery(searchParams);
   const resourceKey = `/api/deliveries/${encodeURIComponent(deliveryId)}/view${query}`;
   const { data, error, isValidating, mutate } = useSWR<
-    DeliveryPageResponse & { requestKey: string; fetchedAt: number }
+    DeliveryPageResponse & {
+      requestKey: string;
+      fetchedAt: number;
+      selection?: DeliverySelectionItem[];
+    }
   >(
     enabled ? resourceKey : null,
     async (key: string) => ({
       ...(await fetcher(key)),
+      // Refresh off-page selection metadata with the board as well. A failed
+      // selection read leaves the entire previous response marked stale.
+      selection: selected.size
+        ? await fetcher<DeliverySelectionItem[]>(key.replace(/\/view(?=\?|$)/, "/selection"))
+        : undefined,
       requestKey: key,
       fetchedAt: Date.now(),
     }),
@@ -1354,10 +1367,6 @@ function DeliveryBoardContent({
     DeliverySelectionItem[]
   >([]);
   const [notice, setNotice] = useState<string | null>(null);
-  // Bulk selection, keyed by delivery_task_id.
-  const [selected, setSelected] = useState<Map<string, DeliverySelectionItem>>(
-    new Map()
-  );
   const pendingHistory = useRef(
     new Map<string, Promise<TaskQAHistoryResponse>>()
   );
@@ -1621,9 +1630,38 @@ function DeliveryBoardContent({
   const pagedTasks = data.tasks;
   const bulkable = isAdmin && !frozen;
   const matchingIds = new Set(data.matching_task_ids);
-  const selectedRows = [...selected.values()].filter((row) =>
-    matchingIds.has(row.delivery_task_id)
+  const currentSelection = new Map(
+    data.selection?.map((row) => [row.delivery_task_id, row])
   );
+  for (const row of data.tasks) {
+    currentSelection.set(row.delivery_task_id, {
+      delivery_task_id: row.delivery_task_id,
+      task_id: row.task_id,
+      task_name: row.task_name,
+      version_id: row.version_id ?? null,
+      version: row.version ?? null,
+      state: deliveryTaskState(row),
+      qa_status: row.qa.status,
+      can_sign_off:
+        deliveryTaskState(row) === "awaiting_signoff" &&
+        row.checks.some((c) => c.key === "signoff" && c.status === "fail"),
+    });
+  }
+  const selectedRows = [...selected.values()]
+    .filter((row) => matchingIds.has(row.delivery_task_id))
+    .map((row) => {
+      const current = currentSelection.get(row.delivery_task_id);
+      return current
+        ? {
+            ...current,
+            // Keep sign-off tied to the version the user selected.
+            version_id: row.version_id,
+            version: row.version,
+            can_sign_off:
+              current.version_id === row.version_id && current.can_sign_off,
+          }
+        : row;
+    });
   const canSignOffSelection =
     !changingView &&
     selectedRows.length > 0 &&
