@@ -5544,3 +5544,38 @@ def test_antigravity_environment_hosts_span_install_and_model():
     )  # manifest
     assert "storage.googleapis.com" in hosts  # binary tarball
     assert "generativelanguage.googleapis.com" in hosts  # ...and inference works
+
+
+def test_store_trial_results_fails_provider_not_found_without_work(monkeypatch):
+    """Verifier reward 0 plus a provider NotFound and no tokens must be FAILED."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=0.0,
+        error="NotFoundError: The model fireworks/missing does not exist",
+        exit_code=-1,
+        duration_sec=2.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="NotFoundError",
+        input_tokens=0,
+        output_tokens=0,
+        has_trajectory=False,
+        total_steps=0,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.reward is None
+    assert trial.finished_at is not None

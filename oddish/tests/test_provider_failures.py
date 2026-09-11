@@ -8,7 +8,10 @@ retryable, burning 6/6 attempts per job and re-hitting the blocked endpoint
 
 from __future__ import annotations
 
-from oddish.workers.queue.provider_failures import is_permanent_provider_failure
+from oddish.workers.queue.provider_failures import (
+    is_permanent_provider_failure,
+    is_setup_failure_without_work,
+)
 
 
 # The exact string prod recorded on 6,155 QA jobs.
@@ -72,3 +75,38 @@ def test_403_inside_a_larger_message_still_matches():
         is_permanent_provider_failure(f"QA task-abc FAILED: {AZURE_CONTENT_POLICY_403}")
         is True
     )
+
+
+def _setup_kwargs(**overrides):
+    base = dict(
+        exception_type="NotFoundError",
+        error="NotFoundError: The model does not exist",
+        input_tokens=None,
+        output_tokens=None,
+        has_trajectory=False,
+        total_steps=None,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_not_found_without_work_is_setup_failure():
+    assert is_setup_failure_without_work(**_setup_kwargs()) is True
+
+
+def test_file_not_found_is_not_a_provider_setup_failure():
+    assert (
+        is_setup_failure_without_work(
+            **_setup_kwargs(
+                exception_type="FileNotFoundError",
+                error="FileNotFoundError: missing reward file",
+            )
+        )
+        is False
+    )
+
+
+def test_not_found_after_real_work_is_not_setup_only():
+    assert is_setup_failure_without_work(**_setup_kwargs(input_tokens=12)) is False
+    assert is_setup_failure_without_work(**_setup_kwargs(has_trajectory=True)) is False
+    assert is_setup_failure_without_work(**_setup_kwargs(total_steps=3)) is False

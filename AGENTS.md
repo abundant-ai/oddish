@@ -1201,6 +1201,8 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   GLM/MiniMax/Kimi stay native unless prefixed `fireworks/`. `dsh` is locked
   to DeepSeek. Resolution is `(agent, model, provider)` only — never process
   credentials. `POST /tasks/sweep` hashes the raw body before that rewrite.
+  Provider NotFound/auth with no tokens, trajectory, or steps settles FAILED
+  and is dropped from QA and delivery evidence.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in

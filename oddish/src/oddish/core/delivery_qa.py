@@ -23,6 +23,7 @@ from oddish.db import (
 )
 from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.schemas import DeliveryQAStatus
+from oddish.workers.queue.provider_failures import is_setup_failure_without_work
 
 
 async def delivery_qa_statuses(
@@ -61,7 +62,8 @@ async def delivery_qa_statuses(
         )
     ).all()
     # Fetch only bounded evidence fields, never trajectories or analyses, and
-    # share admission's exclusions instead of approximating "eligible" here.
+    # share admission's exclusions (SQL clauses plus setup-failure-without-work)
+    # instead of approximating "eligible" here.
     evidence: dict[str, list[TrialModel]] = defaultdict(list)
     sources = (
         await session.execute(
@@ -75,6 +77,11 @@ async def delivery_qa_statuses(
                     TrialModel.reward,
                     TrialModel.has_trajectory,
                     TrialModel.finished_at,
+                    TrialModel.error_message,
+                    TrialModel.input_tokens,
+                    TrialModel.output_tokens,
+                    TrialModel.total_steps,
+                    TrialModel.result,
                 )
             )
             .where(
@@ -85,7 +92,7 @@ async def delivery_qa_statuses(
         )
     ).all()
     for source, eligible in sources:
-        if eligible or is_nop_oracle_agent(source.agent):
+        if counts_as_delivery_qa_source(source, sql_eligible=bool(eligible)):
             evidence[source.task_version_id].append(source)
     return {
         qa.task_id: evaluate_delivery_qa(
@@ -96,6 +103,31 @@ async def delivery_qa_statuses(
         )
         for qa in latest
     }
+
+
+def counts_as_delivery_qa_source(
+    trial: TrialModel, *, sql_eligible: bool
+) -> bool:
+    """True when delivery should treat ``trial`` as current QA evidence.
+
+    Matches ``qa_eligible_trial_ids``: SQL eligibility (or a nop/oracle
+    baseline) minus provider NotFound/auth that never did agent work.
+    """
+    result = trial.result
+    harbor = result.get("harbor_exception") if isinstance(result, dict) else None
+    exception_type = (
+        harbor.get("exception_type") if isinstance(harbor, dict) else None
+    )
+    if is_setup_failure_without_work(
+        exception_type=str(exception_type) if exception_type else None,
+        error=trial.error_message,
+        input_tokens=trial.input_tokens,
+        output_tokens=trial.output_tokens,
+        has_trajectory=trial.has_trajectory,
+        total_steps=trial.total_steps,
+    ):
+        return False
+    return sql_eligible or is_nop_oracle_agent(trial.agent)
 
 
 def evaluate_delivery_qa(
