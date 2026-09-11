@@ -208,27 +208,29 @@ export function useTaskOpenReader(
         (open?.selected_version?.pending_count ?? 0) > 0 ? 30000 : 0,
     }
   );
-  // Agent trials drive the cards/matrix; the platform's own QA/audit trials
-  // render separately as the QA strip.
-  const trialsForVersion = useMemo(
+  // Both agent results and QA rows use the expanded payload when requested.
+  const selectedVersionTrials = useMemo(
     () =>
       (fullDetail?.task.id === taskId
         ? (fullDetail.task.trials ?? [])
         : (task?.trials ?? [])
       ).filter(
         (trial) =>
-          isAgentTrial(trial) &&
-          (fullDetail?.task.id !== taskId ||
-            (trial.task_version_id ?? null) === selectedVersionId)
+          fullDetail?.task.id !== taskId ||
+          (trial.task_version_id ?? null) === selectedVersionId
       ),
     [fullDetail, taskId, task?.trials, selectedVersionId]
   );
+  const trialsForVersion = useMemo(
+    () => selectedVersionTrials.filter(isAgentTrial),
+    [selectedVersionTrials]
+  );
   const analysisTrialsForVersion = useMemo(
     () =>
-      (task?.trials ?? []).filter(
+      selectedVersionTrials.filter(
         (t) => !isAgentTrial(t) && !t.superseded_by_trial_id
       ),
-    [task?.trials]
+    [selectedVersionTrials]
   );
   const handleSetDefaultVersion = useCallback(async () => {
     if (!task || !open || !selectedVersion || selectedVersion.is_current) {

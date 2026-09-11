@@ -102,6 +102,30 @@ test("all trials load only on request, preserve version scope, and retry after f
                   name: "selected-version-trial",
                   task_version_id: fixture.selected_version!.id,
                 },
+                ...["qa", "audit", "analyze"].flatMap((kind) => [
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `selected-${kind}`,
+                    name: `selected-${kind}`,
+                    kind,
+                    task_version_id: fixture.selected_version!.id,
+                  },
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `other-${kind}`,
+                    name: `other-${kind}`,
+                    kind,
+                    task_version_id: "other-version",
+                  },
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `superseded-${kind}`,
+                    name: `superseded-${kind}`,
+                    kind,
+                    task_version_id: fixture.selected_version!.id,
+                    superseded_by_trial_id: `selected-${kind}`,
+                  },
+                ]),
                 {
                   ...fixtureTask.trials![0],
                   id: "other-version",
@@ -131,5 +155,15 @@ test("all trials load only on request, preserve version scope, and retry after f
   await expect(
     page.getByRole("button", { name: /other-version-trial/ })
   ).toHaveCount(0);
+  for (const kind of ["qa", "audit", "analyze"]) {
+    await expect(
+      page.getByRole("button", { name: new RegExp(`selected-${kind}`) })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`other-${kind}|superseded-${kind}`),
+      })
+    ).toHaveCount(0);
+  }
   await expect(load).toHaveCount(0);
 });
