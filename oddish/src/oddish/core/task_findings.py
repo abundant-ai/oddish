@@ -105,6 +105,7 @@ async def task_defect_items(
             }
         )
 
+    version: TaskVersionModel
     for vid, version in versions.items():
         for report in version.reported_findings or []:
             add(

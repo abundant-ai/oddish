@@ -959,7 +959,7 @@ async def _compute_board(
 
     rows: list[DeliveryTaskBoardRow] = []
     for member in members:
-        task = tasks.get(member.task_id)
+        task: TaskModel | None = tasks.get(member.task_id)
         if task is None or task.deleted_at is not None:
             rows.append(
                 DeliveryTaskBoardRow(
@@ -987,7 +987,7 @@ async def _compute_board(
                 )
             )
             continue
-        version = versions.get(task.current_version_id or "")
+        version: TaskVersionModel | None = versions.get(task.current_version_id or "")
         checks: list[DeliveryCheckResult] = []
 
         def automated(key: str, passed: bool, detail: str) -> None:

@@ -132,7 +132,7 @@ async def delivery_page(
             else set()
         )
         if version_ids:
-            versions = (
+            versions: list[TaskVersionModel] = (
                 await session.scalars(
                     select(TaskVersionModel)
                     .where(TaskVersionModel.id.in_(version_ids))
