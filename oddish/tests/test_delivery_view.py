@@ -128,6 +128,34 @@ async def test_focus_outside_filters_hydrates_exact_finding_and_selection(
 
 
 @pytest.mark.asyncio
+async def test_expanding_a_task_preserves_sibling_findings_and_compact_board(
+    session, inventory
+):
+    delivery, tasks = inventory
+    compact = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG, include_details=False
+    )
+    original = compact.model_dump_json()
+    for task in (tasks[0], tasks[3]):
+        with count_statements() as statements:
+            page = await delivery_page(
+                session, compact, DeliveryViewQuery(task=task.id, per_page=10)
+            )
+        assert len(statements) == 2  # One version read and one focused findings read.
+        assert compact.model_dump_json() == original
+        siblings_with_findings = 0
+        for row in page.tasks:
+            before = next(r for r in compact.tasks if r.task_id == row.task_id)
+            if row.task_id == task.id:
+                assert row.defects[0].finding["description"] == "evidence " * 15000
+            else:
+                assert row.defects == before.defects
+                siblings_with_findings += bool(row.defects)
+                assert all("description" not in d.finding for d in row.defects)
+        assert siblings_with_findings == 3
+
+
+@pytest.mark.asyncio
 async def test_filters_counts_and_grouping_agree_with_full_board(session, inventory):
     delivery, _ = inventory
     board = await get_delivery_board_core(

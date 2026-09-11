@@ -123,38 +123,34 @@ async def delivery_page(
     if focus is not None:
         page = rows.index(focus) // view.per_page + 1
     visible = rows[(page - 1) * view.per_page : page * view.per_page]
-    if not board.frozen:
-        # Only the expanded version needs full evidence. The compact pass and this
-        # hydration use the same collector, defect IDs and precedence rules.
-        version_ids = (
-            {focus.version_id}
-            if focus and focus.version_id and focus.defects
-            else set()
-        )
-        if version_ids:
-            versions: list[TaskVersionModel] = (
-                await session.scalars(
-                    select(TaskVersionModel)
-                    .where(TaskVersionModel.id.in_(version_ids))
-                    .options(
-                        load_only(
-                            TaskVersionModel.id,
-                            TaskVersionModel.pre_trial,
-                            TaskVersionModel.reported_findings,
-                        )
+    if not board.frozen and focus and focus.version_id and focus.defects:
+        # Only the expanded version needs full evidence. The shared collector
+        # preserves defect IDs and precedence; sibling rows stay compact.
+        versions: list[TaskVersionModel] = (
+            await session.scalars(
+                select(TaskVersionModel)
+                .where(TaskVersionModel.id == focus.version_id)
+                .options(
+                    load_only(
+                        TaskVersionModel.id,
+                        TaskVersionModel.pre_trial,
+                        TaskVersionModel.reported_findings,
                     )
-                    .execution_options(include_deleted=True)
                 )
-            ).all()
-            findings = await task_defect_items(session, {v.id: v for v in versions})
-            for row in visible:
-                bodies = {
-                    d["id"]: d["finding"] for d in findings.get(row.version_id, [])
-                }
-                row.defects = [
-                    d.model_copy(update={"finding": bodies.get(d.id)})
-                    for d in row.defects
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+        findings = await task_defect_items(session, {v.id: v for v in versions})
+        bodies = {d["id"]: d["finding"] for d in findings.get(focus.version_id, [])}
+        expanded = focus.model_copy(
+            update={
+                "defects": [
+                    d.model_copy(update={"finding": bodies.get(d.id, d.finding)})
+                    for d in focus.defects
                 ]
+            }
+        )
+        visible = [expanded if row is focus else row for row in visible]
     return DeliveryPageResponse(
         **board.model_dump(exclude={"tasks"}),
         tasks=[

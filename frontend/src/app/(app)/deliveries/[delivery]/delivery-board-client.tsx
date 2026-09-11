@@ -691,6 +691,7 @@ function TaskRow({
           >
             <Checkbox
               checked={selected}
+              disabled={busy}
               onCheckedChange={() => onToggleSelect()}
               aria-label={`Select ${row.task_name}`}
             />
@@ -1268,7 +1269,7 @@ function DeliveryBoardContent({
   }
   const query = deliveryPageQuery(searchParams);
   const resourceKey = `/api/deliveries/${encodeURIComponent(deliveryId)}/view${query}`;
-  const { data, error, mutate } = useSWR<
+  const { data, error, isValidating, mutate } = useSWR<
     DeliveryPageResponse & { requestKey: string; fetchedAt: number }
   >(
     enabled ? resourceKey : null,
@@ -1313,7 +1314,8 @@ function DeliveryBoardContent({
       void mutate();
     }
   }, [enabled, cache, resourceKey, mutate]);
-  const changingView = Boolean(data && data.requestKey !== resourceKey);
+  const showingPreviousView = Boolean(data && data.requestKey !== resourceKey);
+  const changingView = showingPreviousView && isValidating;
   async function refreshBoard() {
     const isDeliveryPage = (key: unknown) =>
       typeof key === "string" &&
@@ -1520,8 +1522,10 @@ function DeliveryBoardContent({
       className="text-destructive flex items-center gap-2 text-sm"
     >
       <p>
-        Failed to refresh delivery: {error.message}. Previously loaded delivery
-        details may be out of date.
+        {showingPreviousView
+          ? "Could not load the requested delivery view. Showing the previously loaded tasks."
+          : "Failed to refresh delivery. Previously loaded delivery details may be out of date."}{" "}
+        {error.message}
       </p>
       <Button
         variant="outline"
@@ -1555,6 +1559,10 @@ function DeliveryBoardContent({
     );
   }
 
+  // Rows and bulk selection belong to the response's query, even when a newer
+  // URL request fails. Filter controls continue to describe the requested URL.
+  const displayedQuery = data.requestKey.split("?")[1] ?? "";
+  const displayedView = parseDeliveryView(new URLSearchParams(displayedQuery));
   const frozen = data.frozen;
   const owners = new Map(Object.entries(data.owners));
   const focusedTask = data.tasks.find(
@@ -1562,9 +1570,9 @@ function DeliveryBoardContent({
   );
   const focusOutsideFilters = data.focus_outside_filters;
   const groupLabel = (row: DeliveryTaskBoardRow) =>
-    groupBy === "owner"
+    displayedView.groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
-      : groupBy === "state"
+      : displayedView.groupBy === "state"
         ? DELIVERY_STATES[deliveryTaskState(row)].label
         : row.qa_work.issue_categories[0]
           ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
@@ -1669,7 +1677,7 @@ function DeliveryBoardContent({
     setActionError(null);
     try {
       const rows: DeliverySelectionItem[] = await fetcher(
-        `/api/deliveries/${encodeURIComponent(deliveryId)}/selection${query}`
+        `/api/deliveries/${encodeURIComponent(deliveryId)}/selection${displayedQuery ? `?${displayedQuery}` : ""}`
       );
       setSelected(new Map(rows.map((row) => [row.delivery_task_id, row])));
     } catch (error) {
@@ -1803,7 +1811,7 @@ function DeliveryBoardContent({
         )}
       </section>
 
-      <DeliveryOverview board={data} ownerFilter={ownerFilter} />
+      <DeliveryOverview board={data} ownerFilter={displayedView.ownerFilter} />
 
       <section>
         <div>
@@ -2056,10 +2064,10 @@ function DeliveryBoardContent({
                         )}
                         <TableHead className="w-10" />
                         <TableHead>Task</TableHead>
-                        {groupBy !== "state" && (
+                        {displayedView.groupBy !== "state" && (
                           <TableHead className="w-40">State</TableHead>
                         )}
-                        {groupBy !== "owner" && (
+                        {displayedView.groupBy !== "owner" && (
                           <TableHead className="w-28">Owner</TableHead>
                         )}
                         <TableHead className="w-28 text-right">
@@ -2073,7 +2081,7 @@ function DeliveryBoardContent({
                     <TableBody>
                       {pagedTasks.map((row, index) => (
                         <Fragment key={row.delivery_task_id}>
-                          {groupBy !== "none" &&
+                          {displayedView.groupBy !== "none" &&
                             (index === 0 ||
                               groupLabel(pagedTasks[index - 1]) !==
                                 groupLabel(row)) && (
@@ -2082,7 +2090,8 @@ function DeliveryBoardContent({
                                   colSpan={
                                     (bulkable ? 7 : 6) -
                                     Number(
-                                      groupBy === "owner" || groupBy === "state"
+                                      displayedView.groupBy === "owner" ||
+                                        displayedView.groupBy === "state"
                                     )
                                   }
                                   className="bg-muted text-xs font-medium"
@@ -2093,7 +2102,7 @@ function DeliveryBoardContent({
                             )}
                           <TaskRow
                             pendingChecks={pendingChecks}
-                            groupBy={groupBy}
+                            groupBy={displayedView.groupBy}
                             busy={busy || changingView}
                             canEditWork={
                               !frozen &&

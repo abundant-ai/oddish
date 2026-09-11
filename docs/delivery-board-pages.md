@@ -23,6 +23,8 @@ PostgreSQL for trial finding identity fields instead of full descriptions and
 metadata. The shared collector preserves retained reports, legacy tiers, deleted
 and superseded reporting trials, defect IDs, and acknowledgment decisions.
 Full trial evidence is loaded only for the expanded version, after pagination.
+The expanded row is copied for the response; sibling finding identities and the
+input compact board remain unchanged.
 
 This is not a constant-time database read: pre-trial audit JSON is still needed
 for the existing audit fingerprint, retained findings and global review facts
@@ -89,6 +91,12 @@ then refreshes the mounted view. It retains displayed data if that refresh fails
 and exposes the existing stale-data warning and retry. Each acknowledged finding
 shows Saving through its write and Updating through the subsequent read; unrelated
 actions can proceed after its write finishes.
+
+A failed page/filter request ends the loading indicator and keeps the displayed
+rows usable. Their grouping, owner summary and Select all request use the last
+successful response's query. The URL and filter controls retain the requested
+view so Retry can load it without losing agent parameters. No extra request or
+separate React state is needed to maintain this distinction.
 
 History prefetch begins after 150 ms of row hover or keyboard focus, with at most
 two active speculative reads. Opening history shares its pending request.

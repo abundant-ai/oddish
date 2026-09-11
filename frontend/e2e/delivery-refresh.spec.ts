@@ -480,6 +480,92 @@ test("a failed first board load can recover without navigating away", async ({
   expect(state.writes).toEqual([]);
 });
 
+for (const query of ["page=2", "filter=ready&group=owner&owner=unassigned"]) {
+  test(`failed navigation preserves usable displayed rows and selection: ${query}`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks = Array.from({ length: 12 }, (_, i) => ({
+      ...taskRow(),
+      task_id: `task-${i}`,
+      task_name: `Task ${i}`,
+      delivery_task_id: `member-${i}`,
+      version_id: `version-${i}`,
+    }));
+    await page.goto("/?per_page=10&source=agent");
+    const first = page.getByRole("checkbox", {
+      name: "Select Task 0",
+      exact: true,
+    });
+    await expect(first).toBeEnabled();
+    const selectionQueries: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith("/selection"))
+        selectionQueries.push(url.search);
+    });
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      await gate;
+      return route.fallback();
+    });
+    state.failBoard = true;
+    await page.evaluate(
+      (query) =>
+        window.history.pushState(
+          null,
+          "",
+          `?per_page=10&source=agent&${query}`
+        ),
+      query
+    );
+    await expect(page.getByRole("status")).toHaveText(
+      "Updating delivery view…"
+    );
+    await expect(first).toBeDisabled();
+    release();
+    await expect(page.locator("main").getByRole("alert")).toContainText(
+      "Showing the previously loaded tasks"
+    );
+    await expect(page.getByText("Updating delivery view…")).toHaveCount(0);
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    await expect(first).toBeEnabled();
+    await expect(
+      page.getByRole("columnheader", { name: "Owner", exact: true })
+    ).toBeVisible();
+    await page
+      .getByRole("checkbox", { name: "Select all tasks in this view" })
+      .click();
+    await expect(page.getByText("12 selected", { exact: true })).toBeVisible();
+    expect(selectionQueries).toEqual(["?per_page=10"]);
+    expect(state.reads).toEqual({ board: 2, history: 0 });
+    expect(state.writes).toEqual([]);
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    state.failBoard = false;
+    await page.getByRole("button", { name: "Retry delivery" }).click();
+    await expect(page.getByText("Updating delivery view…")).toBeVisible();
+    await expect(first).toBeDisabled();
+    release();
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+    await expect(page.getByText("Updating delivery view…")).toHaveCount(0);
+    await expect(first).toHaveCount(0);
+    if (query === "page=2") {
+      await expect(
+        page.getByRole("checkbox", { name: "Select Task 10", exact: true })
+      ).toBeEnabled();
+    } else {
+      await expect(page.getByText("No tasks match this filter.")).toBeVisible();
+    }
+    expect(state.reads.board).toBe(3);
+    await expect(page).toHaveURL(new RegExp(`source=agent&${query}`));
+  });
+}
+
 test("bulk sign-off keeps the versions shown when confirmation opened", async ({
   page,
 }) => {
