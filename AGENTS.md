@@ -1680,6 +1680,12 @@ Apply core migration `worker_resources_001` before this worker deploy. It seeds
 `worker_resource_rollout` with fraction zero, max_workers two, and configuration
 `candidate-cpu0.6-mem3072`. Change the row through `backend/worker_resource_rollout.py`
 or SQL; it is read before every hosted claim, including batch continuations.
+After a successful worker deployment, `staging-deploy.yml` applies a 1% sample
+to `oddish-staging` in Modal environment `staging`, with the candidate pinned to
+0.6 cores / 3072 MiB and a two-worker cap. The GitHub `staging` environment variable
+`STAGING_WORKER_RESOURCE_FRACTION` overrides the fraction on subsequent deploys;
+set it to `0` and run the existing live stop command to stop now and stay stopped
+across redeploys. Production and preview workflows do not enable the rollout.
 The candidate cohort is the first fraction of the 32-bit MD5 buckets of worker
 job IDs, restricted to ordinary agent trials (not probes), non-positive priority,
 default Harbor image, and default execution lane. Retries keep their bucket.

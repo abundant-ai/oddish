@@ -1,6 +1,8 @@
 # Worker reservation canary
 
-The shipped database row has `fraction=0`; no candidate jobs run until it is changed.
+The migration seeds the database row with `fraction=0`. Staging deployment enables
+a 1% CPU-only sample after the worker deploy succeeds. Production and preview
+deployments leave admission under manual control.
 The existing worker remains 1 physical CPU core and 3,072 MiB RAM. The candidate
 uses the same `_run_one_job` body, Harbor image, secrets, timeout, interruption
 protection, and task sandbox resource configuration. Only the worker reservation
@@ -34,6 +36,17 @@ ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=2
 Set them in the environment that runs `modal deploy deploy.py`. Their values are
 also delivered in the final deployment-owned secret, so older provider secrets
 cannot change the resource values used for cost recording inside a worker.
+
+`.github/workflows/staging-deploy.yml` pins the candidate to 0.6 cores, 3,072 MiB,
+and two containers, then calls the control command after a successful deployment.
+It uses `MODAL_APP_NAME=oddish-staging` and Modal environment `staging`, whose
+`oddish-staging-db` secret supplies the staging database connection. Each staging
+deploy applies a fraction of `0.01` unless the GitHub `staging` environment variable
+`STAGING_WORKER_RESOURCE_FRACTION` overrides it. Setting that variable to `0`
+keeps subsequent staging deploys stopped. For an immediate stop, also run the
+stop command below; changing the GitHub variable alone does not update the live
+database. Removing the override restores the 1% default on the next staging deploy.
+The production deployment workflow and migration default are unchanged.
 
 From `backend/`, display staging's live state (read-only):
 
@@ -196,7 +209,7 @@ actual savings from the rounded charges. Compare a longer CPU-only cohort with
 Modal's usage export before expanding or moving the live cohort to lower RAM.
 
 No delivery job was claimed and no staging or production rollout was enabled by
-these tests. The shipped candidate remains CPU-only, fraction 0, cap 2. A 1% live
+these tests. At that point the candidate was CPU-only, fraction 0, cap 2. A 1% live
 CPU-only comparison and production database-heartbeat measurements remain the
 next deployment step; the isolated lower-RAM result does not skip that gate.
 

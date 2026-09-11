@@ -96,6 +96,10 @@ jobs:
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "400"
       ODDISH_MODAL_MAX_WORKERS_PER_POLL: "400"
+      # CPU-only worker comparison; admission is enabled after deployment.
+      ODDISH_MODAL_WORKER_CANDIDATE_CPU: "0.6"
+      ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB: "3072"
+      ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS: "2"
       # Explicit documentation of the default (MODAL_APP_NAME != "oddish").
       ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS: "false"
     steps:
@@ -185,3 +189,12 @@ jobs:
         run: |
           uv sync --frozen
           uv run modal deploy deploy.py
+
+      - name: Configure staging worker resource sample
+        working-directory: backend
+        env:
+          # Set this staging environment variable to "0" to keep future deploys stopped.
+          ROLLOUT_FRACTION: ${{ vars.STAGING_WORKER_RESOURCE_FRACTION || '0.01' }}
+        run: |
+          uv run modal run --env staging worker_resource_rollout.py \
+            --fraction "$ROLLOUT_FRACTION" --max-workers 2
