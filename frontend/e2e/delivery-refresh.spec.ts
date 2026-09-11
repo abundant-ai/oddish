@@ -1632,3 +1632,33 @@ test("history starts on intent and opening consumes the same pending read", asyn
   await expect(current(page)).toBeVisible();
   expect(requests).toBe(1);
 });
+
+for (const count of [1, 11]) {
+  test(`refresh updates ${count} selected tasks and preserves selected versions`, async ({ page }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks = Array.from({ length: count }, (_, i) => ({
+      ...taskRow(), task_id: `task-${i}`, delivery_task_id: `member-${i}`, task_name: `Task ${i}`,
+    }));
+    await page.goto("/?per_page=10");
+    await page.getByRole("checkbox", { name: "Select all tasks in this view" }).click();
+    const signoff = page.getByRole("button", { name: "Sign off", exact: true });
+    await expect(signoff).toBeDisabled();
+    for (const row of state.board.tasks) row.checks[0].status = "pass";
+    await tick(page);
+    await expect(signoff).toBeEnabled();
+    const last = state.board.tasks[count - 1];
+    last.checks[0].status = "fail";
+    last.qa.status = "running";
+    await tick(page);
+    await expect(signoff).toBeDisabled();
+    await expect(page.getByRole("button", { name: `Rerun QA (${count - 1})` })).toBeVisible();
+    last.checks[0].status = "pass";
+    last.qa.status = "never";
+    last.version_id = "version-8";
+    last.version = 8;
+    await tick(page);
+    await expect(signoff).toBeDisabled();
+    await expect(page.getByRole("button", { name: `Rerun QA (${count})` })).toBeEnabled();
+    expect(state.writes).toEqual([]);
+  });
+}

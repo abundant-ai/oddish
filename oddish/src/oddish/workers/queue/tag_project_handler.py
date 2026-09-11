@@ -152,10 +152,14 @@ async def run_tag_project_job(*, payload: dict[str, Any]) -> dict[str, Any]:
                 recompute_version_effective_tags,
             )
 
+            # Match sweep/QA and the other projection modes: task before
+            # version. The task projection's UPDATE holds its row lock until
+            # commit; reversing these writes deadlocks a task-locked request
+            # that needs to claim an audit or lock the version for QA.
+            await recompute_task_browse_projection(session, task_id=str(task_id))
             await recompute_version_effective_tags(
                 session, task_id=str(task_id), version_id=target_id
             )
-            await recompute_task_browse_projection(session, task_id=str(task_id))
             summary["task_id"] = str(task_id)
             summary["tasks_recomputed"] = 1
             summary["versions_recomputed"] = 1
