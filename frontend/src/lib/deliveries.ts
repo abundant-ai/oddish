@@ -15,7 +15,7 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 };
 
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "No blocking defects found",
+  accepted: "Accepted",
   needs_fixes: "Blocking defects found",
   outdated: "Review needs refresh",
   queued: "Review queued",
