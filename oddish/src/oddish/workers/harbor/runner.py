@@ -135,6 +135,26 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # Compose agent-phase bridge below and remains unchanged for Modal and
 # single-container trials.
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
+# Every ``installed`` Harbor agent begins its install by asking the distro
+# package manager for curl (claude-code/opencode also want bash, nodejs, npm,
+# procps). That step runs under the ENVIRONMENT baseline like the rest of agent
+# setup, so on a closed task the mirrors have to be on the baseline too --
+# otherwise apt exits 100 "unable to fetch" and no agent is ever installed,
+# which is not distinguishable downstream from the agent failing the task
+# (3 LHTB trials died exactly this way once the blackhole was lifted, and 18
+# more hung on the blackhole itself, 2026-09-11).
+#
+# Slim Debian images are the common case; the Ubuntu and Alpine mirrors are
+# here because the same install step branches on apt-get/apk and a task may
+# ship either base.
+_SYSTEM_PACKAGE_HOSTS = (
+    "deb.debian.org",
+    "security.debian.org",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "ports.ubuntu.com",
+    "dl-cdn.alpinelinux.org",
+)
 # Gemini env the stock gemini-cli agent forwards: its transport base-URL keys
 # and its OAuth toggles. Both are single-sourced in model_hosts (the same source
 # the restricted-egress filter and host discovery read), so this fold cannot
@@ -1428,6 +1448,7 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1448,6 +1469,7 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """
     return [
         *OPENCODE_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1456,6 +1478,7 @@ def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts Gemini CLI needs during environment setup and agent execution."""
     return [
         *GEMINI_CLI_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *gemini_cli_transport_hosts(agent_config.env),
     ]
 
@@ -1470,6 +1493,7 @@ def _antigravity_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *ANTIGRAVITY_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *ANTIGRAVITY_RUNTIME_HOSTS,
         *outbound_hosts_for_model(
             agent_config.model_name,

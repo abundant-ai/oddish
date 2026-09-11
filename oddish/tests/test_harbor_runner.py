@@ -5588,3 +5588,35 @@ def test_ephemeral_harbor_receives_the_widened_baseline():
         "return serializes the environment config, or pinned-Harbor runs ship "
         "a closed baseline with no installer hosts"
     )
+
+
+def test_installer_hosts_include_the_distro_package_mirrors():
+    """Every installed agent's first install step is `apt-get install curl`
+    (or apk), which runs under the environment baseline. Without the mirrors a
+    closed task exits 100 "unable to fetch" and no agent is installed.
+    """
+    from oddish.workers.harbor.runner import (
+        _SYSTEM_PACKAGE_HOSTS,
+        _antigravity_environment_hosts,
+        _claude_code_environment_hosts,
+        _gemini_cli_environment_hosts,
+        _opencode_environment_hosts,
+    )
+
+    assert "deb.debian.org" in _SYSTEM_PACKAGE_HOSTS
+    agent_config = SimpleNamespace(
+        name="claude-code",
+        model_name="anthropic-hdo/claude-opus-5",
+        env={},
+        import_path=None,
+        kwargs={},
+    )
+    for resolve in (
+        _claude_code_environment_hosts,
+        _opencode_environment_hosts,
+        _gemini_cli_environment_hosts,
+        _antigravity_environment_hosts,
+    ):
+        hosts = resolve(agent_config)
+        missing = [h for h in _SYSTEM_PACKAGE_HOSTS if h not in hosts]
+        assert not missing, f"{resolve.__name__} is missing {missing}"
