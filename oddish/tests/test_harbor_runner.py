@@ -5537,3 +5537,54 @@ def test_antigravity_environment_hosts_span_install_and_model():
     )  # manifest
     assert "storage.googleapis.com" in hosts  # binary tarball
     assert "generativelanguage.googleapis.com" in hosts  # ...and inference works
+
+
+def test_widen_environment_baseline_grants_claude_code_install_hosts():
+    """Agent setup runs under the ENVIRONMENT baseline, so a closed task must
+    have the installer hosts on that baseline or the agent is never installed.
+    """
+    from harbor.models.trial.config import EnvironmentConfig
+
+    from oddish.workers.harbor.runner import (
+        _CLAUDE_CODE_INSTALLER_HOSTS,
+        widen_environment_baseline_for_agent_install,
+    )
+
+    env_config = EnvironmentConfig()
+    agent_config = SimpleNamespace(
+        name="claude-code",
+        model_name="anthropic-hdo/claude-opus-5",
+        env={},
+        import_path=None,
+    )
+    widen_environment_baseline_for_agent_install(
+        env_config=env_config,
+        agent="claude-code",
+        agent_config=agent_config,
+        task_path=Path("/tmp/does-not-need-to-exist"),
+    )
+    for host in _CLAUDE_CODE_INSTALLER_HOSTS:
+        assert host in env_config.extra_allowed_hosts, host
+
+
+def test_ephemeral_harbor_receives_the_widened_baseline():
+    """Regression: the ephemeral variant (``--harbor <sha>``) returns early and
+    serializes the environment config before the in-process widening ran, so a
+    closed task reached the sandbox with a bare no-network policy. apt and curl
+    blackholed instead of being refused and agent setup died on Harbor's 360 s
+    cap -- 23 of 47 LHTB trials, with no agent ever installed (2026-09-11).
+    """
+    import inspect
+
+    from oddish.workers.harbor import runner
+
+    source = inspect.getsource(runner._run_harbor_trial_async_impl)
+    widen_at = source.find("widen_environment_baseline_for_agent_install(")
+    ephemeral_at = source.find("run_ephemeral_harbor_trial(")
+    assert widen_at != -1, "the widening call must exist"
+    assert ephemeral_at != -1, "the ephemeral dispatch must exist"
+    assert widen_at < ephemeral_at, (
+        "the environment baseline must be widened BEFORE the ephemeral early "
+        "return serializes the environment config, or pinned-Harbor runs ship "
+        "a closed baseline with no installer hosts"
+    )

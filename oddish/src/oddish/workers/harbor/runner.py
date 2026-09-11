@@ -1745,6 +1745,119 @@ async def run_harbor_trial_async(
         )
 
 
+def widen_environment_baseline_for_agent_install(
+    *,
+    env_config: HarborEnvironmentConfig,
+    agent: str,
+    agent_config: Any,
+    task_path: Path,
+) -> None:
+    """Grant the agent's installer hosts on the ENVIRONMENT baseline.
+
+    Harbor installs an ``installed`` agent during ``_setup_agent()``, which
+    runs under the environment baseline -- the agent-phase allowlist only
+    takes effect around ``agent.run()``. A closed task (``[environment]
+    allow_internet=false`` -> a no-network baseline for every phase) therefore
+    has to widen the baseline, or the installer cannot be fetched at all.
+
+    This lives in one function because it must apply to EVERY way a trial can
+    reach Harbor. It used to be inline in the in-process path only, so a run
+    that pinned its own Harbor (``--harbor <sha>``, the ephemeral variant,
+    which returns early and serializes the environment config before this
+    point) silently skipped it: the sandbox came up with a bare no-network
+    policy, apt and curl blackholed rather than being refused, and agent setup
+    died on Harbor's 360 s cap. 23 of 47 LHTB trials failed that way with no
+    agent ever installed (2026-09-11).
+    """
+    # Claude Code downloads its CLI at agent-setup and calls its model
+    # endpoint during agent.run(). On closed-internet tasks, installer CDN
+    # hosts and custom model routes are not always in the task allowlist, so
+    # allow both via the environment baseline (which spans install + run).
+    # Model API hosts are also injected automatically for restricted agent
+    # phases via _apply_restricted_agent_network_defaults.
+    #
+    # This preserves the existing setup lifecycle for every non-Compose
+    # shape, and is independent from the class-profile boundary that owns
+    # the restricted Daytona Compose agent phase -- which is why that shape
+    # is excluded here rather than having both paths widen the baseline.
+    if "claude-code" in (agent or "").strip().lower() and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _claude_code_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
+    # runs under the environment baseline -- same lifecycle problem as the
+    # claude-code arm above, same solution: allow install + model hosts via
+    # the environment baseline, which spans install and run. On a public
+    # baseline the merge is a no-op (harbor ignores extras there), so
+    # modern swe-marathon-shaped tasks (public setup -> restricted agent)
+    # keep their agent phase free of the install hosts.
+    if (agent or "").strip().lower() == "opencode" and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _opencode_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # Gemini CLI's nvm, Node, and npm install happens during agent setup,
+    # under the environment baseline.  Do not merge it for a restricted
+    # Daytona Compose task: that shape owns a runtime-only agent profile and
+    # its setup phase is already public.
+    if (
+        (agent or "").strip().lower() == "gemini-cli"
+        or "gemini_cli:"
+        in (getattr(agent_config, "import_path", None) or "").strip().lower()
+    ) and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _gemini_cli_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # agy self-installs (install.sh -> manifest -> GCS tarball) at
+    # agent-setup, which runs under the environment baseline -- same
+    # lifecycle problem as the opencode arm above, same solution: allow
+    # install + model hosts via the environment baseline, which spans
+    # install and run. Checked on the raw requested agent (not
+    # agent_config.name/import_path, which only diverge here via the
+    # Compose wrapper swap this branch already excludes by construction)
+    # OR an explicit import_path, mirroring the is_gemini check in
+    # _resolved_runtime_transport_env, so a caller-submitted
+    # raw_agent_config import_path is covered too.
+    if (
+        (agent or "").strip().lower() == "antigravity-cli"
+        or "antigravity_cli:"
+        in (getattr(agent_config, "import_path", None) or "").strip().lower()
+    ) and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _antigravity_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+
 async def _run_harbor_trial_async_impl(
     task_path: Path,
     agent: str,
@@ -1862,6 +1975,23 @@ async def _run_harbor_trial_async_impl(
                 job_dir=None,
                 exception_type="RestrictedNetworkProfileError",
             )
+        # The ephemeral variant serializes the environment config and runs
+        # out-of-process, so it must widen the baseline here: the in-process
+        # arm below is past this return. Without it a closed task reaches the
+        # sandbox as a bare no-network policy and the agent is never installed.
+        widen_environment_baseline_for_agent_install(
+            env_config=resolved_environment_config,
+            agent=agent,
+            agent_config=_build_agent_config(
+                agent=agent,
+                model=model,
+                raw_harbor_config=raw,
+                is_probe=is_probe,
+                probe_oddish_env=extra_agent_env,
+            ),
+            task_path=task_path,
+        )
+
         from .ephemeral import run_ephemeral_harbor_trial
 
         return await run_ephemeral_harbor_trial(
@@ -2077,94 +2207,12 @@ async def _run_harbor_trial_async_impl(
             if restricted_compose_kind in ("dynamic", "static"):
                 assert_no_serialized_restricted_routes(agent_config)
 
-        # Claude Code downloads its CLI at agent-setup and calls its model
-        # endpoint during agent.run(). On closed-internet tasks, installer CDN
-        # hosts and custom model routes are not always in the task allowlist, so
-        # allow both via the environment baseline (which spans install + run).
-        # Model API hosts are also injected automatically for restricted agent
-        # phases via _apply_restricted_agent_network_defaults.
-        #
-        # This preserves the existing setup lifecycle for every non-Compose
-        # shape, and is independent from the class-profile boundary that owns
-        # the restricted Daytona Compose agent phase -- which is why that shape
-        # is excluded here rather than having both paths widen the baseline.
-        if "claude-code" in (agent or "").strip().lower() and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _claude_code_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
-        # runs under the environment baseline -- same lifecycle problem as the
-        # claude-code arm above, same solution: allow install + model hosts via
-        # the environment baseline, which spans install and run. On a public
-        # baseline the merge is a no-op (harbor ignores extras there), so
-        # modern swe-marathon-shaped tasks (public setup -> restricted agent)
-        # keep their agent phase free of the install hosts.
-        if (agent or "").strip().lower() == "opencode" and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _opencode_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # Gemini CLI's nvm, Node, and npm install happens during agent setup,
-        # under the environment baseline.  Do not merge it for a restricted
-        # Daytona Compose task: that shape owns a runtime-only agent profile and
-        # its setup phase is already public.
-        if (
-            (agent or "").strip().lower() == "gemini-cli"
-            or "gemini_cli:"
-            in (getattr(agent_config, "import_path", None) or "").strip().lower()
-        ) and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _gemini_cli_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # agy self-installs (install.sh -> manifest -> GCS tarball) at
-        # agent-setup, which runs under the environment baseline -- same
-        # lifecycle problem as the opencode arm above, same solution: allow
-        # install + model hosts via the environment baseline, which spans
-        # install and run. Checked on the raw requested agent (not
-        # agent_config.name/import_path, which only diverge here via the
-        # Compose wrapper swap this branch already excludes by construction)
-        # OR an explicit import_path, mirroring the is_gemini check in
-        # _resolved_runtime_transport_env, so a caller-submitted
-        # raw_agent_config import_path is covered too.
-        if (
-            (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:"
-            in (getattr(agent_config, "import_path", None) or "").strip().lower()
-        ) and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _antigravity_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
+        widen_environment_baseline_for_agent_install(
+            env_config=env_config,
+            agent=agent,
+            agent_config=agent_config,
+            task_path=effective_task_path,
+        )
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
         # failure never blocks a trial run.
