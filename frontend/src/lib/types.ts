@@ -1504,6 +1504,34 @@ export interface DeliveryBoardResponse {
   finalized_at?: string | null;
 }
 
+export interface DeliverySelectionItem {
+  delivery_task_id: string;
+  task_id: string;
+  task_name: string;
+  version_id: string | null;
+  version: number | null;
+  state: "needs_work" | "qa_incomplete" | "awaiting_signoff" | "ready";
+  can_sign_off: boolean;
+  qa_status: DeliveryQAStatus["status"];
+}
+
+export interface DeliveryPageRow extends DeliveryTaskBoardRow {
+  state: DeliverySelectionItem["state"];
+}
+
+export interface DeliveryPageResponse extends DeliveryBoardResponse {
+  tasks: DeliveryPageRow[];
+  page: number;
+  per_page: number;
+  total: number;
+  focus_task_id: string | null;
+  focus_outside_filters: boolean;
+  owner_counts: Record<DeliverySelectionItem["state"], number>;
+  owners: Record<string, string>;
+  member_task_ids: string[];
+  matching_task_ids: string[];
+}
+
 interface TaskQAHistoryRun {
   trial_id: string;
   kind: string;

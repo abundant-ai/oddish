@@ -1,3 +1,4 @@
+import { pageFixture, selectionFixture } from "./delivery-page-fixtures";
 import { expect, test, type Page } from "@playwright/test";
 import { board, history, taskRow, reviewTaskRow } from "./delivery-fixtures";
 
@@ -59,11 +60,21 @@ async function controlledAPI(page: Page) {
         json: state.failHistory ? { detail: "history offline" } : state.history,
       });
     }
-    if (path === "/api/deliveries/refresh-test") {
+    if (path === "/api/deliveries/refresh-test/selection") {
+      return route.fulfill({
+        json: selectionFixture(
+          state.board,
+          new URL(request.url()).searchParams
+        ),
+      });
+    }
+    if (path === "/api/deliveries/refresh-test/view") {
       state.reads.board++;
       return route.fulfill({
         status: state.failBoard ? 503 : 200,
-        json: state.failBoard ? { detail: "board offline" } : state.board,
+        json: state.failBoard
+          ? { detail: "board offline" }
+          : pageFixture(state.board, new URL(request.url()).searchParams),
       });
     }
     if (path.startsWith("/api/tasks/browse"))
@@ -333,6 +344,7 @@ test("an old version draft stays copyable and cannot save against the replacemen
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Notes about v8");
   await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
   await expect(page.getByText("Notes about v8", { exact: true })).toBeVisible();
   expect(state.writes.at(-1)?.body).toMatchObject({
     version_id: "version-8",
@@ -425,11 +437,13 @@ test("a delayed pre-mutation board response cannot overwrite a saved note", asyn
   });
   let delayed = false;
   const oldBoard = structuredClone(state.board);
-  await page.route("**/api/deliveries/refresh-test", async (route) => {
+  await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
     if (delayed) return route.fallback();
     delayed = true;
     await gate;
-    await route.fulfill({ json: oldBoard });
+    await route.fulfill({
+      json: pageFixture(oldBoard, new URL(route.request().url()).searchParams),
+    });
   });
   await tick(page);
   await expect.poll(() => delayed).toBe(true);
@@ -438,6 +452,7 @@ test("a delayed pre-mutation board response cannot overwrite a saved note", asyn
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved during a slow refresh");
   await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
   await expect(
     page.getByText("Saved during a slow refresh", { exact: true })
   ).toBeVisible();
@@ -512,22 +527,23 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   await page.goBack();
   // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
-  expect(state.reads.board).toBe(0);
+  expect(state.reads.board).toBe(1);
   await page.goForward();
   await expect(page).toHaveURL(/group=owner/);
-  expect(state.reads.board).toBe(0);
+  expect(state.reads.board).toBe(1);
   await page.goBack();
   // The shared URL restores the open history panel.
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");
-  expect(state.reads.board).toBe(1);
+  expect(state.reads.board).toBe(2);
   await page.getByRole("button", { name: "Edit QA work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved after server load");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(() => state.reads.board).toBe(2);
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect.poll(() => state.reads.board).toBe(3);
   await expect(
     page.getByText("Saved after server load", { exact: true })
   ).toBeVisible();
@@ -536,7 +552,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   await page.reload();
   // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
-  expect(state.reads.board).toBe(2);
+  expect(state.reads.board).toBe(3);
   await expect(page).toHaveURL(/source=agent/);
 });
 
@@ -548,6 +564,40 @@ test("an old server snapshot refreshes on arrival", async ({ page }) => {
     page.getByRole("link", { name: "Updated task", exact: true })
   ).toBeVisible();
   expect(state.reads.board).toBe(1);
+});
+
+test("a write invalidates inactive pages before browser Forward restores them", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?task=task-a&source=agent");
+  await expect(
+    page.getByRole("button", { name: "Edit QA work" })
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("group", "owner");
+    window.history.pushState(null, "", url);
+  });
+  await expect.poll(() => state.reads.board).toBe(2);
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await page.goBack();
+  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page
+    .getByRole("textbox", { name: "Handoff note" })
+    .fill("Fresh across pages");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(
+    page.getByText("Fresh across pages", { exact: true })
+  ).toBeVisible();
+  expect(state.reads.board).toBe(3);
+  await page.goForward();
+  await expect.poll(() => state.reads.board).toBe(4);
+  await expect(
+    page.getByText("Fresh across pages", { exact: true })
+  ).toBeVisible();
+  await expect(page).toHaveURL(/source=agent&group=owner/);
 });
 
 test("a snapshot from another organization is discarded", async ({ page }) => {
@@ -729,7 +779,7 @@ test("finalized review exposes evidence but cannot acknowledge outstanding findi
   expect(state.writes).toEqual([]);
 });
 
-test("owner, state, and history share one scope without refetching; finalize stays delivery-wide", async ({
+test("owner, state, and history share one scope across server pages; finalize stays delivery-wide", async ({
   page,
 }, testInfo) => {
   const state = await controlledAPI(page);
@@ -883,7 +933,7 @@ test("owner, state, and history share one scope without refetching; finalize sta
   ).toBeDisabled();
   await page.goBack();
   await expect(page.getByRole("table")).toContainText("Missing review");
-  expect(state.reads.board).toBe(reads);
+  expect(state.reads.board).toBe(reads + 2);
   expect(state.writes).toEqual([]);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({
@@ -1103,6 +1153,16 @@ test("history keeps gaps visible and separates equal endpoint labels", async ({
   expect(dots).toBe(2);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
+    // ResizeObserver and React render asynchronously; wait for the actual label
+    // position while allowing the fake animation clock to advance.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(16);
+        return overview
+          .getByText("24 ready", { exact: true })
+          .evaluate((element) => element.getBoundingClientRect().right);
+      })
+      .toBeLessThanOrEqual(width);
     const total = (await overview
       .getByText("24 total", { exact: true })
       .boundingBox())!;
@@ -1165,7 +1225,7 @@ test("acknowledgment shows saving and refreshing, and a failed save can be retri
   const refreshGate = new Promise<void>((resolve) => {
     releaseRefresh = resolve;
   });
-  await page.route("**/api/deliveries/refresh-test", async (route) => {
+  await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
     await refreshGate;
     return route.fallback();
   });
@@ -1217,15 +1277,18 @@ test("legacy blocked links include defects and incomplete QA but exclude signoff
   const state = await controlledAPI(page);
   const defect = reviewTaskRow();
   defect.task_id = "defect";
+  defect.delivery_task_id = "member-defect";
   defect.task_name = "Defect task";
   const incomplete = taskRow();
   incomplete.task_name = "Incomplete task";
   const awaiting = taskRow();
   awaiting.task_id = "awaiting";
+  awaiting.delivery_task_id = "member-awaiting";
   awaiting.task_name = "Awaiting task";
   awaiting.checks[0].status = "pass";
   const ready = taskRow();
   ready.task_id = "ready";
+  ready.delivery_task_id = "member-ready";
   ready.task_name = "Ready task";
   ready.checks.forEach((check) => (check.status = "pass"));
   ready.ready = true;
@@ -1238,4 +1301,77 @@ test("legacy blocked links include defects and incomplete QA but exclude signoff
     await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
   for (const name of ["Awaiting task", "Ready task"])
     await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
+});
+
+test("select all includes matching tasks beyond the rendered page", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = Array.from({ length: 32 }, (_, i) => {
+    const row = taskRow();
+    row.task_id = `bulk-${i}`;
+    row.task_name = `Bulk ${i}`;
+    row.delivery_task_id = `bulk-member-${i}`;
+    row.version_id = `bulk-version-${i}`;
+    row.checks[0].status = "pass";
+    return row;
+  });
+  await page.goto("/?per_page=10&filter=awaiting_signoff&source=agent");
+  await expect(
+    page.getByRole("checkbox", { name: /^Select Bulk/ })
+  ).toHaveCount(10);
+  await page
+    .getByRole("checkbox", { name: "Select all tasks in this view" })
+    .click();
+  await expect(page.getByText("32 selected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Sign off", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "Sign off 32 tasks?"
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Sign off", exact: true })
+    .click();
+  await expect.poll(() => state.writes.length).toBe(32);
+  expect(new Set(state.writes.map((w) => w.body.expected_version_id))).toEqual(
+    new Set(state.board.tasks.map((r) => r.version_id))
+  );
+  await expect(page).toHaveURL(/source=agent/);
+});
+
+test("history starts on intent and opening consumes the same pending read", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?panels=history");
+  await expect(
+    page.getByRole("link", { name: "Task A", exact: true })
+  ).toBeVisible();
+  expect(state.reads.history).toBe(0);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await page.route("**/api/tasks/task-a/qa-history", async (route) => {
+    requests++;
+    await gate;
+    return route.fallback();
+  });
+  try {
+    const row = page
+      .getByRole("row")
+      .filter({ has: page.getByRole("link", { name: "Task A", exact: true }) });
+    await row.hover();
+    await page.clock.runFor(200);
+    await expect.poll(() => requests).toBe(1);
+    await row.click();
+    await expect(page).toHaveURL(/task=task-a/);
+    await page.clock.runFor(200);
+    expect(requests).toBe(1);
+  } finally {
+    release();
+  }
+  await expect(current(page)).toBeVisible();
+  expect(requests).toBe(1);
 });
