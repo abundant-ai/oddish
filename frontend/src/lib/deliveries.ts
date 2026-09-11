@@ -1,5 +1,6 @@
 import type {
   DeliveryBoardResponse,
+  DeliveryPageRow,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -51,8 +52,9 @@ export type DeliveryTaskState = keyof typeof DELIVERY_STATES;
 /** One state per task, based on delivery requirements rather than review age.
  * Waived checks and acknowledged findings still permit readiness. */
 export function deliveryTaskState(
-  row: DeliveryTaskBoardRow
+  row: DeliveryTaskBoardRow | DeliveryPageRow
 ): DeliveryTaskState {
+  if ("state" in row) return row.state;
   if (row.defects.some((finding) => !finding.acknowledged)) return "needs_work";
   const failedChecks = row.checks.filter(
     (check) => check.kind === "automated" && check.status === "fail"
@@ -195,4 +197,19 @@ export function deliveryViewQuery(
   }
   const query = params.toString();
   return query ? `?${query}` : "";
+}
+
+/** Only parameters affecting returned rows identify a page request/cache entry.
+ * Disclosure state and unrelated link parameters remain in browser history. */
+export function deliveryPageQuery(params: Pick<URLSearchParams, "get">) {
+  const view = parseDeliveryView(params);
+  return deliveryViewQuery("", {
+    page: String(view.page + 1),
+    per_page: String(view.pageSize),
+    filter: view.filter,
+    issue: view.issueFilter,
+    owner: view.ownerFilter,
+    group: view.groupBy,
+    task: view.focusTask,
+  });
 }

@@ -20,6 +20,7 @@ on:
     paths:
       - "oddish/src/oddish/**.py"
       - "oddish/scripts/load_only_guard.py"
+      - "oddish/tests/test_load_only_guard.py"
       - ".github/workflows/load-only-guard.yml"
   push:
     branches:
@@ -28,6 +29,7 @@ on:
     paths:
       - "oddish/src/oddish/**.py"
       - "oddish/scripts/load_only_guard.py"
+      - "oddish/tests/test_load_only_guard.py"
       - ".github/workflows/load-only-guard.yml"
 
 concurrency:
@@ -65,4 +67,6 @@ jobs:
         run: uv sync --frozen --extra server
 
       - name: Run load_only guard
-        run: uv run python scripts/load_only_guard.py
+        run: |
+          uv run python scripts/load_only_guard.py
+          uv run pytest tests/test_load_only_guard.py -q

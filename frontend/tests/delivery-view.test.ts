@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseDeliveryView, deliveryViewQuery } from "../src/lib/deliveries.ts";
+import {
+  parseDeliveryView,
+  deliveryViewQuery,
+  deliveryPageQuery,
+} from "../src/lib/deliveries.ts";
 
 test("shared links restore every delivery filter and the focused task", () => {
   const query = deliveryViewQuery("?source=slack", {
@@ -151,4 +155,24 @@ test("legacy blocked links retain their filter when changing pages", () => {
   assert.equal(view.filter, "blocked");
   assert.equal(view.ownerFilter, "mine");
   assert.equal(view.page, 1);
+});
+
+test("page request keys retain agent filters but exclude disclosures and unrelated parameters", () => {
+  const shared = new URLSearchParams(
+    "page=2&per_page=50&filter=blocked&issue=verifier&owner=mine&group=owner&task=legacy-task&panels=history&source=agent"
+  );
+  const key = deliveryPageQuery(shared);
+  assert.equal(
+    key,
+    "?page=2&per_page=50&filter=blocked&issue=verifier&owner=mine&group=owner&task=legacy-task"
+  );
+  shared.set("panels", "history,all-versions");
+  shared.set("source", "another-agent");
+  assert.equal(deliveryPageQuery(shared), key);
+  assert.equal(
+    deliveryPageQuery(
+      new URLSearchParams("filter=all&page=1&per_page=25&group=none")
+    ),
+    ""
+  );
 });

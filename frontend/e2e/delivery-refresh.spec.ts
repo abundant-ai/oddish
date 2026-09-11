@@ -1,3 +1,4 @@
+import { pageFixture, selectionFixture } from "./delivery-page-fixtures";
 import { expect, test, type Page } from "@playwright/test";
 import { board, history, taskRow, reviewTaskRow } from "./delivery-fixtures";
 
@@ -59,11 +60,21 @@ async function controlledAPI(page: Page) {
         json: state.failHistory ? { detail: "history offline" } : state.history,
       });
     }
-    if (path === "/api/deliveries/refresh-test") {
+    if (path === "/api/deliveries/refresh-test/selection") {
+      return route.fulfill({
+        json: selectionFixture(
+          state.board,
+          new URL(request.url()).searchParams
+        ),
+      });
+    }
+    if (path === "/api/deliveries/refresh-test/view") {
       state.reads.board++;
       return route.fulfill({
         status: state.failBoard ? 503 : 200,
-        json: state.failBoard ? { detail: "board offline" } : state.board,
+        json: state.failBoard
+          ? { detail: "board offline" }
+          : pageFixture(state.board, new URL(request.url()).searchParams),
       });
     }
     if (path.startsWith("/api/tasks/browse"))
@@ -298,6 +309,94 @@ test("task pagination stays put when the next page has fewer rows", async ({
   ).toBe(paginationOffset);
 });
 
+for (const direction of ["Previous", "Next"] as const) {
+  test(`${direction} waits for navigation and retries the same page after failure`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks = Array.from({ length: 40 }, (_, i) => ({
+      ...taskRow(),
+      task_id: `task-${i}`,
+      task_name: `Task ${i}`,
+      delivery_task_id: `member-${i}`,
+    }));
+    await page.goto("/?page=2&per_page=10&source=agent#tasks");
+    await expect(page.getByText("Page 2 of 4 · 40 tasks")).toBeVisible();
+    const previous = page.getByRole("button", {
+      name: "Previous",
+      exact: true,
+    });
+    const next = page.getByRole("button", { name: "Next", exact: true });
+    const target = direction === "Previous" ? 1 : 3;
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requests: string[] = [];
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      requests.push(route.request().url());
+      await gate;
+      return route.fallback();
+    });
+    state.failBoard = true;
+    await page.getByRole("button", { name: direction, exact: true }).click();
+    await expect(page.getByText("Updating delivery view…")).toBeVisible();
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeDisabled();
+    // Native clicks on either disabled button cannot overwrite the pending URL.
+    await previous.evaluate((button: HTMLButtonElement) => button.click());
+    await next.evaluate((button: HTMLButtonElement) => button.click());
+    expect(new URL(page.url()).searchParams.get("page")).toBe(
+      target === 1 ? null : String(target)
+    );
+    expect(new URL(page.url()).searchParams.get("source")).toBe("agent");
+    expect(new URL(page.url()).hash).toBe("#tasks");
+    await expect.poll(() => requests.length).toBe(1);
+    release();
+    await expect(page.locator("main").getByRole("alert")).toContainText(
+      "Showing the previously loaded tasks"
+    );
+    await expect(previous).toBeEnabled();
+    await expect(next).toBeEnabled();
+    const failedURL = page.url();
+    const historyLength = await page.evaluate(() => window.history.length);
+    state.failBoard = false;
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.getByRole("button", { name: direction, exact: true }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeDisabled();
+    expect(page.url()).toBe(failedURL);
+    expect(await page.evaluate(() => window.history.length)).toBe(
+      historyLength
+    );
+    release();
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+    await expect(
+      page.getByText(`Page ${target} of 4 · 40 tasks`)
+    ).toBeVisible();
+    await expect(next).toBeEnabled();
+    if (target === 1) await expect(previous).toBeDisabled();
+    else await expect(previous).toBeEnabled();
+    expect(state.reads).toEqual({ board: 3, history: 0 });
+
+    // Returning to an already loaded page stays immediate and allows navigation.
+    await page
+      .getByRole("button", {
+        name: direction === "Previous" ? "Next" : "Previous",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByText("Page 2 of 4 · 40 tasks")).toBeVisible();
+    await expect(previous).toBeEnabled();
+    await expect(next).toBeEnabled();
+    expect(state.reads).toEqual({ board: 3, history: 0 });
+    expect(state.writes).toEqual([]);
+  });
+}
+
 test("an old version draft stays copyable and cannot save against the replacement", async ({
   page,
 }) => {
@@ -333,6 +432,7 @@ test("an old version draft stays copyable and cannot save against the replacemen
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Notes about v8");
   await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
   await expect(page.getByText("Notes about v8", { exact: true })).toBeVisible();
   expect(state.writes.at(-1)?.body).toMatchObject({
     version_id: "version-8",
@@ -425,11 +525,13 @@ test("a delayed pre-mutation board response cannot overwrite a saved note", asyn
   });
   let delayed = false;
   const oldBoard = structuredClone(state.board);
-  await page.route("**/api/deliveries/refresh-test", async (route) => {
+  await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
     if (delayed) return route.fallback();
     delayed = true;
     await gate;
-    await route.fulfill({ json: oldBoard });
+    await route.fulfill({
+      json: pageFixture(oldBoard, new URL(route.request().url()).searchParams),
+    });
   });
   await tick(page);
   await expect.poll(() => delayed).toBe(true);
@@ -438,6 +540,7 @@ test("a delayed pre-mutation board response cannot overwrite a saved note", asyn
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved during a slow refresh");
   await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
   await expect(
     page.getByText("Saved during a slow refresh", { exact: true })
   ).toBeVisible();
@@ -464,6 +567,98 @@ test("a failed first board load can recover without navigating away", async ({
   await expect(page).toHaveURL(/filter=qa_incomplete&task=task-a/);
   expect(state.writes).toEqual([]);
 });
+
+for (const query of ["page=2", "filter=ready&group=owner&owner=unassigned"]) {
+  test(`failed navigation preserves usable displayed rows and selection: ${query}`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks = Array.from({ length: 12 }, (_, i) => ({
+      ...taskRow(),
+      task_id: `task-${i}`,
+      task_name: `Task ${i}`,
+      delivery_task_id: `member-${i}`,
+      version_id: `version-${i}`,
+    }));
+    await page.goto("/?per_page=10&source=agent");
+    const first = page.getByRole("checkbox", {
+      name: "Select Task 0",
+      exact: true,
+    });
+    await expect(first).toBeEnabled();
+    const selectionQueries: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith("/selection"))
+        selectionQueries.push(url.search);
+    });
+    let release!: () => void;
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      await gate;
+      return route.fallback();
+    });
+    state.failBoard = true;
+    await page.evaluate(
+      (query) =>
+        window.history.pushState(
+          null,
+          "",
+          `?per_page=10&source=agent&${query}`
+        ),
+      query
+    );
+    await expect(page.getByRole("status")).toHaveText(
+      "Updating delivery view…"
+    );
+    await expect(first).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Next", exact: true })
+    ).toBeDisabled();
+    release();
+    await expect(page.locator("main").getByRole("alert")).toContainText(
+      "Showing the previously loaded tasks"
+    );
+    await expect(page.getByText("Updating delivery view…")).toHaveCount(0);
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    await expect(first).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Next", exact: true })
+    ).toBeEnabled();
+    await expect(
+      page.getByRole("columnheader", { name: "Owner", exact: true })
+    ).toBeVisible();
+    await page
+      .getByRole("checkbox", { name: "Select all tasks in this view" })
+      .click();
+    await expect(page.getByText("12 selected", { exact: true })).toBeVisible();
+    expect(selectionQueries).toEqual(["?per_page=10"]);
+    expect(state.reads).toEqual({ board: 2, history: 0 });
+    expect(state.writes).toEqual([]);
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    state.failBoard = false;
+    await page.getByRole("button", { name: "Retry delivery" }).click();
+    await expect(page.getByText("Updating delivery view…")).toBeVisible();
+    await expect(first).toBeDisabled();
+    release();
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
+    await expect(page.getByText("Updating delivery view…")).toHaveCount(0);
+    await expect(first).toHaveCount(0);
+    if (query === "page=2") {
+      await expect(
+        page.getByRole("checkbox", { name: "Select Task 10", exact: true })
+      ).toBeEnabled();
+    } else {
+      await expect(page.getByText("No tasks match this filter.")).toBeVisible();
+    }
+    expect(state.reads.board).toBe(3);
+    await expect(page).toHaveURL(new RegExp(`source=agent&${query}`));
+  });
+}
 
 test("bulk sign-off keeps the versions shown when confirmation opened", async ({
   page,
@@ -512,22 +707,23 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   await page.goBack();
   // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
-  expect(state.reads.board).toBe(0);
+  expect(state.reads.board).toBe(1);
   await page.goForward();
   await expect(page).toHaveURL(/group=owner/);
-  expect(state.reads.board).toBe(0);
+  expect(state.reads.board).toBe(1);
   await page.goBack();
   // The shared URL restores the open history panel.
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");
-  expect(state.reads.board).toBe(1);
+  expect(state.reads.board).toBe(2);
   await page.getByRole("button", { name: "Edit QA work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved after server load");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect.poll(() => state.reads.board).toBe(2);
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect.poll(() => state.reads.board).toBe(3);
   await expect(
     page.getByText("Saved after server load", { exact: true })
   ).toBeVisible();
@@ -536,7 +732,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   await page.reload();
   // The shared URL restores the open history panel.
   await expect(current(page)).toBeVisible();
-  expect(state.reads.board).toBe(2);
+  expect(state.reads.board).toBe(3);
   await expect(page).toHaveURL(/source=agent/);
 });
 
@@ -548,6 +744,40 @@ test("an old server snapshot refreshes on arrival", async ({ page }) => {
     page.getByRole("link", { name: "Updated task", exact: true })
   ).toBeVisible();
   expect(state.reads.board).toBe(1);
+});
+
+test("a write invalidates inactive pages before browser Forward restores them", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?task=task-a&source=agent");
+  await expect(
+    page.getByRole("button", { name: "Edit QA work" })
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("group", "owner");
+    window.history.pushState(null, "", url);
+  });
+  await expect.poll(() => state.reads.board).toBe(2);
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await page.goBack();
+  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page
+    .getByRole("textbox", { name: "Handoff note" })
+    .fill("Fresh across pages");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(
+    page.getByText("Fresh across pages", { exact: true })
+  ).toBeVisible();
+  expect(state.reads.board).toBe(3);
+  await page.goForward();
+  await expect.poll(() => state.reads.board).toBe(4);
+  await expect(
+    page.getByText("Fresh across pages", { exact: true })
+  ).toBeVisible();
+  await expect(page).toHaveURL(/source=agent&group=owner/);
 });
 
 test("a snapshot from another organization is discarded", async ({ page }) => {
@@ -729,7 +959,7 @@ test("finalized review exposes evidence but cannot acknowledge outstanding findi
   expect(state.writes).toEqual([]);
 });
 
-test("owner, state, and history share one scope without refetching; finalize stays delivery-wide", async ({
+test("owner, state, and history share one scope across server pages; finalize stays delivery-wide", async ({
   page,
 }, testInfo) => {
   const state = await controlledAPI(page);
@@ -883,7 +1113,7 @@ test("owner, state, and history share one scope without refetching; finalize sta
   ).toBeDisabled();
   await page.goBack();
   await expect(page.getByRole("table")).toContainText("Missing review");
-  expect(state.reads.board).toBe(reads);
+  expect(state.reads.board).toBe(reads + 2);
   expect(state.writes).toEqual([]);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({
@@ -1103,6 +1333,16 @@ test("history keeps gaps visible and separates equal endpoint labels", async ({
   expect(dots).toBe(2);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
+    // ResizeObserver and React render asynchronously; wait for the actual label
+    // position while allowing the fake animation clock to advance.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(16);
+        return overview
+          .getByText("24 ready", { exact: true })
+          .evaluate((element) => element.getBoundingClientRect().right);
+      })
+      .toBeLessThanOrEqual(width);
     const total = (await overview
       .getByText("24 total", { exact: true })
       .boundingBox())!;
@@ -1165,7 +1405,7 @@ test("acknowledgment shows saving and refreshing, and a failed save can be retri
   const refreshGate = new Promise<void>((resolve) => {
     releaseRefresh = resolve;
   });
-  await page.route("**/api/deliveries/refresh-test", async (route) => {
+  await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
     await refreshGate;
     return route.fallback();
   });
@@ -1211,21 +1451,101 @@ test("acknowledgment shows saving and refreshing, and a failed save can be retri
   ).toHaveCount(0);
 });
 
+for (const action of ["release", "note", "acknowledgment"] as const) {
+  test(`a successful ${action} with a failed refresh shows only the board warning`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const state = await controlledAPI(page);
+    state.board.tasks = [reviewTaskRow()];
+    await page.goto("/?task=task-a&source=agent");
+    await expect(
+      page.getByRole("button", { name: "Edit QA work" })
+    ).toBeVisible();
+    const url = page.url();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      await gate;
+      return route.fallback();
+    });
+    state.failBoard = true;
+    const finding = page.getByRole("listitem").filter({
+      hasText: "The verifier does not check",
+    });
+    if (action === "release") {
+      await page
+        .getByRole("button", { name: "Release task", exact: true })
+        .click();
+    } else if (action === "note") {
+      await page.getByRole("button", { name: "Edit QA work" }).click();
+      await page
+        .getByRole("textbox", { name: "Handoff note" })
+        .fill("Saved once");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "Saving…", exact: true })
+      ).toBeDisabled();
+    } else {
+      await finding
+        .getByRole("button", { name: "Acknowledge for v1", exact: true })
+        .click();
+      await expect(
+        finding.getByRole("button", { name: "Updating…", exact: true })
+      ).toBeDisabled();
+    }
+    await expect.poll(() => state.writes.length).toBe(1);
+    release();
+    const alert = page.locator("main").getByRole("alert");
+    await expect(alert).toHaveCount(1);
+    await expect(alert).toContainText("Failed to refresh delivery.");
+    await expect(alert).toContainText("board offline");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /^(Saving|Updating)…$/ })
+    ).toHaveCount(0);
+    await page.clock.runFor(100);
+    expect(errors).toEqual([]);
+    expect(state.reads.board).toBe(2);
+    expect(page.url()).toBe(url);
+
+    state.failBoard = false;
+    await page.getByRole("button", { name: "Retry delivery" }).click();
+    await expect(alert).toHaveCount(0);
+    expect(state.writes).toHaveLength(1);
+    expect(state.reads.board).toBe(3);
+    if (action === "note")
+      await expect(page.getByText("Saved once", { exact: true })).toBeVisible();
+    if (action === "acknowledgment") {
+      await expect(
+        finding.getByRole("button", { name: "Acknowledge for v1", exact: true })
+      ).toHaveCount(0);
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
 test("legacy blocked links include defects and incomplete QA but exclude signoff and ready tasks", async ({
   page,
 }) => {
   const state = await controlledAPI(page);
   const defect = reviewTaskRow();
   defect.task_id = "defect";
+  defect.delivery_task_id = "member-defect";
   defect.task_name = "Defect task";
   const incomplete = taskRow();
   incomplete.task_name = "Incomplete task";
   const awaiting = taskRow();
   awaiting.task_id = "awaiting";
+  awaiting.delivery_task_id = "member-awaiting";
   awaiting.task_name = "Awaiting task";
   awaiting.checks[0].status = "pass";
   const ready = taskRow();
   ready.task_id = "ready";
+  ready.delivery_task_id = "member-ready";
   ready.task_name = "Ready task";
   ready.checks.forEach((check) => (check.status = "pass"));
   ready.ready = true;
@@ -1238,4 +1558,77 @@ test("legacy blocked links include defects and incomplete QA but exclude signoff
     await expect(page.getByRole("link", { name, exact: true })).toBeVisible();
   for (const name of ["Awaiting task", "Ready task"])
     await expect(page.getByRole("link", { name, exact: true })).toHaveCount(0);
+});
+
+test("select all includes matching tasks beyond the rendered page", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks = Array.from({ length: 32 }, (_, i) => {
+    const row = taskRow();
+    row.task_id = `bulk-${i}`;
+    row.task_name = `Bulk ${i}`;
+    row.delivery_task_id = `bulk-member-${i}`;
+    row.version_id = `bulk-version-${i}`;
+    row.checks[0].status = "pass";
+    return row;
+  });
+  await page.goto("/?per_page=10&filter=awaiting_signoff&source=agent");
+  await expect(
+    page.getByRole("checkbox", { name: /^Select Bulk/ })
+  ).toHaveCount(10);
+  await page
+    .getByRole("checkbox", { name: "Select all tasks in this view" })
+    .click();
+  await expect(page.getByText("32 selected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Sign off", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText(
+    "Sign off 32 tasks?"
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Sign off", exact: true })
+    .click();
+  await expect.poll(() => state.writes.length).toBe(32);
+  expect(new Set(state.writes.map((w) => w.body.expected_version_id))).toEqual(
+    new Set(state.board.tasks.map((r) => r.version_id))
+  );
+  await expect(page).toHaveURL(/source=agent/);
+});
+
+test("history starts on intent and opening consumes the same pending read", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?panels=history");
+  await expect(
+    page.getByRole("link", { name: "Task A", exact: true })
+  ).toBeVisible();
+  expect(state.reads.history).toBe(0);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let requests = 0;
+  await page.route("**/api/tasks/task-a/qa-history", async (route) => {
+    requests++;
+    await gate;
+    return route.fallback();
+  });
+  try {
+    const row = page
+      .getByRole("row")
+      .filter({ has: page.getByRole("link", { name: "Task A", exact: true }) });
+    await row.hover();
+    await page.clock.runFor(200);
+    await expect.poll(() => requests).toBe(1);
+    await row.click();
+    await expect(page).toHaveURL(/task=task-a/);
+    await page.clock.runFor(200);
+    expect(requests).toBe(1);
+  } finally {
+    release();
+  }
+  await expect(current(page)).toBeVisible();
+  expect(requests).toBe(1);
 });

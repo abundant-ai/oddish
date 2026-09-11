@@ -2177,11 +2177,13 @@ Delivery board view state lives in URL parameters: `page` (one-based),
 `filter`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
 reads these directly with `useSearchParams`; native history updates preserve
-Back/Forward behavior without refetching the already-loaded full board.
+Back/Forward behavior. The initial server read and browser cache use the same
+normalized data parameters; disclosure and unrelated link parameters do not
+change the page request.
 Filter/group changes reset the page and task focus. Bulk selections and draft
 edits remain local. The delivery page passes its server-loaded board with the
 Clerk user/org IDs and fetch time to a page-owned SWR cache. The cache is keyed
-by user, organization, and delivery, never by presentation filters. A matching
+by user, organization, delivery, and normalized page/filter/group/focus parameters. A matching
 server result suppresses the immediate browser board read; missing/mismatched
 results fetch normally, and non-frozen snapshots at least 15 seconds old refresh
 on activation. The board and expanded history share this cache and its mutate
@@ -2194,8 +2196,30 @@ retain loaded data with a stale warning and adjacent retry; revalidation never
 clears cached data or starts analysis. Frozen delivery boards disable periodic
 refreshes and label separately fetched history as live task history rather than
 the shipped snapshot.
-Backend filtering/pagination is not implemented yet; the full task collection
-still supplies bulk actions and delivery-wide readiness checks.
+`GET /deliveries/{id}/view` returns only the requested page of rows, plus
+whole-delivery totals, owner-scoped state counts, owner names, and compact ID
+lists for inventory and matching selection. State and issue filters narrow the
+queue, not owner summary counts. The expanded task alone receives full finding
+bodies; other rows retain finding identity and acknowledgment metadata. Core
+approval checks still evaluate all required facts with the same calculator;
+readiness is not cached or persisted. Grouping uses case-insensitive server label
+order, with stable membership order for ties. Missing/deleted members remain
+blockers. A task link resolves by ID before legacy name and stays visible outside
+filters. Finalized pages are slices of the stored snapshot, never live recomputes.
+
+`GET /deliveries/{id}/selection` resolves every matching task to its ID and viewed
+version when Select all is used; it never silently selects only the visible page.
+Sign-off confirms those versions and rejects stale writes. Single-task sign-off
+loads only that task's evidence; finalization and progress recording continue
+calculating the entire delivery. The original complete-board endpoint remains
+available to CLI and standalone callers. Hosted reads share approval and data
+access in one read session, checking approval on every request.
+
+Writes invalidate cached pages and refresh the mounted view; late responses
+cannot restore pre-write data. Cached navigation keeps the previous page visible
+while the new request finishes and marks that transition. History prefetch starts
+after 150 ms of hover/focus, allows at most two active prefetches, and shares its
+pending request with an opened history panel. See `docs/delivery-board-pages.md`.
 
 Review presentation distinguishes task defects, execution classifications,
 review progress, and version-specific human sign-off. Shared review words live
@@ -2226,8 +2250,9 @@ history remains mounted so board refreshes preserve its open versions.
 Individual acknowledgment buttons show Saving while the check request runs,
 then Updating until the delivery read finishes. The global busy state ends at
 save completion; pending status is tracked per check so unrelated actions do not
-wait for a slow refresh. Check refreshes use the
-no-argument SWR `mutate()` form, whose promise waits for revalidation; passing
+wait for a slow refresh. Check refreshes mark all delivery page cache entries
+stale without revalidation, then call SWR `mutate(pageKeyFilter)` with no data
+argument. That promise waits for the mounted view's revalidation; passing
 `undefined` as mutation data starts revalidation without waiting for it.
 Delivery lookups join their customer, and task checks read membership and lock
 the default-version pointer in one query. An acknowledgment uses six core SQL
