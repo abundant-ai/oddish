@@ -1668,9 +1668,15 @@ truncate UUIDs to the eight-character IDs used by some other entities.
 
 ### Worker resource comparison
 
+The production workflow sets `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=10`;
+staging and preview retain the default of two. This bounds both Modal containers
+and dispatcher reservations. The database's live fraction and worker cap still
+require an explicit control update after deployment; see the production 2% /
+ten-worker command in `docs/worker-resource-canary.md`.
+
 `process_single_job_candidate` shares `_run_one_job` with the base worker. Its
 initial reservation is `cpu=(0.6, 17)`, scalar `memory=3072`, non-preemptible,
-with no warm containers and a two-container maximum. Deployment controls are
+with no warm containers and a default two-container maximum. Deployment controls are
 `ODDISH_MODAL_WORKER_CANDIDATE_CPU`, `ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB`,
 and `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS`. The base remains 1 core /
 3072 MiB. Deployment-owned secret values keep declared and recorded resources
