@@ -1195,6 +1195,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`require_geometric_served_model_id`), never in `normalize_trial_model`,
   which must stay total for reads over stored rows whose model has since left
   the set. Keep the set in sync with `--served-model-name`.
+- Fireworks and DeepSeek short ids are curated at sweep submit: unknown
+  spellings 422 unless `allow_unknown_model`. A bare DeepSeek-family id pins
+  to Fireworks (`deepseek-v4-flash` → `fireworks/deepseek-v4-flash-0731`);
+  GLM/MiniMax/Kimi stay native unless prefixed `fireworks/`. `dsh` is locked
+  to DeepSeek. Resolution is `(agent, model, provider)` only — never process
+  credentials. `POST /tasks/sweep` hashes the raw body before that rewrite.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in

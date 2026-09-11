@@ -82,22 +82,37 @@ def hash_idempotency_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
-def compute_request_hash(submission: Any) -> str:
-    payload = submission.model_dump(mode="json")
-    # Drop an absent github_id so an honest retry that never sent it hashes the
-    # same as the original (linkage idempotency guard).
+def _omit_stable_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop default github_id / provider / allow_unknown_model so retries keep matching."""
+    payload = dict(payload)
     if payload.get("github_id") is None:
         payload.pop("github_id", None)
+    configs = payload.get("configs")
+    if isinstance(configs, list):
+        normalized: list[Any] = []
+        for config in configs:
+            if not isinstance(config, dict):
+                normalized.append(config)
+                continue
+            config = dict(config)
+            if config.get("provider") is None:
+                config.pop("provider", None)
+            if config.get("allow_unknown_model") is False:
+                config.pop("allow_unknown_model", None)
+            normalized.append(config)
+        payload["configs"] = normalized
+    return payload
+
+
+def compute_request_hash(submission: Any) -> str:
+    payload = submission.model_dump(mode="json")
     # Fingerprint registry creds so equivalent secrets replay instead of leaking
     # raw tokens into the request hash.
     if hasattr(submission, "registry_auth"):
         payload["registry_auth"] = _registry_auth_fingerprints(
             getattr(submission, "registry_auth", None)
         )
-    # Keep unset github_id stable across the deploy boundary.
-    if payload.get("github_id") is None:
-        payload.pop("github_id", None)
-    return _canonical_digest(payload)
+    return _canonical_digest(_omit_stable_defaults(payload))
 
 
 @dataclass(frozen=True)
