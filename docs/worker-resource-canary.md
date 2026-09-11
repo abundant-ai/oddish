@@ -75,6 +75,24 @@ Preview apps use their exact `oddish-pr-N` app name and environment `preview`.
 All three borrow provider secrets from `main`; staging and preview append their
 own database override. Never use a production app name when testing copied jobs.
 
+The production deployment workflow sets
+`ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=10` for both the Modal function
+and the dispatcher. Staging and preview retain the default ceiling of two.
+After this workflow change is promoted to main and deployed, use the matching
+deployment setting when raising production's live cap to ten and sampling 2%:
+
+```bash
+MODAL_APP_NAME=oddish MODAL_ENVIRONMENT=main MODAL_SECRET_ENVIRONMENT=main \
+ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=10 \
+  uv run modal run --env main worker_resource_rollout.py --fraction 0.02 --max-workers 10
+```
+
+Deploying the higher ceiling does not update the database's `fraction` or
+`max_workers`. The control command prints the saved row; verify `fraction=0.02`,
+`max_workers=10`, and `configuration=candidate-cpu0.6-mem3072`. This keeps the
+candidate at 0.6 CPU and 3,072 MiB RAM. Ten is a concurrency ceiling, not a
+minimum number of running workers; only eligible sampled jobs use it.
+
 To test lower RAM: stop, wait for active candidate jobs to finish, redeploy with
 `ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB=1536`, and repeat copied tests before
 setting fraction 0.01 with configuration `candidate-cpu0.6-mem1536`. Pass that same
