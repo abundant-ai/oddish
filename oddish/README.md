@@ -89,6 +89,8 @@ reference. The main commands are:
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 - `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
+- `oddish version` — print the installed CLI version (`--check` compares with the latest PyPI release). No API key.
+- `oddish update` — upgrade a `uv pip install oddish` install from PyPI. No API key.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,
 `oddish link`, `oddish skill`, and the `oddish probe` helpers do not.
