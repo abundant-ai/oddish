@@ -1100,6 +1100,7 @@ class ExperimentTaskVerdict(ExperimentPageVerdict):
 
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    pre_trial_status: VerdictStatus | None = None
     must_fix_count: int | None = None
     verdict: ExperimentTaskVerdict | None = None
 

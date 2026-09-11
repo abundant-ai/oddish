@@ -265,9 +265,11 @@ export interface Task {
   run_analysis?: boolean;
   run_probe?: boolean;
   review_version_matches?: boolean | null;
+  /** Source audit of the experiment-selected version (trial_version_id or default). */
+  pre_trial_status?: JobStatus | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
-  /** Must-fix findings in the completed source audit of the current version. */
+  /** Must-fix findings in the completed source audit of the experiment-selected version. */
   must_fix_count?: number | null;
   verdict_error?: string | null;
   jobs?: VisibleWorkerJob[];
@@ -297,6 +299,7 @@ export type PublicExperimentOpenTask = Omit<
   | "experiment_owner"
   | "experiment_link"
   | "must_fix_count"
+  | "pre_trial_status"
 >;
 
 export interface ExperimentPageSummary {
