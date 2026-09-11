@@ -51,6 +51,11 @@ from modal_app import (
     WORKER_BATCH_BUDGET_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_CPU,
+    WORKER_CANDIDATE_CPU,
+    WORKER_CANDIDATE_CPU_LIMIT,
+    WORKER_CANDIDATE_MEMORY_MB,
+    WORKER_CANDIDATE_MAX_CONTAINERS,
+    WORKER_CANDIDATE_CONFIGURATION,
     WORKER_MAX_CONTAINERS,
     WORKER_MEMORY_MB,
     WORKER_MIN_CONTAINERS,
@@ -222,6 +227,9 @@ async def _run_one_job(
     reservation_token: str | None = None,
     priority_class: bool | None = None,
     org_id: str | None = None,
+    *,
+    worker_billing_spec: WorkerBillingSpec | None = None,
+    resource_candidate: bool = False,
 ) -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
@@ -229,6 +237,13 @@ async def _run_one_job(
     ``process_single_job__<id>`` Function -- they differ only in the image (which
     Harbor is baked) and which ``harbor_variant_id`` rows they claim.
     """
+    if worker_billing_spec is None:
+        worker_billing_spec = WorkerBillingSpec(
+            cpu_cores=WORKER_CPU,
+            memory_mb=WORKER_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            configuration=f"base-cpu{WORKER_CPU:g}-mem{WORKER_MEMORY_MB}",
+        )
     # Resolve the Modal function-call id BEFORE opening the span so
     # it can ride as a span attribute. This is a pure in-process
     # lookup, no I/O, so it's safe to do pre-span.
@@ -248,6 +263,9 @@ async def _run_one_job(
         harbor_variant_id=harbor_variant_id,
         execution_lane=execution_lane,
         modal_function_call_id=fc_id,
+        worker_configuration=worker_billing_spec.configuration,
+        worker_cpu=worker_billing_spec.cpu_cores,
+        worker_memory_mb=worker_billing_spec.memory_mb,
     )
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
@@ -259,7 +277,8 @@ async def _run_one_job(
     try:
         console.print(
             f"[cyan]Job worker starting (queue_key={queue_key}, "
-            f"execution_lane={execution_lane})...[/cyan]"
+            f"execution_lane={execution_lane}, configuration={worker_billing_spec.configuration}, "
+            f"cpu={worker_billing_spec.cpu_cores}, memory_mb={worker_billing_spec.memory_mb})...[/cyan]"
         )
         if fc_id:
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
@@ -313,11 +332,6 @@ async def _run_one_job(
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        worker_billing_spec = WorkerBillingSpec(
-            cpu_cores=WORKER_CPU,
-            memory_mb=WORKER_MEMORY_MB,
-            nonpreemptible=WORKER_NONPREEMPTIBLE,
-        )
         if execution_lane == EC2_TRIAL_EXECUTION_LANE:
             # Only a normal return proves the sandbox teardown path completed.
             # On cancellation, reconciliation keeps this lease until the owner
@@ -336,6 +350,8 @@ async def _run_one_job(
                     capacity_provider="ec2",
                     capacity_slot=capacity_slot,
                     worker_billing_spec=worker_billing_spec,
+                    resource_candidate=resource_candidate,
+                    candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
                     priority_class=priority_class,
                     org_id=org_id,
                 )
@@ -353,6 +369,8 @@ async def _run_one_job(
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
                 worker_billing_spec=worker_billing_spec,
+                resource_candidate=resource_candidate,
+                candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
                 priority_class=priority_class,
                 org_id=org_id,
             )
@@ -438,6 +456,56 @@ async def process_single_job(
         reservation_token=reservation_token,
         priority_class=priority_class,
         org_id=org_id,
+    )
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=trial_worker_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_CANDIDATE_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=(WORKER_CANDIDATE_CPU, WORKER_CANDIDATE_CPU_LIMIT),
+    memory=WORKER_CANDIDATE_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_job_candidate(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = DEFAULT_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
+):
+    """Same Harbor body, smaller reservation; every claim rechecks live admission."""
+    if (harbor_variant_id, execution_lane, priority_class) != (
+        "default",
+        DEFAULT_EXECUTION_LANE,
+        False,
+    ):
+        raise ValueError(
+            "Candidate requires an ordinary default-image/default-lane launch"
+        )
+    if reservation_token is None:
+        raise ValueError("Candidate requires a dispatcher reservation")
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        execution_lane,
+        reservation_token=reservation_token,
+        priority_class=priority_class,
+        org_id=org_id,
+        resource_candidate=True,
+        worker_billing_spec=WorkerBillingSpec(
+            cpu_cores=WORKER_CANDIDATE_CPU,
+            cpu_limit=WORKER_CANDIDATE_CPU_LIMIT,
+            memory_mb=WORKER_CANDIDATE_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            configuration=WORKER_CANDIDATE_CONFIGURATION,
+        ),
     )
 
 
@@ -1018,7 +1086,9 @@ async def poll_queue():
                         EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
                     },
                     held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
-                )
+                ),
+                candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
+                candidate_max_workers=WORKER_CANDIDATE_MAX_CONTAINERS,
             )
         record_dispatch_snapshot(
             queue_keys=plan.queue_keys,
@@ -1134,6 +1204,7 @@ async def poll_queue():
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,
+                candidate_fn=process_single_job_candidate,
                 ec2_fn=process_single_ec2_trial_job,
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
                 ec2_variant_fns=_EC2_VARIANT_JOB_FUNCTIONS,

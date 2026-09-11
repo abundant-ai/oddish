@@ -22,11 +22,10 @@ import {
   parseDeliveryView,
   deliveryViewQuery,
   type DeliveryTaskFilter,
-  readySummary,
-  deliveryQAStatus,
-  isDeliveryBlocked,
+  DELIVERY_STATES,
+  deliveryTaskState,
+  deliveryOwnerTasks,
   QA_ISSUE_LABELS,
-  QA_STATUS_LABELS,
 } from "@/lib/deliveries";
 import { DeliveryDisclosure } from "@/components/delivery-disclosure";
 import { DeliveryOverview } from "@/components/delivery-overview";
@@ -35,7 +34,6 @@ import { isOrgAdminRole } from "@/lib/org-roles";
 import type {
   DeliveryBoardResponse,
   DeliveryCheckResult,
-  DeliveryQAStatus,
   QAIssueCategory,
   DeliveryTaskBoardRow,
   TaskBrowseResponse,
@@ -58,7 +56,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -346,85 +344,48 @@ const QA_HISTORY_PAGE = 5;
 // at once; the first rows cover what a person reaches quickly.
 const QA_PREFETCH_LIMIT = 25;
 
-/** The board filter. The three non-"all" states are disjoint: every task
- * is blocked (a failing automated check or an open defect), awaiting
- * sign-off (nothing blocks it, a person has not signed it off), or
- * ready. */
-function applyTaskFilter(
-  tasks: DeliveryTaskBoardRow[],
-  filter: DeliveryTaskFilter
-) {
-  if (filter === "all") return tasks;
-  return tasks.filter((row) => {
-    if (filter === "outstanding") return !row.ready;
-    if (filter === "ready") return row.ready;
-    if (filter === "blocked") return isDeliveryBlocked(row);
-    return !row.ready && !isDeliveryBlocked(row);
-  });
-}
-
-/** The rows the table actually renders: the board filter, then the QA-work
- * filters, plus a task named by a deep link even when the filters hide it.
- * Rendering and QA-history prefetching share this order. */
+/** The visible queue and its history prefetch share the same filters and order.
+ * A task deep link remains visible even after its state changes. */
 function applyBoardView(
   data: DeliveryBoardResponse,
   view: {
     filter: DeliveryTaskFilter;
-    qaDays: string;
-    qaFilter: string;
     issueFilter: string;
     ownerFilter: string;
     groupBy: string;
     focusTask: string | null;
   }
 ) {
-  const cutoff =
-    new Date(data.qa_as_of ?? 0).getTime() - Number(view.qaDays) * 86400000;
-  const statuses = new Map(
-    data.tasks.map((row) => [
-      row.delivery_task_id,
-      deliveryQAStatus(row, cutoff),
-    ])
-  );
   const groupLabel = (row: DeliveryTaskBoardRow) =>
     view.groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
-      : row.qa_work.issue_categories[0]
-        ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
-        : "Uncategorized";
-  const rows = applyTaskFilter(data.tasks, view.filter).filter((row) => {
-    const status = statuses.get(row.delivery_task_id)!.status;
-    return (
-      (view.qaFilter === "all" ||
-        (view.qaFilter === "checked"
-          ? ["accepted", "needs_fixes"].includes(status)
-          : view.qaFilter === "needs_qa"
-            ? ["never", "outdated"].includes(status)
-            : status === view.qaFilter)) &&
+      : view.groupBy === "state"
+        ? DELIVERY_STATES[deliveryTaskState(row)].label
+        : row.qa_work.issue_categories[0]
+          ? QA_ISSUE_LABELS[row.qa_work.issue_categories[0]]
+          : "Uncategorized";
+  const rows = deliveryOwnerTasks(data, view.ownerFilter).filter(
+    (row) =>
+      (view.filter === "all" ||
+        (view.filter === "outstanding"
+          ? !row.ready
+          : view.filter === "blocked"
+            ? ["needs_work", "qa_incomplete"].includes(deliveryTaskState(row))
+            : deliveryTaskState(row) === view.filter)) &&
       (view.issueFilter === "all" ||
         row.qa_work.issue_categories.includes(
           view.issueFilter as QAIssueCategory
-        )) &&
-      (view.ownerFilter === "all" ||
-        (view.ownerFilter === "unassigned"
-          ? !row.qa_work.owner_user_id
-          : row.qa_work.owner_user_id ===
-            (view.ownerFilter === "mine"
-              ? data.qa_viewer_user_id
-              : view.ownerFilter)))
-    );
-  });
-  // Resolve IDs before legacy task names, against the complete inventory.
+        ))
+  );
   const focusedTask = view.focusTask
     ? (data.tasks.find((row) => row.task_id === view.focusTask) ??
       data.tasks.find((row) => row.task_name === view.focusTask))
     : undefined;
-  const focusOutsideFilters =
-    focusedTask != null && !rows.includes(focusedTask);
+  const focusOutsideFilters = !!focusedTask && !rows.includes(focusedTask);
   if (focusOutsideFilters) rows.push(focusedTask);
   if (view.groupBy !== "none")
     rows.sort((a, b) => groupLabel(a).localeCompare(groupLabel(b)));
-  return { statuses, rows, groupLabel, focusedTask, focusOutsideFilters };
+  return { rows, groupLabel, focusedTask, focusOutsideFilters };
 }
 
 function QAHistoryPanel({
@@ -694,12 +655,13 @@ function TaskRow({
   onToggleSelect,
   onSetCheck,
   onRemove,
-  qa,
+  groupBy,
   canEditWork,
   busy,
   onClaim,
   onRelease,
   onSaveWork,
+  pendingChecks,
 }: {
   row: DeliveryTaskBoardRow;
   frozen: boolean;
@@ -720,9 +682,10 @@ function TaskRow({
     checked: boolean
   ) => void;
   onRemove: () => void;
-  qa: DeliveryQAStatus;
+  groupBy: string;
   canEditWork: boolean;
   busy: boolean;
+  pendingChecks: Record<string, "saving" | "refreshing">;
   onClaim: () => void;
   onRelease: () => void;
   onSaveWork: (patch: {
@@ -732,18 +695,8 @@ function TaskRow({
 }) {
   const expanded = focused;
   const openDefects = row.defects.filter((defect) => !defect.acknowledged);
-  const blocker = openDefects[0];
   const taskHref = `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}&drawer=task&taskPane=overview` : ""}`;
-  const blockerHref =
-    blocker && row.version != null
-      ? findingHref(row.task_id, row.version, {
-          file: blocker.file,
-          line_start: blocker.line_start,
-          line_end: blocker.line_end,
-          id: blocker.finding_id,
-        })
-      : taskHref;
-  const blocked = isDeliveryBlocked(row);
+  const state = DELIVERY_STATES[deliveryTaskState(row)];
   const [editingWork, setEditingWork] = useState<DeliveryTaskBoardRow | null>(
     null
   );
@@ -793,12 +746,12 @@ function TaskRow({
             )}
           </button>
         </TableCell>
-        <TableCell className="py-4 whitespace-normal">
+        <TableCell className="py-3 whitespace-normal">
           <div className="flex items-center gap-2">
             <Link
               href={taskHref}
               title={row.task_name}
-              className="min-w-0 truncate text-base font-medium hover:underline"
+              className="min-w-0 text-sm font-medium break-words hover:underline"
               onClick={(event) => event.stopPropagation()}
             >
               {row.task_name}
@@ -823,104 +776,106 @@ function TaskRow({
               )}
             </button>
           </div>
-          <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-            <span>
-              {row.version != null ? `v${row.version}` : "No version"}
-            </span>
-            {row.newer_version_exists && <span>Newer version available</span>}
-            <DeliveryQAStatusBadge qa={qa} />
-            {!row.is_visible && <span>Hidden from customer</span>}
-          </div>
-          {!expanded && blocker && (
-            <a
-              href={blockerHref}
-              className="text-muted-foreground hover:text-foreground mt-2 block truncate hover:underline"
-              onClick={(event) => event.stopPropagation()}
-            >
-              {blocker.title}
-            </a>
-          )}
-        </TableCell>
-        <TableCell className="whitespace-normal">
-          <span
-            className={
-              row.ready
-                ? "text-emerald-700 dark:text-emerald-400"
-                : blocked
-                  ? "text-red-700 dark:text-red-400"
-                  : "text-muted-foreground"
-            }
-          >
-            {row.ready
-              ? "Ready to deliver"
-              : blocked
-                ? "Blocked"
-                : "Awaiting sign-off"}
+          <span className="text-muted-foreground text-xs">
+            {row.version != null ? `v${row.version}` : "No version"}
+            {!row.is_visible && " · Hidden from customer"}
           </span>
-          {openDefects.length > 0 && (
-            <p className="mt-1 text-sm">
-              {openDefects.length} finding{openDefects.length === 1 ? "" : "s"}{" "}
-              need{openDefects.length === 1 ? "s" : ""} a decision
-            </p>
-          )}
         </TableCell>
-        <TableCell onClick={(event) => event.stopPropagation()}>
-          {row.qa_work.owner_user_id ? (
-            <div className="space-y-1">
-              <p className="text-sm">
-                {row.qa_owner_name ?? row.qa_work.owner_user_id}
-              </p>
-              {canEditWork && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={onRelease}
-                >
-                  Release
-                </Button>
-              )}
-            </div>
-          ) : !frozen && row.version_id ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={onClaim}
+        {groupBy !== "state" && (
+          <TableCell>
+            <span
+              className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${state.tone} ${state.background}`}
             >
-              Claim
-            </Button>
+              {state.label}
+            </span>
+          </TableCell>
+        )}
+        {groupBy !== "owner" && (
+          <TableCell onClick={(event) => event.stopPropagation()}>
+            {row.qa_work.owner_user_id ? (
+              <span className="text-sm">
+                {row.qa_owner_name ?? row.qa_work.owner_user_id}
+              </span>
+            ) : !frozen && row.version_id ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={onClaim}
+              >
+                Claim
+              </Button>
+            ) : (
+              <span className="text-muted-foreground">Unassigned</span>
+            )}
+          </TableCell>
+        )}
+        <TableCell className="text-right tabular-nums">
+          {openDefects.length ? (
+            <button
+              type="button"
+              className="underline underline-offset-4"
+              aria-label={`Review ${openDefects.length} open findings for ${row.task_name}`}
+            >
+              {openDefects.length}
+            </button>
           ) : (
-            "Unassigned"
+            <span className="text-muted-foreground">—</span>
           )}
         </TableCell>
-        <TableCell className="text-right">
-          <Button
-            variant="outline"
-            size="sm"
-            aria-expanded={expanded}
-            onClick={(event) => {
-              event.stopPropagation();
-              manuallyToggled.current = true;
-              onToggleExpanded();
-            }}
-          >
-            {expanded
-              ? "Close review"
-              : blocked
-                ? "Review task"
-                : row.ready
-                  ? "View record"
-                  : "Awaiting sign-off"}
-          </Button>
+        <TableCell className="text-muted-foreground text-right text-xs">
+          {row.qa.finished_at ? (
+            <time
+              dateTime={row.qa.finished_at}
+              title={new Date(row.qa.finished_at).toLocaleString()}
+            >
+              {formatRelativeTime(row.qa.finished_at)}
+            </time>
+          ) : (
+            "—"
+          )}
         </TableCell>
       </TableRow>
       {expanded && (
         <TableRow className="hover:bg-transparent">
           {selectable && <TableCell />}
           <TableCell />
-          <TableCell colSpan={4} className="pb-6 whitespace-normal">
+          <TableCell
+            colSpan={5 - Number(groupBy === "owner" || groupBy === "state")}
+            className="pb-6 whitespace-normal"
+          >
             <div className="max-w-4xl space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <DeliveryQAStatusBadge qa={row.qa} />
+                {groupBy === "owner" &&
+                  !row.qa_work.owner_user_id &&
+                  !frozen &&
+                  row.version_id && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={onClaim}
+                    >
+                      Claim task
+                    </Button>
+                  )}
+                {row.newer_version_exists && (
+                  <span className="text-muted-foreground text-xs">
+                    Newer version available
+                  </span>
+                )}
+                {canEditWork && row.qa_work.owner_user_id && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={onRelease}
+                  >
+                    Release task
+                  </Button>
+                )}
+              </div>
               {[false, true].map((acknowledged) => {
                 const defects = row.defects.filter(
                   (defect) => defect.acknowledged === acknowledged
@@ -1026,7 +981,13 @@ function TaskRow({
                               size="sm"
                               className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
                               disabled={
-                                frozen || !isAdmin || busy || !row.version_id
+                                frozen ||
+                                !isAdmin ||
+                                busy ||
+                                !row.version_id ||
+                                !!pendingChecks[
+                                  `${row.delivery_task_id}:ack:${defect.id}`
+                                ]
                               }
                               onClick={() =>
                                 onSetCheck(
@@ -1036,7 +997,15 @@ function TaskRow({
                                 )
                               }
                             >
-                              Acknowledge for v{row.version}
+                              {pendingChecks[
+                                `${row.delivery_task_id}:ack:${defect.id}`
+                              ]
+                                ? pendingChecks[
+                                    `${row.delivery_task_id}:ack:${defect.id}`
+                                  ] === "saving"
+                                  ? "Saving…"
+                                  : "Updating…"
+                                : `Acknowledge for v${row.version}`}
                             </Button>
                           )}
                         </li>
@@ -1113,7 +1082,7 @@ function TaskRow({
                       }
                     />
                   ))}
-                  {blocked &&
+                  {!row.ready &&
                     manualChecks.some(
                       (check) =>
                         check.key === "signoff" && check.status === "pass"
@@ -1154,19 +1123,19 @@ function TaskRow({
                   Review status and checks
                 </summary>
                 <div className="mt-2 max-w-prose space-y-3 text-sm leading-relaxed">
-                  <p>{qa.detail}</p>
-                  {qa.finished_at && (
+                  <p>{row.qa.detail}</p>
+                  {row.qa.finished_at && (
                     <p className="text-muted-foreground">
                       Review finished{" "}
                       {frozen
-                        ? new Date(qa.finished_at).toLocaleString()
-                        : formatRelativeTime(qa.finished_at)}
+                        ? new Date(row.qa.finished_at).toLocaleString()
+                        : formatRelativeTime(row.qa.finished_at)}
                     </p>
                   )}
-                  {qa.trial_id && (
+                  {row.qa.trial_id && (
                     <Link
                       className="underline"
-                      href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(qa.trial_id)}`}
+                      href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(row.qa.trial_id)}`}
                     >
                       Open execution-review run
                     </Link>
@@ -1349,6 +1318,9 @@ function DeliveryBoardContent({
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pendingChecks, setPendingChecks] = useState<
+    Record<string, "saving" | "refreshing">
+  >({});
   const [signoffConfirm, setSignoffConfirm] =
     useState<DeliveryTaskBoardRow | null>(null);
   const [bulkSignoffRows, setBulkSignoffRows] = useState<
@@ -1360,8 +1332,6 @@ function DeliveryBoardContent({
     page,
     pageSize,
     filter,
-    qaDays,
-    qaFilter,
     issueFilter,
     ownerFilter,
     groupBy,
@@ -1385,8 +1355,6 @@ function DeliveryBoardContent({
     if (!data) return;
     const { rows, focusedTask: taskFromLink } = applyBoardView(data, {
       filter,
-      qaDays,
-      qaFilter,
       issueFilter,
       ownerFilter,
       groupBy,
@@ -1405,6 +1373,8 @@ function DeliveryBoardContent({
       const key = `/api/tasks/${encodeURIComponent(row.task_id)}/qa-history`;
       if (!prefetched.current.has(key)) {
         prefetched.current.add(key);
+        // The expanded history owns this read; do not race it with prefetch.
+        if (row === taskFromLink) continue;
         void mutateResource(key, fetcher(key), {
           revalidate: false,
           throwOnError: false,
@@ -1417,8 +1387,6 @@ function DeliveryBoardContent({
     pageSize,
     focusTask,
     filter,
-    qaDays,
-    qaFilter,
     issueFilter,
     ownerFilter,
     groupBy,
@@ -1432,11 +1400,9 @@ function DeliveryBoardContent({
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Request failed");
     } finally {
-      try {
-        await mutate(undefined, { populateCache: false, throwOnError: false });
-      } finally {
-        setBusy(false);
-      }
+      // Preserve background refreshes for actions that do not show per-check progress.
+      void mutate(undefined, { populateCache: false, throwOnError: false });
+      setBusy(false);
     }
   };
 
@@ -1457,7 +1423,7 @@ function DeliveryBoardContent({
       }
     );
 
-  const setCheck = (
+  const setCheck = async (
     checkKey: string,
     deliveryTaskId: string | null,
     checked: boolean
@@ -1477,14 +1443,36 @@ function DeliveryBoardContent({
     const row = data?.tasks.find(
       (row) => row.delivery_task_id === deliveryTaskId
     );
-    void run(() =>
-      putCheck(
+    const pendingKey = `${deliveryTaskId}:${checkKey}`;
+    setPendingChecks((pending) => ({ ...pending, [pendingKey]: "saving" }));
+    setBusy(true);
+    setActionError(null);
+    try {
+      await putCheck(
         checkKey,
         deliveryTaskId,
         checked,
         row ? (row.version_id ?? null) : undefined
-      )
-    );
+      );
+      setPendingChecks((pending) => ({
+        ...pending,
+        [pendingKey]: "refreshing",
+      }));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      // Only this check waits for its result; other actions can proceed after saving.
+      setBusy(false);
+      try {
+        await mutate();
+      } finally {
+        setPendingChecks((pending) => {
+          const next = { ...pending };
+          delete next[pendingKey];
+          return next;
+        });
+      }
+    }
   };
 
   const acknowledgeAndSignOff = (row: DeliveryTaskBoardRow) => {
@@ -1578,26 +1566,27 @@ function DeliveryBoardContent({
   }
 
   const frozen = data.frozen;
+  const owners = new Map<string, string>();
+  for (const row of data.tasks) {
+    if (row.qa_work.owner_user_id) {
+      owners.set(
+        row.qa_work.owner_user_id,
+        row.qa_owner_name ?? row.qa_work.owner_user_id
+      );
+    }
+  }
   const {
-    statuses,
     rows: filteredTasks,
     groupLabel,
     focusedTask,
     focusOutsideFilters,
   } = applyBoardView(data, {
     filter,
-    qaDays,
-    qaFilter,
     issueFilter,
     ownerFilter,
     groupBy,
     focusTask,
   });
-  const checkedCount = data.tasks.filter((row) =>
-    ["accepted", "needs_fixes"].includes(
-      statuses.get(row.delivery_task_id)!.status
-    )
-  ).length;
   const claimWork = (rows: DeliveryTaskBoardRow[], limit: number) =>
     void run(async () => {
       const payload = await postJson<{ claimed_version_ids: string[] }>(
@@ -1638,26 +1627,19 @@ function DeliveryBoardContent({
     clampedPage * pageSize,
     (clampedPage + 1) * pageSize
   );
-  // Tasks a mass sign-off may take: not signed off, no open blockers.
-  // Blocked tasks keep the per-task acknowledge flow.
-  const cleanUnsigned = data.tasks.filter((row) => {
-    const signoffCheck = row.checks.find((check) => check.key === "signoff");
-    if (!signoffCheck || signoffCheck.status === "pass") return false;
-    const { checks, defects } = signoffBlockers(row);
-    return checks.length + defects.length === 0;
-  });
   const bulkable = isAdmin && !frozen;
   const selectedRows = filteredTasks.filter((row) =>
     selected.has(row.delivery_task_id)
   );
-  const cleanUnsignedIds = new Set(
-    cleanUnsigned.map((row) => row.delivery_task_id)
-  );
-  // Sign off selected takes only the clean, unsigned part of the
-  // selection; blocked tasks keep the per-task acknowledge flow.
-  const selectedClean = selectedRows.filter((row) =>
-    cleanUnsignedIds.has(row.delivery_task_id)
-  );
+  const canSignOffSelection =
+    selectedRows.length > 0 &&
+    selectedRows.every(
+      (row) =>
+        deliveryTaskState(row) === "awaiting_signoff" &&
+        row.checks.some(
+          (check) => check.key === "signoff" && check.status === "fail"
+        )
+    );
   const runnableRows = selectedRows.filter(
     (row) => row.version_id && !["queued", "running"].includes(row.qa.status)
   );
@@ -1720,24 +1702,21 @@ function DeliveryBoardContent({
       setSelected(new Set());
     });
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {refreshError}
-      <Card>
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
+      <section>
+        <header className="flex flex-wrap items-center justify-between gap-3 py-3">
           <div className="min-w-0">
-            <CardTitle className="flex items-center gap-2">
+            <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight">
               {data.delivery.name}
               <DeliveryStatusBadge status={data.delivery.status} />
               {frozen && <Lock className="text-muted-foreground h-4 w-4" />}
-            </CardTitle>
+            </h1>
             <p className="text-muted-foreground mt-1 text-sm">
               Customer:{" "}
               <span className="text-foreground font-medium">
                 {data.delivery.customer_name ?? "not set"}
               </span>
-              {" · "}
-              {readySummary(data)}
-              {data.ready && !frozen && " · ready to finalize"}
               {frozen &&
                 data.finalized_at &&
                 ` · finalized ${new Date(data.finalized_at).toLocaleString()}`}
@@ -1752,38 +1731,6 @@ function DeliveryBoardContent({
                 busy={busy}
                 onAdd={addTasks}
               />
-              {cleanUnsigned.length > 0 && (
-                <AlertDialog
-                  onOpenChange={(open) => {
-                    if (open) setBulkSignoffRows(cleanUnsigned);
-                  }}
-                >
-                  <AlertDialogTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={busy}>
-                      Sign off all ({cleanUnsigned.length})
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Sign off {bulkSignoffRows.length} task
-                        {bulkSignoffRows.length === 1 ? "" : "s"}?
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Every check passes on these tasks. Each sign-off is
-                        recorded in your name. Tasks with open blockers are not
-                        included; sign those off from their row.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={signOffRows}>
-                        Sign off all
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              )}
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button size="sm" disabled={busy || !data.ready}>
@@ -1820,7 +1767,7 @@ function DeliveryBoardContent({
               </AlertDialog>
             </div>
           )}
-        </CardHeader>
+        </header>
         {(actionError || data.delivery_checks.length > 0) && (
           <CardContent className="space-y-2 pt-0">
             {actionError && (
@@ -1843,30 +1790,14 @@ function DeliveryBoardContent({
             )}
           </CardContent>
         )}
-      </Card>
+      </section>
 
-      <DeliveryOverview
-        board={data}
-        filter={filter}
-        ownerFilter={ownerFilter}
-        onFilter={(nextFilter, owner) =>
-          updateView({
-            filter: nextFilter,
-            owner,
-            qa: null,
-            issue: null,
-            page: null,
-            task: null,
-          })
-        }
-      />
+      <DeliveryOverview board={data} ownerFilter={ownerFilter} />
 
-      <Card>
-        <CardContent className="pt-4">
+      <section>
+        <div>
           {data.tasks.length === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              No tasks yet. Add the tasks this delivery should ship.
-            </p>
+            <p className="text-muted-foreground text-sm">No tasks yet.</p>
           ) : (
             <>
               {notice && (
@@ -1875,34 +1806,112 @@ function DeliveryBoardContent({
                 </p>
               )}
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Select
-                  value={filter}
-                  onValueChange={(value) => {
-                    updateView({ filter: value, page: null, task: null });
-                  }}
+                <div
+                  role="group"
+                  aria-label="Task filters"
+                  className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap"
                 >
-                  <SelectTrigger className="w-full sm:w-80">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="outstanding">
-                      Blockers and outstanding sign-offs
-                    </SelectItem>
-                    <SelectItem value="all">All tasks</SelectItem>
-                    <SelectItem value="blocked">
-                      Blocked (failing checks or defects)
-                    </SelectItem>
-                    <SelectItem value="awaiting_signoff">
-                      Awaiting sign-off (checks pass)
-                    </SelectItem>
-                    <SelectItem value="ready">Ready</SelectItem>
-                  </SelectContent>
-                </Select>
-                {filter !== "all" && (
-                  <span className="text-muted-foreground text-sm">
-                    {filteredTasks.length} of {data.tasks.length} tasks
-                  </span>
-                )}
+                  <Select
+                    value={filter}
+                    onValueChange={(filter) =>
+                      updateView({ filter, page: null, task: null })
+                    }
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="State filter"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All states</SelectItem>
+                      {filter === "outstanding" && (
+                        <SelectItem value="outstanding">Outstanding</SelectItem>
+                      )}
+                      {filter === "blocked" && (
+                        <SelectItem value="blocked">Blocked</SelectItem>
+                      )}
+                      {Object.entries(DELIVERY_STATES).map(([key, state]) => (
+                        <SelectItem key={key} value={key}>
+                          {state.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={ownerFilter}
+                    onValueChange={(owner) =>
+                      updateView({ owner, page: null, task: null })
+                    }
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="Owner filter"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All owners</SelectItem>
+                      {data.qa_viewer_user_id && (
+                        <SelectItem value="mine">Mine</SelectItem>
+                      )}
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {[...owners]
+                        .sort((a, b) => a[1].localeCompare(b[1]))
+                        .map(([id, name]) => (
+                          <SelectItem key={id} value={id}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      {!["all", "mine", "unassigned"].includes(ownerFilter) &&
+                        !owners.has(ownerFilter) && (
+                          <SelectItem value={ownerFilter}>
+                            {ownerFilter}
+                          </SelectItem>
+                        )}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={issueFilter}
+                    onValueChange={(issue) =>
+                      updateView({ issue, page: null, task: null })
+                    }
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="Issue category filter"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All categories</SelectItem>
+                      {Object.entries(QA_ISSUE_LABELS).map(([key, label]) => (
+                        <SelectItem key={key} value={key}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={groupBy}
+                    onValueChange={(group) =>
+                      updateView({ group, page: null, task: null })
+                    }
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-44"
+                      aria-label="Group tasks"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No grouping</SelectItem>
+                      <SelectItem value="state">Group by state</SelectItem>
+                      <SelectItem value="owner">Group by owner</SelectItem>
+                      <SelectItem value="issue">Group by category</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 {bulkable && selectedRows.length > 0 && (
                   <div className="ml-auto flex flex-wrap items-center gap-2">
                     <span className="text-muted-foreground text-sm">
@@ -1918,16 +1927,16 @@ function DeliveryBoardContent({
                     </Button>
                     <AlertDialog
                       onOpenChange={(open) => {
-                        if (open) setBulkSignoffRows(selectedClean);
+                        if (open) setBulkSignoffRows(selectedRows);
                       }}
                     >
                       <AlertDialogTrigger asChild>
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={busy || selectedClean.length === 0}
+                          disabled={busy || !canSignOffSelection}
                         >
-                          Sign off selected ({selectedClean.length})
+                          Sign off
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
@@ -1937,11 +1946,7 @@ function DeliveryBoardContent({
                             {bulkSignoffRows.length === 1 ? "" : "s"}?
                           </AlertDialogTitle>
                           <AlertDialogDescription>
-                            {bulkSignoffRows.length} of the{" "}
-                            {selectedRows.length} selected tasks have no open
-                            blockers and are not signed off; each sign-off is
-                            recorded in your name. The rest are skipped — sign
-                            those off from their row.
+                            Record your approval of these task versions.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -1960,14 +1965,14 @@ function DeliveryBoardContent({
                           className="text-destructive"
                           disabled={busy}
                         >
-                          Remove selected ({selected.size})
+                          Remove selected
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
                           <AlertDialogTitle>
-                            Remove {selected.size} task
-                            {selected.size === 1 ? "" : "s"}?
+                            Remove {selectedRows.length} task
+                            {selectedRows.length === 1 ? "" : "s"}?
                           </AlertDialogTitle>
                           <AlertDialogDescription>
                             The tasks leave this delivery. Their sign-offs and
@@ -1993,151 +1998,9 @@ function DeliveryBoardContent({
                   </div>
                 )}
               </div>
-              <DeliveryDisclosure
-                panel="filters"
-                className="mb-4"
-                defaultOpen={
-                  qaFilter !== "all" ||
-                  issueFilter !== "all" ||
-                  ownerFilter !== "all" ||
-                  groupBy !== "none" ||
-                  qaDays !== "7"
-                }
-              >
-                <summary className="cursor-pointer py-2 text-sm">
-                  Review filters and grouping
-                </summary>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm">
-                    {checkedCount} / {data.tasks.length} tasks checked in the
-                    last {qaDays === "7" ? "7 days" : "24 hours"}
-                  </p>
-                  <Select
-                    value={qaDays}
-                    onValueChange={(value) => {
-                      updateView({ days: value, page: null, task: null });
-                    }}
-                  >
-                    <SelectTrigger
-                      className="w-40"
-                      aria-label="QA freshness window"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="7">Last 7 days</SelectItem>
-                      <SelectItem value="1">Last 24 hours</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <p className="text-muted-foreground mb-3 text-xs">
-                  Checked includes completed reviews with and without blocking
-                  defects covering the current version and trials.{" "}
-                  {frozen && "Counts are frozen at finalization."}
-                </p>
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <Select
-                    value={qaFilter}
-                    onValueChange={(value) => {
-                      updateView({ qa: value, page: null, task: null });
-                    }}
-                  >
-                    <SelectTrigger
-                      className="w-44"
-                      aria-label="QA status filter"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All QA states</SelectItem>
-                      <SelectItem value="checked">Checked</SelectItem>
-                      <SelectItem value="needs_qa">Needs QA</SelectItem>
-                      {Object.entries(QA_STATUS_LABELS).map(([key, label]) => (
-                        <SelectItem key={key} value={key}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={issueFilter}
-                    onValueChange={(value) => {
-                      updateView({ issue: value, page: null, task: null });
-                    }}
-                  >
-                    <SelectTrigger
-                      className="w-48"
-                      aria-label="Issue category filter"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All issue categories</SelectItem>
-                      {Object.entries(QA_ISSUE_LABELS).map(([key, label]) => (
-                        <SelectItem key={key} value={key}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={ownerFilter}
-                    onValueChange={(value) => {
-                      updateView({ owner: value, page: null, task: null });
-                    }}
-                  >
-                    <SelectTrigger className="w-40" aria-label="Owner filter">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All owners</SelectItem>
-                      <SelectItem value="unassigned">Unassigned</SelectItem>
-                      <SelectItem value="mine">Mine</SelectItem>
-                      {[
-                        ...new Map(
-                          data.tasks
-                            .filter((row) => row.qa_work.owner_user_id)
-                            .map((row) => [
-                              row.qa_work.owner_user_id!,
-                              row.qa_owner_name ?? row.qa_work.owner_user_id!,
-                            ])
-                        ).entries(),
-                      ].map(([id, name]) => (
-                        <SelectItem key={id} value={id}>
-                          {name}
-                        </SelectItem>
-                      ))}
-                      {!["all", "mine", "unassigned"].includes(ownerFilter) &&
-                        !data.tasks.some(
-                          (row) => row.qa_work.owner_user_id === ownerFilter
-                        ) && (
-                          <SelectItem value={ownerFilter}>
-                            {ownerFilter} (no assigned tasks)
-                          </SelectItem>
-                        )}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={groupBy}
-                    onValueChange={(value) => {
-                      updateView({ group: value, page: null, task: null });
-                    }}
-                  >
-                    <SelectTrigger className="w-44" aria-label="Group tasks">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No grouping</SelectItem>
-                      <SelectItem value="issue">Group by issue</SelectItem>
-                      <SelectItem value="owner">Group by owner</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </DeliveryDisclosure>
               {focusOutsideFilters && (
                 <p className="text-muted-foreground mb-2 text-xs">
-                  The linked task is shown even though it does not match the
-                  selected filters.
+                  Linked task is outside the current filters.
                 </p>
               )}
               <div
@@ -2186,10 +2049,17 @@ function DeliveryBoardContent({
                         )}
                         <TableHead className="w-10" />
                         <TableHead>Task</TableHead>
-                        <TableHead className="w-44">Delivery status</TableHead>
-                        <TableHead className="w-28">Owner</TableHead>
-                        <TableHead className="w-40 text-right">
-                          Next action
+                        {groupBy !== "state" && (
+                          <TableHead className="w-40">State</TableHead>
+                        )}
+                        {groupBy !== "owner" && (
+                          <TableHead className="w-28">Owner</TableHead>
+                        )}
+                        <TableHead className="w-28 text-right">
+                          Open findings
+                        </TableHead>
+                        <TableHead className="w-24 text-right">
+                          Last QA
                         </TableHead>
                       </TableRow>
                     </TableHeader>
@@ -2202,7 +2072,12 @@ function DeliveryBoardContent({
                                 groupLabel(row)) && (
                               <TableRow>
                                 <TableCell
-                                  colSpan={bulkable ? 6 : 5}
+                                  colSpan={
+                                    (bulkable ? 7 : 6) -
+                                    Number(
+                                      groupBy === "owner" || groupBy === "state"
+                                    )
+                                  }
                                   className="bg-muted text-xs font-medium"
                                 >
                                   {groupLabel(row)}
@@ -2210,7 +2085,8 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
-                            qa={statuses.get(row.delivery_task_id)!}
+                            pendingChecks={pendingChecks}
+                            groupBy={groupBy}
                             busy={busy}
                             canEditWork={
                               !frozen &&
@@ -2320,8 +2196,8 @@ function DeliveryBoardContent({
               )}
             </>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       <AlertDialog
         open={signoffConfirm !== null}
         onOpenChange={(open) => {

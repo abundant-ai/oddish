@@ -59,13 +59,27 @@ export async function GET(request: NextRequest) {
           source_hash: `fixture-v${version}`,
         });
       }
-      return NextResponse.json({
-        files: request.nextUrl.searchParams.get("prefix")
-          ? [{ path: "tests/test.sh", type: "file", size: 140 }]
-          : [{ path: "tests", type: "directory" }],
+      const directoryPage = (prefix: string) => ({
+        files:
+          prefix === "tests"
+            ? [{ path: "tests/test.sh", key: "tests/test.sh", size: 140 }]
+            : [],
+        dirs: prefix === "" ? [{ path: "tests" }] : [],
         source_hash: `fixture-v${version}`,
-        next_cursor: null,
+        cursor: null,
       });
+      const directories = request.nextUrl.searchParams.getAll("directories");
+      return NextResponse.json(
+        directories.length
+          ? {
+              directories: Object.fromEntries(
+                directories.map((prefix) => [prefix, directoryPage(prefix)])
+              ),
+              version,
+              source_hash: `fixture-v${version}`,
+            }
+          : directoryPage(request.nextUrl.searchParams.get("prefix") ?? "")
+      );
     }
   }
   if (parts[0] === "trials") {

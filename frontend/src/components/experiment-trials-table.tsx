@@ -65,6 +65,8 @@ import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
 import { preloadTrial } from "@/lib/use-trial";
+import { usePrefetchTaskFiles } from "@/lib/use-task-file-tree";
+import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -612,6 +614,12 @@ export function ExperimentTrialsTable({
   onRejectedOnlyChange,
 }: ExperimentTrialsTableProps) {
   const router = useRouter();
+  const prefetchTaskFiles = usePrefetchTaskFiles();
+  const prefetchTask = (task: Task) => {
+    if (!readOnly && onTaskSelect) prefetchTaskFiles(
+      `/api/tasks/${encodeURIComponent(task.id)}/files`, resolveExperimentTaskVersion(task)
+    );
+  };
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -2513,6 +2521,8 @@ export function ExperimentTrialsTable({
                                   <Button
                                     type="button"
                                     variant="ghost"
+                                    onPointerEnter={() => prefetchTask(task)}
+                                    onFocus={() => prefetchTask(task)}
                                     onClick={() =>
                                       openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
@@ -2597,6 +2607,8 @@ export function ExperimentTrialsTable({
                                   <Button
                                     type="button"
                                     variant="ghost"
+                                    onPointerEnter={() => prefetchTask(task)}
+                                    onFocus={() => prefetchTask(task)}
                                     onClick={() =>
                                       openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
