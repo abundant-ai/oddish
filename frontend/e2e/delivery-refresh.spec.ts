@@ -309,6 +309,72 @@ test("task pagination stays put when the next page has fewer rows", async ({
   ).toBe(paginationOffset);
 });
 
+for (const direction of ["Previous", "Next"] as const) {
+  test(`${direction} waits for the requested page before allowing another page change`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks = Array.from({ length: 40 }, (_, i) => ({
+      ...taskRow(),
+      task_id: `task-${i}`,
+      task_name: `Task ${i}`,
+      delivery_task_id: `member-${i}`,
+    }));
+    await page.goto("/?page=2&per_page=10&source=agent#tasks");
+    await expect(page.getByText("Page 2 of 4 · 40 tasks")).toBeVisible();
+    const previous = page.getByRole("button", {
+      name: "Previous",
+      exact: true,
+    });
+    const next = page.getByRole("button", { name: "Next", exact: true });
+    const target = direction === "Previous" ? 1 : 3;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requests: string[] = [];
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      requests.push(route.request().url());
+      await gate;
+      return route.fallback();
+    });
+    await page.getByRole("button", { name: direction, exact: true }).click();
+    await expect(page.getByText("Updating delivery view…")).toBeVisible();
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeDisabled();
+    // Native clicks on either disabled button cannot overwrite the pending URL.
+    await previous.evaluate((button: HTMLButtonElement) => button.click());
+    await next.evaluate((button: HTMLButtonElement) => button.click());
+    expect(new URL(page.url()).searchParams.get("page")).toBe(
+      target === 1 ? null : String(target)
+    );
+    expect(new URL(page.url()).searchParams.get("source")).toBe("agent");
+    expect(new URL(page.url()).hash).toBe("#tasks");
+    await expect.poll(() => requests.length).toBe(1);
+    release();
+    await expect(
+      page.getByText(`Page ${target} of 4 · 40 tasks`)
+    ).toBeVisible();
+    await expect(next).toBeEnabled();
+    if (target === 1) await expect(previous).toBeDisabled();
+    else await expect(previous).toBeEnabled();
+    expect(state.reads).toEqual({ board: 2, history: 0 });
+
+    // Returning to an already loaded page stays immediate and allows navigation.
+    await page
+      .getByRole("button", {
+        name: direction === "Previous" ? "Next" : "Previous",
+        exact: true,
+      })
+      .click();
+    await expect(page.getByText("Page 2 of 4 · 40 tasks")).toBeVisible();
+    await expect(previous).toBeEnabled();
+    await expect(next).toBeEnabled();
+    expect(state.reads).toEqual({ board: 2, history: 0 });
+    expect(state.writes).toEqual([]);
+  });
+}
+
 test("an old version draft stays copyable and cannot save against the replacement", async ({
   page,
 }) => {
@@ -526,6 +592,9 @@ for (const query of ["page=2", "filter=ready&group=owner&owner=unassigned"]) {
       "Updating delivery view…"
     );
     await expect(first).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Next", exact: true })
+    ).toBeDisabled();
     release();
     await expect(page.locator("main").getByRole("alert")).toContainText(
       "Showing the previously loaded tasks"
@@ -533,6 +602,9 @@ for (const query of ["page=2", "filter=ready&group=owner&owner=unassigned"]) {
     await expect(page.getByText("Updating delivery view…")).toHaveCount(0);
     await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
     await expect(first).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: "Next", exact: true })
+    ).toBeEnabled();
     await expect(
       page.getByRole("columnheader", { name: "Owner", exact: true })
     ).toBeVisible();

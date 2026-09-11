@@ -84,7 +84,10 @@ user, organization and delivery. Matching server data avoids an immediate
 duplicate browser request. A cached active delivery page at least 15 seconds old
 refreshes on activation; active boards keep the existing 15-second poll. Frozen
 boards do not poll. Navigation keeps the previous rows visible with an updating
-status while the requested page loads, and disables row mutations in that interval.
+status while the requested page loads, and disables row mutations and Previous/Next
+in that interval. Pager controls follow the displayed server-clamped page and
+become available again after success or failure; same-view background refreshes
+and fresh cached navigation do not block them.
 
 A write marks all cached pages stale and invalidates older in-flight requests,
 then refreshes the mounted view. It retains displayed data if that refresh fails

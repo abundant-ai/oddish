@@ -2184,7 +2184,7 @@ function DeliveryBoardContent({
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={clampedPage === 0}
+                        disabled={changingView || clampedPage === 0}
                         onClick={() =>
                           updateView({ page: String(clampedPage), task: null })
                         }
@@ -2194,7 +2194,7 @@ function DeliveryBoardContent({
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={clampedPage >= pageCount - 1}
+                        disabled={changingView || clampedPage >= pageCount - 1}
                         onClick={() =>
                           updateView({
                             page: String(clampedPage + 2),
