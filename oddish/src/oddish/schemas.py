@@ -180,6 +180,20 @@ class AgentModelPair(TrialSpec):
         ge=1,
         description="(Deprecated) Max parallel trials for this agent",
     )
+    provider: str | None = Field(
+        None,
+        description=(
+            "Optional LLM provider pin for a bare model id "
+            "(e.g. 'fireworks'). Conflicts with a different prefix on model."
+        ),
+    )
+    allow_unknown_model: bool = Field(
+        False,
+        description=(
+            "Send an unlisted curated Fireworks/DeepSeek model id anyway. "
+            "Open providers ignore this flag."
+        ),
+    )
 
 
 class RegistryAuth(BaseModel):
