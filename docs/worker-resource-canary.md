@@ -1,8 +1,9 @@
 # Worker reservation canary
 
-The migration seeds the database row with `fraction=0`. Staging deployment enables
-a 1% CPU-only sample after the worker deploy succeeds. Production and preview
-deployments leave admission under manual control.
+The migration seeds the database row with `fraction=0`. Staging and production deployments enable
+a 1% CPU-only sample after their worker deploy succeeds. Merging into `staging`
+enables staging; promoting to `main` enables production. Preview deployments
+leave admission under manual control.
 The existing worker remains 1 physical CPU core and 3,072 MiB RAM. The candidate
 uses the same `_run_one_job` body, Harbor image, secrets, timeout, interruption
 protection, and task sandbox resource configuration. Only the worker reservation
@@ -37,16 +38,22 @@ Set them in the environment that runs `modal deploy deploy.py`. Their values are
 also delivered in the final deployment-owned secret, so older provider secrets
 cannot change the resource values used for cost recording inside a worker.
 
-`.github/workflows/staging-deploy.yml` pins the candidate to 0.6 cores, 3,072 MiB,
-and two containers, then calls the control command after a successful deployment.
-It uses `MODAL_APP_NAME=oddish-staging` and Modal environment `staging`, whose
-`oddish-staging-db` secret supplies the staging database connection. Each staging
-deploy applies a fraction of `0.01` unless the GitHub `staging` environment variable
-`STAGING_WORKER_RESOURCE_FRACTION` overrides it. Setting that variable to `0`
-keeps subsequent staging deploys stopped. For an immediate stop, also run the
-stop command below; changing the GitHub variable alone does not update the live
-database. Removing the override restores the 1% default on the next staging deploy.
-The production deployment workflow and migration default are unchanged.
+The deployment workflows pin the candidate to 0.6 cores, 3,072 MiB, and two
+containers, then call the control command after a successful worker deployment.
+Each deploy applies a fraction of `0.01` unless its GitHub configuration variable
+overrides it:
+
+| Workflow | Modal app / environment | Fraction override |
+| --- | --- | --- |
+| `.github/workflows/staging-deploy.yml` | `oddish-staging` / `staging` | `STAGING_WORKER_RESOURCE_FRACTION` in the GitHub `staging` environment |
+| `.github/workflows/modal-deploy.yml` | `oddish` / `main` | Repository variable `PRODUCTION_WORKER_RESOURCE_FRACTION` |
+
+The production job runs only from `main`. Staging uses the `oddish-staging-db`
+secret for its database; production uses its existing production secret.
+Set the corresponding GitHub variable to `0` to keep subsequent deploys stopped.
+For an immediate stop, also run the live stop command below; changing the GitHub
+variable alone does not update the live database. Removing the override restores
+the 1% default on the next deploy. The migration still seeds fraction zero.
 
 From `backend/`, display staging's live state (read-only):
 
@@ -69,6 +76,15 @@ Stop new candidate claims without interrupting running jobs:
 MODAL_APP_NAME=oddish-staging MODAL_ENVIRONMENT=staging MODAL_SECRET_ENVIRONMENT=main \
   uv run modal run --env staging worker_resource_rollout.py --fraction 0
 ```
+
+For production, stop new candidate claims with:
+
+```bash
+MODAL_APP_NAME=oddish MODAL_ENVIRONMENT=main MODAL_SECRET_ENVIRONMENT=main \
+  uv run modal run --env main worker_resource_rollout.py --fraction 0
+```
+
+Omit `--fraction 0` to read production's live state without changing it.
 
 The equivalent SQL, run against the intended deployment's database, is:
 

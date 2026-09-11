@@ -54,6 +54,12 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      MODAL_APP_NAME: oddish
+      MODAL_SECRET_ENVIRONMENT: main
+      # CPU-only worker comparison; admission is enabled after deployment.
+      ODDISH_MODAL_WORKER_CANDIDATE_CPU: "0.6"
+      ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB: "3072"
+      ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS: "2"
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
       # Numinous Cloud execution backend (merged in #1344). Disabled in prod:
@@ -140,6 +146,14 @@ jobs:
         run: |
           uv sync --frozen
           uv run modal deploy deploy.py
+
+      - name: Configure production worker resource sample
+        env:
+          # Set this repository variable to "0" to keep future deploys stopped.
+          ROLLOUT_FRACTION: ${{ vars.PRODUCTION_WORKER_RESOURCE_FRACTION || '0.01' }}
+        run: |
+          uv run modal run --env main worker_resource_rollout.py \
+            --fraction "$ROLLOUT_FRACTION" --max-workers 2
 
       - name: Summarize deployment
         if: ${{ always() }}
