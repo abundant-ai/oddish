@@ -49,3 +49,24 @@ def test_deployed_worker_limits_survive_runtime_import(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(modal_app)
+
+
+def test_candidate_resource_definitions_and_billing_survive_runtime_import(monkeypatch):
+    requested = {
+        "ODDISH_MODAL_WORKER_CANDIDATE_CPU": "0.6",
+        "ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB": "1536",
+        "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS": "2",
+    }
+    for key, value in requested.items():
+        monkeypatch.setenv(key, value)
+    importlib.reload(modal_app)
+    try:
+        assert all(modal_app.ENV_VARS[key] == value for key, value in requested.items())
+        assert modal_app.WORKER_CANDIDATE_CONFIGURATION == "candidate-cpu0.6-mem1536"
+        assert modal_app.WORKER_CANDIDATE_CPU_LIMIT == 17
+        assert modal_app.WORKER_CPU == 1
+        assert modal_app.WORKER_MEMORY_MB == 3072
+        assert modal_app.WORKER_NONPREEMPTIBLE is True
+    finally:
+        monkeypatch.undo()
+        importlib.reload(modal_app)

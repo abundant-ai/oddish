@@ -912,9 +912,7 @@ class TaskVersionModelMetricsModel(Base):
     agent: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Older trials carry no model; "" keeps them addressable in the primary key
     # rather than dropping them or inventing a name.
-    model: Mapped[str] = mapped_column(
-        String(256), primary_key=True, server_default=""
-    )
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, server_default="")
     task_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -1441,8 +1439,8 @@ sa_event.listen(
         # the view before the historical column ALTERs later in the chain,
         # and Postgres refuses to alter a column a view depends on. The
         # chain creates the view itself at analysisspend01.
-        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
-            "ODDISH_ALEMBIC_RUNNING"
+        callable_=lambda ddl, target, bind, **kw: (
+            not os.environ.get("ODDISH_ALEMBIC_RUNNING")
         )
     ),
 )
@@ -1667,14 +1665,56 @@ class ModelRequestLeaseModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     pool_id: Mapped[str] = mapped_column(Text, nullable=False)
     worker_job_id: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False)
     input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     __table_args__ = (
         Index("ix_model_request_pool_expiry", "pool_id", "expires_at"),
         Index("ix_model_request_worker_created", "worker_job_id", "created_at"),
+    )
+
+
+class WorkerResourceRolloutModel(Base):
+    """Live, database-scoped candidate admission; zero is the shipped state."""
+
+    __tablename__ = "worker_resource_rollout"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_worker_rollout_singleton"),
+        CheckConstraint(
+            "fraction >= 0 AND fraction <= 1", name="ck_worker_rollout_fraction"
+        ),
+        CheckConstraint("max_workers >= 0", name="ck_worker_rollout_max_workers"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fraction: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    max_workers: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="2"
+    )
+    configuration: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="candidate-cpu0.6-mem3072"
+    )
+
+
+class WorkerResourceAttemptModel(Base):
+    """Claim-time resource attribution, preserved across retries and cost outages."""
+
+    __tablename__ = "worker_resource_attempts"
+    worker_job_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
+    configuration: Mapped[str] = mapped_column(Text, nullable=False)
+    modal_function_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cpu_request: Mapped[float] = mapped_column(Float, nullable=False)
+    cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    nonpreemptible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -1708,6 +1748,10 @@ class QueueSlotModel(Base):
 
     # Retained through adoption until the first job claim commits.
     launch_demand: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Retained after the first claim, unlike launch_demand, to cap whole workers.
+    resource_candidate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     __table_args__ = (
         Index(
@@ -2825,9 +2869,7 @@ class DeliveryModel(TimestampedMixin, Base):
     finalized_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    finalized_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    finalized_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class DeliveryTaskModel(TimestampedMixin, Base):
@@ -2908,7 +2950,9 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    note: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     checked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
