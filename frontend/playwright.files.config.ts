@@ -18,6 +18,7 @@ export default defineConfig({
       "cd e2e/review-app && node ../../node_modules/next/dist/bin/next build --webpack && node ../../node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3217",
     url: "http://127.0.0.1:3217",
     reuseExistingServer: false,
-    timeout: 120000,
+    // This includes the production build; cold CI builds can exceed two minutes.
+    timeout: 300000,
   },
 });
