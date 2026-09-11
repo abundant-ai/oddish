@@ -5,6 +5,7 @@ import type {
 } from "@/lib/types";
 import { formatLineRange } from "@/lib/line-range";
 import { taskHasActiveVerdict, taskHasActiveAnalysis } from "@/lib/job-status";
+import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 
 export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
   GOOD_SUCCESS: "Agent succeeded",
@@ -22,6 +23,107 @@ export const REVIEW_LABELS = {
   ...QA_STATUS_LABELS,
   outdated: "Review outdated",
 };
+
+export const VERDICT_LABELS = {
+  accepted: "Accepted",
+  needs_fixes: "Rejected",
+  outdated: "Verdict outdated",
+  queued: "Verdict queued",
+  running: "Verdict running",
+  error: "Verdict could not complete",
+  never: "No verdict",
+};
+
+/** Source-audit state belongs to the selected experiment version, not its verdict. */
+export function preTrialReviewLabel(task: Task): string {
+  switch (task.pre_trial_status) {
+    case "pending":
+      return "Pending";
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "failed":
+      return "Could not complete";
+    case "success":
+      return task.must_fix_count == null
+        ? "Completed"
+        : task.must_fix_count > 0
+          ? "Findings"
+          : "Passed";
+    default:
+      return "Not reviewed";
+  }
+}
+
+/** Count loaded solver reviews independently of solver reward and task verdict. */
+export function postTrialReviewLabel(task: Task): string {
+  const counts = {
+    passed: 0,
+    failed: 0,
+    incomplete: 0,
+    running: 0,
+    pending: 0,
+    unreviewed: 0,
+  };
+  // Explicit null denotes the experiment's legacy, versionless trial rows.
+  const versionId =
+    task.trial_version_id !== undefined
+      ? task.trial_version_id
+      : task.current_version_id;
+  for (const trial of task.trials ?? []) {
+    if (
+      trial.is_probe ||
+      (trial.kind ?? "agent") !== "agent" ||
+      trial.superseded_by_trial_id ||
+      isBaselineAgentName(trial.agent) ||
+      (versionId !== undefined && (trial.task_version_id ?? null) !== versionId)
+    )
+      continue;
+    if (trial.analysis_status === "running") {
+      counts.running++;
+    } else if (
+      trial.analysis_status === "pending" ||
+      trial.analysis_status === "queued"
+    ) {
+      counts.pending++;
+    } else if (trial.analysis_status === "failed") {
+      counts.incomplete++;
+    } else if (trial.analysis_status === "success") {
+      switch (trial.analysis?.classification) {
+        case "GOOD_SUCCESS":
+        case "GOOD_FAILURE":
+          counts.passed++;
+          break;
+        case "BAD_SUCCESS":
+        case "BAD_FAILURE":
+          counts.failed++;
+          break;
+        case "HARNESS_ERROR":
+          counts.incomplete++;
+          break;
+        default:
+          counts.unreviewed++;
+      }
+    } else {
+      counts.unreviewed++;
+    }
+  }
+  const labels = {
+    passed: "passed",
+    failed: "failed",
+    incomplete: "could not complete",
+    running: "running",
+    pending: "pending",
+    unreviewed: "unreviewed",
+  };
+  return (
+    Object.entries(counts)
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => `${count} ${labels[key as keyof typeof labels]}`)
+      .join(" · ") || "No solver reviews loaded"
+  );
+}
 
 /** Review progress and task quality; solver failure never determines this. */
 export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {

@@ -42,6 +42,7 @@ export const tasks: Task[] = records.map((record) => ({
         },
   verdict_error: record.error,
   must_fix_count: record.finding ? 1 : 0,
+  pre_trial_status: record.source_status as Task["pre_trial_status"],
   review_version_matches: !record.historical_version,
   trials: record.classification
     ? [

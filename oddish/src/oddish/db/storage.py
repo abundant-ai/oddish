@@ -6,6 +6,7 @@ import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import gzip
 import io
@@ -18,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 import aioboto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 from oddish.config import settings
 from oddish.timing import current_request_timing, timed_phase
@@ -297,6 +298,17 @@ def _read_task_archive_text(
     )
 
 
+@dataclass(frozen=True)
+class _TaskListingSource:
+    """Storage selected and validated once for every page in a request."""
+
+    root_prefix: str
+    expanded: bool = False
+    archive_key: str | None = None
+    archive_files: list[dict] | None = None
+    archive_texts: dict[str, str] | None = None
+
+
 class StorageClient:
     """
     Async S3-compatible storage client.
@@ -327,7 +339,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -974,31 +986,159 @@ class StorageClient:
         still requires manifest validation: an overwrite can replace the tree
         after the caller selects its archive.
         """
+        source = await self._resolve_task_listing_source(
+            task_id=task_id,
+            version=version,
+            task_s3_prefix=task_s3_prefix,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
+        )
+        return await self._list_task_files_from_source(
+            source,
+            task_id=task_id,
+            prefix=prefix,
+            recursive=recursive,
+            limit=limit,
+            cursor=cursor,
+            presign=presign,
+            presign_expiration=presign_expiration,
+            inline=inline,
+        )
+
+    async def list_task_directories(
+        self,
+        *,
+        task_id: str,
+        directories: list[str],
+        limit: int,
+        version: int | None = None,
+        task_s3_prefix: str | None = None,
+        expanded: bool | None = None,
+        expanded_manifest_key: str | None = None,
+        previews: bool = False,
+    ) -> dict:
+        """Bounded directory pages and optional previews from one selected source."""
+        if not 1 <= len(directories) <= 8 or not 1 <= limit <= 1000:
+            raise HTTPException(
+                400, "Request 1–8 directories and 1–1000 entries per page"
+            )
+        paths = list(dict.fromkeys(normalize_s3_relative_path(p) for p in directories))
+        source = await self._resolve_task_listing_source(
+            task_id=task_id,
+            version=version,
+            task_s3_prefix=task_s3_prefix,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
+        )
+        pages = await asyncio.gather(
+            *(
+                self._list_task_files_from_source(
+                    source,
+                    task_id=task_id,
+                    prefix=path,
+                    recursive=False,
+                    limit=limit,
+                    cursor=None,
+                    presign=False,
+                    presign_expiration=900,
+                    inline=False,
+                )
+                for path in paths
+            )
+        )
+        if previews:
+            # Bound both storage fan-out and payload size. Missing, binary and
+            # large members remain ordinary on-demand reads. Never walk below
+            # the requested directory pages to find preview candidates.
+            candidates = {}
+            for page in pages:
+                for file in page["files"]:
+                    size = file.get("size")
+                    if isinstance(size, int) and 0 <= size <= 32 * 1024:
+                        candidates.setdefault(str(file["path"]), file)
+            selected = []
+            budget = 256 * 1024
+            for path, file in sorted(
+                candidates.items(),
+                key=lambda item: (item[0] != "instruction.md", item[0]),
+            ):
+                if len(selected) >= 16:
+                    break
+                if file["size"] <= budget:
+                    selected.append((path, file))
+                    budget -= file["size"]
+
+            async def read_preview(path, file):
+                if source.archive_texts is not None:
+                    return path, source.archive_texts.get(path)
+                try:
+                    async with asyncio.timeout(1):
+                        text, truncated = await self.download_text_prefix(
+                            str(file["key"]), 32 * 1024
+                        )
+                    return path, None if truncated else text
+                except (BotoCoreError, ClientError, UnicodeError, TimeoutError):
+                    # Directory browsing remains usable when one preview fails.
+                    return path, None
+
+            contents = dict(
+                await asyncio.gather(*(read_preview(*item) for item in selected))
+            )
+            remaining = 256 * 1024
+            for path, _file in selected:
+                content = contents[path]
+                if content is None:
+                    continue
+                size = len(content.encode("utf-8"))
+                if size > min(32 * 1024, remaining):
+                    continue
+                remaining -= size
+                for page in pages:
+                    # Archive metadata is shared by the cache; never mutate it.
+                    page["files"] = [
+                        {**file, "content": content} if file["path"] == path else file
+                        for file in page["files"]
+                    ]
+        return {
+            "task_id": task_id,
+            "version": version,
+            "directories": dict(zip(paths, pages)),
+        }
+
+    async def _task_archive_head(self, task_id, version, archive_key):
+        """Reuse metadata only for a cached, publisher-owned immutable archive."""
+        root = f"tasks/{task_id}/v{version}-revisions/"
+        if version is not None and archive_key.startswith(root):
+            token, _, name = archive_key[len(root) :].partition("/")
+            if (
+                len(token) == 32
+                and all(c in "0123456789abcdef" for c in token)
+                and name == self._TASK_ARCHIVE_OBJECT_NAME
+            ):
+                etag = self._archive_etag_hints.get(archive_key)
+                if etag and self._archive_cache_get((archive_key, etag)) is not None:
+                    return {"ETag": etag}
+        return await self.head_object(archive_key)
+
+    async def _resolve_task_listing_source(
+        self,
+        *,
+        task_id: str,
+        version: int | None,
+        task_s3_prefix: str | None,
+        expanded: bool | None,
+        expanded_manifest_key: str | None,
+    ) -> _TaskListingSource:
         published_prefix = self._published_expansion_prefix(
             task_id, version, expanded_manifest_key
         )
         if published_prefix is not None and expanded is not False:
             record_file_source("expanded")
-            return await self._list_expanded_task_files(
-                task_id=task_id,
-                expanded_prefix=published_prefix,
-                prefix=prefix,
-                recursive=recursive,
-                limit=limit,
-                cursor=cursor,
-                presign=presign,
-                presign_expiration=presign_expiration,
-                inline=inline,
-            )
+            return _TaskListingSource(published_prefix, expanded=True)
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_head = await self.head_object(archive_key)
-        archive_exists = archive_head is not None
-
-        # Prefer the per-file expanded layout when it was built from the
-        # database-selected archive. An overwrite switches that archive key
-        # atomically; a stale manifest is ignored even if cleanup later fails.
+        archive_head = await self._task_archive_head(task_id, version, archive_key)
         if version is not None and expanded is not False:
             expanded_prefix = (
                 expanded_manifest_key.rsplit("/", 1)[0] + "/"
@@ -1007,29 +1147,53 @@ class StorageClient:
             )
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key) and (
-                not archive_exists
+                archive_head is None
                 or await self._expanded_manifest_matches_archive(
                     manifest_key, archive_key
                 )
             ):
                 record_file_source("expanded")
-                return await self._list_expanded_task_files(
-                    task_id=task_id,
-                    expanded_prefix=expanded_prefix,
-                    prefix=prefix,
-                    recursive=recursive,
-                    limit=limit,
-                    cursor=cursor,
-                    presign=presign,
-                    presign_expiration=presign_expiration,
-                    inline=inline,
-                )
-
-        if archive_exists:
+                return _TaskListingSource(expanded_prefix, expanded=True)
+        if archive_head is not None:
             record_file_source("archive")
-            _bytes, archive_files, archive_texts = await self._load_task_archive(
+            _bytes, files, texts = await self._load_task_archive(
                 archive_key, head=archive_head
             )
+            return _TaskListingSource(
+                root_prefix,
+                archive_key=archive_key,
+                archive_files=files,
+                archive_texts=texts,
+            )
+        return _TaskListingSource(root_prefix)
+
+    async def _list_task_files_from_source(
+        self,
+        source: _TaskListingSource,
+        *,
+        task_id: str,
+        prefix: str | None,
+        recursive: bool,
+        limit: int,
+        cursor: str | None,
+        presign: bool,
+        presign_expiration: int,
+        inline: bool,
+    ) -> dict:
+        root_prefix = source.root_prefix
+        if source.expanded:
+            return await self._list_expanded_task_files(
+                task_id=task_id,
+                expanded_prefix=root_prefix,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                presign_expiration=presign_expiration,
+                inline=inline,
+            )
+        if source.archive_files is not None:
             relative_prefix = normalize_s3_relative_path(prefix)
             if relative_prefix and not relative_prefix.endswith("/"):
                 relative_prefix = f"{relative_prefix}/"
@@ -1037,12 +1201,14 @@ class StorageClient:
 
             filtered_files = [
                 file_meta
-                for file_meta in archive_files
+                for file_meta in source.archive_files
                 if not relative_prefix
                 or str(file_meta["path"]).startswith(relative_prefix)
             ]
             archive_url = (
-                await self.get_presigned_url(archive_key, expiration=presign_expiration)
+                await self.get_presigned_url(
+                    source.archive_key, expiration=presign_expiration
+                )
                 if presign
                 else None
             )
@@ -1050,7 +1216,9 @@ class StorageClient:
                 return {
                     "task_id": task_id,
                     "files": (
-                        _merge_inline_contents(filtered_files, archive_texts)
+                        _merge_inline_contents(
+                            filtered_files, source.archive_texts or {}
+                        )
                         if inline
                         else filtered_files
                     ),
@@ -1059,7 +1227,7 @@ class StorageClient:
                     "recursive": True,
                     "presigned": bool(archive_url),
                     "presign_expires_in": presign_expiration if archive_url else None,
-                    "archive_key": archive_key,
+                    "archive_key": source.archive_key,
                     "archive_url": archive_url,
                 }
 
@@ -1101,7 +1269,7 @@ class StorageClient:
                 "truncated": next_offset < len(entries),
                 "presigned": bool(archive_url),
                 "presign_expires_in": presign_expiration if archive_url else None,
-                "archive_key": archive_key,
+                "archive_key": source.archive_key,
                 "archive_url": archive_url,
             }
 
@@ -1530,7 +1698,7 @@ class StorageClient:
         root_prefix, archive_key = await self._resolve_task_prefix(
             task_id, version, task_s3_prefix
         )
-        archive_head = await self.head_object(archive_key)
+        archive_head = await self._task_archive_head(task_id, version, archive_key)
         archive_exists = archive_head is not None
 
         s3_key: str | None = None

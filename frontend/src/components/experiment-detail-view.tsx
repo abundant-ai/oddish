@@ -59,11 +59,7 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
-import {
-  taskReviewFilter,
-  REVIEW_LABELS,
-  type TaskReviewFilter,
-} from "@/lib/review";
+import { taskReviewFilter, type TaskReviewFilter } from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   formatLineRange,
@@ -739,31 +735,33 @@ function ExperimentSummaryBar({
       </KpiTile>
       {qa && (
         <KpiTile
-          label="Task review"
-          labelInfo="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
+          label="Verdicts"
+          labelInfo="Task verdicts for the loaded tasks. Counts update as results arrive. Source audits, per-trial reviews, and human delivery sign-off are separate. Select a count to filter the results."
         >
-          <div className="flex flex-wrap gap-1.5 text-xs">
+          <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-xs">
             {(
               [
-                ["accepted", qa.accepted, REVIEW_LABELS.accepted],
-                ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
-                ["running", qa.running, "Review queued / running"],
-                ["failed", qa.failed, REVIEW_LABELS.error],
-                ["unreviewed", qa.unreviewed, "No current review"],
+                ["accepted", qa.accepted, "Accepted"],
+                ["rejected", qa.rejected, "Rejected"],
+                ["running", qa.running, "Pending"],
+                ["failed", qa.failed, "Failed"],
+                ["unreviewed", qa.unreviewed, "No verdict"],
               ] as const
-            ).map(([value, count, label]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={reviewFilter === value}
-                className={`rounded border px-1.5 py-1 text-left ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
-                onClick={() =>
-                  onReviewFilter(reviewFilter === value ? "all" : value)
-                }
-              >
-                {count} {label}
-              </button>
-            ))}
+            )
+              .filter(([, count]) => count > 0)
+              .map(([value, count, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={reviewFilter === value}
+                  className={`rounded border px-1.5 py-0.5 text-left whitespace-nowrap ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
+                  onClick={() =>
+                    onReviewFilter(reviewFilter === value ? "all" : value)
+                  }
+                >
+                  {count} {label}
+                </button>
+              ))}
             {reviewFilter !== "all" && (
               <button
                 className="underline"
@@ -2050,7 +2048,7 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               contentOnly={true}
             />
           }
@@ -2069,7 +2067,7 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();

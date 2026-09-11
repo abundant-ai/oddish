@@ -64,9 +64,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Trials"])
 
 
-async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
+async def _get_authorized_trial(
+    trial_id: str, auth: AuthContext, request: Request
+) -> TrialModel:
     """Load a trial, then release the DB session before artifact I/O."""
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
         trial = await get_trial_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
@@ -283,31 +285,34 @@ async def get_trial_live(
 
 @router.get("/trials/{trial_id}/logs")
 async def get_trial_logs(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get logs for a specific trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_logs(trial)
 
 
 @router.get("/trials/{trial_id}/logs/structured")
 async def get_trial_logs_structured(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     verifier_only: bool = Query(False),
 ) -> dict:
     """Get structured logs, optionally limited to verifier evidence."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @router.get("/trials/{trial_id}/files")
 async def list_trial_files(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
@@ -316,7 +321,7 @@ async def list_trial_files(
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await list_trial_files_s3(
         trial,
         prefix=prefix,
@@ -329,12 +334,13 @@ async def list_trial_files(
 
 @router.get("/trials/{trial_id}/debug-files")
 async def debug_trial_files_endpoint(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Debug endpoint: list all files in S3 for a trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
 
     from oddish.core.trial_io import debug_trial_files
 
@@ -343,9 +349,10 @@ async def debug_trial_files_endpoint(
 
 @router.get("/trials/{trial_id}/files/{file_path:path}")
 async def get_trial_file(
+    request: Request,
     trial_id: str,
     file_path: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> Response:
     """Get a file from a trial's S3 directory by relative path.
 
@@ -353,7 +360,7 @@ async def get_trial_file(
     then falls back to the agent/ subdirectory for backward compatibility.
     """
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     try:
         content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
@@ -365,8 +372,9 @@ async def get_trial_file(
 
 @router.get("/trials/{trial_id}/probe-artifacts")
 async def get_trial_probe_artifacts(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get the probe `_artifacts` blob (agent transcript, verifier stdout,
     trajectory, watchdog log) for a trial.
@@ -375,18 +383,19 @@ async def get_trial_probe_artifacts(
     from object storage so the probe result page can render the agent output.
     """
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_probe_artifacts(trial)
 
 
 @router.get("/trials/{trial_id}/trajectory")
 async def get_trial_trajectory(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict | None:
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_trajectory(trial)
 
 
@@ -478,7 +487,10 @@ async def regenerate_trial_trajectory_summary(
 ) -> dict:
     """Start or adopt the paid summarize trial for one agent trajectory."""
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
-    trial = await _get_authorized_trial(trial_id, auth)
+    async with get_read_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
     async with get_session() as session:
         refresh_trial = await get_or_create_summarize_trial(
             session, target_trial_id=trial.id
@@ -496,10 +508,11 @@ async def regenerate_trial_trajectory_summary(
 
 @router.get("/trials/{trial_id}/result")
 async def get_trial_result(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get result.json for a trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_result(trial)

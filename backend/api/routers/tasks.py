@@ -76,7 +76,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
-from oddish.core.task_files import resolve_task_file_source
+from api.services.task_file_source import resolve_authorized_task_file_source
 from oddish.core.idempotency import (
     IdempotencyReplay,
     SWEEP_ROUTE,
@@ -1808,6 +1808,16 @@ async def list_task_files(
         True, description="Include eligible text file contents in the listing"
     ),
     version: int | None = Query(None, description="Task version number"),
+    directories: Annotated[
+        list[str] | None,
+        Query(
+            max_length=8,
+            description="Repeat for 1–8 directory pages; empty means root",
+        ),
+    ] = None,
+    previews: bool = Query(
+        False, description="Include bounded small text previews in directory batches"
+    ),
     stream: bool = Query(
         False,
         description="Stream NDJSON: the file tree first, then file contents",
@@ -1820,14 +1830,12 @@ async def list_task_files(
     With stream=True the response is NDJSON: a listing chunk as soon as the
     tree is known, then per-file content chunks as they load.
     """
-    async with authorized_read_session(request, auth) as session:
-        auth.require_scope(APIKeyScope.READ)
-        source = await resolve_task_file_source(
-            session,
-            task_id=task_id,
-            org_id=auth.org_id,
-            version=version,
-        )
+    source = await resolve_authorized_task_file_source(
+        request, auth, task_id=task_id, version=version
+    )
+
+    if (directories is not None or previews) and stream:
+        raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -1848,6 +1856,8 @@ async def list_task_files(
 
     return await list_task_files_s3(
         task_id=task_id,
+        **({"directories": directories} if directories is not None else {}),
+        **({"previews": True} if previews else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,
@@ -1880,14 +1890,9 @@ async def get_task_file_content(
     ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
     so clients must revalidate rather than treating a version URL as immutable.
     """
-    async with authorized_read_session(request, auth) as session:
-        auth.require_scope(APIKeyScope.READ)
-        source = await resolve_task_file_source(
-            session,
-            task_id=task_id,
-            org_id=auth.org_id,
-            version=version,
-        )
+    source = await resolve_authorized_task_file_source(
+        request, auth, task_id=task_id, version=version
+    )
 
     try:
         result = await get_task_file_content_s3(
