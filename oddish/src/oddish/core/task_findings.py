@@ -16,6 +16,16 @@ from oddish.db import TaskVersionModel, TrialModel
 from oddish.filters.trial_predicates import EligibleTrialScope
 
 RECORDED_DEFECT_TIERS = tuple(t.value for t in ActionTier)
+FINDING_IDENTITY_FIELDS = (
+    "id",
+    "title",
+    "file",
+    "line_start",
+    "line_end",
+    "tier",
+    "severity",
+    "links_to",
+)
 
 
 def _defect_id(version_id: str, item: dict, source: str) -> str:
@@ -51,7 +61,10 @@ def pre_trial_items(version: TaskVersionModel) -> list[dict]:
 
 
 async def task_defect_items(
-    session: AsyncSession, versions: dict[str, TaskVersionModel]
+    session: AsyncSession,
+    versions: dict[str, TaskVersionModel],
+    *,
+    include_details: bool = True,
 ) -> dict[str, list[dict]]:
     """Reported task defects per version, with original evidence and severity.
 
@@ -84,12 +97,15 @@ async def task_defect_items(
                     if item.get("tier") is not None
                     else item.get("severity")
                 ),
-                "finding": item,
+                "finding": item
+                if include_details
+                else {key: item[key] for key in FINDING_IDENTITY_FIELDS if key in item},
                 "reporting_trial_id": reporting_trial_id,
                 "review_trial_id": review_trial_id,
             }
         )
 
+    version: TaskVersionModel
     for vid, version in versions.items():
         for report in version.reported_findings or []:
             add(
@@ -128,12 +144,20 @@ async def task_defect_items(
                 ),
                 else_=text("'[]'::jsonb"),
             )
-        ).table_valued("value", joins_implicitly=True)
+        ).table_valued("value", with_ordinality="ordinality", joins_implicitly=True)
         rows = (
             await session.execute(
                 select(
                     TrialModel.task_version_id,
-                    items.c.value,
+                    items.c.value
+                    if include_details
+                    else func.jsonb_build_object(
+                        *[
+                            value
+                            for key in FINDING_IDENTITY_FIELDS
+                            for value in (key, items.c.value.op("->")(key))
+                        ]
+                    ),
                     TrialModel.id,
                     TrialModel.analysis["_graded_by"].astext,
                 )
@@ -148,6 +172,7 @@ async def task_defect_items(
                 # superseding the trial that reported it must not clear it.
                 # Only an acknowledgement or a new version does.
                 .execution_options(include_deleted=True)
+                .order_by(TrialModel.id, items.c.ordinality)
             )
         ).all()
         for vid, item, reporting_trial_id, review_trial_id in rows:

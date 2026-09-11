@@ -11,12 +11,10 @@ import {
 } from "recharts";
 import {
   DELIVERY_STATES,
-  deliveryOwnerTasks,
   deliveryProgressHistory,
-  deliveryTaskState,
   type DeliveryTaskState,
 } from "@/lib/deliveries";
-import type { DeliveryBoardResponse } from "@/lib/types";
+import type { DeliveryPageResponse } from "@/lib/types";
 
 const historyDate = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -28,17 +26,10 @@ export function DeliveryOverview({
   board,
   ownerFilter,
 }: {
-  board: DeliveryBoardResponse;
+  board: DeliveryPageResponse;
   ownerFilter: string;
 }) {
-  const tasks = deliveryOwnerTasks(board, ownerFilter);
-  const counts = {
-    needs_work: 0,
-    qa_incomplete: 0,
-    awaiting_signoff: 0,
-    ready: 0,
-  };
-  for (const row of tasks) counts[deliveryTaskState(row)]++;
+  const counts = board.owner_counts;
   const days = deliveryProgressHistory(board, ownerFilter);
   const latest = days.findLast((day) => day.task_count !== null);
   const ownerName =
@@ -48,7 +39,7 @@ export function DeliveryOverview({
         ? "my tasks"
         : ownerFilter === "unassigned"
           ? "unassigned tasks"
-          : (tasks[0]?.qa_owner_name ?? ownerFilter);
+          : (board.owners[ownerFilter] ?? ownerFilter);
   const closeEndpoints =
     latest &&
     latest.task_count! - latest.ready! <
