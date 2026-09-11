@@ -17,6 +17,7 @@ from oddish.cli.experiment import experiment_app
 from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
+from oddish.cli.models import models
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
 from oddish.cli.qa import qa_app
@@ -59,6 +60,7 @@ app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command()(preflight)
 app.command(name="ls")(ls)
+app.command()(models)
 app.command()(status)
 app.command()(skill)
 app.command(name="version")(version_cmd)
