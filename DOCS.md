@@ -5,6 +5,14 @@
 ## Installation
 
 ```bash
+uv pip install oddish
+```
+
+`oddish update` upgrades that install. `oddish version --check` compares with PyPI.
+
+To install the development tree:
+
+```bash
 uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
@@ -40,12 +48,15 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete trials, tasks, or experiments (what's allowed depends on the deployment; see [Delete Data](#delete-data))
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish link` - print the dashboard URL for a task or trial (built locally; needs no API key)
+- `oddish version` - print the installed CLI version (`--check` compares with the latest PyPI release)
+- `oddish update` - upgrade a `uv pip install oddish` install from PyPI
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 - `oddish skill` - print or install the packaged SKILL.md agent guide
 
 Most commands accept `--json` for machine-readable output (CI / scripts /
 agents). The exceptions are `oddish logs`, `oddish link`, `oddish skill`, and
 the `oddish probe` helpers, which print human-readable output only.
+`oddish version` and `oddish update` are local and do not require an API key.
 
 ### Lifecycle
 
@@ -952,7 +963,9 @@ a dropdown of existing customers and a form for a new one. `POST
 
 The dashboard board can filter its task list: all tasks, blocked tasks
 (a failing check or an open defect), tasks awaiting sign-off (every
-check passes), or ready tasks. Use it to hide what is already approved. Each row also
+check passes), or ready tasks. Use it to hide what is already approved. The filter, the
+page, and the page size live in the URL (`?filter=`, `?page=`,
+`?per_page=`), so a filtered view can be shared or reloaded. Each row also
 has a selection checkbox (the header checkbox selects the whole filtered
 view): the bulk bar signs off every clean selected task or removes the
 selected tasks from the delivery in one action.

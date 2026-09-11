@@ -802,11 +802,45 @@ database-selected immutable directories bypass legacy manifest validation. Exist
 back to the archive. Listing responses (including the first NDJSON chunk) and file
 responses carry `source_hash` for the contents selected by the database.
 
+Task listings also accept repeated `directories` parameters (1–8 paths; an empty
+path means root), with `recursive=false&inline=false&presign=false`. Each directory
+gets its own first page and continuation cursor under `directories`; `limit` is
+per directory. Batch mode refuses `prefix`, `cursor`, and streaming. Hosted,
+standalone, and token-scoped public routes share this contract. Storage resolves
+and validates one source for the batch, then lists the bounded pages concurrently;
+archive-only sources are loaded once. Existing single-directory and recursive
+CLI responses are unchanged.
+
+`useTaskFileTree` owns the browser directory cache, scoped by user/organization
+(or the public token URL), task, version, and known content hash. The first batch
+contains root, solution, tests, and environment, at 100 entries each; other
+sections, wrappers, and continuation pages use the original listing API. Task-name
+hover and keyboard focus prefetch that task's directory bundle after 150 ms; opening
+the drawer consumes the same SWR request. Reopening reuses data for 30 seconds,
+then refreshes; panel hash changes invalidate the revision. An older server's
+root-only response remains usable. File/line selection stays in the existing URL
+owners, and an addressed file reads directly before its directory tree finishes.
+Directory completion must not emit file-selection callbacks or clear line anchors.
+The browser opts into `previews=true`: at most 16 files, 32 KiB each and 256 KiB
+combined, selected only from the requested pages with `instruction.md` first.
+Storage reads previews concurrently and gives each read one second; failed, binary,
+large, and omitted members retain on-demand reads. Cached archive text needs no
+additional storage request. Hosted definition routes combine current organization
+approval with exact task/version source selection in one SQL statement for ordinary
+credentials; bound analysis credentials retain additional resource checks. Cached
+publisher-owned `vN-revisions/<32-hex-token>/` archives skip HEAD only while their
+bytes remain cached. Legacy mutable archives still revalidate.
+See `docs/batched-file-loading.md` for the contract and local verification.
+
 File-list request state records the requested and received content fingerprints.
 Late task details do not abort a pending listing just to add a previously unknown
 fingerprint; a differing fingerprint still invalidates the listing. The response
 fingerprint resolves the race whether details or the listing finish first. URL
 selection and line anchors retain their existing ownership.
+Selected-file previews keep their own requested/received fingerprint using the
+same revision bookkeeping. A late matching panel hash must not change the body
+request key or clear the preview; a differing body hash still triggers a fresh
+read. Preserve `source_hash` through previews, binary URLs, and full-file reads.
 
 Storage HEAD/GET/body-read/LIST/DELETE and archive parsing have named timing phases.
 `backend.request.phases` includes storage operation counts, downloaded/archive bytes,
@@ -1116,11 +1150,44 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, and Anthropic HDO each
-  have explicit canonical provider prefixes and queue keys: `zai/`, `minimax/`,
-  `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
-  change provider aliases in `config.py`, then update env injection in the
-  Harbor runner and the network allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, Geometric, and Anthropic
+  HDO each have explicit canonical provider prefixes and queue keys: `zai/`,
+  `minimax/`, `moonshot/`, `fireworks/`, `xai/`, `meta/`, `geometric/`, and
+  `anthropic-hdo/`. Add or change provider aliases in `config.py`, then update
+  env injection in the Harbor runner and the network allowlist notes.
+- Geometric is Oddish's own self-hosted vLLM endpoint, currently serving
+  GLM-5.3. It exposes **both** API shapes from one server, and the route is
+  chosen by harness, not by model id: `mini-swe-agent` gets the OpenAI shape
+  (`OddishGeometricMiniSweAgent` hands litellm an `openai/<bare-id>` against
+  `OPENAI_BASE_URL`), and `claude-code` gets the Anthropic shape
+  (`_apply_claude_code_geometric_env` sets `ANTHROPIC_BASE_URL`). One
+  `geometric/<id>` therefore keeps a single queue key and cost bucket across
+  both. The two base URLs differ by design: litellm appends
+  `/chat/completions` so `OPENAI_BASE_URL` carries the `/v1`, while Claude Code
+  appends `/v1/messages` so `ANTHROPIC_BASE_URL` must not —
+  `get_geometric_anthropic_base_url()` derives the latter by dropping a
+  trailing `/v1`, overridable with `GEOMETRIC_ANTHROPIC_BASE_URL`. So
+  **`GEOMETRIC_BASE_URL` must end in `/v1`** — it is on the OpenAI side of the
+  repo's base-URL split (as `META_BASE_URL` is), not the Anthropic side that
+  `ZAI_BASE_URL`, `MINIMAX_BASE_URL`, `MOONSHOT_BASE_URL`, and
+  `FIREWORKS_BASE_URL` sit on, where the root deliberately omits it. Setting it
+  without the suffix breaks exactly one of the two routes: the derivation is a
+  no-op so `claude-code` still resolves, while `mini-swe-agent` 404s against
+  vLLM, which serves `/v1/chat/completions`. The result reads as an
+  agent-specific bug rather than a misconfiguration, so check the suffix first
+  when only one harness fails.
+- Geometric is **prefix-only**: `is_zai_model` claims every bare `glm...` id, so
+  a bare `glm-5.3` keeps routing to z.ai and selecting Geometric takes an
+  explicit `geometric/glm-5.3` (or the `gm/` alias) — the same opt-in rule
+  Fireworks uses to take over GLM/MiniMax/Kimi ids.
+- Geometric is also the one provider with a **served-model allowlist**
+  (`_GEOMETRIC_SERVED_MODELS`), because a vLLM process serves exactly one
+  `--served-model-name`, and because `geometric/<foreign-id>` would otherwise
+  reach litellm as `openai/<foreign-id>`, whose default route is public OpenAI.
+  Enforcement lives at submit (`sweep.py`) and on the wire id
+  (`require_geometric_served_model_id`), never in `normalize_trial_model`,
+  which must stay total for reads over stored rows whose model has since left
+  the set. Keep the set in sync with `--served-model-name`.
 - Gemini model ids use the `gemini/<id>` prefix. `_build_agent_config` hands
   each agent the spelling its LLM client expects (litellm agents in
   `_LITELLM_MODEL_ID_AGENTS`, Vercel AI SDK agents in
@@ -1599,6 +1666,49 @@ Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
 within the existing 64-character column; high-volume ledger inserts must not
 truncate UUIDs to the eight-character IDs used by some other entities.
 
+### Worker resource comparison
+
+The production workflow sets `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=10`;
+staging and preview retain the default of two. This bounds both Modal containers
+and dispatcher reservations. The database's live fraction and worker cap still
+require an explicit control update after deployment; see the production 2% /
+ten-worker command in `docs/worker-resource-canary.md`.
+
+`process_single_job_candidate` shares `_run_one_job` with the base worker. Its
+initial reservation is `cpu=(0.6, 17)`, scalar `memory=3072`, non-preemptible,
+with no warm containers and a default two-container maximum. Deployment controls are
+`ODDISH_MODAL_WORKER_CANDIDATE_CPU`, `ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB`,
+and `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS`. The base remains 1 core /
+3072 MiB. Deployment-owned secret values keep declared and recorded resources
+identical when Modal imports the image.
+
+Apply core migration `worker_resources_001` before this worker deploy. It seeds
+`worker_resource_rollout` with fraction zero, max_workers two, and configuration
+`candidate-cpu0.6-mem3072`. Change the row through `backend/worker_resource_rollout.py`
+or SQL; it is read before every hosted claim, including batch continuations.
+The candidate cohort is the first fraction of the 32-bit MD5 buckets of worker
+job IDs, restricted to ordinary agent trials (not probes), non-positive priority,
+default Harbor image, and default execution lane. Retries keep their bucket.
+Base workers exclude the cohort only while the matching configuration is enabled;
+standalone workers retain unscoped behavior. Organization authorization and the
+existing fair-share planner still apply.
+
+`queue_slots.resource_candidate` survives the first claim so pending and running
+candidate workers share the cap across dispatcher processes. These are the same
+model-capacity slots, not additional capacity. A candidate-only backlog at the cap
+does not launch base workers. The candidate must own a candidate reservation to
+claim. Setting fraction or max_workers to zero stops new candidate claims; the
+short claim transaction takes a shared rollout-row lock, so the stop commits only
+after in-flight claims complete. Running jobs finish normally. Configuration
+changes also fence old candidates. Stop and drain before changing resource requests.
+
+`worker_resource_attempts` records configuration, CPU request/limit, scalar memory,
+non-preemptibility, and Modal invocation ID atomically with each hosted claim,
+independently of best-effort cost recording. Join it to `modal_costs` on
+`worker_job_id` and attempt for historical cost attribution. One invocation can
+appear in several attempt records; do not put it in the cost ledger's unique
+`external_id` column. See `docs/worker-resource-canary.md` for commands and evidence.
+
 ### Worker Runtime Invariants & Pitfalls
 
 Load-bearing properties, several learned from incidents. Changing them naively
@@ -1720,7 +1830,9 @@ on `auth.org` on both cache hits and misses. Keep ORM rows out of identity cache
 resolve identity before entering, then check analysis-key resource restrictions
 and current organization approval on the borrowed read session. Trial detail,
 task open/panel/detail/files, delivery-board and QA-history reads reuse that
-session for their resource queries. End the scope before storage downloads or
+session for their resource queries. Trial artifact GETs (files, logs, result,
+trajectory, and probe/debug artifacts) also share this scope, detaching the trial
+before calling storage. End the scope before storage downloads or
 streaming; never hold a database connection across artifact I/O. Other routes
 keep `require_auth`, which uses the same checks but releases the session before
 returning. Workers can still call `require_execution_org` without a session.
@@ -1963,6 +2075,20 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 
 ## `frontend/` — Next.js Dashboard
 
+Task and experiment drawers share the `experiment.trial-drawer` layout saved
+through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).
+The hosted `user_ui_layouts` table keys versioned JSON by authenticated
+organization-membership user ID and layout key. Only Clerk user sessions may
+access it. Apply backend migration `user_ui_layouts_001` before deployment.
+`use-user-ui-layout.ts` owns an account-specific store; it loads once per mounted
+page, merges gestures made while loading, and serializes coalesced writes.
+Only gestures save: viewport clamping and restoration never write a preference.
+The preferred expanded width survives maximizing; hidden panes preserve the
+last noncollapsed split. Public pages use local state without preference API
+requests. The old browser-global keys are not imported because they have no
+account ownership. A read failure leaves the drawer usable and exposes Retry;
+it must not overwrite an unread server preference with defaults.
+
 The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
@@ -2047,14 +2173,17 @@ folders. Keep the task navigation and overview mounted while the listing loads.
 Hidden task panes still defer their file requests.
 
 Delivery board view state lives in URL parameters: `page` (one-based),
-`filter`, `days` (QA freshness window), `qa`, `issue`, `owner`, `group`, and
+`per_page` (10, 25, 50, or 100 rows; defaults to 25),
+`filter`, `issue`, `owner`, `group`, and
 `task` (expanded task ID; legacy task names remain supported). The browser
 reads these directly with `useSearchParams`; native history updates preserve
-Back/Forward behavior without refetching the already-loaded full board.
+Back/Forward behavior. The initial server read and browser cache use the same
+normalized data parameters; disclosure and unrelated link parameters do not
+change the page request.
 Filter/group changes reset the page and task focus. Bulk selections and draft
 edits remain local. The delivery page passes its server-loaded board with the
 Clerk user/org IDs and fetch time to a page-owned SWR cache. The cache is keyed
-by user, organization, and delivery, never by presentation filters. A matching
+by user, organization, delivery, and normalized page/filter/group/focus parameters. A matching
 server result suppresses the immediate browser board read; missing/mismatched
 results fetch normally, and non-frozen snapshots at least 15 seconds old refresh
 on activation. The board and expanded history share this cache and its mutate
@@ -2067,8 +2196,30 @@ retain loaded data with a stale warning and adjacent retry; revalidation never
 clears cached data or starts analysis. Frozen delivery boards disable periodic
 refreshes and label separately fetched history as live task history rather than
 the shipped snapshot.
-Backend filtering/pagination is not implemented yet; the full task collection
-still supplies bulk actions and delivery-wide readiness checks.
+`GET /deliveries/{id}/view` returns only the requested page of rows, plus
+whole-delivery totals, owner-scoped state counts, owner names, and compact ID
+lists for inventory and matching selection. State and issue filters narrow the
+queue, not owner summary counts. The expanded task alone receives full finding
+bodies; other rows retain finding identity and acknowledgment metadata. Core
+approval checks still evaluate all required facts with the same calculator;
+readiness is not cached or persisted. Grouping uses case-insensitive server label
+order, with stable membership order for ties. Missing/deleted members remain
+blockers. A task link resolves by ID before legacy name and stays visible outside
+filters. Finalized pages are slices of the stored snapshot, never live recomputes.
+
+`GET /deliveries/{id}/selection` resolves every matching task to its ID and viewed
+version when Select all is used; it never silently selects only the visible page.
+Sign-off confirms those versions and rejects stale writes. Single-task sign-off
+loads only that task's evidence; finalization and progress recording continue
+calculating the entire delivery. The original complete-board endpoint remains
+available to CLI and standalone callers. Hosted reads share approval and data
+access in one read session, checking approval on every request.
+
+Writes invalidate cached pages and refresh the mounted view; late responses
+cannot restore pre-write data. Cached navigation keeps the previous page visible
+while the new request finishes and marks that transition. History prefetch starts
+after 150 ms of hover/focus, allows at most two active prefetches, and shares its
+pending request with an opened history panel. See `docs/delivery-board-pages.md`.
 
 Review presentation distinguishes task defects, execution classifications,
 review progress, and version-specific human sign-off. Shared review words live
@@ -2087,15 +2238,26 @@ review counts and filters both classify the loaded task rows with
 `taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
 trials. Drawer navigation retains the selected review group. Unreviewed includes
 missing and outdated reviews, and remains visible when every task is unreviewed.
-Delivery `filter` defaults to `outstanding`; `filter=all` restores the complete
-inventory. A `task` link resolves against the inventory (ID before legacy name)
+Delivery `filter` defaults to `all`; the State selector filters the task queue using
+`needs_work`, `qa_incomplete`, `awaiting_signoff`, and `ready`. A `task` link resolves against the inventory (ID before legacy name)
 and keeps that row visible across filters, pagination, and sign-off refreshes.
 Expanded delivery tasks show unresolved findings and failed checks first;
 acknowledged findings and waived checks share a collapsed record. Individual
 findings replace the duplicate `no_must_fix` explanation when findings exist.
 The board derives delivery blockers independently of review status and recorded
-sign-off. Review filters, passed checks, and history use native disclosures;
+sign-off. Passed checks and history use native disclosures;
 history remains mounted so board refreshes preserve its open versions.
+Individual acknowledgment buttons show Saving while the check request runs,
+then Updating until the delivery read finishes. The global busy state ends at
+save completion; pending status is tracked per check so unrelated actions do not
+wait for a slow refresh. Check refreshes mark all delivery page cache entries
+stale without revalidation, then call SWR `mutate(pageKeyFilter)` with no data
+argument. That promise waits for the mounted view's revalidation; passing
+`undefined` as mutation data starts revalidation without waiting for it.
+Delivery lookups join their customer, and task checks read membership and lock
+the default-version pointer in one query. An acknowledgment uses six core SQL
+statements (including the write), independent of whether the tick already exists;
+hosted authorization and subsequent delivery/history reads add their own queries.
 
 Finding links pin `version`, `finding`, `taskPane`, `taskFile`, and `taskLines`
 on `/tasks/{id}`. Overview preserves the file and line address for sharing.
@@ -2197,20 +2359,33 @@ Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
 
 
-Delivery overview uses the full board for current readiness, owner review
-outcomes (including completed tasks), and open/acknowledged finding counts;
-table filters never change these counts. Owner bars derive disjoint outcomes
-through `deliveryOwnerOutcome`: red for unresolved findings or rejected QA,
-green for accepted QA, grey only for rejected QA with at least one finding,
-all findings acknowledged, and human sign-off on the displayed version. Amber
-means QA is incomplete, missing, failed, or outdated. Sign-off totals are
-shown separately from QA outcomes and do not imply every delivery check passes.
-Selecting an owner shows all their tasks, including completed work. The daily
-history remains delivery-readiness history; it does not infer past owner outcomes. `owner` accepts a user ID as well as `mine` and `unassigned`. `panels`
-preserves disclosure state as comma-separated panel IDs, with `!` for explicit
-collapse of a default-open section; drafts, dialogs, and bulk selection stay local.
-The board response includes `progress_history`: at most 30 daily observations
-(latest per UTC day). The page adds no request or polling timer for this chart.
+Delivery overview and task rows use `deliveryTaskState` for one exclusive state:
+open findings or a failed rejection/task-existence check need work; other failing
+automated requirements mean QA incomplete; tasks with remaining human checks need
+sign-off; ready requires the board's version-specific readiness. Recorded QA age
+does not override delivery requirements, and approved exceptions can satisfy them.
+The toolbar contains State, Owner, Category, and Group selectors. Summary counts
+are read-only; the zero Needs sign-off count is omitted.
+The owner selector scopes current counts, the task queue, and recorded progress;
+state and category filters narrow only the queue. Finalize always uses the full
+board's `ready`, including delivery-level checks. Grouping by owner or state omits
+the corresponding repeated table column. Bulk sign-off lives in task selection.
+
+The single step-line chart shows total and ready tasks. `progress_history` contains
+at most 30 daily observations (latest per UTC day), with no extra browser request
+or polling timer. New observations include `owners`, a map of user IDs (or
+`unassigned`) to `{task_count, ready}` covering all tasks, including ready tasks.
+It is stored inside the existing JSON counts column; no migration is needed.
+A null/missing `owners` means owner history was not recorded, while an absent user
+inside a recorded map means zero tasks. Never reconstruct past owners from today's
+assignments. Missing dates stay gaps; no observations show "No history yet".
+The history chart sits above the state counts. Even one observation renders in
+the chart as labeled points; multiple observations form step lines with endpoint
+counts and first/last date labels, without gridlines or a numbered vertical axis.
+A single-day chart labels its date once. Isolated observations retain a dot across gaps.
+`owner` accepts a user ID, `mine`, or `unassigned`. `panels` preserves disclosure
+state as comma-separated panel IDs, with `!` for explicit collapse of a default-open
+section; drafts, dialogs, and bulk selection stay local.
 
 Apply core migration `delivery_progress_001` before deploying. The hosted
 `record_delivery_history` function samples active deliveries hourly through the
@@ -2223,3 +2398,8 @@ last observation and freezes daily history in the shipping snapshot. Old finaliz
 snapshots remain unchanged. Progress history is stripped from customer-safe
 snapshots because its counts include internal/hidden tasks. Acknowledged findings
 are exceptions, not verified repairs; missing days have no observation, not zero.
+
+Delivery legacy `filter=blocked` links include Needs work and QA incomplete,
+excluding Needs sign-off and Ready. Verdict provenance on delivery boards and
+task QA history orders by completion time (creation time when absent), then
+creation time and trial ID descending to resolve ties consistently.

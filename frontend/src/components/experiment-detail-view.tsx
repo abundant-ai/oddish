@@ -21,6 +21,7 @@ import { CostValue } from "@/components/cost-value";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { fetcher } from "@/lib/api";
 import {
   prBadge,
@@ -54,11 +55,7 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
-import {
-  taskReviewFilter,
-  REVIEW_LABELS,
-  type TaskReviewFilter,
-} from "@/lib/review";
+import { taskReviewFilter, type TaskReviewFilter } from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   formatLineRange,
@@ -774,31 +771,33 @@ function ExperimentSummaryBar({
       {qa && (
         <div className="border-t border-[color:var(--paper-line)] pt-2">
           <SummaryStat
-            label="Task review"
-            description="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
+            label="Verdicts"
+            description="Task verdicts for the loaded tasks. Counts update as results arrive. Source audits, per-trial reviews, and human delivery sign-off are separate. Select a count to filter the results."
           >
             <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1 font-sans text-xs font-normal">
               {(
                 [
-                  ["accepted", qa.accepted, REVIEW_LABELS.accepted],
-                  ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
-                  ["running", qa.running, "Review queued / running"],
-                  ["failed", qa.failed, REVIEW_LABELS.error],
-                  ["unreviewed", qa.unreviewed, "No current review"],
+                  ["accepted", qa.accepted, "Accepted"],
+                  ["rejected", qa.rejected, "Rejected"],
+                  ["running", qa.running, "Pending"],
+                  ["failed", qa.failed, "Failed"],
+                  ["unreviewed", qa.unreviewed, "No verdict"],
                 ] as const
-              ).map(([value, count, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={reviewFilter === value}
-                  className={`rounded px-1 py-0.5 text-left ${reviewFilter === value ? "bg-muted text-foreground" : "hover:bg-muted text-[color:var(--paper-ink-2)]"}`}
-                  onClick={() =>
-                    onReviewFilter(reviewFilter === value ? "all" : value)
-                  }
-                >
-                  {count} {label}
-                </button>
-              ))}
+              )
+                .filter(([, count]) => count > 0)
+                .map(([value, count, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={reviewFilter === value}
+                    className={`rounded px-1 py-0.5 text-left ${reviewFilter === value ? "bg-muted text-foreground" : "hover:bg-muted text-[color:var(--paper-ink-2)]"}`}
+                    onClick={() =>
+                      onReviewFilter(reviewFilter === value ? "all" : value)
+                    }
+                  >
+                    {count} {label}
+                  </button>
+                ))}
               {reviewFilter !== "all" && (
                 <button
                   className="underline"
@@ -987,55 +986,24 @@ export function ExperimentDetailView({
     trialId: string;
   } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
-  const [showTask, setShowTask] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-task"
-      );
-      // Default ON: only explicit "0" disables it.
-      return stored !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [showTrial, setShowTrial] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    try {
-      const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-trial"
-      );
-      return stored !== "0";
-    } catch {
-      return true;
-    }
-  });
-
-  const handleShowTaskChange = useCallback((next: boolean) => {
-    setShowTask(next);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        "oddish:trial-drawer-show-task",
-        next ? "1" : "0"
-      );
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const handleShowTrialChange = useCallback((next: boolean) => {
-    setShowTrial(next);
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        "oddish:trial-drawer-show-trial",
-        next ? "1" : "0"
-      );
-    } catch {
-      // ignore
-    }
-  }, []);
+  const drawerLayout = useUserUiLayout(!readOnly);
+  // Incoming links reveal their target without changing the account's layout.
+  // Capture only the incoming URL: drawer navigation also writes these params.
+  const [linkedTaskPaneVisible, setLinkedTaskPaneVisible] = useState(
+    () => searchParams.has("taskFile") || searchParams.has("taskPane")
+  );
+  const showTask = linkedTaskPaneVisible || drawerLayout.layout.showTask;
+  const showTrial = drawerLayout.layout.showTrial;
+  const handleShowTaskChange = (showTask: boolean) => {
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
+    void drawerLayout.flush();
+  };
+  const handleShowTrialChange = (showTrial: boolean) => {
+    drawerLayout.update({ showTask, showTrial });
+    setLinkedTaskPaneVisible(false);
+    void drawerLayout.flush();
+  };
   const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
     ExperimentAgentSummary[]
   >([]);
@@ -1400,6 +1368,7 @@ export function ExperimentDetailView({
   // link: a late resolve must never yank them away from where they went.
   const cancelPendingDeepLink = useCallback(() => {
     clearPendingDeepLink();
+    setLinkedTaskPaneVisible(false);
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
     next.delete("task");
@@ -1875,8 +1844,17 @@ export function ExperimentDetailView({
 
       {drawerState && (
         <UnifiedDrawerWrapper
+          key={drawerLayout.identity ?? "public"}
+          layout={drawerLayout.layout}
+          onLayoutChange={drawerLayout.update}
+          onLayoutCommit={drawerLayout.flush}
+          layoutSaveError={drawerLayout.status === "error"}
+          onRetryLayoutSave={drawerLayout.retry}
           open={drawerState.isOpen}
-          onOpenChange={(open) => !open && closeDrawer()}
+          onOpenChange={(open) => {
+            void drawerLayout.flush();
+            if (!open) closeDrawer();
+          }}
           mode={drawerState.mode}
           showTask={showTask}
           showTrial={showTrial}
@@ -1909,7 +1887,7 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               contentOnly={true}
             />
           }
@@ -1928,7 +1906,7 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();

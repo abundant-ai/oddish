@@ -57,6 +57,9 @@ import Link from "next/link";
 import {
   EXECUTION_LABELS,
   REVIEW_LABELS,
+  VERDICT_LABELS,
+  preTrialReviewLabel,
+  postTrialReviewLabel,
   taskReviewStatus,
 } from "@/lib/review";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -65,6 +68,8 @@ import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
 import { preloadTrial } from "@/lib/use-trial";
+import { usePrefetchTaskFiles } from "@/lib/use-task-file-tree";
+import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   costEstimateMarks,
   formatCostUsd,
@@ -412,10 +417,12 @@ function TaskVerdictChip({
   task,
   ungradedSettled,
   onOpen,
+  onPrefetch,
 }: {
   task: Task;
   ungradedSettled: number;
   onOpen?: () => void;
+  onPrefetch?: () => void;
 }) {
   const status = taskReviewStatus(task);
   const running = status === "queued" || status === "running";
@@ -430,15 +437,13 @@ function TaskVerdictChip({
             ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
             : "bg-muted text-muted-foreground";
   const label =
-    status === "needs_fixes" &&
-    task.must_fix_count != null &&
-    task.must_fix_count > 0
-      ? `${task.must_fix_count} Must Fix Finding${task.must_fix_count === 1 ? "" : "s"}`
-      : REVIEW_LABELS[status];
+    status === "needs_fixes"
+      ? rejectedMustFixLabel(task)
+      : VERDICT_LABELS[status];
   let tip =
     status === "error"
-      ? `This review did not establish task quality. ${task.verdict_error ?? "Inspect review evidence."}`
-      : `${label}. Human delivery sign-off is separate`;
+      ? `This verdict did not establish task quality. ${task.verdict_error ?? "Inspect verdict evidence."}`
+      : `${VERDICT_LABELS[status]}. Human delivery sign-off is separate`;
 
   if (!running && status !== "error" && task.verdict && ungradedSettled > 0) {
     tip += `. From an earlier QA run: ${ungradedSettled} settled trial${
@@ -462,9 +467,11 @@ function TaskVerdictChip({
         {onOpen ? (
           <button
             type="button"
+            onPointerEnter={onPrefetch}
+            onFocus={onPrefetch}
             onClick={onOpen}
             className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-            aria-label={`Open QA overview for ${task.name}`}
+            aria-label={`${status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
           >
             {chip}
           </button>
@@ -612,6 +619,14 @@ export function ExperimentTrialsTable({
   onRejectedOnlyChange,
 }: ExperimentTrialsTableProps) {
   const router = useRouter();
+  const prefetchTaskFiles = usePrefetchTaskFiles();
+  const prefetchTask = (task: Task) => {
+    if (!readOnly && onTaskSelect)
+      prefetchTaskFiles(
+        `/api/tasks/${encodeURIComponent(task.id)}/files`,
+        resolveExperimentTaskVersion(task)
+      );
+  };
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -2513,6 +2528,8 @@ export function ExperimentTrialsTable({
                                   <Button
                                     type="button"
                                     variant="ghost"
+                                    onPointerEnter={() => prefetchTask(task)}
+                                    onFocus={() => prefetchTask(task)}
                                     onClick={() =>
                                       openTaskInDrawer(task, {
                                         orderedTasks: filteredTasks,
@@ -2564,6 +2581,20 @@ export function ExperimentTrialsTable({
                               </Tooltip>
                             </div>
                             <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
+                              {showAnalysis && !readOnly && (
+                                <span className="text-muted-foreground font-mono text-[9.5px]">
+                                  Pre-trial: {preTrialReviewLabel(task)}
+                                </span>
+                              )}
+                              {showAnalysis && !readOnly && (
+                                <span
+                                  className="text-muted-foreground font-mono text-[9.5px]"
+                                  title="Post-trial reviews for loaded solver trials in this version. Passed includes fair agent failures; failed means the task affected the evaluation. Could not complete includes harness errors and failed analysis. Running, pending, and unreviewed show remaining review progress."
+                                >
+                                  Post-trial{isLoadingTrials ? " (loaded)" : ""}
+                                  : {postTrialReviewLabel(task)}
+                                </span>
+                              )}
                               {showAnalysis && (
                                 <TaskVerdictChip
                                   task={task}
@@ -2590,42 +2621,19 @@ export function ExperimentTrialsTable({
                                           })
                                       : undefined
                                   }
+                                  onPrefetch={() => prefetchTask(task)}
                                 />
                               )}
                               {showAnalysis &&
-                                taskReviewStatus(task) === "needs_fixes" && (
-                                  <div className="min-w-0">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      onClick={() =>
-                                        openTaskInDrawer(task, {
-                                          orderedTasks: filteredTasks,
-                                          taskIndex: index,
-                                        })
-                                      }
-                                      className="h-auto min-w-0 p-0 font-mono text-[10px] font-normal text-red-700 hover:bg-transparent hover:underline dark:text-red-300"
-                                      title={
-                                        rejectedOnly
-                                          ? task.verdict?.primary_issue ||
-                                            task.verdict?.reasoning ||
-                                            "QA rejected this task"
-                                          : rejectedMustFixLabel(task)
-                                      }
-                                      aria-label={`Open findings for ${task.name}`}
-                                    >
-                                      {rejectedMustFixLabel(task)}
-                                    </Button>
-                                    {rejectedOnly &&
-                                    (task.verdict?.primary_issue ||
-                                      task.verdict?.reasoning) ? (
-                                      <p className="mt-1 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
-                                        {task.verdict?.primary_issue ||
-                                          task.verdict?.reasoning}
-                                      </p>
-                                    ) : null}
-                                  </div>
-                                )}
+                              taskReviewStatus(task) === "needs_fixes" &&
+                              rejectedOnly &&
+                              (task.verdict?.primary_issue ||
+                                task.verdict?.reasoning) ? (
+                                <p className="mt-1 min-w-0 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
+                                  {task.verdict?.primary_issue ||
+                                    task.verdict?.reasoning}
+                                </p>
+                              ) : null}
                               {(() => {
                                 const showVersion =
                                   showAnalysis && task.current_version != null;

@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { REVIEW_LABELS, taskReviewStatus } from "@/lib/review";
+import { VERDICT_LABELS, taskReviewStatus } from "@/lib/review";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
@@ -47,35 +47,35 @@ function presentVerdict(
         className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`}
       />
     );
-    title = REVIEW_LABELS[review];
+    title = VERDICT_LABELS[review];
     toneCard = "border-blue-500/30 bg-blue-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   } else if (failed) {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-600`} />
     );
-    title = REVIEW_LABELS.error;
+    title = VERDICT_LABELS.error;
     toneCard = "border-amber-500/30 bg-amber-500/5";
     toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
   } else if (review === "outdated") {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-600`} />
     );
-    title = REVIEW_LABELS.outdated;
+    title = VERDICT_LABELS.outdated;
     toneCard = "border-amber-500/30 bg-amber-500/5";
     toneInline = "border-amber-500/40 bg-amber-500/5";
   } else if (isGood === true) {
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
     );
-    title = REVIEW_LABELS.accepted;
+    title = VERDICT_LABELS.accepted;
     toneCard = "border-emerald-500/30 bg-emerald-500/5";
     toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
   } else if (isGood === false) {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-red-600`} />
     );
-    title = REVIEW_LABELS.needs_fixes;
+    title = VERDICT_LABELS.needs_fixes;
     toneCard = "border-red-500/50 bg-red-500/10";
     toneInline = "border-red-500/50 bg-red-500/10";
   } else {
@@ -85,7 +85,7 @@ function presentVerdict(
     title =
       status === "success"
         ? "Review completed without a verdict"
-        : REVIEW_LABELS.never;
+        : VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
@@ -177,7 +177,7 @@ export function TaskVerdictBadge({
                     !p.pending &&
                     !p.failed &&
                     p.isGood === false
-                  ? REVIEW_LABELS.needs_fixes
+                  ? VERDICT_LABELS.needs_fixes
                   : p.title}
             </span>
             {p.isGood !== null && verdict?.confidence ? (

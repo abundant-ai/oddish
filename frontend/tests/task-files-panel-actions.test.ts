@@ -53,6 +53,8 @@ function renderPanel({
     "react/jsx-runtime": jsx,
     swr: {
       __esModule: true,
+      useSWRConfig: () => ({ mutate: () => {} }),
+      unstable_serialize: JSON.stringify,
       default: (key: string | null) => ({
         data: key?.includes("/panel") ? panel : undefined,
       }),
@@ -81,6 +83,15 @@ function renderPanel({
       fetcher: () => {
         throw new Error("Unexpected request during render");
       },
+    },
+    "@/lib/use-task-file-tree": {
+      useTaskFileTree: () => ({
+        data: undefined,
+        isLoading: false,
+        statusByDirectory: {},
+        identity: "",
+        loadDirectory: () => {},
+      }),
     },
   };
   function load(name: string): unknown {

@@ -202,11 +202,12 @@ def test_post_adopts_existing_refresh(tasks_client):
     get_or_create = AsyncMock(return_value=refresh)
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(return_value=_trial({"stale": True})),
         ),
         patch("api.routers.trials.get_or_create_summarize_trial", new=get_or_create),
         patch("api.routers.trials.get_session", new=lambda: _session()),
+        patch("api.routers.trials.get_read_session", new=lambda: _session()),
     ):
         response = tasks_client.post("/trials/t-1/trajectory/summary")
     assert response.status_code == 200
@@ -225,7 +226,7 @@ def test_post_adopts_existing_refresh(tasks_client):
 def test_post_refuses_ineligible_target(tasks_client):
     with (
         patch(
-            "api.routers.trials._get_authorized_trial",
+            "api.routers.trials.get_trial_for_org_core",
             new=AsyncMock(return_value=_trial(None, kind="qa")),
         ),
         patch(
@@ -233,6 +234,7 @@ def test_post_refuses_ineligible_target(tasks_client):
             new=AsyncMock(return_value=None),
         ),
         patch("api.routers.trials.get_session", new=lambda: _session()),
+        patch("api.routers.trials.get_read_session", new=lambda: _session()),
     ):
         response = tasks_client.post("/trials/t-1/trajectory/summary")
     assert response.status_code == 409

@@ -283,15 +283,17 @@ def _experiment_task_rows(
         stats.c.average_score,
     ]
     if include_user:
+        review_version = aliased(TaskVersionModel, name="review_version")
         columns.extend(
             [
                 TaskModel.user,
+                review_version.pre_trial_status.label("pre_trial_status"),
                 case(
                     (
-                        current_version.pre_trial_status == VerdictStatus.SUCCESS,
+                        review_version.pre_trial_status == VerdictStatus.SUCCESS,
                         func.jsonb_array_length(
                             func.jsonb_path_query_array(
-                                current_version.pre_trial,
+                                review_version.pre_trial,
                                 cast('$.items[*] ? (@.tier == "must_fix")', JSONPATH),
                             )
                         ),
@@ -300,7 +302,7 @@ def _experiment_task_rows(
                 ).label("must_fix_count"),
             ]
         )
-    return (
+    query = (
         select(*columns)
         .select_from(TaskModel)
         .join(
@@ -329,6 +331,16 @@ def _experiment_task_rows(
             ),
         )
     )
+    if include_user:
+        query = query.outerjoin(
+            review_version,
+            and_(
+                review_version.id
+                == func.coalesce(stats.c.trial_version_id, TaskModel.current_version_id),
+                review_version.deleted_at.is_(None),
+            ),
+        )
+    return query
 
 
 def _task_row_values(row: Mapping[str, Any]) -> dict[str, Any]:

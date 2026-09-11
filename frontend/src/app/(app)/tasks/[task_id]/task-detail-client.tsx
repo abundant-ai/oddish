@@ -23,6 +23,7 @@ import {
 import { TagEditor } from "@/components/tag-editor";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { ExperimentsList } from "@/components/experiments-list";
 import { SummaryStat } from "@/components/summary-stat";
 import { CostValue } from "@/components/cost-value";
@@ -651,8 +652,23 @@ export function TaskDetailClient({
     [selectedVersion, trialsForVersion]
   );
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
-  const [drawerShowTask, setDrawerShowTask] = useState(false);
-  const [drawerShowTrial, setDrawerShowTrial] = useState(true);
+  const drawerLayout = useUserUiLayout(true);
+  // A file deep link can reveal the task pane without changing a preference.
+  const [linkedTaskPaneVisible, setLinkedTaskPaneVisible] = useState(false);
+  const drawerShowTask = linkedTaskPaneVisible || drawerLayout.layout.showTask;
+  const drawerShowTrial = drawerLayout.layout.showTrial;
+  const changeDrawerVisibility = (patch: {
+    showTask?: boolean;
+    showTrial?: boolean;
+  }) => {
+    drawerLayout.update({
+      showTask: drawerShowTask,
+      showTrial: drawerShowTrial,
+      ...patch,
+    });
+    setLinkedTaskPaneVisible(false);
+    void drawerLayout.flush();
+  };
   const drawerTrialGroups = useMemo(
     () =>
       agentCards.map((card) => ({
@@ -716,7 +732,7 @@ export function TaskDetailClient({
     // The user (or hydration) is driving the drawer now; any unresolved
     // deep-link trial param no longer needs preserving.
     unresolvedTrialParamRef.current = false;
-    setDrawerShowTask(false);
+    setLinkedTaskPaneVisible(false);
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
@@ -816,7 +832,7 @@ export function TaskDetailClient({
         drawerHydratedRef.current = true;
         hydrationOpeningRef.current = true;
         handleSelectTrial(previewTrial);
-        if (urlTaskFile || urlTaskPane) setDrawerShowTask(true);
+        if (urlTaskFile || urlTaskPane) setLinkedTaskPaneVisible(true);
         return;
       }
       if (isDeepLinkTrialLoading) return;
@@ -836,7 +852,7 @@ export function TaskDetailClient({
       }
       hydrationOpeningRef.current = true;
       handleSelectTrial(fetchedDeepLinkTrial);
-      if (urlTaskFile || urlTaskPane) setDrawerShowTask(true);
+      if (urlTaskFile || urlTaskPane) setLinkedTaskPaneVisible(true);
       return;
     }
 
@@ -1283,16 +1299,29 @@ export function TaskDetailClient({
 
         {drawer && (
           <UnifiedDrawerWrapper
+            key={drawerLayout.identity ?? "loading"}
+            layout={drawerLayout.layout}
+            onLayoutChange={drawerLayout.update}
+            onLayoutCommit={drawerLayout.flush}
+            layoutSaveError={drawerLayout.status === "error"}
+            onRetryLayoutSave={drawerLayout.retry}
             open={true}
-            onOpenChange={(open) => !open && setDrawer(null)}
+            onOpenChange={(open) => {
+              void drawerLayout.flush();
+              if (!open) setDrawer(null);
+            }}
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
-            onShowTaskChange={setDrawerShowTask}
-            onShowTrialChange={setDrawerShowTrial}
+            onShowTaskChange={(showTask) =>
+              changeDrawerVisibility({ showTask })
+            }
+            onShowTrialChange={(showTrial) =>
+              changeDrawerVisibility({ showTrial })
+            }
             sideBySideLeft={
               <TaskFilesPanel
-                isOpen={true}
+                isOpen={drawer.mode === "trial" && drawerShowTask}
                 onClose={() => {}}
                 activePane={activeTaskPane}
                 onActivePaneChange={selectTaskPane}

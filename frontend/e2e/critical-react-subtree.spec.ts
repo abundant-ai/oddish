@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
+import { DEFAULT_TRIAL_DRAWER_LAYOUT } from "../src/lib/user-ui-layout";
 
 import type {
   TaskBrowseResponse,
@@ -342,6 +343,13 @@ test.describe("critical task and trial subtree", () => {
     let taskQaInProgress = false;
     let failTrialRevalidation = false;
     const requests: string[] = [];
+    // This test exercises lazy loading while the account keeps task content
+    // hidden. Explicitly supply that preference instead of relying on defaults.
+    await page.route("**/api/users/me/ui-layouts/experiment.trial-drawer", (route) =>
+      route.fulfill({
+        json: { ...DEFAULT_TRIAL_DRAWER_LAYOUT, showTask: false },
+      })
+    );
     let summaryGetCount = 0;
     let summaryPostCount = 0;
     let failNextSummaryPost = false;
@@ -607,6 +615,9 @@ test.describe("critical task and trial subtree", () => {
       `/api/tasks/${TASK_ID}/detail(?:\\?|$)`
     );
     const taskOpenRequest = page.waitForRequest(taskOpenPattern);
+    const layoutResponse = page.waitForResponse(
+      "**/api/users/me/ui-layouts/experiment.trial-drawer"
+    );
     await taskLink.click();
     await taskOpenRequest;
     expect(requestCount(requests, taskOpenPattern)).toBe(1);
@@ -622,6 +633,7 @@ test.describe("critical task and trial subtree", () => {
     await taskOpenResponse;
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
+    await layoutResponse;
 
     const trialDetailPattern = new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`);
     const taskTrialsPattern = new RegExp(
