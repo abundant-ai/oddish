@@ -92,6 +92,41 @@ def test_run_tag_project_job_direct_task_calls_recompute(monkeypatch):
     assert summary["task_id"] == "t-1"
 
 
+def test_version_projection_writes_task_before_version(monkeypatch):
+    from oddish.core.tags import projection
+    from oddish.workers.queue import tag_project_handler
+
+    calls = []
+
+    async def task_projection(session, *, task_id):
+        calls.append(("task", task_id))
+
+    async def version_projection(session, *, task_id, version_id):
+        calls.append(("version", task_id, version_id))
+
+    monkeypatch.setattr(
+        tag_project_handler, "recompute_task_browse_projection", task_projection
+    )
+    monkeypatch.setattr(
+        projection, "recompute_version_effective_tags", version_projection
+    )
+    session = _FakeSession()
+
+    @asynccontextmanager
+    async def get_session():
+        yield session
+
+    monkeypatch.setattr(tag_project_handler, "get_session", get_session)
+    summary = _run(
+        tag_project_handler.run_tag_project_job(
+            payload={"scope": "VERSION", "target_id": "t-1-v1", "task_id": "t-1"}
+        )
+    )
+    assert calls == [("task", "t-1"), ("version", "t-1", "t-1-v1")]
+    assert session.committed
+    assert summary["tasks_recomputed"] == summary["versions_recomputed"] == 1
+
+
 def test_run_tag_project_job_experiment_fanout_chunks_members(monkeypatch):
     from oddish.workers.queue import tag_project_handler
 
