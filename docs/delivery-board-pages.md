@@ -88,12 +88,19 @@ status while the requested page loads, and disables row mutations and Previous/N
 in that interval. Pager controls follow the displayed server-clamped page and
 become available again after success or failure; same-view background refreshes
 and fresh cached navigation do not block them.
+Clicking the same pager button after failure retries the requested page without
+adding another browser history entry or changing the URL.
 
 A write marks all cached pages stale and invalidates older in-flight requests,
 then refreshes the mounted view. It retains displayed data if that refresh fails
 and exposes the existing stale-data warning and retry. Each acknowledged finding
 shows Saving through its write and Updating through the subsequent read; unrelated
 actions can proceed after its write finishes.
+The no-data SWR mutation waits for the read, whose failures SWR stores in the
+board's error state. A successful save still completes when that read fails;
+the board warning offers a read-only retry. Do not pass `undefined` mutation
+data to add `throwOnError`: that switches to the mutation-data path and returns
+before revalidation finishes.
 
 A failed page/filter request ends the loading indicator and keeps the displayed
 rows usable. Their grouping, owner summary and Select all request use the last

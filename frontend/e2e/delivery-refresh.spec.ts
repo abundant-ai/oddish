@@ -310,7 +310,7 @@ test("task pagination stays put when the next page has fewer rows", async ({
 });
 
 for (const direction of ["Previous", "Next"] as const) {
-  test(`${direction} waits for the requested page before allowing another page change`, async ({
+  test(`${direction} waits for navigation and retries the same page after failure`, async ({
     page,
   }) => {
     const state = await controlledAPI(page);
@@ -329,7 +329,7 @@ for (const direction of ["Previous", "Next"] as const) {
     const next = page.getByRole("button", { name: "Next", exact: true });
     const target = direction === "Previous" ? 1 : 3;
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
+    let gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const requests: string[] = [];
@@ -338,6 +338,7 @@ for (const direction of ["Previous", "Next"] as const) {
       await gate;
       return route.fallback();
     });
+    state.failBoard = true;
     await page.getByRole("button", { name: direction, exact: true }).click();
     await expect(page.getByText("Updating delivery view…")).toBeVisible();
     await expect(previous).toBeDisabled();
@@ -352,13 +353,34 @@ for (const direction of ["Previous", "Next"] as const) {
     expect(new URL(page.url()).hash).toBe("#tasks");
     await expect.poll(() => requests.length).toBe(1);
     release();
+    await expect(page.locator("main").getByRole("alert")).toContainText(
+      "Showing the previously loaded tasks"
+    );
+    await expect(previous).toBeEnabled();
+    await expect(next).toBeEnabled();
+    const failedURL = page.url();
+    const historyLength = await page.evaluate(() => window.history.length);
+    state.failBoard = false;
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.getByRole("button", { name: direction, exact: true }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    await expect(previous).toBeDisabled();
+    await expect(next).toBeDisabled();
+    expect(page.url()).toBe(failedURL);
+    expect(await page.evaluate(() => window.history.length)).toBe(
+      historyLength
+    );
+    release();
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
     await expect(
       page.getByText(`Page ${target} of 4 · 40 tasks`)
     ).toBeVisible();
     await expect(next).toBeEnabled();
     if (target === 1) await expect(previous).toBeDisabled();
     else await expect(previous).toBeEnabled();
-    expect(state.reads).toEqual({ board: 2, history: 0 });
+    expect(state.reads).toEqual({ board: 3, history: 0 });
 
     // Returning to an already loaded page stays immediate and allows navigation.
     await page
@@ -370,7 +392,7 @@ for (const direction of ["Previous", "Next"] as const) {
     await expect(page.getByText("Page 2 of 4 · 40 tasks")).toBeVisible();
     await expect(previous).toBeEnabled();
     await expect(next).toBeEnabled();
-    expect(state.reads).toEqual({ board: 2, history: 0 });
+    expect(state.reads).toEqual({ board: 3, history: 0 });
     expect(state.writes).toEqual([]);
   });
 }
@@ -1428,6 +1450,83 @@ test("acknowledgment shows saving and refreshing, and a failed save can be retri
     nextFinding.getByRole("button", { name: "Acknowledge for v1", exact: true })
   ).toHaveCount(0);
 });
+
+for (const action of ["release", "note", "acknowledgment"] as const) {
+  test(`a successful ${action} with a failed refresh shows only the board warning`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const state = await controlledAPI(page);
+    state.board.tasks = [reviewTaskRow()];
+    await page.goto("/?task=task-a&source=agent");
+    await expect(
+      page.getByRole("button", { name: "Edit QA work" })
+    ).toBeVisible();
+    const url = page.url();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/deliveries/refresh-test/view?*", async (route) => {
+      await gate;
+      return route.fallback();
+    });
+    state.failBoard = true;
+    const finding = page.getByRole("listitem").filter({
+      hasText: "The verifier does not check",
+    });
+    if (action === "release") {
+      await page
+        .getByRole("button", { name: "Release task", exact: true })
+        .click();
+    } else if (action === "note") {
+      await page.getByRole("button", { name: "Edit QA work" }).click();
+      await page
+        .getByRole("textbox", { name: "Handoff note" })
+        .fill("Saved once");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "Saving…", exact: true })
+      ).toBeDisabled();
+    } else {
+      await finding
+        .getByRole("button", { name: "Acknowledge for v1", exact: true })
+        .click();
+      await expect(
+        finding.getByRole("button", { name: "Updating…", exact: true })
+      ).toBeDisabled();
+    }
+    await expect.poll(() => state.writes.length).toBe(1);
+    release();
+    const alert = page.locator("main").getByRole("alert");
+    await expect(alert).toHaveCount(1);
+    await expect(alert).toContainText("Failed to refresh delivery.");
+    await expect(alert).toContainText("board offline");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /^(Saving|Updating)…$/ })
+    ).toHaveCount(0);
+    await page.clock.runFor(100);
+    expect(errors).toEqual([]);
+    expect(state.reads.board).toBe(2);
+    expect(page.url()).toBe(url);
+
+    state.failBoard = false;
+    await page.getByRole("button", { name: "Retry delivery" }).click();
+    await expect(alert).toHaveCount(0);
+    expect(state.writes).toHaveLength(1);
+    expect(state.reads.board).toBe(3);
+    if (action === "note")
+      await expect(page.getByText("Saved once", { exact: true })).toBeVisible();
+    if (action === "acknowledgment") {
+      await expect(
+        finding.getByRole("button", { name: "Acknowledge for v1", exact: true })
+      ).toHaveCount(0);
+    }
+    expect(errors).toEqual([]);
+  });
+}
 
 test("legacy blocked links include defects and incomplete QA but exclude signoff and ready tasks", async ({
   page,

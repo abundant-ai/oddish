@@ -1261,10 +1261,17 @@ function DeliveryBoardContent({
   const { pageSize, filter, issueFilter, ownerFilter, groupBy, focusTask } =
     parseDeliveryView(searchParams);
   function updateView(patch: Parameters<typeof deliveryViewQuery>[1]) {
+    const nextSearch = deliveryViewQuery(window.location.search, patch);
+    if (nextSearch === window.location.search) {
+      // A failed pager request already owns this URL. Retry its read without
+      // adding duplicate history or waiting for a cache-key change.
+      if (error && !isValidating) void mutate();
+      return;
+    }
     window.history.pushState(
       null,
       "",
-      `${pathname}${deliveryViewQuery(window.location.search, patch)}${window.location.hash}`
+      `${pathname}${nextSearch}${window.location.hash}`
     );
   }
   const query = deliveryPageQuery(searchParams);
@@ -1330,6 +1337,8 @@ function DeliveryBoardContent({
     );
     // The no-data form waits for the mounted view's read. Passing undefined as
     // mutation data returns before revalidation and loses per-check progress.
+    // SWR catches read failures in revalidation and publishes them as `error`;
+    // throwOnError controls mutation-data failures, not this read-only form.
     return mutateResource(isDeliveryPage);
   }
 
