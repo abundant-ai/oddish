@@ -10,7 +10,7 @@ export function ExperimentPageSkeleton() {
       <div className="space-y-2">
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <Skeleton className="h-10 w-[340px]" />
+            <Skeleton className="h-10 w-[340px] max-w-full" />
             <Skeleton className="h-4 w-64" />
           </div>
           <div className="flex items-center gap-2">
@@ -22,9 +22,10 @@ export function ExperimentPageSkeleton() {
         <Skeleton className="h-4 w-40" />
       </div>
 
-      <div className="space-y-2">
-        <Skeleton className="h-6 w-full" />
-        <Skeleton className="h-4 w-2/3" />
+      <div className="grid grid-cols-2 gap-5 lg:grid-cols-5">
+        {Array.from({ length: 5 }, (_, index) => (
+          <Skeleton key={index} className="h-20 w-full" />
+        ))}
       </div>
 
       <div className="space-y-3">

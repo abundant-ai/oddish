@@ -628,7 +628,7 @@ function ExperimentSummaryBar({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-5">
         <SummaryStat
           label="Avg score"
           description="Average of per-task average reward, nop/oracle excluded"
@@ -1664,7 +1664,7 @@ export function ExperimentDetailView({
            */}
           <div className="space-y-2">
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex min-w-0 basis-full flex-col gap-1 sm:flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   {headerLeft}
                   {experimentId && (

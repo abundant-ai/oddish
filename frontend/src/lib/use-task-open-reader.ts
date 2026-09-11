@@ -16,6 +16,7 @@ import {
 import { isAgentTrial } from "@/lib/types";
 import type {
   Task,
+  TaskDetailResponse,
   TaskOpenResponse,
   TaskOpenTrialRef,
   TaskOpenVersionRef,
@@ -190,11 +191,37 @@ export function useTaskOpenReader(
     writeVersionToQuery(id);
   }, []);
 
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const {
+    data: fullDetail,
+    error: fullTrialsError,
+    isLoading: isLoadingFullTrials,
+    mutate: reloadFullTrials,
+  } = useSWR<TaskDetailResponse>(
+    expandedTaskId === taskId
+      ? `/api/tasks/${encodeURIComponent(taskId)}/detail`
+      : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      refreshInterval:
+        (open?.selected_version?.pending_count ?? 0) > 0 ? 30000 : 0,
+    }
+  );
   // Agent trials drive the cards/matrix; the platform's own QA/audit trials
   // render separately as the QA strip.
   const trialsForVersion = useMemo(
-    () => (task?.trials ?? []).filter((t) => isAgentTrial(t)),
-    [task?.trials]
+    () =>
+      (fullDetail?.task.id === taskId
+        ? (fullDetail.task.trials ?? [])
+        : (task?.trials ?? [])
+      ).filter(
+        (trial) =>
+          isAgentTrial(trial) &&
+          (fullDetail?.task.id !== taskId ||
+            (trial.task_version_id ?? null) === selectedVersionId)
+      ),
+    [fullDetail, taskId, task?.trials, selectedVersionId]
   );
   const analysisTrialsForVersion = useMemo(
     () =>
@@ -284,15 +311,21 @@ export function useTaskOpenReader(
   const revalidateReaderResources = useCallback(async () => {
     await Promise.all([
       mutate(),
+      reloadFullTrials(),
       mutateCache(
         (key) =>
           typeof key === "string" &&
           key.startsWith(`/api/tasks/${encodeURIComponent(taskId)}/panel`)
       ),
     ]);
-  }, [taskId, mutate, mutateCache]);
+  }, [taskId, mutate, mutateCache, reloadFullTrials]);
 
   return {
+    fullTrialsError,
+    isLoadingFullTrials,
+    hasFullTrials: fullDetail?.task.id === taskId,
+    loadAllTrials: () => setExpandedTaskId(taskId),
+    reloadFullTrials,
     agentCards,
     analysisTrialsForVersion,
     defaultVersionError,
