@@ -54,6 +54,9 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      # Allow the live resource experiment to admit up to ten workers.
+      # Sampling and the active worker cap remain database controls.
+      ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS: "10"
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
       # Numinous Cloud execution backend (merged in #1344). Disabled in prod:

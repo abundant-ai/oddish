@@ -15,7 +15,7 @@ from auth import (
     require_admin,
     require_auth,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from models import UserModel, UserRole
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -33,6 +33,7 @@ from oddish.core.deliveries import (
     remove_delivery_task_core,
     set_manual_check_core,
 )
+from oddish.core.delivery_view import delivery_page, delivery_selection
 from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
@@ -40,9 +41,12 @@ from oddish.schemas import (
     DeliveryBoardResponse,
     DeliveryCreate,
     DeliveryListItem,
+    DeliveryPageResponse,
     DeliveryPatch,
     DeliveryResponse,
+    DeliverySelectionItem,
     DeliveryTasksAdd,
+    DeliveryViewQuery,
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
@@ -169,6 +173,42 @@ async def get_delivery_board(
         board.qa_viewer_user_id = auth.user_id
         await _fill_user_names(session, auth.org_id, board)
         return board
+
+
+@router.get("/deliveries/{delivery_id}/view", response_model=DeliveryPageResponse)
+async def get_delivery_view(
+    request: Request,
+    delivery_id: str,
+    view: Annotated[DeliveryViewQuery, Query()],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> DeliveryPageResponse:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery_id, org_id=auth.org_id, include_details=False
+        )
+        board.qa_viewer_user_id = auth.user_id
+        await _fill_user_names(session, auth.org_id, board)
+        return await delivery_page(session, board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/selection", response_model=list[DeliverySelectionItem]
+)
+async def get_delivery_selection(
+    request: Request,
+    delivery_id: str,
+    view: Annotated[DeliveryViewQuery, Query()],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> list[DeliverySelectionItem]:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery_id, org_id=auth.org_id, include_details=False
+        )
+        board.qa_viewer_user_id = auth.user_id
+        await _fill_user_names(session, auth.org_id, board)
+        return delivery_selection(board, view)
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)

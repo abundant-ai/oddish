@@ -265,9 +265,11 @@ export interface Task {
   run_analysis?: boolean;
   run_probe?: boolean;
   review_version_matches?: boolean | null;
+  /** Source audit of the experiment-selected version (trial_version_id or default). */
+  pre_trial_status?: JobStatus | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
-  /** Must-fix findings in the completed source audit of the current version. */
+  /** Must-fix findings in the completed source audit of the experiment-selected version. */
   must_fix_count?: number | null;
   verdict_error?: string | null;
   jobs?: VisibleWorkerJob[];
@@ -297,6 +299,7 @@ export type PublicExperimentOpenTask = Omit<
   | "experiment_owner"
   | "experiment_link"
   | "must_fix_count"
+  | "pre_trial_status"
 >;
 
 export interface ExperimentPageSummary {
@@ -1502,6 +1505,34 @@ export interface DeliveryBoardResponse {
   task_count: number;
   frozen: boolean;
   finalized_at?: string | null;
+}
+
+export interface DeliverySelectionItem {
+  delivery_task_id: string;
+  task_id: string;
+  task_name: string;
+  version_id: string | null;
+  version: number | null;
+  state: "needs_work" | "qa_incomplete" | "awaiting_signoff" | "ready";
+  can_sign_off: boolean;
+  qa_status: DeliveryQAStatus["status"];
+}
+
+export interface DeliveryPageRow extends DeliveryTaskBoardRow {
+  state: DeliverySelectionItem["state"];
+}
+
+export interface DeliveryPageResponse extends DeliveryBoardResponse {
+  tasks: DeliveryPageRow[];
+  page: number;
+  per_page: number;
+  total: number;
+  focus_task_id: string | null;
+  focus_outside_filters: boolean;
+  owner_counts: Record<DeliverySelectionItem["state"], number>;
+  owners: Record<string, string>;
+  member_task_ids: string[];
+  matching_task_ids: string[];
 }
 
 interface TaskQAHistoryRun {

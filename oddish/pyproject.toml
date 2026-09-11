@@ -37,6 +37,8 @@ dependencies = [
     # Validation & settings
     "pydantic==2.12.5",
     "pydantic-settings==2.12.0",
+    # PEP 440 version comparison for `oddish version --check` / `oddish update`
+    "packaging==26.0",
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling). Published wheels
