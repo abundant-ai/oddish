@@ -2082,24 +2082,7 @@ export function ExperimentTrialsTable({
 
         <div className="max-w-full">
           <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-bg)] pb-3">
-            <div className="flex flex-wrap items-stretch gap-3">
-              {/* Fills the space left of the legend; stretches to its height. */}
-              <div className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)] sm:w-auto sm:min-w-[280px] sm:flex-1">
-                <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
-                <Input
-                  type="search"
-                  value={taskSearch}
-                  onChange={(event) =>
-                    handleTaskSearchChange(event.target.value)
-                  }
-                  placeholder="Search tasks (comma-separated)"
-                  className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
-                />
-              </div>
-              {/* shrink-0 keeps the legend intact on one line; when the row is
-                  too narrow it drops below the search bar and wraps there. */}
-              <div className="max-w-full shrink-0">{renderLegendBlock()}</div>
-            </div>
+            {renderLegendBlock()}
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
                 {!readOnly && (
@@ -2330,7 +2313,7 @@ export function ExperimentTrialsTable({
                               : "Clear sort (default order)"
                         }
                         aria-label="Toggle task sort"
-                        className="hover:bg-background/70 h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:text-blue-400 sm:text-sm"
+                        className="hover:bg-background/70 h-auto shrink-0 gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:text-blue-400 sm:text-sm"
                       >
                         <span>Task</span>
                         {taskSort === "name-asc" ? (
@@ -2341,6 +2324,19 @@ export function ExperimentTrialsTable({
                           <ArrowUpDown className="text-muted-foreground/60 h-3 w-3" />
                         )}
                       </Button>
+                      <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 font-sans font-normal focus-within:border-[color:var(--paper-ink-4)]">
+                        <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
+                        <Input
+                          type="search"
+                          aria-label="Search tasks"
+                          value={taskSearch}
+                          onChange={(event) =>
+                            handleTaskSearchChange(event.target.value)
+                          }
+                          placeholder="Search tasks (comma-separated)"
+                          className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
+                        />
+                      </div>
                     </div>
                     <div
                       className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize"
