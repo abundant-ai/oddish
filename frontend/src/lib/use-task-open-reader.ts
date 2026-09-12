@@ -216,8 +216,9 @@ export function useTaskOpenReader(
         : (task?.trials ?? [])
       ).filter(
         (trial) =>
-          fullDetail?.task.id !== taskId ||
-          (trial.task_version_id ?? null) === selectedVersionId
+          !trial.superseded_by_trial_id &&
+          (fullDetail?.task.id !== taskId ||
+            (trial.task_version_id ?? null) === selectedVersionId)
       ),
     [fullDetail, taskId, task?.trials, selectedVersionId]
   );
@@ -226,10 +227,7 @@ export function useTaskOpenReader(
     [selectedVersionTrials]
   );
   const analysisTrialsForVersion = useMemo(
-    () =>
-      selectedVersionTrials.filter(
-        (t) => !isAgentTrial(t) && !t.superseded_by_trial_id
-      ),
+    () => selectedVersionTrials.filter((trial) => !isAgentTrial(trial)),
     [selectedVersionTrials]
   );
   const handleSetDefaultVersion = useCallback(async () => {

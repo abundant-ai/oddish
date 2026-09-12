@@ -102,7 +102,7 @@ test("all trials load only on request, preserve version scope, and retry after f
                   name: "selected-version-trial",
                   task_version_id: fixture.selected_version!.id,
                 },
-                ...["qa", "audit", "analyze"].flatMap((kind) => [
+                ...["agent", "qa", "audit", "analyze"].flatMap((kind) => [
                   {
                     ...fixtureTask.trials![0],
                     id: `selected-${kind}`,
@@ -155,7 +155,7 @@ test("all trials load only on request, preserve version scope, and retry after f
   await expect(
     page.getByRole("button", { name: /other-version-trial/ })
   ).toHaveCount(0);
-  for (const kind of ["qa", "audit", "analyze"]) {
+  for (const kind of ["agent", "qa", "audit", "analyze"]) {
     await expect(
       page.getByRole("button", { name: new RegExp(`selected-${kind}`) })
     ).toBeVisible();
