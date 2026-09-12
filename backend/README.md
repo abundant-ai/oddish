@@ -306,6 +306,12 @@ workers both pick it up without modifying the `oddish-prod` secret:
   every statement's expression tree, which is meaningful overhead on
   hot paths.
 
+`ODDISH_MODAL_API_REGION` defaults to `us-east` to place database-heavy API
+containers near the hosted PostgreSQL database. Set it in the deploying process
+before `modal deploy` when using a database in another region; a runtime secret
+does not set deployment placement. This applies only to `api_app`, not workers
+or the QA-model gateway. Modal's regional placement pricing applies.
+
 Modal runtime knobs are read directly by `modal_app.py`, which is the source
 of truth for the full list and defaults. They cover worker enablement
 (`ODDISH_ENABLE_MODAL_WORKERS`, `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS`),

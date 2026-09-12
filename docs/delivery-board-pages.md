@@ -17,6 +17,16 @@ trial and version joins cannot multiply the counts. Membership ordering includes
 the member ID as a final tie breaker. Soft-deleted trials remain excluded from
 rollout/verdict eligibility; deleted member tasks remain visible as blockers.
 
+The latest verdict version uses a correlated `LEFT JOIN LATERAL`: PostgreSQL
+looks within each member task's trials and selects one qualifying QA run ordered
+by completion (falling back to creation), creation, then ID, all descending.
+This avoids the plan that scanned every QA trial's configuration before filtering
+delivery membership. The eligibility rules still include superseded successful
+verdict runs and exclude deleted, unsuccessful, and classification-only runs.
+QA freshness reads select `harbor_config['analysis_payload']` separately from
+the trial's metadata; they never download its large agent instruction text or
+replace the ORM object's full configuration with a partial one.
+
 The page read still evaluates required facts for the entire delivery to produce
 accurate totals and filtering. It excludes unused task/version columns and asks
 PostgreSQL for trial finding identity fields instead of full descriptions and
@@ -79,6 +89,11 @@ is denied on the next request even if its identity is cached.
 
 ## Browser refresh and prefetch
 
+`deliveries/loading.tsx` supplies the route loading boundary for the delivery
+list and detail pages. Next.js can stream the authenticated shell and placeholder
+while the server awaits the initial board. The authoritative board still seeds
+the exact page query, so showing the placeholder does not add a browser fetch.
+
 The server seeds only the exact normalized page query. Cache ownership includes
 user, organization and delivery. Matching server data avoids an immediate
 duplicate browser request. A cached active delivery page at least 15 seconds old
@@ -121,6 +136,12 @@ checks and readiness, and each 10-row payload below one tenth of the full board
 payload. It also checks focused evidence outside filters, selection across pages,
 single-task sign-off scope, whole-delivery finalization, frozen snapshots and
 organization isolation. These are fixture bounds, not measured staging timings.
+
+`test_deliveries.py` also compares board and history verdict provenance for
+timestamp ties, missing completion times, superseded QA, and ineligible newer
+runs. `test_delivery_qa.py` checks that large instruction text stays unloaded,
+an already-loaded configuration remains intact, and malformed projected evidence
+still produces an outdated QA status.
 
 `backend/tests/test_delivery_page_routes.py` exercises actual HTTP query parsing
 and cached-identity approval revocation against PostgreSQL. The existing delivery,
