@@ -2750,7 +2750,23 @@ class QAWorkAssignResponse(BaseModel):
     skipped_task_ids: list[str] = Field(default_factory=list)
 
 
+class DeliveryReviewStage(BaseModel):
+    status: str
+    detail: str
+    finished_at: datetime | None = None
+    trial_id: str | None = None
+    outdated: bool = False
+
+
+class DeliveryReviews(BaseModel):
+    pre_trial: DeliveryReviewStage
+    post_trial: DeliveryReviewStage
+    verdict: DeliveryReviewStage
+
+
 class DeliveryQAStatus(BaseModel):
+    run_status: str | None = None
+    run_error: str | None = None
     status: Literal[
         "never", "queued", "running", "error", "outdated", "accepted", "needs_fixes"
     ] = "never"
@@ -2773,6 +2789,7 @@ class DeliveryTaskBoardRow(BaseModel):
     internal_note: str | None
     checks: list[DeliveryCheckResult]
     defects: list[DeliveryDefect] = Field(default_factory=list)
+    reviews: DeliveryReviews | None = None
     qa: DeliveryQAStatus = Field(default_factory=DeliveryQAStatus)
     qa_work: QAWorkMetadata = Field(default_factory=QAWorkMetadata)
     qa_owner_name: str | None = None

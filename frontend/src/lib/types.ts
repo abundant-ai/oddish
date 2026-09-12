@@ -1460,7 +1460,20 @@ export interface DeliveryQAStatus {
   detail: string;
 }
 
+export interface DeliveryReviewStage {
+  status: string;
+  detail: string;
+  finished_at: string | null;
+  trial_id: string | null;
+  outdated: boolean;
+}
+
 export interface DeliveryTaskBoardRow {
+  reviews?: {
+    pre_trial: DeliveryReviewStage;
+    post_trial: DeliveryReviewStage;
+    verdict: DeliveryReviewStage;
+  } | null;
   qa: DeliveryQAStatus;
   qa_work: QAWorkMetadata;
   qa_owner_name: string | null;

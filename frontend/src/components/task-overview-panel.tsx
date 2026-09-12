@@ -612,7 +612,7 @@ export function TaskOverviewPanel({
   return (
     <div className={cn("flex flex-col", className)}>
       {verdictTask ? (
-        <div className="border-border border-b p-4">
+        <div id="verdict" className="border-border border-b p-4">
           <TaskVerdictBadge
             task={verdictTask}
             variant="inline"
@@ -627,7 +627,10 @@ export function TaskOverviewPanel({
         </div>
       ) : null}
 
-      <div className="border-border flex flex-col gap-3 border-b p-4">
+      <div
+        id="source-review"
+        className="border-border flex flex-col gap-3 border-b p-4"
+      >
         {selectedFinding &&
         !checksLoading &&
         !trialsError &&
@@ -682,7 +685,7 @@ export function TaskOverviewPanel({
         {findingsBody()}
       </div>
 
-      <div className="flex flex-col gap-3 p-4">
+      <div id="execution-review" className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
             Execution review

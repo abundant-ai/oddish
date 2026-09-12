@@ -2416,3 +2416,12 @@ Delivery legacy `filter=blocked` links include Needs work and QA incomplete,
 excluding Needs sign-off and Ready. Verdict provenance on delivery boards and
 task QA history orders by completion time (creation time when absent), then
 creation time and trial ID descending to resolve ties consistently.
+
+Delivery rows expose nullable `reviews` containing pre-trial completion/error,
+post-trial run completion/error and evidence freshness, and published verdict
+judgment/freshness. These are presentation facts, never inputs to State or
+readiness. Reads reuse loaded task/version/QA fields without per-row history
+requests. The Reviews column opens stage-specific explanations and links to
+version-pinned task details or the exact QA run. Finalized snapshots retain
+recorded stages; older snapshots show Not recorded, with no live reconstruction.
+Customer-safe snapshots omit `reviews` alongside internal QA metadata.

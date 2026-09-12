@@ -22,6 +22,7 @@ from oddish.core.delivery_progress import (
     record_delivery_progress,
 )
 from oddish.core.task_findings import pre_trial_items, task_defect_items
+from oddish.core.delivery_reviews import delivery_reviews
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -893,6 +894,7 @@ async def _compute_board(
                     TaskModel.deleted_at,
                     TaskModel.verdict,
                     TaskModel.verdict_status,
+                    TaskModel.verdict_error,
                 ),
                 load_only(
                     TaskVersionModel.id,
@@ -901,6 +903,7 @@ async def _compute_board(
                     TaskVersionModel.pre_trial,
                     TaskVersionModel.reported_findings,
                     TaskVersionModel.pre_trial_status,
+                    TaskVersionModel.pre_trial_error,
                     TaskVersionModel.content_hash,
                     TaskVersionModel.pre_trial_started_at,
                     TaskVersionModel.pre_trial_finished_at,
@@ -1226,6 +1229,12 @@ async def _compute_board(
                 internal_note=member.internal_note,
                 checks=checks,
                 defects=defects,
+                reviews=delivery_reviews(
+                    task,
+                    version,
+                    qa_statuses.get(task.id, DeliveryQAStatus()),
+                    latest_qa_version.get(task.id),
+                ),
                 qa=qa_statuses.get(task.id, DeliveryQAStatus()),
                 qa_work=QAWorkMetadata.model_validate(version.qa_work or {})
                 if version
@@ -1310,7 +1319,7 @@ def _customer_safe_board(board: DeliveryBoardResponse) -> dict:
             **{
                 key: value
                 for key, value in row.items()
-                if key not in {"qa", "qa_work", "qa_owner_name"}
+                if key not in {"qa", "qa_work", "qa_owner_name", "reviews"}
             },
             "internal_note": None,
         }

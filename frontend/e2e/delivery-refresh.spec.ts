@@ -1671,3 +1671,255 @@ for (const count of [1, 11]) {
     expect(state.writes).toEqual([]);
   });
 }
+
+test("review stages expose the failure without changing delivery state or starting QA", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks[0].reviews = {
+    pre_trial: {
+      status: "completed",
+      detail: "Source review finished; findings are tracked separately.",
+      finished_at: "2026-09-10T12:00:00Z",
+      trial_id: null,
+      outdated: false,
+    },
+    post_trial: {
+      status: "failed",
+      detail: "Provider timeout while reviewing trial evidence",
+      finished_at: "2026-09-11T12:00:00Z",
+      trial_id: "qa-failed",
+      outdated: false,
+    },
+    verdict: {
+      status: "unavailable",
+      detail: "No current verdict was produced",
+      finished_at: null,
+      trial_id: null,
+      outdated: false,
+    },
+  };
+  await page.goto("/");
+  await expect(
+    page.getByRole("columnheader", { name: "Reviews", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Pre-trial for Task A: Clear",
+      exact: true,
+    })
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "Post-trial for Task A: Could not complete",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("Provider timeout while reviewing trial evidence", {
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open post-trial details" })
+  ).toHaveAttribute("href", /version=7.*trial=qa-failed/);
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", {
+      name: "Verdict for Task A: Unavailable",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("No current verdict was produced", { exact: true })
+  ).toBeVisible();
+  // Hovering the task row retains the existing one-request history prefetch.
+  expect(state.reads.history).toBeLessThanOrEqual(1);
+  expect(state.writes).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("row").filter({ hasText: "Task A" }).first()
+  ).toContainText("QA incomplete");
+  await page.clock.runFor(300);
+  await expect(
+    page.getByRole("link", { name: "Task A", exact: true })
+  ).toBeInViewport();
+  await page.screenshot({
+    path: "/tmp/delivery-review-stages.png",
+    fullPage: true,
+  });
+});
+
+test("compact review badges distinguish findings, freshness and unknown outcomes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  const state = await controlledAPI(page);
+  await page.clock.setSystemTime(new Date("2026-09-12T12:00:00Z"));
+  const completed = {
+    status: "completed",
+    detail: "Review finished",
+    finished_at: "2026-09-11T18:00:00Z",
+    trial_id: null,
+    outdated: false,
+  };
+  const clear = state.board.tasks[0];
+  clear.qa.status = "accepted";
+  clear.reviews = {
+    pre_trial: completed,
+    post_trial: completed,
+    verdict: { ...completed, status: "accept", finished_at: null },
+  };
+  const findings = {
+    ...taskRow(),
+    task_id: "task-b",
+    task_name: "Task B",
+    delivery_task_id: "member-b",
+    defects: [
+      {
+        id: "finding-b",
+        title: "Verifier issue",
+        source: "pre_trial",
+        acknowledged: false,
+      },
+    ],
+    reviews: {
+      pre_trial: completed,
+      post_trial: { ...completed, outdated: true },
+      verdict: {
+        ...completed,
+        status: "reject",
+        outdated: true,
+        finished_at: null,
+      },
+    },
+  };
+  const unknown = {
+    ...taskRow(),
+    task_id: "task-c",
+    task_name: "Task C",
+    delivery_task_id: "member-c",
+    reviews: {
+      pre_trial: { ...completed, status: "queued", finished_at: null },
+      post_trial: completed,
+      verdict: { ...completed, status: "unavailable", finished_at: null },
+    },
+  };
+  state.board.tasks.push(findings, unknown);
+  await page.goto("/");
+  const pre = page.getByRole("button", {
+    name: "Pre-trial for Task A: Clear",
+    exact: true,
+  });
+  const post = page.getByRole("button", {
+    name: "Post-trial for Task A: Clear",
+    exact: true,
+  });
+  await expect(pre).toHaveText("✓Pre-trial(18h ago)");
+  await expect(post).toHaveText("✓Post-trial(18h ago)");
+  await expect(pre).toHaveClass(/bg-emerald/);
+  await expect(
+    page.getByRole("button", {
+      name: "Pre-trial for Task B: Findings",
+      exact: true,
+    })
+  ).toHaveClass(/bg-red/);
+  const outdated = page.getByRole("button", {
+    name: "Post-trial for Task B: Completed, outdated",
+    exact: true,
+  });
+  await expect(outdated).toHaveClass(/bg-amber/);
+  await expect(outdated).not.toContainText("Completed");
+  await expect(
+    page.getByRole("button", {
+      name: "Verdict for Task B: Reject, outdated",
+      exact: true,
+    })
+  ).toContainText("Reject· outdated");
+  await expect(
+    page.getByRole("button", {
+      name: "Pre-trial for Task C: Queued",
+      exact: true,
+    })
+  ).toContainText("Pre-trial: queued");
+  await expect(
+    page.getByRole("button", {
+      name: "Post-trial for Task C: Completed",
+      exact: true,
+    })
+  ).toHaveClass(/bg-amber/);
+  const boxes = await Promise.all(
+    [
+      pre,
+      post,
+      page.getByRole("button", {
+        name: "Verdict for Task A: Accept",
+        exact: true,
+      }),
+    ].map((button) => button.boundingBox())
+  );
+  expect(new Set(boxes.map((box) => Math.round(box!.y))).size).toBe(1);
+  await outdated.click();
+  await expect(
+    page.getByText(
+      "This result does not establish a current review of this version and its evidence."
+    )
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  expect(state.writes).toEqual([]);
+  await page.clock.runFor(300);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await page.keyboard.press("Tab");
+  await page
+    .getByRole("table")
+    .screenshot({ path: "/tmp/compact-delivery-reviews.png" });
+});
+
+test("frozen review badges retain dates and older snapshots stay unrecorded", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.frozen = true;
+  state.board.delivery.status = "finalized";
+  const completed = {
+    status: "completed",
+    detail: "Saved source review",
+    finished_at: "2026-09-10T12:00:00Z",
+    trial_id: null,
+    outdated: false,
+  };
+  state.board.tasks[0].reviews = {
+    pre_trial: completed,
+    post_trial: { ...completed, status: "not_run", finished_at: null },
+    verdict: { ...completed, status: "unavailable", finished_at: null },
+  };
+  state.board.tasks.push({
+    ...taskRow(),
+    task_id: "legacy",
+    task_name: "Legacy",
+    delivery_task_id: "legacy",
+  });
+  await page.goto("/");
+  const pre = page.getByRole("button", {
+    name: "Pre-trial for Task A: Clear",
+    exact: true,
+  });
+  await expect(pre).not.toContainText("ago");
+  const recorded = await pre.textContent();
+  await page.clock.fastForward(86400000);
+  await expect(pre).toHaveText(recorded!);
+  await expect(
+    page.getByRole("button", {
+      name: "Pre-trial for Legacy: Not recorded",
+      exact: true,
+    })
+  ).toHaveClass(/text-muted-foreground/);
+  await pre.click();
+  await expect(
+    page.getByText(
+      "Recorded at finalization. The linked task details are live."
+    )
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
