@@ -259,3 +259,30 @@ test("expanded trials refresh until complete even when the summary is already co
   await page.clock.runFor(90000);
   expect(detailReads).toBe(3);
 });
+
+for (const { path, labels } of [
+  { path: `/tasks/${fixtureTask.id}`, labels: ["Avg score", "Harness errors"] },
+  {
+    path: "/experiments/review-demo",
+    labels: ["Avg score", "Cost", "Verdicts"],
+  },
+]) {
+  test(`metric labels remain accessible with keyboard help on ${path}`, async ({
+    page,
+  }) => {
+    await page.goto(path);
+    for (const label of labels) {
+      const help = page.getByRole("button", {
+        name: `How ${label} is calculated`,
+        exact: true,
+      });
+      const labelRow = help.locator("..");
+      await expect(labelRow.getByText(label, { exact: true })).toBeVisible();
+      expect(await labelRow.ariaSnapshot()).toContain(`- text: ${label}`);
+      await help.focus();
+      await expect(page.getByRole("tooltip")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+    }
+  });
+}
