@@ -646,13 +646,22 @@ test.describe("authenticated task view", () => {
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
     await expect(page.getByText("1 agent · 25 trials")).toBeVisible();
+    const agent = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "codex", exact: true }),
+    });
     await expect(
-      page.getByText("Showing 20 most recent of 25 trials")
+      agent.getByText("20 of 25 in the recent preview")
     ).toBeVisible();
-    await expect(page.getByText("80% (20/25)")).toBeVisible();
-    await expect(page.getByText("1m 40s")).toBeVisible();
-    await expect(page.getByText("$25.00").last()).toBeVisible();
-    await expect(page.getByText("$1.00")).toBeVisible();
+    await expect(agent.getByText("80.0%")).toBeVisible();
+    await expect(agent.getByText("1m 40s", { exact: true })).toBeVisible();
+    await expect(agent.getByText("$25.00", { exact: true })).toBeVisible();
+    await agent.getByText("Agent details", { exact: true }).click();
+    await expect(
+      agent.getByText("25 scored · 20 pass · 0 partial · 5 fail")
+    ).toBeVisible();
+    await expect(
+      agent.getByText("Avg cost per priced trial: $1.00")
+    ).toBeVisible();
 
     await page.getByRole("button", { name: /v2/ }).click();
     await page.getByText("v3", { exact: true }).click();
