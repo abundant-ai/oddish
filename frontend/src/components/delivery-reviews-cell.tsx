@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import type { DeliveryTaskBoardRow } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
@@ -31,6 +30,17 @@ const LABELS: Record<string, string> = {
   blocked: "Blocked",
 };
 
+function reviewAge(iso: string): string {
+  const minutes = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
+  );
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`;
+  return `${Math.floor(minutes / 1440)}d ago`;
+}
+
 /** Each disclosure owns the explanation and evidence link for one review stage. */
 export function DeliveryReviewsCell({
   row,
@@ -42,12 +52,71 @@ export function DeliveryReviewsCell({
   frozen: boolean;
 }) {
   return (
-    <div className="space-y-1 text-xs">
+    <div className="grid grid-cols-[1fr_1fr_0.9fr] items-center gap-2 text-xs">
       {STAGES.map(([key, label]) => {
         const stage = row.reviews?.[key];
         const status = stage
           ? (LABELS[stage.status] ?? stage.status)
           : "Not recorded";
+        const findings = row.defects.filter((finding) =>
+          key === "pre_trial"
+            ? finding.source === "pre_trial"
+            : finding.source === "trial"
+        ).length;
+        const clear =
+          stage?.status === "accept" ||
+          (stage?.status === "completed" &&
+            (key === "pre_trial"
+              ? findings === 0
+              : row.qa.status === "accepted" && findings === 0));
+        const bad =
+          stage?.status === "reject" ||
+          (stage?.status === "completed" && findings > 0);
+        const failed = stage?.status === "failed" || stage?.status === "error";
+        const inactive =
+          !stage || ["not_run", "unavailable"].includes(stage.status);
+        const waiting =
+          stage &&
+          ["pending", "queued", "running", "paused", "retrying"].includes(
+            stage.status
+          );
+        const tone = stage?.outdated
+          ? "amber"
+          : bad
+            ? "red"
+            : clear
+              ? "green"
+              : inactive
+                ? "gray"
+                : "amber";
+        const symbol = stage?.outdated
+          ? "!"
+          : bad
+            ? "x"
+            : clear
+              ? "+"
+              : inactive
+                ? ""
+                : waiting
+                  ? "~"
+                  : "?";
+        const meaning = stage?.outdated
+          ? `${status}, outdated`
+          : bad && key !== "verdict"
+            ? "Findings"
+            : clear && key !== "verdict"
+              ? "Clear"
+              : failed
+                ? "Could not complete"
+                : status;
+        const colors = {
+          green:
+            "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+          red: "border-red-600/25 bg-red-500/10 text-red-800 dark:text-red-300",
+          amber:
+            "border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+          gray: "border-transparent text-muted-foreground",
+        };
         const href = stage?.trial_id
           ? `${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(stage.trial_id)}`
           : `${taskHref}#${key === "pre_trial" ? "source-review" : key === "post_trial" ? "execution-review" : "verdict"}`;
@@ -56,31 +125,39 @@ export function DeliveryReviewsCell({
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="hover:bg-muted flex w-full items-baseline justify-between gap-3 rounded px-1 py-0.5 text-left"
-                aria-label={`${label} for ${row.task_name}: ${status}${stage?.outdated ? ", outdated" : ""}`}
+                className={`flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left whitespace-nowrap hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 ${colors[tone]}`}
+                aria-label={`${label} for ${row.task_name}: ${meaning}`}
               >
-                <span className="text-muted-foreground">{label}</span>
-                <span
-                  className={`text-right whitespace-normal ${
-                    stage?.outdated
-                      ? "text-amber-700 dark:text-amber-400"
-                      : stage?.status === "failed" || stage?.status === "reject"
-                        ? "text-red-700 dark:text-red-400"
-                        : ""
-                  }`}
-                >
-                  {status}
-                  {stage?.outdated && " · outdated"}
-                  {stage?.finished_at && (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      ·{" "}
-                      {frozen
-                        ? new Date(stage.finished_at).toLocaleDateString()
-                        : formatRelativeTime(stage.finished_at)}
-                    </span>
-                  )}
+                {symbol && (
+                  <span
+                    aria-hidden="true"
+                    className="w-2.5 shrink-0 text-center font-mono font-semibold"
+                  >
+                    {symbol}
+                  </span>
+                )}
+                <span>
+                  {key === "verdict" ? (inactive ? "—" : status) : label}
+                  {key !== "verdict" &&
+                    (inactive ||
+                      waiting ||
+                      failed ||
+                      stage?.status === "blocked" ||
+                      stage?.status === "cancelled") &&
+                    `: ${stage ? (failed ? "error" : status.toLowerCase()) : "not recorded"}`}
                 </span>
+                {key === "verdict" && stage?.outdated && (
+                  <span>· outdated</span>
+                )}
+                {key !== "verdict" && stage?.finished_at && (
+                  <span className="text-muted-foreground text-[11px] tabular-nums">
+                    (
+                    {frozen
+                      ? new Date(stage.finished_at).toLocaleDateString()
+                      : reviewAge(stage.finished_at)}
+                    )
+                  </span>
+                )}
               </button>
             </PopoverTrigger>
             <PopoverContent
@@ -88,13 +165,21 @@ export function DeliveryReviewsCell({
               className="w-96 max-w-[calc(100vw-2rem)] space-y-2 text-sm"
             >
               <p className="font-medium">
-                {label} · {status}
-                {stage?.outdated && " · outdated"} · v{row.version ?? "?"}
+                {label} · {meaning} · v{row.version ?? "?"}
               </p>
               <p className="break-words whitespace-pre-wrap">
                 {stage?.detail ??
                   "This delivery record does not contain separate review-stage details."}
               </p>
+              {stage?.status === "completed" &&
+                !clear &&
+                !bad &&
+                !stage.outdated && (
+                  <p>
+                    Completion is recorded, but this row does not establish a
+                    clear outcome.
+                  </p>
+                )}
               {stage?.outdated && (
                 <p>
                   This result does not establish a current review of this
