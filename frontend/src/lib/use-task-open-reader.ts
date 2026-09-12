@@ -204,8 +204,21 @@ export function useTaskOpenReader(
     fetcher,
     {
       revalidateOnFocus: false,
-      refreshInterval:
-        (open?.selected_version?.pending_count ?? 0) > 0 ? 30000 : 0,
+      // The summary can finish before this response. Keep refreshing until
+      // the expanded rows themselves have observed completion.
+      refreshInterval: (latest) =>
+        (open?.selected_version?.pending_count ?? 0) > 0 ||
+        open?.active_qa_trial != null ||
+        latest?.task.trials?.some(
+          (trial) =>
+            !trial.superseded_by_trial_id &&
+            (trial.task_version_id ?? null) === selectedVersionId &&
+            ["pending", "queued", "running", "retrying", "paused"].includes(
+              trial.status
+            )
+        )
+          ? 30000
+          : 0,
     }
   );
   // Both agent results and QA rows use the expanded payload when requested.

@@ -167,3 +167,95 @@ test("all trials load only on request, preserve version scope, and retry after f
   }
   await expect(load).toHaveCount(0);
 });
+
+test("expanded trials refresh until complete even when the summary is already complete", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let detailReads = 0;
+  await page.route("**/api/tasks/*/open*", (route) => {
+    return route.fulfill({
+      json: {
+        ...fixture,
+        task: {
+          ...fixture.task,
+          status: "completed",
+          verdict_status: "success",
+        },
+        selected_version: { ...fixture.selected_version, pending_count: 0 },
+        trials: [],
+        trials_has_more: true,
+        active_qa_trial: null,
+      },
+    });
+  });
+  await page.route("**/api/tasks/*/detail", (route) => {
+    detailReads++;
+    return route.fulfill({
+      json: {
+        task: {
+          ...fixtureTask,
+          trials: [
+            ...["agent", "qa", "audit", "analyze"].map((kind) => ({
+              ...fixtureTask.trials![0],
+              id: `live-${kind}`,
+              name: `live-${kind}`,
+              kind,
+              task_version_id: fixture.selected_version!.id,
+              status:
+                detailReads < (kind === "agent" ? 2 : 3)
+                  ? "running"
+                  : "success",
+              reward: detailReads < (kind === "agent" ? 2 : 3) ? null : 1,
+            })),
+            {
+              ...fixtureTask.trials![0],
+              id: "old-running",
+              status: "running",
+              task_version_id: fixture.selected_version!.id,
+              superseded_by_trial_id: "live-agent",
+            },
+            {
+              ...fixtureTask.trials![0],
+              id: "other-running",
+              status: "running",
+              task_version_id: "other-version",
+            },
+          ],
+        },
+        versions: [],
+        totals: fixture.totals,
+      },
+    });
+  });
+  await page.goto(`/tasks/${fixtureTask.id}`);
+  await expect(
+    page.getByRole("button", { name: "View all trials", exact: true })
+  ).toBeVisible();
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await page.clock.runFor(10000);
+  await page
+    .getByRole("button", { name: "View all trials", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "live-agent Running", exact: true })
+  ).toBeVisible();
+  // A completed summary must not stop the expanded list's own refresh.
+  await page.clock.runFor(31000);
+  await expect(
+    page.getByRole("button", { name: "live-agent Pass", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "live-qa Running", exact: true })
+  ).toBeVisible();
+  // QA alone must keep polling; superseded and other-version rows must not.
+  await page.clock.runFor(31000);
+  for (const kind of ["agent", "qa", "audit", "analyze"]) {
+    await expect(
+      page.getByRole("button", { name: `live-${kind} Pass`, exact: true })
+    ).toBeVisible();
+  }
+  expect(detailReads).toBe(3);
+  await page.clock.runFor(90000);
+  expect(detailReads).toBe(3);
+});
