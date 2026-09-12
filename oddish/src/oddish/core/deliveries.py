@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, load_only
@@ -828,21 +828,23 @@ async def _compute_board(
         .group_by(TrialModel.task_version_id)
         .subquery()
     )
+    # Look up QA within each member's trials. A delivery-wide DISTINCT ON can
+    # make PostgreSQL scan every QA run and its JSON before filtering membership.
     latest_verdict = (
-        select(TrialModel.task_id, TrialModel.task_version_id)
+        select(TrialModel.task_version_id)
         .where(
-            TrialModel.task_id.in_(member_scope),
+            TrialModel.task_id == TaskModel.id,
             TrialModel.deleted_at.is_(None),
             *_verdict_qa_clauses(),
         )
-        .distinct(TrialModel.task_id)
         .order_by(
-            TrialModel.task_id,
             func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
             TrialModel.created_at.desc(),
             TrialModel.id.desc(),
         )
-        .subquery()
+        .limit(1)
+        .correlate(TaskModel)
+        .lateral()
     )
     highest_versions = (
         select(
@@ -878,7 +880,7 @@ async def _compute_board(
             .outerjoin(
                 rollouts_query, rollouts_query.c.version_id == TaskVersionModel.id
             )
-            .outerjoin(latest_verdict, latest_verdict.c.task_id == TaskModel.id)
+            .outerjoin(latest_verdict, true())
             .outerjoin(highest_versions, highest_versions.c.task_id == TaskModel.id)
             .where(
                 DeliveryTaskModel.delivery_id == delivery.id,

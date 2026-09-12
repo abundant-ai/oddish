@@ -1,6 +1,7 @@
 """Compare the latest QA run with the evidence currently selected for delivery."""
 
 from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,9 +34,11 @@ async def delivery_qa_statuses(
 ) -> dict[str, DeliveryQAStatus]:
     if not tasks:
         return {}
+    # Instructions in harbor_config can dwarf the evidence. Project the payload
+    # separately so an ORM instance never holds a truncated writable config.
     latest = (
-        await session.scalars(
-            select(TrialModel)
+        await session.execute(
+            select(TrialModel, TrialModel.harbor_config["analysis_payload"])
             .options(
                 load_only(
                     TrialModel.id,
@@ -46,7 +49,7 @@ async def delivery_qa_statuses(
                     TrialModel.finished_at,
                     TrialModel.error_message,
                     TrialModel.analysis_error,
-                    TrialModel.harbor_config,
+                    raiseload=True,
                 )
             )
             .where(
@@ -92,9 +95,10 @@ async def delivery_qa_statuses(
             task=tasks[qa.task_id],
             version=versions.get(tasks[qa.task_id].current_version_id),
             qa=qa,
+            analysis_payload=analysis_payload,
             sources=evidence.get(tasks[qa.task_id].current_version_id, []),
         )
-        for qa in latest
+        for qa, analysis_payload in latest
     }
 
 
@@ -103,6 +107,7 @@ def evaluate_delivery_qa(
     task: TaskModel,
     version: TaskVersionModel | None,
     qa: TrialModel,
+    analysis_payload: Any,
     sources: list[TrialModel],
 ) -> DeliveryQAStatus:
     result = DeliveryQAStatus(
@@ -131,7 +136,7 @@ def evaluate_delivery_qa(
         result.status, result.detail = "outdated", "QA completion time was not recorded"
     else:
         try:
-            payload = parse_analysis_payload("qa", qa.harbor_config)
+            payload = parse_analysis_payload("qa", {"analysis_payload": analysis_payload})
         except AnalysisPayloadError:
             result.status, result.detail = (
                 "outdated",
@@ -153,7 +158,7 @@ def evaluate_delivery_qa(
                 "outdated",
                 "Trials changed since QA; rerun QA",
             )
-        elif not audit_snapshot_matches(version, qa.harbor_config["analysis_payload"]):
+        elif not audit_snapshot_matches(version, analysis_payload):
             result.status, result.detail = (
                 "outdated",
                 "Source audit changed since QA; rerun QA",

@@ -1893,6 +1893,9 @@ Oddish org; the Slack app needs `links:read` and `links:write`, subscribes to
 Optional team and channel allowlists provide defense in depth. This integration
 is separate from the scheduled expense-notification webhook.
 
+Modal `api_app` is placed in `us-east`, near the hosted PostgreSQL database;
+override `ODDISH_MODAL_API_REGION` in the deploying process for another database
+region. Workers and the QA-model gateway keep their existing placement.
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
@@ -2179,6 +2182,9 @@ Overview and Files preserves the listing request, selection, and expanded
 folders. Keep the task navigation and overview mounted while the listing loads.
 Hidden task panes still defer their file requests.
 
+The `deliveries/loading.tsx` route boundary streams a placeholder while the
+delivery list or detail server page awaits its initial data. The loaded board
+still seeds the matching browser query without an immediate duplicate fetch.
 Delivery board view state lives in URL parameters: `page` (one-based),
 `per_page` (10, 25, 50, or 100 rows; defaults to 25),
 `filter`, `issue`, `owner`, `group`, and
