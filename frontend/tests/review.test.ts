@@ -441,7 +441,8 @@ test("verdict summary hides empty categories and keeps clearing an active filter
     {
       exports: output,
       require: () => jsx,
-      KpiTile: ({
+      CostValue: () => React.createElement("span", null, "—"),
+      SummaryStat: ({
         label,
         children,
       }: {

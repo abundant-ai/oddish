@@ -16,6 +16,7 @@ import {
 import { isAgentTrial } from "@/lib/types";
 import type {
   Task,
+  TaskDetailResponse,
   TaskOpenResponse,
   TaskOpenTrialRef,
   TaskOpenVersionRef,
@@ -190,18 +191,57 @@ export function useTaskOpenReader(
     writeVersionToQuery(id);
   }, []);
 
-  // Agent trials drive the cards/matrix; the platform's own QA/audit trials
-  // render separately as the QA strip.
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const {
+    data: fullDetail,
+    error: fullTrialsError,
+    isLoading: isLoadingFullTrials,
+    mutate: reloadFullTrials,
+  } = useSWR<TaskDetailResponse>(
+    expandedTaskId === taskId
+      ? `/api/tasks/${encodeURIComponent(taskId)}/detail`
+      : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      // The summary can finish before this response. Keep refreshing until
+      // the expanded rows themselves have observed completion.
+      refreshInterval: (latest) =>
+        (open?.selected_version?.pending_count ?? 0) > 0 ||
+        open?.active_qa_trial != null ||
+        latest?.task.trials?.some(
+          (trial) =>
+            !trial.superseded_by_trial_id &&
+            (trial.task_version_id ?? null) === selectedVersionId &&
+            ["pending", "queued", "running", "retrying", "paused"].includes(
+              trial.status
+            )
+        )
+          ? 30000
+          : 0,
+    }
+  );
+  // Both agent results and QA rows use the expanded payload when requested.
+  const selectedVersionTrials = useMemo(
+    () =>
+      (fullDetail?.task.id === taskId
+        ? (fullDetail.task.trials ?? [])
+        : (task?.trials ?? [])
+      ).filter(
+        (trial) =>
+          !trial.superseded_by_trial_id &&
+          (fullDetail?.task.id !== taskId ||
+            (trial.task_version_id ?? null) === selectedVersionId)
+      ),
+    [fullDetail, taskId, task?.trials, selectedVersionId]
+  );
   const trialsForVersion = useMemo(
-    () => (task?.trials ?? []).filter((t) => isAgentTrial(t)),
-    [task?.trials]
+    () => selectedVersionTrials.filter(isAgentTrial),
+    [selectedVersionTrials]
   );
   const analysisTrialsForVersion = useMemo(
-    () =>
-      (task?.trials ?? []).filter(
-        (t) => !isAgentTrial(t) && !t.superseded_by_trial_id
-      ),
-    [task?.trials]
+    () => selectedVersionTrials.filter((trial) => !isAgentTrial(trial)),
+    [selectedVersionTrials]
   );
   const handleSetDefaultVersion = useCallback(async () => {
     if (!task || !open || !selectedVersion || selectedVersion.is_current) {
@@ -284,15 +324,21 @@ export function useTaskOpenReader(
   const revalidateReaderResources = useCallback(async () => {
     await Promise.all([
       mutate(),
+      reloadFullTrials(),
       mutateCache(
         (key) =>
           typeof key === "string" &&
           key.startsWith(`/api/tasks/${encodeURIComponent(taskId)}/panel`)
       ),
     ]);
-  }, [taskId, mutate, mutateCache]);
+  }, [taskId, mutate, mutateCache, reloadFullTrials]);
 
   return {
+    fullTrialsError,
+    isLoadingFullTrials,
+    hasFullTrials: fullDetail?.task.id === taskId,
+    loadAllTrials: () => setExpandedTaskId(taskId),
+    reloadFullTrials,
     agentCards,
     analysisTrialsForVersion,
     defaultVersionError,

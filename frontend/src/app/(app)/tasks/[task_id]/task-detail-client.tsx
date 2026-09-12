@@ -25,6 +25,8 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { ExperimentsList } from "@/components/experiments-list";
+import { SummaryStat } from "@/components/summary-stat";
+import { CostValue } from "@/components/cost-value";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
@@ -120,104 +122,28 @@ function DrawerContentLoading({ label }: { label: string }) {
   );
 }
 
-function CostBadge({
+function TaskCost({
   cost,
   trialCount,
   hasEstimated,
   hasNative,
-  size = "md",
 }: {
   cost: number;
   trialCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
-  size?: "sm" | "md" | "lg";
-}) {
-  const valueClass =
-    size === "lg"
-      ? "text-[26px]"
-      : size === "md"
-        ? "text-[20px]"
-        : "text-[13px]";
-  const prefixClass =
-    size === "lg"
-      ? "text-[16px]"
-      : size === "md"
-        ? "text-[13px]"
-        : "text-[10px]";
-  const titleText =
-    trialCount === 0
-      ? "No cost data reported yet"
-      : `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}${
-          hasEstimated && hasNative
-            ? ". Mixed native + estimated values; ~ marks estimates."
-            : hasEstimated
-              ? ". Estimated from token counts × static model pricing."
-              : ". Reported by the agent runtime."
-        }`;
-
-  // Sub-cent totals round to "$0.00", which reads as free; show the same dash
-  // as "no data" rather than a zero the ledger doesn't mean.
-  if (trialCount === 0 || !hasDisplayableCostUsd(cost)) {
-    return (
-      <span
-        className={`font-display ${valueClass} leading-none tracking-[-0.02em] text-[color:var(--paper-ink-3)]`}
-        title={titleText}
-      >
-        —
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`font-display flex items-baseline gap-1 ${valueClass} leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]`}
-      title={titleText}
-    >
-      {hasEstimated && !hasNative && (
-        <span
-          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
-        >
-          ~
-        </span>
-      )}
-      {formatCostUsd(cost)}
-      {hasEstimated && hasNative && (
-        <span
-          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
-        >
-          *
-        </span>
-      )}
-    </span>
-  );
-}
-
-function KpiTile({
-  label,
-  children,
-  hint,
-  className = "",
-}: {
-  label: string;
-  children: React.ReactNode;
-  hint?: React.ReactNode;
-  className?: string;
 }) {
   return (
-    <div
-      className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
-    >
-      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-        {label}
-      </span>
-      {children}
-      {hint ? (
-        <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-          {hint}
-        </span>
-      ) : null}
-    </div>
+    <CostValue
+      cost={trialCount > 0 && hasDisplayableCostUsd(cost) ? cost : null}
+      hasEstimated={hasEstimated}
+      hasNative={hasNative}
+      title={
+        trialCount === 0
+          ? "No cost data reported yet"
+          : `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}`
+      }
+    />
   );
 }
 
@@ -232,7 +158,7 @@ function TaskDetailHeader({
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex min-w-0 basis-full flex-col gap-1 sm:flex-1">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">
@@ -252,16 +178,19 @@ function TaskDetailHeader({
               : [];
           if (affiliated.length === 0) return null;
           return (
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
-              <span>
-                {affiliated.length > 1 ? "experiments" : "experiment"}
-              </span>
+            <details className="mt-1 text-xs text-[color:var(--paper-ink-2)]">
+              <summary className="cursor-pointer">
+                {affiliated.length}{" "}
+                {affiliated.length === 1 ? "experiment" : "experiments"} across
+                all versions
+              </summary>
               <ExperimentsList
                 experiments={affiliated}
-                maxVisible={2}
-                linkClassName="text-[color:var(--paper-ink-2)]"
+                maxVisible={affiliated.length}
+                layout="stacked"
+                className="mt-2"
               />
-            </div>
+            </details>
           );
         })()}
         {(() => {
@@ -538,16 +467,16 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   );
 }
 
-function AgentCard({
-  agentLabel,
+function AgentSection({
   summary,
   trials,
   onTrialSelect,
+  preview,
 }: {
-  agentLabel: string;
   summary: TaskOpenAgentModelSummary;
   trials: Trial[];
   onTrialSelect: (trial: Trial) => void;
+  preview: boolean;
 }) {
   const scorePct =
     summary.reward_total > 0
@@ -568,75 +497,62 @@ function AgentCard({
   });
 
   return (
-    <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--paper-line-2)] px-4 py-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="font-mono text-[14px] font-semibold text-[color:var(--paper-ink)]">
+    <section className="border-t border-[color:var(--paper-line)] py-3 last:border-b">
+      <div className="grid grid-cols-3 items-start gap-3 lg:grid-cols-[minmax(0,2fr)_repeat(3,minmax(0,1fr))_minmax(0,1.3fr)_minmax(0,1.3fr)] lg:gap-5">
+        <div className="col-span-3 min-w-0 lg:col-span-1">
+          <h3 className="font-mono text-sm font-semibold break-words text-[color:var(--paper-ink)]">
             {summary.agent}
-          </span>
+          </h3>
           {summary.model ? (
-            <Badge variant="outline" className="font-mono text-[11px]">
+            <p className="mt-1 text-xs break-all text-[color:var(--paper-ink-2)]">
               {summary.model}
-            </Badge>
-          ) : null}
-          {agentLabel !== summary.agent ? (
-            <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-              {agentLabel}
-            </span>
+            </p>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {summary.trial_count}
-            </span>
+        <div className="text-right text-sm tabular-nums">
+          <span className="mb-1 block text-xs text-[color:var(--paper-ink-2)] lg:sr-only">
+            Trials
           </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {scorePct != null
-                ? `${scorePct.toFixed(0)}% (${summary.pass_count}/${summary.reward_total})`
-                : "—"}
-            </span>
+          {summary.trial_count}
+        </div>
+        <div className="text-right text-sm tabular-nums">
+          <span className="mb-1 block text-xs text-[color:var(--paper-ink-2)] lg:sr-only">
+            Avg score
           </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
-            <CostBadge
-              cost={summary.cost_usd}
-              trialCount={summary.cost_trial_count}
-              hasEstimated={summary.cost_has_estimated}
-              hasNative={summary.cost_has_native}
-              size="sm"
-            />
+          {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
+        </div>
+        <div className="text-right text-sm tabular-nums">
+          <span className="mb-1 block text-xs text-[color:var(--paper-ink-2)] lg:sr-only">
+            Cost
           </span>
-          <span title="Mean cost per priced trial">
-            <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {hasDisplayableCostUsd(avgCostUsd)
-                ? formatCostUsd(avgCostUsd)
-                : "—"}
-            </span>
-          </span>
-          <span title="Exact mean wall-clock duration (started_at → finished_at)">
-            <span className="text-[color:var(--paper-ink-3)]">
-              avg duration
-            </span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
-            </span>
-          </span>
+          <TaskCost
+            cost={summary.cost_usd}
+            trialCount={summary.cost_trial_count}
+            hasEstimated={summary.cost_has_estimated}
+            hasNative={summary.cost_has_native}
+          />
+        </div>
+        <div className="hidden text-right text-sm tabular-nums lg:block">
+          {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
+        </div>
+        <div className="hidden text-right text-sm tabular-nums lg:block">
           {summary.last_run_at ? (
-            <span title={new Date(summary.last_run_at).toLocaleString()}>
-              <span className="text-[color:var(--paper-ink-3)]">last run</span>{" "}
-              <span className="text-[color:var(--paper-ink)]">
-                {formatRelativeTime(summary.last_run_at)}
-              </span>
-            </span>
-          ) : null}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button type="button">
+                  {formatRelativeTime(summary.last_run_at)}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {new Date(summary.last_run_at).toLocaleString()}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            "—"
+          )}
         </div>
       </div>
-      <div className="px-4 py-3">
+      <div className="mt-3">
         <div className="flex flex-wrap gap-1.5">
           {sortedTrials.map((trial) => (
             <TrialChip
@@ -648,12 +564,44 @@ function AgentCard({
         </div>
         {summary.trial_count > sortedTrials.length ? (
           <p className="mt-2 font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-            Showing {sortedTrials.length} most recent of {summary.trial_count}{" "}
-            trials
+            {sortedTrials.length
+              ? `${sortedTrials.length} of ${summary.trial_count} ${preview ? "in the recent preview" : "trial details available"}`
+              : preview
+                ? "Trials outside recent preview"
+                : "Trial details unavailable"}
           </p>
         ) : null}
       </div>
-    </div>
+      <details className="mt-2 text-xs text-[color:var(--paper-ink-2)]">
+        <summary className="w-fit cursor-pointer">Agent details</summary>
+        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2">
+          <span>
+            {summary.reward_total} scored · {summary.pass_count} pass ·{" "}
+            {summary.partial_count} partial · {summary.fail_count} fail
+          </span>
+          <span>{summary.failed_count} harness errors</span>
+          <span>
+            {summary.cost_trial_count} of {summary.trial_count} trials priced
+          </span>
+          <span>
+            Avg cost per priced trial:{" "}
+            {hasDisplayableCostUsd(avgCostUsd)
+              ? formatCostUsd(avgCostUsd)
+              : "—"}
+          </span>
+          <span className="lg:hidden">
+            Avg duration:{" "}
+            {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
+          </span>
+          <span>
+            Last run:{" "}
+            {summary.last_run_at
+              ? new Date(summary.last_run_at).toLocaleString()
+              : "—"}
+          </span>
+        </div>
+      </details>
+    </section>
   );
 }
 
@@ -669,6 +617,11 @@ export function TaskDetailClient({
   initialVersionId,
 }: TaskDetailClientProps) {
   const {
+    fullTrialsError,
+    isLoadingFullTrials,
+    hasFullTrials,
+    loadAllTrials,
+    reloadFullTrials,
     agentCards,
     analysisTrialsForVersion,
     defaultVersionError,
@@ -1099,9 +1052,14 @@ export function TaskDetailClient({
   if (!open || !task) {
     return (
       <div className="space-y-4">
-        <Skeleton className="h-10 w-72" />
-        <Skeleton className="h-20 w-full" />
-        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-10 w-72 max-w-full" />
+        <Skeleton className="h-8 w-56 max-w-full" />
+        <div className="grid grid-cols-2 gap-5 lg:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
+            <Skeleton key={index} className="h-20 w-full" />
+          ))}
+        </div>
+        <Skeleton className="h-24 w-full" />
       </div>
     );
   }
@@ -1142,127 +1100,6 @@ export function TaskDetailClient({
             error={judgeError}
           />
         ) : null}
-
-        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
-          <KpiTile
-            label="Total cost (all versions)"
-            hint={
-              isBrowseSnapshot
-                ? "loading all versions"
-                : totals && totals.cost_trial_count > 0
-                  ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
-                  : totals && totals.total_trials > 0
-                    ? `${totals.total_trials} trials, no cost data`
-                    : "no trials yet"
-            }
-          >
-            <span className="flex items-baseline gap-1.5">
-              <CostBadge
-                cost={totals?.cost_usd ?? 0}
-                trialCount={totals?.cost_trial_count ?? 0}
-                hasEstimated={totals?.cost_has_estimated ?? false}
-                hasNative={totals?.cost_has_native ?? false}
-                size="lg"
-              />
-              <QaCostSuffix
-                costUsd={totals?.qa_cost_usd}
-                size="tile"
-                title="QA/analysis spend for this task's trials. Not included in the cost figure."
-              />
-            </span>
-            {(totals?.token_trial_count ?? 0) > 0 ? (
-              <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                {formatTokenCount(totals?.token_count ?? 0)}
-              </span>
-            ) : null}
-          </KpiTile>
-          <KpiTile
-            label="Billed spend"
-            hint={
-              isBrowseSnapshot
-                ? "loading all versions"
-                : totals && totals.billed_trial_count > 0
-                  ? `${totals.billed_trial_count} billed trial${
-                      totals.billed_trial_count === 1 ? "" : "s"
-                    }`
-                  : "no billed trials"
-            }
-          >
-            <CostBadge
-              cost={totals?.billed_cost_usd ?? 0}
-              trialCount={totals?.billed_trial_count ?? 0}
-              hasEstimated={totals?.billed_has_estimated ?? false}
-              hasNative={totals?.billed_has_native ?? false}
-              size="lg"
-            />
-          </KpiTile>
-          <KpiTile
-            label={`Spent on ${versionLabel}`}
-            hint={
-              versionSummary.costTrialCount > 0
-                ? `${versionSummary.costTrialCount} trial${
-                    versionSummary.costTrialCount === 1 ? "" : "s"
-                  }`
-                : "no cost data"
-            }
-          >
-            <CostBadge
-              cost={versionSummary.costUsd}
-              trialCount={versionSummary.costTrialCount}
-              hasEstimated={versionSummary.costHasEstimated}
-              hasNative={versionSummary.costHasNative}
-              size="lg"
-            />
-          </KpiTile>
-          <KpiTile
-            label="Trials"
-            hint={`${versionSummary.completed} completed · ${versionSummary.failed} harness errors${
-              versionSummary.skipped > 0
-                ? ` · ${versionSummary.skipped} skipped`
-                : ""
-            }`}
-          >
-            <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-              {versionSummary.trialCount}
-            </span>
-          </KpiTile>
-          <KpiTile
-            label="Avg score"
-            hint={
-              versionSummary.rewardTotal > 0
-                ? `${versionSummary.passCount} pass · ${versionSummary.partialCount} partial · ${versionSummary.failCount} fail`
-                : "no scored trials"
-            }
-          >
-            <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-              {versionScopedScorePct != null
-                ? `${versionScopedScorePct.toFixed(1)}%`
-                : "—"}
-              {versionSummary.rewardTotal > 0 ? (
-                <span
-                  className="font-mono text-[12px] text-[color:var(--paper-ink-3)]"
-                  title={`${versionSummary.passCount} of ${versionSummary.rewardTotal} scored trials passed (reward = 1)`}
-                >
-                  {versionSummary.passCount}/{versionSummary.rewardTotal} pass
-                </span>
-              ) : null}
-            </span>
-          </KpiTile>
-          <KpiTile
-            label="Last run"
-            hint={
-              versionSummary.lastRunAt
-                ? new Date(versionSummary.lastRunAt).toLocaleString()
-                : undefined
-            }
-          >
-            <span className="font-display flex items-baseline gap-2 text-[20px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-              {versionSummary.lastRunAt
-                ? formatRelativeTime(versionSummary.lastRunAt)
-                : "—"}
-            </span>
-          </KpiTile>
-        </div>
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -1331,6 +1168,172 @@ export function TaskDetailClient({
           ) : null}
         </div>
 
+        <div
+          className="grid grid-cols-1 gap-5 min-[360px]:grid-cols-2 lg:grid-cols-4"
+          aria-label="Selected version summary"
+        >
+          <SummaryStat
+            label="Trials"
+            hint={`${versionSummary.completed} completed${versionSummary.skipped ? ` · ${versionSummary.skipped} skipped` : ""}`}
+          >
+            {versionSummary.trialCount}
+          </SummaryStat>
+          <SummaryStat
+            label="Avg score"
+            description="Mean reward across scored trials. Harness errors are not scored."
+            hint={
+              versionSummary.rewardTotal ? (
+                <details>
+                  <summary className="cursor-pointer">
+                    {versionSummary.rewardTotal} scored{" "}
+                    {versionSummary.rewardTotal === 1 ? "trial" : "trials"}
+                  </summary>
+                  <p className="mt-1">
+                    {versionSummary.passCount} pass ·{" "}
+                    {versionSummary.partialCount} partial ·{" "}
+                    {versionSummary.failCount} fail
+                  </p>
+                </details>
+              ) : (
+                "No scored trials"
+              )
+            }
+          >
+            {versionScopedScorePct != null
+              ? `${versionScopedScorePct.toFixed(1)}%`
+              : "—"}
+          </SummaryStat>
+          <SummaryStat
+            label="Harness errors"
+            description="Trials whose execution failed, separate from completed trials with a failing score."
+            hint={
+              versionSummary.failed ? "Execution failed" : "No execution errors"
+            }
+          >
+            <span
+              className={
+                versionSummary.failed
+                  ? "text-yellow-700 dark:text-yellow-400"
+                  : undefined
+              }
+            >
+              {versionSummary.failed}
+            </span>
+          </SummaryStat>
+          <SummaryStat label="Last run">
+            {versionSummary.lastRunAt ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button" className="text-left">
+                    {formatRelativeTime(versionSummary.lastRunAt)}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {new Date(versionSummary.lastRunAt).toLocaleString()}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              "—"
+            )}
+          </SummaryStat>
+        </div>
+        <div className="border-b border-[color:var(--paper-line)] pb-4 text-xs text-[color:var(--paper-ink-2)]">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span>Version cost</span>
+            <span className="font-semibold text-[color:var(--paper-ink)]">
+              <TaskCost
+                cost={versionSummary.costUsd}
+                trialCount={versionSummary.costTrialCount}
+                hasEstimated={versionSummary.costHasEstimated}
+                hasNative={versionSummary.costHasNative}
+              />
+            </span>
+            <span>
+              {versionSummary.costTrialCount} of {versionSummary.trialCount}{" "}
+              trials priced
+            </span>
+          </div>
+          <details className="mt-2">
+            <summary className="w-fit cursor-pointer underline underline-offset-4">
+              Cost details
+            </summary>
+            <div className="pt-4">
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
+                <SummaryStat
+                  label="Total cost (all versions)"
+                  hint={
+                    isBrowseSnapshot
+                      ? "loading all versions"
+                      : totals && totals.cost_trial_count > 0
+                        ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
+                        : totals && totals.total_trials > 0
+                          ? `${totals.total_trials} trials, no cost data`
+                          : "no trials yet"
+                  }
+                >
+                  <span className="flex items-baseline gap-1.5">
+                    <TaskCost
+                      cost={totals?.cost_usd ?? 0}
+                      trialCount={totals?.cost_trial_count ?? 0}
+                      hasEstimated={totals?.cost_has_estimated ?? false}
+                      hasNative={totals?.cost_has_native ?? false}
+                    />
+                    <QaCostSuffix
+                      costUsd={totals?.qa_cost_usd}
+                      size="row"
+                      title="QA/analysis spend for this task's trials. Not included in the cost figure."
+                    />
+                  </span>
+                  {(totals?.token_trial_count ?? 0) > 0 ? (
+                    <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                      {formatTokenCount(totals?.token_count ?? 0)}
+                    </span>
+                  ) : null}
+                </SummaryStat>
+                <SummaryStat
+                  label="Billed spend"
+                  hint={
+                    isBrowseSnapshot
+                      ? "loading all versions"
+                      : totals && totals.billed_trial_count > 0
+                        ? `${totals.billed_trial_count} billed trial${
+                            totals.billed_trial_count === 1 ? "" : "s"
+                          }`
+                        : "no billed trials"
+                  }
+                >
+                  <TaskCost
+                    cost={totals?.billed_cost_usd ?? 0}
+                    trialCount={totals?.billed_trial_count ?? 0}
+                    hasEstimated={totals?.billed_has_estimated ?? false}
+                    hasNative={totals?.billed_has_native ?? false}
+                  />
+                </SummaryStat>
+                <SummaryStat
+                  label={`Spent on ${versionLabel}`}
+                  hint={
+                    versionSummary.costTrialCount > 0
+                      ? `${versionSummary.costTrialCount} trial${
+                          versionSummary.costTrialCount === 1 ? "" : "s"
+                        }`
+                      : "no cost data"
+                  }
+                >
+                  <TaskCost
+                    cost={versionSummary.costUsd}
+                    trialCount={versionSummary.costTrialCount}
+                    hasEstimated={versionSummary.costHasEstimated}
+                    hasNative={versionSummary.costHasNative}
+                  />
+                </SummaryStat>
+              </div>
+              <p className="mt-3">
+                QA / analysis spend is additional to trial costs.
+              </p>
+            </div>
+          </details>
+        </div>
+
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
             <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
@@ -1342,25 +1345,90 @@ export function TaskDetailClient({
               {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[color:var(--paper-ink-2)]">
+            <div
+              className="flex flex-wrap gap-x-3 gap-y-1"
+              aria-label="Trial status legend"
+            >
+              {Object.entries(STATUS_CONFIG)
+                .filter(([status]) =>
+                  trialsForVersion.some(
+                    (trial) =>
+                      getMatrixStatus(
+                        trial.status,
+                        trial.reward,
+                        trial.error_message
+                      ) === status
+                  )
+                )
+                .map(([status, config]) => (
+                  <span
+                    key={status}
+                    className="inline-flex items-center gap-1.5"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`h-2.5 w-2.5 rounded-sm border ${config.matrixClass}`}
+                    />
+                    {status === "harness-error"
+                      ? "Harness error"
+                      : config.shortLabel}
+                  </span>
+                ))}
+            </div>
+            {!hasFullTrials && open?.trials_has_more && !fullTrialsError ? (
+              <button
+                type="button"
+                className="underline underline-offset-4 disabled:opacity-60"
+                disabled={isLoadingFullTrials}
+                onClick={loadAllTrials}
+              >
+                {isLoadingFullTrials ? "Loading trials…" : "View all trials"}
+              </button>
+            ) : null}
+            {fullTrialsError ? (
+              <span role="alert">
+                Could not load all trials.{" "}
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => void reloadFullTrials()}
+                >
+                  Retry
+                </button>
+              </span>
+            ) : null}
+          </div>
+          <div
+            className="hidden grid-cols-[minmax(0,2fr)_repeat(3,minmax(0,1fr))_minmax(0,1.3fr)_minmax(0,1.3fr)] gap-5 text-right text-xs text-[color:var(--paper-ink-2)] lg:grid"
+            aria-hidden="true"
+          >
+            <span className="text-left">Agent / model</span>
+            <span>Trials</span>
+            <span>Avg score</span>
+            <span>Cost</span>
+            <span>Avg duration</span>
+            <span>Last run</span>
+          </div>
           {agentCards.length === 0 ? (
-            <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-10 text-center text-[12px] text-[color:var(--paper-ink-3)]">
+            <div className="border-y border-[color:var(--paper-line)] py-6 text-[12px] text-[color:var(--paper-ink-3)]">
               {isBrowseSnapshot
                 ? "Loading exact agent totals..."
                 : "No trials for this version yet."}
             </div>
           ) : (
             agentCards.map((card) => (
-              <AgentCard
+              <AgentSection
                 key={card.key}
-                agentLabel={card.label}
                 summary={card.summary}
                 trials={card.trials}
                 onTrialSelect={handleSelectTrial}
+                preview={!hasFullTrials}
               />
             ))
           )}
           {analysisTrialsForVersion.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--paper-line)] pt-3">
               <span className="text-[11px] tracking-wide text-[color:var(--paper-ink-3)] uppercase">
                 QA
               </span>
@@ -1392,8 +1460,12 @@ export function TaskDetailClient({
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
-            onShowTaskChange={(showTask) => changeDrawerVisibility({ showTask })}
-            onShowTrialChange={(showTrial) => changeDrawerVisibility({ showTrial })}
+            onShowTaskChange={(showTask) =>
+              changeDrawerVisibility({ showTask })
+            }
+            onShowTrialChange={(showTrial) =>
+              changeDrawerVisibility({ showTrial })
+            }
             sideBySideLeft={
               <TaskFilesPanel
                 isOpen={drawer.mode === "trial" && drawerShowTask}

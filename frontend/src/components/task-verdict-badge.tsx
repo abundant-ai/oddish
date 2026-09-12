@@ -155,7 +155,7 @@ export function TaskVerdictBadge({
   if (variant === "inline" || variant === "summary") {
     return (
       <div
-        className={`flex flex-wrap items-start gap-2.5 rounded-[10px] border px-3 py-2 ${p.toneInline}`}
+        className={`flex flex-wrap items-start gap-2.5 ${variant === "summary" ? "border-y border-[color:var(--paper-line)] py-3" : `rounded-[10px] border px-3 py-2 ${p.toneInline}`}`}
       >
         {isRunning ? (
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />

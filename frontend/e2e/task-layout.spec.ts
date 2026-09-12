@@ -1,0 +1,288 @@
+import { expect, test } from "@playwright/test";
+import { openFor, tasks } from "./review-app/records";
+
+test.skip(
+  process.env.E2E_REVIEW_FIXTURES !== "1",
+  "Requires the isolated review fixture app"
+);
+
+const fixtureTask = tasks[0];
+const fixture = openFor(fixtureTask, fixtureTask.current_version!);
+
+test("flat task summary stays scoped, aligned and readable at narrow widths", async ({
+  page,
+}) => {
+  const summary = fixture.selected_version!;
+  const agent = summary.agent_models[0];
+  await page.route("**/api/tasks/*/open*", (route) =>
+    route.fulfill({
+      json: {
+        ...fixture,
+        selected_version: {
+          ...summary,
+          trial_count: 304,
+          completed_count: 86,
+          failed_count: 218,
+          reward_total: 86,
+          reward_sum: 41,
+          pass_count: 41,
+          fail_count: 45,
+          agent_models: [
+            {
+              ...agent,
+              agent: "codex",
+              model: "openai/long-model-name-for-layout-checking",
+              trial_count: 151,
+            },
+            { ...agent, agent: "oracle", trial_count: 153 },
+          ],
+        },
+        trials: [],
+        trials_has_more: true,
+      },
+    })
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`/tasks/${fixtureTask.id}`);
+  const stats = page.getByLabel("Selected version summary");
+  await expect(stats.getByText("304", { exact: true })).toBeVisible();
+  await expect(stats.getByText("47.7%", { exact: true })).toBeVisible();
+  await expect(stats.getByText("218", { exact: true })).toBeVisible();
+  const metricTops = await stats
+    .locator(":scope > div > span:last-of-type")
+    .evaluateAll((nodes) =>
+      nodes.map((node) => Math.round(node.getBoundingClientRect().top))
+    );
+  expect(new Set(metricTops).size).toBe(1);
+  const agentColumns = await page
+    .locator("section")
+    .filter({ has: page.getByRole("heading", { level: 3 }) })
+    .evaluateAll((sections) =>
+      sections.map((section) =>
+        Math.round(
+          section.firstElementChild!.children[1].getBoundingClientRect().right
+        )
+      )
+    );
+  expect(agentColumns).toHaveLength(2);
+  expect(new Set(agentColumns).size).toBe(1);
+  await expect(page.getByText("Billed spend", { exact: true })).toBeHidden();
+  await page.getByText("Cost details", { exact: true }).click();
+  await expect(page.getByText("Billed spend", { exact: true })).toBeVisible();
+  await page.getByText("Cost details", { exact: true }).click();
+  for (const width of [1440, 1024, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect(stats).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth
+      )
+    ).toBe(true);
+  }
+});
+
+test("all trials load only on request, preserve version scope, and retry after failure", async ({
+  page,
+}) => {
+  await page.route("**/api/tasks/*/open*", (route) =>
+    route.fulfill({ json: { ...fixture, trials: [], trials_has_more: true } })
+  );
+  let reads = 0;
+  await page.route("**/api/tasks/*/detail", (route) => {
+    reads++;
+    return reads === 1
+      ? route.fulfill({ status: 500, json: { detail: "Unavailable" } })
+      : route.fulfill({
+          json: {
+            task: {
+              ...fixtureTask,
+              trials: [
+                {
+                  ...fixtureTask.trials![0],
+                  name: "selected-version-trial",
+                  task_version_id: fixture.selected_version!.id,
+                },
+                ...["agent", "qa", "audit", "analyze"].flatMap((kind) => [
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `selected-${kind}`,
+                    name: `selected-${kind}`,
+                    kind,
+                    task_version_id: fixture.selected_version!.id,
+                  },
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `other-${kind}`,
+                    name: `other-${kind}`,
+                    kind,
+                    task_version_id: "other-version",
+                  },
+                  {
+                    ...fixtureTask.trials![0],
+                    id: `superseded-${kind}`,
+                    name: `superseded-${kind}`,
+                    kind,
+                    task_version_id: fixture.selected_version!.id,
+                    superseded_by_trial_id: `selected-${kind}`,
+                  },
+                ]),
+                {
+                  ...fixtureTask.trials![0],
+                  id: "other-version",
+                  name: "other-version-trial",
+                  task_version_id: "other-version",
+                },
+              ],
+            },
+            versions: [],
+            totals: fixture.totals,
+          },
+        });
+  });
+  await page.goto(`/tasks/${fixtureTask.id}`);
+  const load = page.getByRole("button", {
+    name: "View all trials",
+    exact: true,
+  });
+  await expect(load).toBeVisible();
+  expect(reads).toBe(0);
+  await load.click();
+  await expect(page.getByText("Could not load all trials.")).toBeVisible();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: /selected-version-trial/ })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /other-version-trial/ })
+  ).toHaveCount(0);
+  for (const kind of ["agent", "qa", "audit", "analyze"]) {
+    await expect(
+      page.getByRole("button", { name: new RegExp(`selected-${kind}`) })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: new RegExp(`other-${kind}|superseded-${kind}`),
+      })
+    ).toHaveCount(0);
+  }
+  await expect(load).toHaveCount(0);
+});
+
+test("expanded trials refresh until complete even when the summary is already complete", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let detailReads = 0;
+  await page.route("**/api/tasks/*/open*", (route) => {
+    return route.fulfill({
+      json: {
+        ...fixture,
+        task: {
+          ...fixture.task,
+          status: "completed",
+          verdict_status: "success",
+        },
+        selected_version: { ...fixture.selected_version, pending_count: 0 },
+        trials: [],
+        trials_has_more: true,
+        active_qa_trial: null,
+      },
+    });
+  });
+  await page.route("**/api/tasks/*/detail", (route) => {
+    detailReads++;
+    return route.fulfill({
+      json: {
+        task: {
+          ...fixtureTask,
+          trials: [
+            ...["agent", "qa", "audit", "analyze"].map((kind) => ({
+              ...fixtureTask.trials![0],
+              id: `live-${kind}`,
+              name: `live-${kind}`,
+              kind,
+              task_version_id: fixture.selected_version!.id,
+              status:
+                detailReads < (kind === "agent" ? 2 : 3)
+                  ? "running"
+                  : "success",
+              reward: detailReads < (kind === "agent" ? 2 : 3) ? null : 1,
+            })),
+            {
+              ...fixtureTask.trials![0],
+              id: "old-running",
+              status: "running",
+              task_version_id: fixture.selected_version!.id,
+              superseded_by_trial_id: "live-agent",
+            },
+            {
+              ...fixtureTask.trials![0],
+              id: "other-running",
+              status: "running",
+              task_version_id: "other-version",
+            },
+          ],
+        },
+        versions: [],
+        totals: fixture.totals,
+      },
+    });
+  });
+  await page.goto(`/tasks/${fixtureTask.id}`);
+  await expect(
+    page.getByRole("button", { name: "View all trials", exact: true })
+  ).toBeVisible();
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await page.clock.runFor(10000);
+  await page
+    .getByRole("button", { name: "View all trials", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "live-agent Running", exact: true })
+  ).toBeVisible();
+  // A completed summary must not stop the expanded list's own refresh.
+  await page.clock.runFor(31000);
+  await expect(
+    page.getByRole("button", { name: "live-agent Pass", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "live-qa Running", exact: true })
+  ).toBeVisible();
+  // QA alone must keep polling; superseded and other-version rows must not.
+  await page.clock.runFor(31000);
+  for (const kind of ["agent", "qa", "audit", "analyze"]) {
+    await expect(
+      page.getByRole("button", { name: `live-${kind} Pass`, exact: true })
+    ).toBeVisible();
+  }
+  expect(detailReads).toBe(3);
+  await page.clock.runFor(90000);
+  expect(detailReads).toBe(3);
+});
+
+for (const { path, labels } of [
+  { path: `/tasks/${fixtureTask.id}`, labels: ["Avg score", "Harness errors"] },
+  {
+    path: "/experiments/review-demo",
+    labels: ["Avg score", "Cost", "Verdicts"],
+  },
+]) {
+  test(`metric labels remain accessible with keyboard help on ${path}`, async ({
+    page,
+  }) => {
+    await page.goto(path);
+    for (const label of labels) {
+      const help = page.getByRole("button", {
+        name: `How ${label} is calculated`,
+        exact: true,
+      });
+      const labelRow = help.locator("..");
+      await expect(labelRow.getByText(label, { exact: true })).toBeVisible();
+      expect(await labelRow.ariaSnapshot()).toContain(`- text: ${label}`);
+      await help.focus();
+      await expect(page.getByRole("tooltip")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
+    }
+  });
+}
