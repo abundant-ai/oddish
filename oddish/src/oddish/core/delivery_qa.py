@@ -105,7 +105,12 @@ def evaluate_delivery_qa(
     qa: TrialModel,
     sources: list[TrialModel],
 ) -> DeliveryQAStatus:
-    result = DeliveryQAStatus(trial_id=qa.id, finished_at=qa.finished_at)
+    result = DeliveryQAStatus(
+        trial_id=qa.id,
+        finished_at=qa.finished_at,
+        run_status=qa.status.value,
+        run_error=qa.error_message or qa.analysis_error,
+    )
     if version is None or qa.task_version_id != version.id:
         result.status, result.detail = "outdated", "QA covers a different task version"
     elif qa.status in ACTIVE_TRIAL_STATUSES:

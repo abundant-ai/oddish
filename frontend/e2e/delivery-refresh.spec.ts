@@ -1662,3 +1662,76 @@ for (const count of [1, 11]) {
     expect(state.writes).toEqual([]);
   });
 }
+
+test("review stages expose the failure without changing delivery state or starting QA", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks[0].reviews = {
+    pre_trial: {
+      status: "completed",
+      detail: "Source review finished; findings are tracked separately.",
+      finished_at: "2026-09-10T12:00:00Z",
+      trial_id: null,
+      outdated: false,
+    },
+    post_trial: {
+      status: "failed",
+      detail: "Provider timeout while reviewing trial evidence",
+      finished_at: "2026-09-11T12:00:00Z",
+      trial_id: "qa-failed",
+      outdated: false,
+    },
+    verdict: {
+      status: "unavailable",
+      detail: "No current verdict was produced",
+      finished_at: null,
+      trial_id: null,
+      outdated: false,
+    },
+  };
+  await page.goto("/");
+  await expect(
+    page.getByRole("columnheader", { name: "Reviews", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Pre-trial for Task A: Completed",
+      exact: true,
+    })
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Post-trial for Task A: Failed", exact: true })
+    .click();
+  await expect(
+    page.getByText("Provider timeout while reviewing trial evidence", {
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open post-trial details" })
+  ).toHaveAttribute("href", /version=7.*trial=qa-failed/);
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", {
+      name: "Verdict for Task A: Unavailable",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByText("No current verdict was produced", { exact: true })
+  ).toBeVisible();
+  // Hovering the task row retains the existing one-request history prefetch.
+  expect(state.reads.history).toBeLessThanOrEqual(1);
+  expect(state.writes).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("row").filter({ hasText: "Task A" }).first()
+  ).toContainText("QA incomplete");
+  await page.clock.runFor(300);
+  await expect(page.getByRole("link", { name: "Task A", exact: true })).toBeInViewport();
+  await page.screenshot({
+    path: "/tmp/delivery-review-stages.png",
+    fullPage: true,
+  });
+});

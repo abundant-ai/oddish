@@ -14,6 +14,7 @@ import {
   Plus,
 } from "lucide-react";
 
+import { DeliveryReviewsCell } from "@/components/delivery-reviews-cell";
 import { findingHref } from "@/lib/review";
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
@@ -788,17 +789,8 @@ function TaskRow({
             <span className="text-muted-foreground">—</span>
           )}
         </TableCell>
-        <TableCell className="text-muted-foreground text-right text-xs">
-          {row.qa.finished_at ? (
-            <time
-              dateTime={row.qa.finished_at}
-              title={new Date(row.qa.finished_at).toLocaleString()}
-            >
-              {formatRelativeTime(row.qa.finished_at)}
-            </time>
-          ) : (
-            "—"
-          )}
+        <TableCell onClick={(event) => event.stopPropagation()}>
+          <DeliveryReviewsCell row={row} taskHref={taskHref} frozen={frozen} />
         </TableCell>
       </TableRow>
       {expanded && (
@@ -1293,7 +1285,9 @@ function DeliveryBoardContent({
       // Refresh off-page selection metadata with the board as well. A failed
       // selection read leaves the entire previous response marked stale.
       selection: selected.size
-        ? await fetcher<DeliverySelectionItem[]>(key.replace(/\/view(?=\?|$)/, "/selection"))
+        ? await fetcher<DeliverySelectionItem[]>(
+            key.replace(/\/view(?=\?|$)/, "/selection")
+          )
         : undefined,
       requestKey: key,
       fetchedAt: Date.now(),
@@ -2088,7 +2082,7 @@ function DeliveryBoardContent({
                     No tasks match this filter.
                   </p>
                 ) : (
-                  <Table className="min-w-[720px] table-fixed">
+                  <Table className="min-w-[960px] table-fixed">
                     <TableHeader>
                       <TableRow>
                         {bulkable && (
@@ -2120,9 +2114,7 @@ function DeliveryBoardContent({
                         <TableHead className="w-28 text-right">
                           Open findings
                         </TableHead>
-                        <TableHead className="w-24 text-right">
-                          Last QA
-                        </TableHead>
+                        <TableHead className="w-72">Reviews</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
