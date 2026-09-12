@@ -52,7 +52,7 @@ export function DeliveryReviewsCell({
   frozen: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_1fr_0.9fr] items-center gap-2 text-xs">
+    <div className="grid grid-cols-[1fr_1fr_0.8fr] items-center gap-1 text-[11px]">
       {STAGES.map(([key, label]) => {
         const stage = row.reviews?.[key];
         const status = stage
@@ -94,7 +94,7 @@ export function DeliveryReviewsCell({
           : bad
             ? "x"
             : clear
-              ? "+"
+              ? "✓"
               : inactive
                 ? ""
                 : waiting
@@ -125,7 +125,7 @@ export function DeliveryReviewsCell({
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className={`flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left whitespace-nowrap hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 ${colors[tone]}`}
+                className={`flex w-fit max-w-full min-w-0 flex-wrap items-center gap-x-1 gap-y-0 rounded border px-1.5 py-0.5 text-left whitespace-nowrap hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 ${colors[tone]}`}
                 aria-label={`${label} for ${row.task_name}: ${meaning}`}
               >
                 {symbol && (

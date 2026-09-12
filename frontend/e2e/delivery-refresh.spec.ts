@@ -1815,8 +1815,8 @@ test("compact review badges distinguish findings, freshness and unknown outcomes
     name: "Post-trial for Task A: Clear",
     exact: true,
   });
-  await expect(pre).toHaveText("+Pre-trial(18h ago)");
-  await expect(post).toHaveText("+Post-trial(18h ago)");
+  await expect(pre).toHaveText("✓Pre-trial(18h ago)");
+  await expect(post).toHaveText("✓Post-trial(18h ago)");
   await expect(pre).toHaveClass(/bg-emerald/);
   await expect(
     page.getByRole("button", {

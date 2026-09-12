@@ -2082,7 +2082,7 @@ function DeliveryBoardContent({
                     No tasks match this filter.
                   </p>
                 ) : (
-                  <Table className="min-w-[1280px] table-fixed">
+                  <Table className="min-w-[1200px] table-fixed">
                     <TableHeader>
                       <TableRow>
                         {bulkable && (
@@ -2114,7 +2114,7 @@ function DeliveryBoardContent({
                         <TableHead className="w-28 text-right">
                           Open findings
                         </TableHead>
-                        <TableHead className="w-[36rem]">Reviews</TableHead>
+                        <TableHead className="w-[30rem]">Reviews</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
