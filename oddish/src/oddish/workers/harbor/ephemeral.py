@@ -44,6 +44,7 @@ from .runner import (
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
+_CHILD_STREAM_LIMIT = 8 * 1024 * 1024
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
@@ -371,6 +372,7 @@ async def run_ephemeral_harbor_trial(
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_CHILD_STREAM_LIMIT,
             start_new_session=True,
             env=child_env,
         )
