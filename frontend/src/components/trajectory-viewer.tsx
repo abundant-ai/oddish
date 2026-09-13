@@ -49,6 +49,7 @@ import {
   toSegments,
   withOtherSegment,
 } from "@/lib/trajectory-segments";
+import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 import { formatMs } from "@/lib/utils";
@@ -713,6 +714,19 @@ export function TrajectoryViewer({
       revalidateOnFocus: false,
     }
   );
+
+  // A trial with no recorded trajectory never fetches, so it is ready as soon
+  // as it mounts — measuring it would dilute the population with zeros.
+  useOpenLatencySpan({
+    name: "ui.trajectory.open",
+    subject: shouldFetch ? trialId : null,
+    ready: !isLoading && trajectory !== undefined,
+    failed: error != null,
+    attributes: {
+      "oddish.trial_id": trialId,
+      "oddish.step_count": trajectory?.steps?.length ?? 0,
+    },
+  });
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
   const expandedStepKeys = new Set(expandedSteps);

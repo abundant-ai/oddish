@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from botocore.exceptions import ClientError
+
 from oddish.core import trial_io
 
 
@@ -15,7 +17,7 @@ class _FakeStorage:
     async def download_text(self, key: str) -> str:
         if key.endswith("/agent/grok-build.json"):
             return self.grok_text
-        raise FileNotFoundError(key)
+        raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
 
     async def object_exists(self, _key: str) -> bool:
         return False
@@ -88,6 +90,8 @@ def test_exact_attempt_converts_only_its_selected_grok_build_artifact(monkeypatc
 
         async def download_text(self, key):
             self.downloaded.append(key)
+            if key not in self.objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
             return self.objects[key]
 
         async def list_keys(self, _prefix):
@@ -141,6 +145,8 @@ def test_exact_attempt_uses_grok_build_when_trajectory_json_is_malformed(monkeyp
             return key in self.objects
 
         async def download_text(self, key):
+            if key not in self.objects:
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
             return self.objects[key]
 
         async def list_keys(self, _prefix):

@@ -76,7 +76,7 @@ def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> Any:
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.write(json.dumps(payload, default=str) + "\n")
     sys.stdout.flush()
 
 

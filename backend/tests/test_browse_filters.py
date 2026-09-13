@@ -33,6 +33,7 @@ from oddish.core.endpoints import (
     browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
+    browse_tasks_count_core,
 )
 from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
@@ -695,5 +696,56 @@ async def test_browse_boolean_no_is_complement():
                 "delta",
             }
             assert await _names(session, has_trajectory=False) == {"beta"}
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_count_matches_the_filtered_set():
+    """``browse_tasks_count_core`` counts the whole filtered set, independent
+    of any page window, and narrows with the same filters as the listing."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            # The page no longer carries a total; the count is its own call.
+            page = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            assert not hasattr(page, "total")
+            assert len(page.items) == 3
+
+            assert await browse_tasks_count_core(session, org_id=ORG) == 3
+
+            # Page window is irrelevant: same answer whatever limit/offset say,
+            # which is what lets one cached count serve every page.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, limit=2, offset=2
+                )
+                == 3
+            )
+
+            # Filters narrow the count exactly as they narrow the items.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, statuses=["running"]
+                )
+                == 1
+            )
+            assert await _names(session, statuses=["running"]) == {"beta"}
+
+            # Sorting reorders the page; it cannot change how many match. The
+            # client relies on this to serve one cached count across sorts.
+            assert (
+                await browse_tasks_count_core(
+                    session, org_id=ORG, sort="avg_score_desc"
+                )
+                == 3
+            )
+
+            # An unknown tag matches nothing, on both paths.
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, tags_all=["ghost"])
+                == 0
+            )
     finally:
         await engine.dispose()

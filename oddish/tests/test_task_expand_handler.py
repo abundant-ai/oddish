@@ -14,6 +14,8 @@ import sys
 import tarfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -108,6 +110,11 @@ class _FakeStorage:
     async def _ensure_client(self) -> None:
         return None
 
+    async def head_object(self, s3_key: str) -> dict | None:
+        if s3_key not in self._objects:
+            return None
+        return await self._s3.head_object(Bucket="test", Key=s3_key)
+
     async def object_exists(self, s3_key: str) -> bool:
         return s3_key in self._objects
 
@@ -145,7 +152,7 @@ class _FakeStorage:
         for key in [key for key in self._objects if key.startswith(prefix)]:
             del self._objects[key]
 
-    async def _load_task_archive(self, archive_key: str):
+    async def _load_task_archive(self, archive_key: str, *, head=None):
         return (self._objects[archive_key], [], {})
 
     async def list_objects_all(self, prefix: str) -> list[dict]:
@@ -192,7 +199,9 @@ class _FakeStorage:
 async def _null_session():
     class _S:
         async def get(self, *_args, **_kwargs):
-            return None
+            return SimpleNamespace(
+                content_hash=None, task_s3_key=None, expanded_manifest_key=None
+            )
 
         async def commit(self):
             return None
@@ -206,6 +215,9 @@ async def _null_session():
 @pytest.fixture
 def _patched_get_session(monkeypatch):
     monkeypatch.setattr(task_expand_handler, "get_session", lambda: _null_session())
+    monkeypatch.setattr(
+        task_expand_handler.uuid, "uuid4", lambda: SimpleNamespace(hex="test-run")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +246,7 @@ async def test_expand_writes_members_and_manifest(monkeypatch, _patched_get_sess
     assert summary["status"] == "expanded"
     assert summary["files"] == 2
 
-    expanded_prefix = "tasks/task-abc/v1-files/"
+    expanded_prefix = "tasks/task-abc/v1-expanded/test-run/"
     assert f"{expanded_prefix}task.toml" in storage._objects
     assert f"{expanded_prefix}verifier/check.py" in storage._objects
     assert (
@@ -284,15 +296,8 @@ async def test_stale_expansion_is_not_promoted(monkeypatch) -> None:
         task_id="task",
         version=1,
         expected_content_hash="old-hash",
-        expanded_prefix="tasks/task/v1-files/",
         manifest_key="tasks/task/v1-files/.oddish-manifest.json",
         manifest_bytes=b"{}",
-        staged_objects=[
-            (
-                "task-expand-staging/task/v1/run/task.toml",
-                "tasks/task/v1-files/task.toml",
-            )
-        ],
     )
 
     assert promoted is False
@@ -324,7 +329,7 @@ async def test_expand_falls_back_to_unversioned_archive(
     # Expanded objects still land under the versioned sibling prefix so
     # readers can locate them with the ``version`` threaded through from
     # the router.
-    expanded_prefix = "tasks/task-legacy/v1-files/"
+    expanded_prefix = "tasks/task-legacy/v1-expanded/test-run/"
     assert f"{expanded_prefix}task.toml" in storage._objects
     assert (
         f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
@@ -380,7 +385,7 @@ async def test_expand_migrates_loose_file_task_without_archive(
     assert summary["source"] == "loose_files"
     assert summary["files"] == 3
 
-    expanded_prefix = "tasks/task-loose/v1-files/"
+    expanded_prefix = "tasks/task-loose/v1-expanded/test-run/"
     assert storage._objects[f"{expanded_prefix}task.toml"] == b"name = 'loose'\n"
     assert storage._objects[f"{expanded_prefix}instruction.md"] == b"do the thing\n"
     assert storage._objects[f"{expanded_prefix}tests/test.sh"] == b"#!/bin/sh\n"
@@ -432,9 +437,9 @@ async def test_stale_loose_migration_is_not_promoted(monkeypatch):
     monkeypatch.setattr(task_expand_handler, "get_session", _session)
 
     async def _old_content_hash(*_args, **_kwargs):
-        return "old-hash"
+        return "old-hash", None
 
-    monkeypatch.setattr(task_expand_handler, "_version_content_hash", _old_content_hash)
+    monkeypatch.setattr(task_expand_handler, "_version_expansion", _old_content_hash)
 
     summary = await task_expand_handler.run_task_expand_job(
         task_id="task-loose", version=1
@@ -528,7 +533,7 @@ async def test_expand_tolerates_per_file_upload_failures_in_archive_path(
     assert summary["files"] == 2
     assert summary["skipped"] == 2
 
-    expanded_prefix = "tasks/task-brackets/v1-files/"
+    expanded_prefix = "tasks/task-brackets/v1-expanded/test-run/"
     # OK files landed.
     assert f"{expanded_prefix}task.toml" in storage._objects
     assert f"{expanded_prefix}solution/solve.sh" in storage._objects
@@ -575,7 +580,7 @@ async def test_expand_tolerates_per_file_upload_failures_in_loose_path(
     assert summary["source"] == "loose_files"
     # summary["files"] counts ALL manifest entries, successful + skipped;
     # that's the same semantic as the archive path returns.
-    expanded_prefix = "tasks/task-loose-brackets/v1-files/"
+    expanded_prefix = "tasks/task-loose-brackets/v1-expanded/test-run/"
     # 2 files landed, the bracketed one didn't.
     assert f"{expanded_prefix}task.toml" in storage._objects
     assert f"{expanded_prefix}instruction.md" in storage._objects
@@ -677,7 +682,7 @@ async def test_expand_skips_oversize_member(monkeypatch, _patched_get_session):
 
     assert summary["status"] == "expanded"
     # The small file must be uploaded; the big one must not.
-    expanded_prefix = "tasks/task-abc/v1-files/"
+    expanded_prefix = "tasks/task-abc/v1-expanded/test-run/"
     assert f"{expanded_prefix}small.txt" in storage._objects
     assert f"{expanded_prefix}big.bin" not in storage._objects
 
@@ -718,7 +723,7 @@ async def test_expand_single_pass_extracts_every_member_correctly(
     assert summary["status"] == "expanded"
     assert summary["files"] == len(files)
 
-    expanded_prefix = "tasks/task-abc/v1-files/"
+    expanded_prefix = "tasks/task-abc/v1-expanded/test-run/"
     for path, expected in files.items():
         assert storage._objects[f"{expanded_prefix}{path}"] == expected
 
@@ -776,3 +781,57 @@ async def test_expand_marks_failed_on_corrupt_tar(monkeypatch, _patched_get_sess
 
     with pytest.raises(Exception):
         await task_expand_handler.run_task_expand_job(task_id="task-abc", version=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_error", [False, True])
+async def test_publication_does_not_depend_on_delete_or_erase_uncertain_commit(
+    monkeypatch, commit_error
+):
+    row = SimpleNamespace(
+        content_hash="hash", task_s3_key="tasks/t/v1/", expanded_manifest_key=None
+    )
+
+    @asynccontextmanager
+    async def session():
+        class Session:
+            async def get(self, *_args, **_kwargs):
+                return row
+
+            async def scalar(self, *_args, **_kwargs):
+                return row.task_s3_key
+
+            async def commit(self):
+                if commit_error:
+                    # The server may have committed before the connection died.
+                    raise ConnectionError("commit acknowledgement lost")
+
+        yield Session()
+
+    storage = _FakeStorage(
+        archive_key="tasks/t/v1/.oddish-task.tar.gz",
+        archive_bytes=_make_archive({"instruction.md": b"new instruction"}),
+        loose_objects={"tasks/t/v1-files/instruction.md": b"old instruction"},
+    )
+    storage.delete_prefix = AsyncMock(
+        side_effect=RuntimeError("DeleteObjects rejected")
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(task_expand_handler, "get_session", session)
+    if commit_error:
+        with pytest.raises(ConnectionError, match="acknowledgement lost"):
+            await task_expand_handler.run_task_expand_job("t", 1)
+    else:
+        result = await task_expand_handler.run_task_expand_job("t", 1)
+        assert result["status"] == "expanded"
+        upload_count = len(storage.upload_calls)
+        assert (await task_expand_handler.run_task_expand_job("t", 1))[
+            "status"
+        ] == "already_expanded"
+        assert len(storage.upload_calls) == upload_count
+    assert row.expanded_manifest_key in storage._objects
+    prefix = row.expanded_manifest_key.rsplit("/", 1)[0] + "/"
+    assert prefix.startswith("tasks/t/v1-expanded/")
+    assert storage._objects[prefix + "instruction.md"] == b"new instruction"
+    assert storage._objects["tasks/t/v1-files/instruction.md"] == b"old instruction"
+    storage.delete_prefix.assert_not_awaited()

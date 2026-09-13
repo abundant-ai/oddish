@@ -18,7 +18,7 @@ from oddish.core.skills import (
     list_skills_core,
     update_skill_core,
 )
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from oddish.schemas import SkillCreate, SkillResponse, SkillUpdate
 
 router = APIRouter()
@@ -29,7 +29,7 @@ async def list_skills(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[SkillResponse]:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         skills = await list_skills_core(session, org_id=auth.org_id)
         return [SkillResponse.model_validate(s) for s in skills]
 
@@ -40,7 +40,7 @@ async def get_skill(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SkillResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         skill = await get_skill_core(session, skill_id, org_id=auth.org_id)
         return SkillResponse.model_validate(skill)
 

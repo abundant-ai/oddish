@@ -75,6 +75,7 @@ from oddish.core.endpoints.tasks_query import (
     browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
+    browse_tasks_count_core,
     get_task_status_core,
     list_tasks_core,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "browse_experiment_options_core",
     "browse_task_facets_core",
     "browse_tasks_core",
+    "browse_tasks_count_core",
     "build_task_sweep_response",
     "cancel_task_qa_core",
     "combine_experiments_core",

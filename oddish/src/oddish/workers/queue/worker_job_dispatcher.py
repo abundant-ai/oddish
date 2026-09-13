@@ -31,6 +31,7 @@ class DispatchUnit(NamedTuple):
     execution_lane: str
     priority_class: bool
     org_id: str | None
+    resource_candidate: bool = False
 
 
 _ACTIVE_KIND_VALUES = tuple(kind.value for kind in ACTIVE_WORKER_JOB_KINDS)
@@ -257,14 +258,25 @@ def select_job_function(
     variant_fns: dict[str, Any],
     ec2_fn: Any | None = None,
     ec2_variant_fns: dict[str, Any] | None = None,
+    candidate_fn: Any | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Pick the worker Function and retain the allocated organization/class.
 
     The execution lane chooses the credential topology first; Harbor variant
     then chooses the image within that topology.
     """
-    queue_key, variant, lane, priority_class, org_id = unit
-    if lane == "ec2_trial":
+    queue_key, variant, lane, priority_class, org_id, resource_candidate = unit
+    if resource_candidate:
+        if candidate_fn is None or (variant, lane, priority_class) != (
+            "default",
+            "default",
+            False,
+        ):
+            raise RuntimeError(
+                "Candidate worker requires ordinary default-image/default-lane demand"
+            )
+        fn = candidate_fn
+    elif lane == "ec2_trial":
         if ec2_fn is None:
             raise RuntimeError("EC2 dispatch unit has no EC2 worker Function")
         fn = (ec2_variant_fns or {}).get(variant, ec2_fn)
@@ -293,6 +305,8 @@ def build_spawn_plan(
     capacity_limits_by_lane: dict[str, int] | None = None,
     held_by_lane: dict[str, int] | None = None,
     fairness_cursors: dict[str, int] | None = None,
+    candidate_by_org_queue: dict[QueueDemandKey, int] | None = None,
+    candidate_capacity: int = 0,
 ) -> list[DispatchUnit]:
     """Allocate org turns round-robin, with a 3:1 analysis/ordinary preference.
 
@@ -305,6 +319,7 @@ def build_spawn_plan(
     """
     if max_workers <= 0 or not queued_by_org_queue:
         return []
+    candidate_demand = dict(candidate_by_org_queue or {})
 
     # Bucket queued work by org -> {(queue_key, variant, lane): queued}.
     org_to_unit_queued: dict[str | None, dict[tuple[str, str, str, bool], int]] = {}
@@ -374,6 +389,10 @@ def build_spawn_plan(
                 if queued > 0
                 and global_capacity.get(unit[0], 0) > 0
                 and lane_capacity.get(unit[2], 1) > 0
+                and (
+                    candidate_capacity > 0
+                    or queued > candidate_demand.get((org_id, *unit), 0)
+                )
             )
             candidates = [unit for unit in eligible if unit[3] == preferred]
             if not candidates:
@@ -385,7 +404,14 @@ def build_spawn_plan(
             class_key = f"{cursor_key}:{candidates[0][3]}"
             unit_turn = cursors.get(class_key, 0)
             picked = candidates[unit_turn % len(candidates)]
-            spawn_plan.append(DispatchUnit(*picked, org_id))
+            demand_key = (org_id, *picked)
+            use_candidate = (
+                candidate_capacity > 0 and candidate_demand.get(demand_key, 0) > 0
+            )
+            spawn_plan.append(DispatchUnit(*picked, org_id, use_candidate))
+            if use_candidate:
+                candidate_capacity -= 1
+                candidate_demand[demand_key] -= 1
             org_to_unit_queued[org_id][picked] -= 1
             global_capacity[picked[0]] -= 1
             if picked[2] in lane_capacity:

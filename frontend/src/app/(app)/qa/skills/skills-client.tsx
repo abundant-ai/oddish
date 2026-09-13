@@ -17,6 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { extractSkillMdBody } from "@/lib/skill-md";
+import { apiFetch } from "@/lib/api";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -459,7 +460,7 @@ export function SkillsClient() {
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/skills");
+      const res = await apiFetch("/api/skills");
       if (!res.ok) {
         setFetchError(`Failed to load skills (HTTP ${res.status})`);
         return;
@@ -482,7 +483,7 @@ export function SkillsClient() {
       return;
     }
     try {
-      const res = await fetch(`/api/skills/${skill.id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/skills/${skill.id}`, { method: "DELETE" });
       if (!res.ok) {
         alert(`Failed to delete skill (HTTP ${res.status})`);
         return;

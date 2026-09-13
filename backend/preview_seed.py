@@ -422,6 +422,8 @@ def _row_key(table, row: dict) -> str:
 def _prepare_row(table, row: dict) -> dict:
     values = {}
     for k, v in row.items():
+        if table.name == "organizations" and k == "execution_enabled":
+            continue
         col = table.columns.get(k)
         if col is None:
             if (table.name, k) not in _warned_dropped_columns:
@@ -509,7 +511,10 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
 async def _load_table_copy_merge(
     engine: AsyncEngine, table, prepared: list[dict]
 ) -> None:
-    cols = [c.name for c in table.columns]
+    cols = [
+        c.name for c in table.columns
+        if not (table.name == "organizations" and c.name == "execution_enabled")
+    ]
     pk_cols = [c.name for c in table.primary_key.columns]
     json_cols = {c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))}
 

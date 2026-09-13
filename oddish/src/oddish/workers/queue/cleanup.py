@@ -568,6 +568,7 @@ async def cleanup_orphaned_queue_state(
                 )
             )
 
+        cancelled_audits_healed = await _heal_cancelled_audits(session)
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
@@ -656,6 +657,7 @@ async def cleanup_orphaned_queue_state(
         "ec2_orphan_snapshot_errors": ec2_orphan_snapshot_errors,
         "ec2_orphan_keep_verdicts": ec2_orphan_keep_verdicts,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
+        "cancelled_audits_healed": cancelled_audits_healed,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
         "stale_analysis_imports_healed": stale_analysis_imports_healed,
@@ -1516,6 +1518,105 @@ async def _heal_stale_verdict_pending(session) -> tuple[int, list[str]]:
             )
 
     return verdict_pending_completed, reimport_trial_ids
+
+
+async def _heal_cancelled_audits(session) -> int:
+    """Clear audit bookkeeping left pending by historical cancellation paths."""
+    from oddish.core.verdict_state import cancel_verdict
+    from oddish.queue import settle_cancelled_audit_status
+
+    candidates = (
+        await session.execute(
+            text(
+                """
+                SELECT tv.task_id, tv.id
+                FROM task_versions tv
+                JOIN tasks t ON t.id = tv.task_id AND t.deleted_at IS NULL
+                JOIN LATERAL (
+                    SELECT tr.harbor_stage
+                    FROM trials tr
+                    WHERE tr.task_version_id = tv.id AND tr.kind = 'audit'
+                      AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
+                    ORDER BY tr.created_at DESC, tr.id DESC LIMIT 1
+                ) latest ON latest.harbor_stage = 'cancelled'
+                WHERE tv.deleted_at IS NULL
+                  AND tv.pre_trial_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trials tr
+                      WHERE tr.task_id = tv.task_id AND tr.deleted_at IS NULL
+                        AND tr.superseded_by_trial_id IS NULL
+                        AND tr.status::text IN ('PENDING','QUEUED','RUNNING','PAUSED','RETRYING')
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM worker_jobs wj
+                      WHERE wj.status::text IN ('QUEUED','RUNNING','RETRYING','BLOCKED')
+                        AND ((wj.subject_table = 'tasks' AND wj.subject_id = tv.task_id)
+                          OR (wj.subject_table = 'trials' AND wj.subject_id IN (
+                              SELECT id FROM trials WHERE task_id = tv.task_id
+                          )))
+                  )
+                ORDER BY tv.task_id, tv.id LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
+        )
+    ).all()
+    healed = 0
+    for task_id, version_id in candidates:
+        try:
+            async with session.begin_nested():
+                task = await session.scalar(
+                    select(TaskModel)
+                    .where(TaskModel.id == task_id)
+                    .with_for_update(skip_locked=True)
+                )
+                if task is None:
+                    continue
+                # Preserve other experiments' live work. When nothing remains,
+                # respect cancellation instead of letting admission launch new QA.
+                active = await session.scalar(
+                    text("""
+                    SELECT 1 WHERE EXISTS (
+                        SELECT 1 FROM trials tr
+                        WHERE tr.task_id = :task_id AND tr.deleted_at IS NULL
+                          AND tr.superseded_by_trial_id IS NULL
+                          AND tr.status::text IN ('PENDING','QUEUED','RUNNING','PAUSED','RETRYING')
+                    ) OR EXISTS (
+                        SELECT 1 FROM worker_jobs wj
+                        WHERE wj.status::text IN ('QUEUED','RUNNING','RETRYING','BLOCKED')
+                          AND ((wj.subject_table = 'tasks' AND wj.subject_id = :task_id)
+                            OR (wj.subject_table = 'trials' AND wj.subject_id IN (
+                                SELECT id FROM trials WHERE task_id = :task_id
+                            )))
+                    )
+                """),
+                    {"task_id": task_id},
+                )
+                if active is not None or not await settle_cancelled_audit_status(
+                    session, version_id
+                ):
+                    continue
+                if task.current_version_id == version_id and task.status in (
+                    TaskStatus.PENDING,
+                    TaskStatus.RUNNING,
+                    TaskStatus.VERDICT_PENDING,
+                ):
+                    now = utcnow()
+                    if task.verdict_status == VerdictStatus.SUCCESS:
+                        task.status = TaskStatus.COMPLETED
+                    else:
+                        cancel_verdict(task, error="Cancelled by user", now=now)
+                        task.status = TaskStatus.FAILED
+                    task.finished_at = task.finished_at or now
+                logger.info(
+                    "healer: cleared cancelled audit status for version %s", version_id
+                )
+            healed += 1
+        except SQLAlchemyError:
+            logger.exception(
+                "healer: cancelled audit repair failed for version %s", version_id
+            )
+    return healed
 
 
 async def _heal_stale_audit_imports(session) -> list[str]:

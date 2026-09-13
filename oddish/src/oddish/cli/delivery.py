@@ -327,6 +327,7 @@ def set_check(
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         board = _fetch_board(client, api_url, delivery)
         delivery_task_id = None
+        row = None
         if task is not None:
             row = next(
                 (
@@ -347,6 +348,7 @@ def set_check(
             json={
                 "check_key": check_key,
                 "delivery_task_id": delivery_task_id,
+                "expected_version_id": row["version_id"] if row else None,
                 "checked": not off,
                 "note": note,
             },
@@ -440,6 +442,7 @@ def signoff(
                     json={
                         "check_key": "signoff",
                         "delivery_task_id": row["delivery_task_id"],
+                        "expected_version_id": row["version_id"],
                         "checked": True,
                         "note": note,
                     },
@@ -484,6 +487,7 @@ def signoff(
                         json={
                             "check_key": f"waive:{check['key']}",
                             "delivery_task_id": row["delivery_task_id"],
+                            "expected_version_id": row["version_id"],
                             "checked": True,
                         },
                     )
@@ -495,6 +499,7 @@ def signoff(
                         json={
                             "check_key": f"ack:{defect['id']}",
                             "delivery_task_id": row["delivery_task_id"],
+                            "expected_version_id": row["version_id"],
                             "checked": True,
                         },
                     )
@@ -505,6 +510,7 @@ def signoff(
             json={
                 "check_key": "signoff",
                 "delivery_task_id": row["delivery_task_id"],
+                "expected_version_id": row["version_id"],
                 "checked": not off,
                 "note": note,
             },
@@ -550,6 +556,7 @@ def ack(
             json={
                 "check_key": f"{prefix}:{defect}",
                 "delivery_task_id": row["delivery_task_id"],
+                "expected_version_id": row["version_id"],
                 "checked": not off,
                 "note": note,
             },
@@ -613,8 +620,8 @@ def history(
         console.print(
             f"  audit: {audit.lower()} · rollouts: {version['rollout_count']} "
             f"({version['rollout_agents']} agents) · defects: "
-            f"{version['must_fix']} must-fix, "
-            f"{version['pre_trial_should_fix']} should-fix"
+            f"{version['must_fix']} requiring resolution or acknowledgment "
+            f"({version['pre_trial_should_fix']} recorded should_fix in source audit)"
         )
         for run in version["qa_runs"]:
             console.print(

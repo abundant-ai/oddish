@@ -19,38 +19,38 @@ const ACTIVE_VISIBLE_JOB_STATUSES = [
 const WORKER_OWNED_TRIAL_STATUSES = ["running", "paused"] as const;
 
 export function isActiveTrialStatus(
-  status: string | null | undefined,
+  status: string | null | undefined
 ): boolean {
   return ACTIVE_TRIAL_STATUSES.includes(
-    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
+    status as (typeof ACTIVE_TRIAL_STATUSES)[number]
   );
 }
 
 export function isWorkerOwnedTrialStatus(
-  status: string | null | undefined,
+  status: string | null | undefined
 ): boolean {
   return WORKER_OWNED_TRIAL_STATUSES.includes(
-    status as (typeof WORKER_OWNED_TRIAL_STATUSES)[number],
+    status as (typeof WORKER_OWNED_TRIAL_STATUSES)[number]
   );
 }
 
 export function isActivePipelineStatus(
-  status: JobStatus | string | null | undefined,
+  status: JobStatus | string | null | undefined
 ): boolean {
   return ACTIVE_PIPELINE_STATUSES.includes(
-    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
+    status as (typeof ACTIVE_PIPELINE_STATUSES)[number]
   );
 }
 
 function isActiveVisibleJob(job: VisibleWorkerJob): boolean {
   return ACTIVE_VISIBLE_JOB_STATUSES.includes(
-    job.status as (typeof ACTIVE_VISIBLE_JOB_STATUSES)[number],
+    job.status as (typeof ACTIVE_VISIBLE_JOB_STATUSES)[number]
   );
 }
 
 function isActiveVisibleJobKind(
   job: VisibleWorkerJob,
-  kind: "trial" | "qa" | "analysis",
+  kind: "trial" | "qa" | "analysis"
 ): boolean {
   return job.kind === kind && isActiveVisibleJob(job);
 }
@@ -72,7 +72,7 @@ export function taskHasActiveTrials(task: Task | null | undefined): boolean {
       (trial) =>
         isAgentTrial(trial) &&
         (isActiveTrialStatus(trial.status) ||
-          trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial"))),
+          trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial")))
     ) === true
   );
 }
@@ -97,7 +97,7 @@ export function isLiveAnalysisTrial(trial: Trial): boolean {
 }
 
 export function taskHasLiveAnalysisTrial(
-  task: Task | null | undefined,
+  task: Task | null | undefined
 ): boolean {
   return (
     (task?.active_qa_trial != null &&
@@ -136,14 +136,13 @@ export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   );
 }
 
-/** A published rejection, excluding a withdrawn verdict during replacement QA. */
-export function taskHasRejectedVerdict(task: Task): boolean {
-  return (
-    !taskHasActiveVerdict(task) &&
-    task.verdict_status !== "failed" &&
-    (task.verdict?.verdict === "reject" ||
-      (task.verdict?.verdict == null && task.verdict?.is_good === false))
-  );
+/** Short experiment-row copy for a rejected task. */
+export function rejectedMustFixLabel(task: Task): string {
+  const count = task.must_fix_count ?? 0;
+  if (count > 0) {
+    return `${count} Must Fix`;
+  }
+  return "Rejected";
 }
 
 export function taskHasCancellableWork(task: Task | null | undefined): boolean {
@@ -163,7 +162,7 @@ function getActiveTrialCount(task: Task | null | undefined): number {
   // Agent trials only: a running qa/audit trial should read as "Cancel QA",
   // not as a mystery "Cancel (1)".
   return (task?.trials ?? []).filter(
-    (trial) => isAgentTrial(trial) && isActiveTrialStatus(trial.status),
+    (trial) => isAgentTrial(trial) && isActiveTrialStatus(trial.status)
   ).length;
 }
 

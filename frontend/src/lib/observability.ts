@@ -3,11 +3,21 @@
 import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import * as logfire from "@pydantic/logfire-browser";
+import { flushTelemetry } from "@/lib/telemetry-flush";
 
 let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
 const LOGFIRE_TRACE_URL = "/api/client-traces";
+
+function apiOriginPatterns(): RegExp[] {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (!apiUrl) return [];
+  const escaped = apiUrl
+    .replace(/\/+$/, "")
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [new RegExp(`^${escaped}(/|$)`)];
+}
 
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
@@ -52,6 +62,9 @@ export function ensureLogfireConfigured(): void {
         getWebAutoInstrumentations({
           "@opentelemetry/instrumentation-fetch": {
             clearTimingResources: true,
+            // Direct API mode calls the backend origin from the browser; send
+            // traceparent there too so those spans join the backend trace.
+            propagateTraceHeaderCorsUrls: apiOriginPatterns(),
           },
         }),
       ],
@@ -78,16 +91,7 @@ function installFlushHandlers(): void {
   if (typeof document === "undefined") return;
 
   const flush = () => {
-    try {
-      const provider = trace.getTracerProvider() as {
-        forceFlush?: () => Promise<void>;
-      };
-      provider.forceFlush?.().catch(() => {
-        /* swallow; flushing is best-effort on unload */
-      });
-    } catch {
-      /* swallow */
-    }
+    flushTelemetry();
   };
 
   document.addEventListener("visibilitychange", () => {

@@ -51,7 +51,7 @@ test.describe("dashboard member filter", () => {
 
     const authorNavigation = page.waitForURL(
       (url) =>
-        url.pathname === "/dashboard" &&
+        url.pathname.endsWith("/dashboard") &&
         url.searchParams.get("author") === "user_kyle",
       { timeout: 30_000, waitUntil: "commit" }
     );

@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from oddish.core.sharing.helpers import get_public_trial_for_experiment
-from oddish.db import get_session
+from oddish.db import get_read_session
 
 router = APIRouter(tags=["Public"])
 
@@ -23,7 +23,7 @@ router = APIRouter(tags=["Public"])
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory/summary")
 async def get_public_trial_trajectory_summary(public_token: str, trial_id: str) -> dict:
     """Return the trial's stored trajectory summary."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")

@@ -6,7 +6,7 @@ import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface TagPolicy {
@@ -75,7 +75,7 @@ export function TagAdminPolicyForm() {
     }
     setSaving(true);
     setError(null);
-    const res = await fetch("/api/tag-policy", {
+    const res = await apiFetch("/api/tag-policy", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { TagColorBar } from "@/components/tag-color-bar";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 
 export interface TagPickerItem {
@@ -99,7 +99,7 @@ export function TagPicker({
   }
 
   async function createTag(rawKey: string) {
-    const res = await fetch("/api/tags", {
+    const res = await apiFetch("/api/tags", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

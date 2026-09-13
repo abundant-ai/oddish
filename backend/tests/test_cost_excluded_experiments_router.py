@@ -68,6 +68,9 @@ class _FakeSessionCtx:
 
 def _install_fake_get_session(monkeypatch, session):
     monkeypatch.setattr(router_mod, "get_session", lambda: _FakeSessionCtx(session))
+    monkeypatch.setattr(
+        router_mod, "get_read_session", lambda: _FakeSessionCtx(session)
+    )
 
 
 def _experiment(exp_id="exp_1", name="glm sweep") -> ExperimentModel:

@@ -439,7 +439,7 @@ async def test_people_search_is_member_visible_and_never_serializes_email(
     async def fake_get_session():
         yield session
 
-    monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
+    monkeypatch.setattr(dashboard_router, "get_read_session", fake_get_session)
     app = FastAPI()
     app.include_router(dashboard_router.router)
     app.dependency_overrides[require_auth] = lambda: AuthContext(

@@ -17,11 +17,13 @@ import { Textarea } from "@/components/ui/textarea";
 export function DeliveryQAWorkEditor({
   taskName,
   work,
+  versionChanged = false,
   onClose,
   onSave,
 }: {
   taskName: string;
   work: QAWorkMetadata;
+  versionChanged?: boolean;
   onClose: () => void;
   onSave: (patch: {
     issue_categories: QAIssueCategory[];
@@ -76,6 +78,13 @@ export function DeliveryQAWorkEditor({
             rows={4}
           />
         </label>
+        {versionChanged && (
+          <p role="alert" className="text-destructive text-sm">
+            The selected version changed. This draft belongs to the previous
+            version. Copy any notes you need, then close and reopen the editor
+            for the new version.
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-destructive text-sm">
             {error}
@@ -83,7 +92,7 @@ export function DeliveryQAWorkEditor({
         )}
         <DialogFooter>
           <Button
-            disabled={saving}
+            disabled={saving || versionChanged}
             onClick={async () => {
               setSaving(true);
               setError(null);

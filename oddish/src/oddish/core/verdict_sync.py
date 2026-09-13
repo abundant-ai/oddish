@@ -31,6 +31,7 @@ def apply_deterministic_verdict_rules(
     *,
     must_fix_ids: list[str],
     baseline_evidence: list[dict],
+    task_defect_count: int = 0,
 ) -> TaskVerdictModel | None:
     """Apply decisive server-owned evidence without asking the model to count."""
     if verdict is not None and not verdict.is_good:
@@ -52,20 +53,20 @@ def apply_deterministic_verdict_rules(
                     "baseline results do not satisfy that rule."
                 ),
             )
-    if not must_fix_ids:
+    if not must_fix_ids and not task_defect_count:
         return verdict
-    count = len(must_fix_ids)
+    count = max(len(must_fix_ids), task_defect_count)
     noun = "finding" if count == 1 else "findings"
     return TaskVerdictModel(
         verdict="reject",
         confidence="high",
-        primary_issue=f"The source audit reported {count} must-fix {noun}.",
+        primary_issue=f"Task review reported {count} must-fix {noun}.",
         recommendations=[
-            "Resolve every `must_fix` source-audit finding before accepting the task."
+            "Resolve every reported task defect before accepting the task."
         ],
         reasoning=(
-            "A `must_fix` source-audit finding can decide a trial, so successful "
-            "solver runs cannot make the task acceptable."
+            "Reported task defects require a fix or an explicit delivery exception. "
+            "Successful solver runs do not erase findings or establish causation."
         ),
     )
 
@@ -270,6 +271,9 @@ async def sync_pre_trial_to_task_version(
             # Re-importing the same immutable audit must not change its
             # fingerprint or erase later exploitation annotations.
             return VerdictStatus.SUCCESS.value
+        from oddish.core.task_findings import preserve_task_findings
+
+        await preserve_task_findings(session, version.id)
         if error is None:
             version.pre_trial = payload
             version.pre_trial_status = VerdictStatus.SUCCESS
@@ -282,6 +286,7 @@ async def sync_pre_trial_to_task_version(
             version.pre_trial_error = str(error)
 
         version.pre_trial_finished_at = utcnow()
+        await preserve_task_findings(session, version.id)
         return version.pre_trial_status.value
 
 

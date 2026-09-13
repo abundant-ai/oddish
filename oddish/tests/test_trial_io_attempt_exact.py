@@ -34,7 +34,7 @@ class _Storage:
         try:
             return self.objects[key]
         except KeyError as exc:
-            raise FileNotFoundError(key) from exc
+            raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject") from exc
 
     async def download_bytes(self, key: str) -> bytes:
         return (await self.download_text(key)).encode()
@@ -958,7 +958,7 @@ def test_missing_pointer_blocks_every_local_fallback(monkeypatch, tmp_path):
     assert structured["verifier"]["stdout"] is None
 
 
-def test_manifest_existence_error_never_activates_historical_fallback(monkeypatch):
+def test_manifest_download_error_never_activates_historical_fallback(monkeypatch):
     _clear_cache()
     prefix = "tasks/task-1/trials/task-1-7/attempt-3/"
     old_key = f"{prefix}old-run/agent/trajectory.json"
@@ -967,10 +967,10 @@ def test_manifest_existence_error_never_activates_historical_fallback(monkeypatc
         listed=[old_key],
     )
 
-    async def fail_manifest_check(_key: str) -> bool:
+    async def fail_manifest_download(_key: str) -> str:
         raise RuntimeError("S3 temporarily unavailable")
 
-    storage.object_exists = fail_manifest_check
+    storage.download_text = fail_manifest_download
     monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
 
     try:

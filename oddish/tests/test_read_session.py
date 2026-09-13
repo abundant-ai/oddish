@@ -86,3 +86,46 @@ async def test_read_session_still_applies_soft_delete_filter():
                 text("DELETE FROM experiments WHERE id = :id"),
                 {"id": experiment_id},
             )
+
+
+@pytest.mark.asyncio
+async def test_read_session_refuses_to_flush_writes():
+    """A read handler that grows a write fails loudly instead of autocommitting.
+
+    Without the guard, autoflush before the next query would apply the UPDATE
+    as its own implicit transaction with nothing to roll it back.
+    """
+    from oddish.db import ExperimentModel
+    from sqlalchemy import select
+
+    experiment_id = "read-session-write-guard-probe"
+    async with get_session() as session:
+        session.add(
+            ExperimentModel(
+                id=experiment_id, org_id="org-read-session-test", name="guard probe"
+            )
+        )
+
+    try:
+        async with get_read_session() as session:
+            experiment = await session.scalar(
+                select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+            )
+            experiment.name = "mutated on the read session"
+            with pytest.raises(RuntimeError, match="read-only"):
+                await session.flush()
+            session.expunge(experiment)
+        async with get_read_session() as session:
+            assert (
+                await session.scalar(
+                    select(ExperimentModel.name).where(
+                        ExperimentModel.id == experiment_id
+                    )
+                )
+                == "guard probe"
+            )
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                text("DELETE FROM experiments WHERE id = :id"), {"id": experiment_id}
+            )

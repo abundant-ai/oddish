@@ -34,7 +34,7 @@ def patched_session():
     async def _fake_get_session():
         yield session
 
-    return patch("api.routers.public_analysis.get_session", new=_fake_get_session)
+    return patch("api.routers.public_analysis.get_read_session", new=_fake_get_session)
 
 
 def _patched_trial(trial):

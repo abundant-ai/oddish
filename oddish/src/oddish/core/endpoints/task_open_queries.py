@@ -2,8 +2,20 @@
 
 from sqlalchemy import text
 
+# Shared by bounded task reads. A stored verdict is task-scoped, so source
+# provenance must be checked before presenting it on a selected version.
+VERDICT_VERSION_SQL = """(
+    SELECT q.task_version_id FROM trials q
+    WHERE q.task_id = {task_id} AND q.kind = 'qa' AND q.status = 'SUCCESS'
+      AND q.deleted_at IS NULL
+      AND (CASE WHEN {verdict}->>'_graded_by' IS NOT NULL
+        THEN q.id = {verdict}->>'_graded_by'
+        ELSE COALESCE(q.harbor_config->'analysis_payload'->>'with_verdict', 'true') <> 'false' END)
+    ORDER BY COALESCE(q.finished_at, q.created_at) DESC, q.id DESC LIMIT 1
+)"""
+
 IDENTITY_SQL = text(
-    """
+    f"""
     WITH identity AS (
       SELECT t.id AS task_id, t.name, lower(t.status::text) AS status,
              lower(t.priority::text) AS priority, t."user", t.task_path, t.link,
@@ -29,6 +41,7 @@ IDENTITY_SQL = text(
       LIMIT 1
     )
     SELECT i.*,
+      COALESCE({VERDICT_VERSION_SQL.format(task_id="i.task_id", verdict="i.verdict")} = i.selected_version_id, false) AS review_version_matches,
       COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
         SELECT e.id, e.name FROM task_experiments te
         JOIN experiments e ON e.id = te.experiment_id
@@ -90,14 +103,17 @@ AGGREGATE_SQL = text(
       ORDER BY tr.created_at DESC, tr.id DESC
       LIMIT 1
     ), qa_rows AS (
-      -- The analysis_spend view: frozen analysis_costs ledger UNION ALL
-      -- QA/audit trial spend. The trial join recovers ledger rows the old
-      -- per-trial classifier stamped with trial_id but no task_id; OR is
-      -- row-level, so a row carrying both never counts twice.
       SELECT COALESCE(a.cost_usd, 0.0) AS cost
       FROM analysis_spend a
-      LEFT JOIN trials qat ON qat.id = a.trial_id
-      WHERE (a.task_id = :task_id OR qat.task_id = :task_id)
+      WHERE a.task_id = :task_id
+        AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
+      UNION ALL
+      -- Only the historical ledger can attribute spend through another trial.
+      -- Exclude direct matches, including NULL-safe overlap, to count each once.
+      SELECT COALESCE(a.cost_usd, 0.0) AS cost
+      FROM trials qat JOIN analysis_costs a ON a.trial_id = qat.id
+      WHERE qat.task_id = :task_id AND a.deleted_at IS NULL
+        AND a.task_id IS DISTINCT FROM CAST(:task_id AS text)
         AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
     ), eligible AS (
       SELECT tr.task_version_id, tr.billed_user_id, tr.is_probe,

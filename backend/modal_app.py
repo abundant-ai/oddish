@@ -53,9 +53,15 @@ SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
 API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-api"
+# Keep database-heavy API reads near the hosted PostgreSQL database in US East.
+# This is a deploy-time setting; other deployments can select their DB's region.
+API_REGION = os.environ.get("ODDISH_MODAL_API_REGION", "us-east")
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
+)
+ENABLE_ENDPOINT_MONITORING = _env_flag(
+    "ODDISH_ENABLE_ENDPOINT_MONITORING", MODAL_APP_NAME == "oddish"
 )
 ENABLE_CARL_AGENT = _env_flag("ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish")
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
@@ -195,6 +201,21 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 #   dispatcher for the larger result sets it materializes.
 WORKER_CPU = _env_float("ODDISH_MODAL_WORKER_CPU", 1.0)
 WORKER_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_MEMORY_MB", 3072)
+# Separate entry point; rollout admission is read live from worker_resource_rollout.
+WORKER_CANDIDATE_CPU = _env_float("ODDISH_MODAL_WORKER_CANDIDATE_CPU", 0.6)
+WORKER_CANDIDATE_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB", 3072)
+WORKER_CANDIDATE_MAX_CONTAINERS = _env_int(
+    "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS", 2
+)
+WORKER_CANDIDATE_CPU_LIMIT = 17.0
+if not 0 < WORKER_CANDIDATE_CPU <= WORKER_CANDIDATE_CPU_LIMIT:
+    raise ValueError("Candidate CPU request must be in (0, 17]")
+if WORKER_CANDIDATE_MEMORY_MB <= 0 or WORKER_CANDIDATE_MAX_CONTAINERS <= 0:
+    raise ValueError("Candidate memory and container cap must be positive")
+WORKER_CANDIDATE_CONFIGURATION = (
+    f"candidate-cpu{WORKER_CANDIDATE_CPU:g}-mem{WORKER_CANDIDATE_MEMORY_MB}"
+)
+
 DISPATCHER_CPU = _env_float("ODDISH_MODAL_DISPATCHER_CPU", 1.0)
 DISPATCHER_MEMORY_MB = _env_int("ODDISH_MODAL_DISPATCHER_MEMORY_MB", 1024)
 RECONCILER_CPU = _env_float("ODDISH_MODAL_RECONCILER_CPU", 1.0)
@@ -250,9 +271,7 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
 _NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
-_NUMINOUS_SECRET_NAME = os.environ.get(
-    "ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous"
-)
+_NUMINOUS_SECRET_NAME = os.environ.get("ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous")
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
 _EC2_SSH_SECRET_NAME_ENV = "ODDISH_EC2_SSH_SECRET_NAME"
 _EC2_PLAN_FILE = "/opt/oddish/ec2_secret_plan.json"
@@ -722,8 +741,7 @@ def assert_gke_cluster_exists() -> None:
         )
     except subprocess.TimeoutExpired:
         print(
-            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
-            "continuing"
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; continuing"
         )
         return
     if result.returncode == 0:
@@ -815,6 +833,14 @@ _EC2_PUBLIC_ENV_NAMES = {
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
+    "ODDISH_MODAL_WORKER_CPU": str(WORKER_CPU),
+    "ODDISH_MODAL_WORKER_MEMORY_MB": str(WORKER_MEMORY_MB),
+    "ODDISH_MODAL_WORKER_NONPREEMPTIBLE": str(WORKER_NONPREEMPTIBLE).lower(),
+    "ODDISH_MODAL_WORKER_CANDIDATE_CPU": str(WORKER_CANDIDATE_CPU),
+    "ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB": str(WORKER_CANDIDATE_MEMORY_MB),
+    "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS": str(
+        WORKER_CANDIDATE_MAX_CONTAINERS
+    ),
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
@@ -828,6 +854,10 @@ ENV_VARS = {
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
     "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
+    "ODDISH_ENABLE_ENDPOINT_MONITORING": str(ENABLE_ENDPOINT_MONITORING).lower(),
+    "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS": str(
+        ENABLE_SLACK_EXPENSE_NOTIFICATIONS
+    ).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -848,6 +878,8 @@ ENV_VARS = {
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
+    "ODDISH_MODAL_MAX_WORKERS_PER_POLL": str(MAX_WORKERS_PER_POLL),
+    "ODDISH_MODAL_WORKER_MAX_CONTAINERS": str(WORKER_MAX_CONTAINERS),
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
@@ -888,6 +920,32 @@ ENV_VARS = {
     # this "false" and GPU trials stay on Modal.
     _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
 }
+
+
+# Named provider secrets can also carry old concurrency settings and override
+# image ENV. Capture the deploy's limits last so container imports and the
+# dispatcher use the same values as the deployed Modal function definitions.
+# Always append: Modal requires identical dependency counts on container import.
+runtime_secrets.append(
+    modal.Secret.from_dict(
+        {
+            name: ENV_VARS[name]
+            for name in (
+                "ODDISH_MODAL_WORKER_CPU",
+                "ODDISH_MODAL_WORKER_MEMORY_MB",
+                "ODDISH_MODAL_WORKER_NONPREEMPTIBLE",
+                "ODDISH_MODAL_WORKER_CANDIDATE_CPU",
+                "ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB",
+                "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS",
+                "ODDISH_MODAL_MAX_WORKERS_PER_POLL",
+                "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
+                "ODDISH_DEFAULT_MODEL_CONCURRENCY",
+                "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+                "ODDISH_NOP_ORACLE_CONCURRENCY",
+            )
+        }
+    )
+)
 
 
 def _lookup_env(name: str) -> str | None:
@@ -1054,11 +1112,14 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "dashboard_cache",
             "dashboard_owner_backfill",
             "endpoints",
+            "endpoint_health",
+            "endpoint_health_worker",
             "idempotency_store",
             "modal_app",
             "modal_runtime",
             "models",
             "observability",
+            "org_access",
             "pg_errors",
             "slack_alert_settings",
             "slack_notifications",

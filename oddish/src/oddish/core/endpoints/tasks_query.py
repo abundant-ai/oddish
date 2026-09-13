@@ -1030,8 +1030,13 @@ async def browse_tasks_core(
     # --- Phase 2.2 OR-groups ("Match any of…"), no migration ---
     or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
-) -> TaskBrowseResponse:
+    count_only: bool = False,
+) -> TaskBrowseResponse | int:
     """List latest-version task summaries for the task browser.
+
+    With ``count_only`` the same filters are applied and the matching total is
+    returned as an ``int`` instead of a page -- see ``browse_tasks_count_core``,
+    which is the typed entry point callers should use for that.
 
     Beyond the free-text / tag / author filters, the browser supports a set of
     "Phase 1.1.1" direct filters that require no schema change:
@@ -1120,6 +1125,8 @@ async def browse_tasks_core(
             session, org_id=org_id, ast=ast
         )
         if unknown_tokens & ({*ast.all} | {*ast.any_}):
+            if count_only:
+                return 0
             return TaskBrowseResponse(
                 items=[], limit=limit, offset=offset, has_more=False
             )
@@ -1731,6 +1738,27 @@ async def browse_tasks_core(
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
+    # Count-only mode stops here: every filter above has been applied, and the
+    # page query below (ordering, the summary join, and the per-row hydration
+    # that follows it) is pure waste when the caller only wants the total.
+    # ``name_rank == 1`` is the page query's own predicate -- one row per task
+    # name -- so the count and the listing de-duplicate identically.
+    if count_only:
+        count_started_at = now()
+        count_result = await session.execute(
+            select(func.count())
+            .select_from(ranked_tasks_subquery)
+            .where(ranked_tasks_subquery.c.name_rank == 1)
+        )
+        total = int(count_result.scalar() or 0)
+        if record_timing is not None:
+            record_timing(
+                "browse_count",
+                elapsed_ms(count_started_at),
+                "Browse tasks count query",
+            )
+        return total
+
     # Join one precomputed row for the selected default version. Page selection
     # now scales with task/version summaries, never with organization trial
     # history. The migration backfills every existing version; a brand-new
@@ -2181,6 +2209,26 @@ async def browse_tasks_core(
     return response
 
 
+async def browse_tasks_count_core(
+    session: AsyncSession, **filters: Any
+) -> int:
+    """Tasks matching ``filters`` across every page.
+
+    Typed wrapper over ``browse_tasks_core(count_only=True)``. It forwards the
+    filter keywords rather than restating them so the two can never drift: a
+    filter the page honours and the count ignores would put a number on screen
+    that the listing contradicts.
+
+    ``limit``/``offset`` are accepted and ignored -- callers hand over the same
+    parameters they would send to the page.
+    """
+    filters.pop("limit", None)
+    filters.pop("offset", None)
+    total = await browse_tasks_core(session, count_only=True, **filters)
+    assert isinstance(total, int)  # count_only always returns the total
+    return total
+
+
 async def browse_task_facets_core(
     session: AsyncSession,
     *,
@@ -2303,6 +2351,23 @@ async def browse_experiment_options_core(
     )
 
 
+async def _load_task_status_trials(
+    session: AsyncSession, task: TaskModel
+) -> list[TrialModel]:
+    """The trials a task status view shows: live, non-QA, current version."""
+    query = select(TrialModel).where(
+        TrialModel.task_id == task.id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        or_(TrialModel.kind.is_(None), TrialModel.kind != "qa_eval"),
+    )
+    if task.current_version_id is not None:
+        query = query.where(TrialModel.task_version_id == task.current_version_id)
+    result = await session.execute(
+        query.order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def get_task_status_core(
     session: AsyncSession,
     *,
@@ -2312,10 +2377,11 @@ async def get_task_status_core(
     org_id: str | None = None,
 ) -> TaskStatusResponse:
     """Get task status with optional org scoping."""
-    query = select(TaskModel).options(selectinload(TaskModel.experiments))
-    if include_trials:
-        query = query.options(selectinload(TaskModel.trials))
-    query = query.where(TaskModel.id == task_id)
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -2326,7 +2392,13 @@ async def get_task_status_core(
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
-        set_committed_value(task, "trials", get_task_status_trials(task))
+        # Same rows ``get_task_status_trials`` keeps, selected in SQL: a task
+        # that has been re-uploaded or retried many times otherwise ships every
+        # version's trials (each with its analysis payload) only to drop most
+        # of them in Python. Still one statement.
+        set_committed_value(
+            task, "trials", await _load_task_status_trials(session, task)
+        )
         jobs_by_subject = await fetch_visible_worker_jobs(
             session,
             task_ids=[task.id],

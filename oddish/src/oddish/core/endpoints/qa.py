@@ -384,6 +384,9 @@ async def backfill_task_analysis_core(
 
     reset_count = 0
     if force:
+        from oddish.core.task_findings import preserve_task_findings
+
+        await preserve_task_findings(session, task.current_version_id)
         if trial_ids is not None:
             wanted = set(trial_ids)
             to_reset = [t for t in live_trials if t.id in wanted]
@@ -471,6 +474,9 @@ async def rerun_pre_trial_audit_core(
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
     # the card showing progress while the trial waits for a worker.
+    from oddish.core.task_findings import preserve_task_findings
+
+    await preserve_task_findings(session, version.id)
     version.pre_trial_status = VerdictStatus.QUEUED
     version.pre_trial = None
     version.pre_trial_error = None

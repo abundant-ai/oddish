@@ -156,14 +156,16 @@ user = "agent"
 
 
 @pytest.mark.parametrize(
-    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+    "environment_type",
+    [EnvironmentType.DAYTONA, EnvironmentType.MODAL, EnvironmentType.ARCHIL],
 )
-def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
+def test_restricted_direct_task_gets_model_hosts_and_web_defaults(
     monkeypatch, tmp_path, environment_type
 ):
     task_path = _write_network_policy_task(tmp_path)
     environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
+        name="codex",
         import_path="example.agent:Agent",
         model_name="example-model",
         env={"MODEL_BASE_URL": "https://model.test/v1"},
@@ -179,13 +181,15 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
 
     monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
-    harbor_runner._inject_restricted_agent_model_hosts(
+    harbor_runner._apply_restricted_agent_network_defaults(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
     )
 
     assert agent_config.extra_allowed_hosts == ["existing.test", "model.test"]
+    assert agent_config.kwargs["web_search"] == "disabled"
+    assert environment_config.extra_allowed_hosts == []
     assert captured["model_name"] == "example-model"
     assert captured["agent_env"] == {"MODEL_BASE_URL": "https://model.test/v1"}
     assert captured["agent_kwargs"] == {
@@ -1451,6 +1455,9 @@ def test_restricted_cursor_does_not_allow_underlying_model_provider(tmp_path):
         (EnvironmentType.DAYTONA, "no-network", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "no-network", True),
         (EnvironmentType.MODAL, "public", "no-network", True),
+        (EnvironmentType.ARCHIL, "public", "public", False),
+        (EnvironmentType.ARCHIL, "no-network", "no-network", False),
+        (EnvironmentType.ARCHIL, "public", "no-network", True),
         (EnvironmentType.DOCKER, "public", "no-network", False),
     ],
 )

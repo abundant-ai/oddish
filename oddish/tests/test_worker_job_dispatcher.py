@@ -27,7 +27,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import ACTIVE_WORKER_JOB_KINDS  # noqa: E402
-from oddish.workers.queue import worker_job_dispatcher as dispatcher_module  # noqa: E402
+from oddish.workers.queue import (
+    worker_job_dispatcher as dispatcher_module,
+)  # noqa: E402
 from oddish.workers.queue.worker_job_dispatcher import (  # noqa: E402
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
@@ -569,3 +571,64 @@ def test_priority_preference_preserves_org_fairness_and_lends_empty_turns():
         True: 96,
         False: 32,
     }
+
+
+def test_candidate_plan_partitions_jobs_and_respects_global_cap():
+    ordinary = ("org-a", "m", "default", "default", False)
+    other_org = ("org-b", "m", "default", "default", False)
+    plan = build_spawn_plan(
+        {ordinary: 10, other_org: 10},
+        {},
+        {"m": 20},
+        20,
+        candidate_by_org_queue={ordinary: 3, other_org: 2},
+        candidate_capacity=2,
+    )
+    assert len(plan) == 17  # 15 base jobs plus two admitted candidate jobs.
+    assert sum(unit.resource_candidate for unit in plan) == 2
+    assert {unit.org_id for unit in plan if unit.resource_candidate} == {
+        "org-a",
+        "org-b",
+    }
+    blocked = build_spawn_plan(
+        {ordinary: 10},
+        {},
+        {"m": 20},
+        20,
+        candidate_by_org_queue={ordinary: 10},
+        candidate_capacity=0,
+    )
+    assert blocked == []  # Do not launch base workers for a candidate-only backlog.
+    assert len(build_spawn_plan({ordinary: 10}, {}, {"m": 20}, 20)) == 10
+
+
+def test_candidate_function_keeps_organization_and_priority():
+    import pytest
+
+    base, candidate = object(), object()
+    unit = dispatcher_module.DispatchUnit(
+        "m", "default", "default", False, "org-a", True
+    )
+    fn, kwargs = select_job_function(
+        unit, default_fn=base, variant_fns={}, candidate_fn=candidate
+    )
+    assert fn is candidate
+    assert kwargs == dict(
+        queue_key="m",
+        harbor_variant_id="default",
+        execution_lane="default",
+        priority_class=False,
+        org_id="org-a",
+    )
+    for changes in (
+        {"priority_class": True},
+        {"harbor_variant_id": "ephemeral"},
+        {"execution_lane": "ec2_trial"},
+    ):
+        with pytest.raises(RuntimeError):
+            select_job_function(
+                unit._replace(**changes),
+                default_fn=base,
+                variant_fns={},
+                candidate_fn=candidate,
+            )

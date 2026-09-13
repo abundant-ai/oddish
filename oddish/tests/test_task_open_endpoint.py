@@ -78,6 +78,7 @@ def _identity(
         "link": "https://github.com/acme/repo/pull/1",
         "tags": {"github_username": "octocat"},
         "run_analysis": True,
+        "review_version_matches": True,
         "verdict_status": "failed",
         "verdict": verdict,
         "verdict_error": "judge timed out",

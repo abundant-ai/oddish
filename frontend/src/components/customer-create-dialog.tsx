@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiFetch } from "@/lib/api";
 
 /** Create-customer form in its own dialog, so customer fields can grow
  * without touching the flows that only need to pick one. */
@@ -33,7 +34,7 @@ export function CustomerCreateDialog({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/customers", {
+      const res = await apiFetch("/api/customers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim() }),

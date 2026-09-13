@@ -328,6 +328,17 @@ async def cancel_tasks_runs(
         if not trial_updated:
             continue
 
+    for version_id in sorted(
+        {
+            trial.task_version_id
+            for trial in trials
+            if trial.id in cancelled_trial_ids
+            and trial.kind == "audit"
+            and trial.task_version_id is not None
+        }
+    ):
+        await settle_cancelled_audit_status(session, version_id)
+
     live_task_ids = {
         trial.task_id
         for trial in all_trials
@@ -1614,6 +1625,53 @@ async def live_analysis_trial_id(
         )
         .limit(1)
     )
+
+
+async def settle_cancelled_audit_status(session: AsyncSession, version_id: str) -> bool:
+    """Mirror the latest cancelled audit onto its version, under the task lock.
+
+    The caller must hold the owning task's lock, as audit enqueue/cancel do.
+    Never replace published results, a newer audit, or still-active execution.
+    """
+    await session.flush()
+    version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+    if version is None or version.pre_trial_status not in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        return False
+    audits = list(
+        await session.scalars(
+            select(TrialModel)
+            .where(
+                TrialModel.task_version_id == version_id,
+                TrialModel.kind == "audit",
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+        )
+    )
+    if not audits or any(is_active_trial_status(a.status) for a in audits):
+        return False
+    latest = audits[0]
+    if latest.harbor_stage != CANCELLED_HARBOR_STAGE:
+        return False
+    active_job = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.subject_table == "trials",
+            WorkerJobModel.subject_id.in_([a.id for a in audits]),
+            WorkerJobModel.status.in_(ACTIVE_WORKER_JOB_STATUSES),
+        )
+        .limit(1)
+    )
+    if active_job is not None:
+        return False
+    version.pre_trial_status = VerdictStatus.FAILED
+    version.pre_trial_error = latest.error_message or USER_CANCELLED_MESSAGE
+    version.pre_trial_finished_at = latest.finished_at or utcnow()
+    return True
 
 
 async def task_audit_pending(session: AsyncSession, task: TaskModel) -> bool:

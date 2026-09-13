@@ -16,7 +16,7 @@ async def _session():
 async def test_admin_diagnostics_pass_active_org(monkeypatch):
     auth = SimpleNamespace(org_id="org-a")
     monkeypatch.delenv("ODDISH_OPERATOR_ORG_ID", raising=False)
-    monkeypatch.setattr(admin, "get_session", _session)
+    monkeypatch.setattr(admin, "get_read_session", _session)
 
     calls = []
 
@@ -64,7 +64,7 @@ async def test_admin_costs_pass_active_org(monkeypatch):
     auth = SimpleNamespace(org_id="org-a")
     result = object()
     seen = {}
-    monkeypatch.setattr(admin, "get_session", _session)
+    monkeypatch.setattr(admin, "get_read_session", _session)
 
     async def fake_costs(session, **kwargs):
         seen.update(kwargs)
@@ -96,7 +96,7 @@ async def test_admin_costs_pass_active_org(monkeypatch):
 async def test_operator_queue_diagnostics_include_global_details(monkeypatch):
     calls = []
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-a")
-    monkeypatch.setattr(admin, "get_session", _session)
+    monkeypatch.setattr(admin, "get_read_session", _session)
 
     async def fake(session, **kwargs):
         calls.append(kwargs)
@@ -178,6 +178,4 @@ def test_operator_org_default_matches_live_abundant(monkeypatch):
     )
     # Bare value is an id match: a tenant that names "8ebde5d0" as its own slug
     # must not gain operator access.
-    assert not is_operator_org(
-        SimpleNamespace(org_id="org_evil", org_slug="8ebde5d0")
-    )
+    assert not is_operator_org(SimpleNamespace(org_id="org_evil", org_slug="8ebde5d0"))

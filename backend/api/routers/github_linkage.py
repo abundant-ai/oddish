@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from api.routers.task_submission import resolve_connected_user
 from auth import AuthContext, require_auth
 from models import APIKeyScope
-from oddish.db import get_session
+from oddish.db import get_read_session
 
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
@@ -25,7 +25,7 @@ async def github_linkage(
     actor_id: Annotated[str | None, Query()] = None,
 ) -> GitHubLinkageResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         user = await resolve_connected_user(
             session, org_id=auth.org_id, github_id=actor_id, github_username=handle
         )

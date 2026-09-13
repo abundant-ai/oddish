@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 from fastapi import HTTPException
 from oddish.core.analysis_payload import audit_fingerprint, qa_trial_evidence
+from oddish.core.delivery_qa import delivery_qa_statuses
 from oddish.core.deliveries import (
     _customer_safe_board,
     claim_delivery_qa_core,
@@ -19,7 +20,9 @@ from oddish.core.verdict_sync import (
 )
 from oddish.db import TrialModel, TrialStatus, VerdictStatus, generate_id, utcnow
 from oddish.schemas import DeliveryCreate, QAWorkClaim, QAWorkPatch
-from sqlalchemy import select
+from sqlalchemy import event, inspect, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from test_statement_budgets import count_statements
 from test_deliveries import ORG, _green_task, _trial, _version
 
 
@@ -54,6 +57,52 @@ async def _reviewed_delivery(session):
     )
     await session.flush()
     return delivery, task, version, experiment, qa, sources
+
+
+@pytest.mark.asyncio
+async def test_qa_read_projects_evidence_without_loading_or_replacing_config(session):
+    _, task, version, _, qa, _ = await _reviewed_delivery(session)
+    config = {
+        **qa.harbor_config,
+        "agent": {"kwargs": {"extra_instructions": "large instructions " * 100_000}},
+    }
+    qa.harbor_config = config
+    await session.flush()
+
+    async with AsyncSession(bind=await session.connection()) as reader:
+        loaded = []
+        event.listen(
+            reader.sync_session,
+            "loaded_as_persistent",
+            lambda _, row: loaded.append(row),
+        )
+        with count_statements() as statements:
+            statuses = await delivery_qa_statuses(
+                reader, tasks={task.id: task}, versions={version.id: version}
+            )
+        assert statuses[task.id].status == "accepted"
+        assert len(statements) == 2
+        loaded_qa = next(row for row in loaded if row.id == qa.id)
+        assert "harbor_config" in inspect(loaded_qa).unloaded
+
+    # Reading in a session that already owns the full config must preserve it.
+    statuses = await delivery_qa_statuses(
+        session, tasks={task.id: task}, versions={version.id: version}
+    )
+    assert statuses[task.id].status == "accepted"
+    assert qa.harbor_config == config
+    assert not session.is_modified(qa)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [None, [], "invalid", {}, {"trial_ids": "invalid"}])
+async def test_projected_malformed_qa_evidence_remains_outdated(session, payload):
+    delivery, _, _, _, qa, _ = await _reviewed_delivery(session)
+    qa.harbor_config = {"analysis_payload": payload}
+    await session.flush()
+    session.expunge_all()
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    assert board.tasks[0].qa.status == "outdated"
 
 
 @pytest.mark.asyncio

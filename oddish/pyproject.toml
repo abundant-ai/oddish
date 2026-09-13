@@ -37,6 +37,8 @@ dependencies = [
     # Validation & settings
     "pydantic==2.12.5",
     "pydantic-settings==2.12.0",
+    # PEP 440 version comparison for `oddish version --check` / `oddish update`
+    "packaging==26.0",
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling). Published wheels
@@ -118,7 +120,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f8f7378d26e44d1eadff3d3d62125839a177df8d" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ce896ccd3b5305c5043aca6ed7a882a410c68054" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

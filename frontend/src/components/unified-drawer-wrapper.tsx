@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
+import type { TrialDrawerLayout } from "@/lib/user-ui-layout";
 import type { ImperativePanelGroupHandle } from "react-resizable-panels";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
@@ -10,13 +11,16 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type DrawerMode = "task" | "trial";
 
-const TASK_PANE_SIZE = 42;
-const TRIAL_PANE_SIZE = 58;
-
 interface UnifiedDrawerWrapperProps {
+  layout: TrialDrawerLayout;
+  onLayoutChange: (patch: Partial<TrialDrawerLayout>) => void;
+  onLayoutCommit: () => void;
+  layoutSaveError?: boolean;
+  onRetryLayoutSave?: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: DrawerMode;
@@ -35,14 +39,19 @@ interface UnifiedDrawerWrapperProps {
 }
 
 export function UnifiedDrawerWrapper({
+  layout,
+  onLayoutChange,
+  onLayoutCommit,
+  layoutSaveError,
+  onRetryLayoutSave,
   open,
   onOpenChange,
   mode,
   taskContent,
   renderTrial,
   trialContent,
-  showTask = true,
-  showTrial = true,
+  showTask = layout.showTask,
+  showTrial = layout.showTrial,
   onShowTaskChange,
   onShowTrialChange,
   sideBySideLeft,
@@ -53,23 +62,11 @@ export function UnifiedDrawerWrapper({
 }: UnifiedDrawerWrapperProps) {
   const hasLeft = Boolean(sideBySideLeft);
   const sideBySideActive = mode === "trial" && showTask && showTrial && hasLeft;
-  const taskOnlyActive =
-    mode === "trial" && showTask && hasLeft && !showTrial;
+  const taskOnlyActive = mode === "trial" && showTask && hasLeft && !showTrial;
 
-  const [width, setWidth] = useState(
-    sideBySideActive ? sideBySideWidth : defaultWidth,
-  );
-  const userResizedRef = useRef(false);
-
-  useEffect(() => {
-    if (userResizedRef.current) return;
-    setWidth(sideBySideActive ? sideBySideWidth : defaultWidth);
-  }, [sideBySideActive, sideBySideWidth, defaultWidth]);
-
-  const handleWidthChange = (next: number) => {
-    userResizedRef.current = true;
-    setWidth(next);
-  };
+  const width =
+    layout.preferredWidthPx ??
+    (sideBySideActive ? sideBySideWidth : defaultWidth);
 
   const trialsToggle = onShowTrialChange ? (
     <Button
@@ -119,7 +116,12 @@ export function UnifiedDrawerWrapper({
 
   const taskFilesPane = (
     <div className="bg-background flex h-full flex-col overflow-hidden">
-      <div className="border-border bg-muted/40 flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2 sm:h-12 sm:px-3">
+      <div
+        className={cn(
+          "border-border bg-muted/40 flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2 sm:h-12 sm:px-3",
+          taskOnlyActive && "pr-24 sm:pr-24"
+        )}
+      >
         <span className="text-muted-foreground pl-2 text-[10px] font-semibold tracking-wider uppercase">
           Task definition
         </span>
@@ -138,20 +140,26 @@ export function UnifiedDrawerWrapper({
   const showLeftPane = mode === "trial" && hasLeft && showTask;
   const showTrialPane = mode === "trial" && !taskOnlyActive;
 
-  // `autoSaveId` persists a pane collapsed to 0 and restores it on the next
-  // mount, which would leave that pane invisible while showTask/showTrial still
-  // say it is shown — and its 0-width handle sits under the drawer's own resize
-  // handle, so dragging it back out is unreliable. Collapsing is a live drag
-  // state, not a saved one: a restored collapse falls back to the even split.
   const panelGroupRef = useRef<ImperativePanelGroupHandle>(null);
   const bothPanesShown = showLeftPane && showTrialPane;
+  // Apply server restoration and re-expand to the last useful ratio after a
+  // Hide/Show toggle. Programmatic layout changes never write preferences.
   useEffect(() => {
     if (!open || !bothPanesShown) return;
-    const layout = panelGroupRef.current?.getLayout();
-    if (layout?.some((size) => size === 0)) {
-      panelGroupRef.current?.setLayout([TASK_PANE_SIZE, TRIAL_PANE_SIZE]);
+    panelGroupRef.current?.setLayout([
+      layout.taskPanePercent,
+      100 - layout.taskPanePercent,
+    ]);
+  }, [open, bothPanesShown, layout.taskPanePercent]);
+
+  const commitSplit = () => {
+    const sizes = panelGroupRef.current?.getLayout();
+    // A drag collapse is transient; visibility has its own explicit controls.
+    if (sizes?.length === 2 && sizes.every((size) => size >= 15)) {
+      onLayoutChange({ taskPanePercent: sizes[0] });
+      onLayoutCommit();
     }
-  }, [open, bothPanesShown]);
+  };
 
   const body =
     mode === "task" ? (
@@ -160,7 +168,6 @@ export function UnifiedDrawerWrapper({
       <ResizablePanelGroup
         ref={panelGroupRef}
         direction="horizontal"
-        autoSaveId="trial-detail-side-by-side"
         className="h-full"
       >
         {showLeftPane ? (
@@ -168,7 +175,7 @@ export function UnifiedDrawerWrapper({
             key="task-pane"
             id="task-pane"
             order={1}
-            defaultSize={TASK_PANE_SIZE}
+            defaultSize={layout.taskPanePercent}
             // Collapsible so the divider drags all the way over and one pane
             // takes the whole drawer. Recoverable by dragging the handle back
             // out, or via the Hide/Show toggle in the *other* pane's header.
@@ -180,14 +187,21 @@ export function UnifiedDrawerWrapper({
           </ResizablePanel>
         ) : null}
         {sideBySideActive ? (
-          <ResizableHandle key="pane-handle" withHandle />
+          <ResizableHandle
+            key="pane-handle"
+            withHandle
+            onDragging={(dragging) => {
+              if (!dragging) commitSplit();
+            }}
+            onKeyUp={commitSplit}
+          />
         ) : null}
         {showTrialPane ? (
           <ResizablePanel
             key="trial-pane"
             id="trial-pane"
             order={2}
-            defaultSize={TRIAL_PANE_SIZE}
+            defaultSize={100 - layout.taskPanePercent}
             minSize={15}
             collapsible
             collapsedSize={0}
@@ -208,8 +222,22 @@ export function UnifiedDrawerWrapper({
       minWidth={minWidth}
       maxWidth={maxWidth}
       width={width}
-      onWidthChange={handleWidthChange}
+      onWidthChange={(preferredWidthPx) => onLayoutChange({ preferredWidthPx })}
+      maximized={layout.maximized}
+      onMaximizedChange={(maximized) => onLayoutChange({ maximized })}
+      onResizeEnd={onLayoutCommit}
     >
+      {layoutSaveError && (
+        <div
+          role="status"
+          className="bg-muted flex shrink-0 items-center gap-2 px-3 py-2 pr-24 text-xs"
+        >
+          Layout preferences could not sync.
+          <Button variant="ghost" size="sm" onClick={onRetryLayoutSave}>
+            Retry
+          </Button>
+        </div>
+      )}
       <div className="flex flex-1 flex-col overflow-hidden">{body}</div>
     </ResizableDrawer>
   );

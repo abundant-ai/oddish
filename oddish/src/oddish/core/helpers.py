@@ -11,8 +11,10 @@ from typing import Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from oddish.config import settings
 from oddish.db import (
@@ -299,7 +301,8 @@ def _normalize_worker_job_status(status: object) -> str:
     return str(value).lower()
 
 
-def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
+def build_visible_worker_job(job: WorkerJobModel | Row) -> VisibleWorkerJob:
+    """Project a ``WorkerJobModel`` (or a row of ``_VISIBLE_WORKER_JOB_COLUMNS``)."""
     return VisibleWorkerJob(
         id=job.id,
         kind=_normalize_worker_job_kind(job.kind),
@@ -327,6 +330,31 @@ def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
 # rows that accumulate per task/trial over time.
 _RECENT_TERMINAL_WORKER_JOB_WINDOW = timedelta(hours=24)
 
+# Exactly the columns ``build_visible_worker_job`` reads. Selecting columns
+# rather than the entity is what makes the UNION ALL below safe: a compound
+# select does not reliably map rows back to ORM instances (the May 2026
+# ``select(aliased(WorkerJobModel, subq))`` attempt returned bare tuples and
+# emptied the experiment grid's trial cells), but plain rows project into the
+# ``VisibleWorkerJob`` dataclass the same way an entity does.
+_VISIBLE_WORKER_JOB_COLUMNS = (
+    WorkerJobModel.id,
+    WorkerJobModel.kind,
+    WorkerJobModel.status,
+    WorkerJobModel.queue_key,
+    WorkerJobModel.provider,
+    WorkerJobModel.external_id,
+    WorkerJobModel.subject_table,
+    WorkerJobModel.subject_id,
+    WorkerJobModel.attempts,
+    WorkerJobModel.max_attempts,
+    WorkerJobModel.created_at,
+    WorkerJobModel.started_at,
+    WorkerJobModel.claimed_at,
+    WorkerJobModel.heartbeat_at,
+    WorkerJobModel.finished_at,
+    WorkerJobModel.error_message,
+)
+
 
 async def fetch_visible_worker_jobs(
     session: AsyncSession,
@@ -338,28 +366,23 @@ async def fetch_visible_worker_jobs(
 ) -> dict[tuple[str, str], list[VisibleWorkerJob]]:
     """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``.
 
-    Splits the work into two narrowly-scoped queries instead of a single
-    ``(active OR finished)`` selection sorted then truncated:
+    One statement, two narrowly-scoped branches joined by ``UNION ALL``
+    (instead of a single ``(active OR finished)`` selection sorted then
+    truncated):
 
     1. **Active jobs** (QUEUED / RUNNING / RETRYING / BLOCKED) for the
        given subjects. The active set is bounded by the dispatcher's
        concurrency limits, so no time window or limit is needed.
     2. **Recent terminal jobs** for the given subjects, capped by
        ``finished_at >= now() - _RECENT_TERMINAL_WORKER_JOB_WINDOW`` and
-       ``LIMIT recent_limit``. The window keeps the planner off the
-       full per-subject history, which can be hundreds of rows per
-       trial after many retries.
+       ``LIMIT recent_limit`` inside the branch. The window keeps the
+       planner off the full per-subject history, which can be hundreds
+       of rows per trial after many retries.
 
     Backed by ``idx_worker_jobs_subject`` for the active branch and
     ``idx_worker_jobs_subject_finished_recent`` for the terminal branch.
-
-    A previous attempt collapsed these into a single ``UNION ALL`` to
-    save a round trip; the ``select(aliased(WorkerJobModel, subq))``
-    pattern doesn't reliably re-map back to ORM entities under
-    ``CompoundSelect``, which silently broke the trial-cell rendering
-    on the experiment page (returned rows but no entity instances).
-    The two-query shape is cheap enough on a warm pool that the safety
-    is worth more than the saved round trip.
+    Every task, trial and experiment fetch calls this, so the second
+    round trip was paid on every dashboard request.
     """
     subject_predicates = []
     if task_ids:
@@ -377,22 +400,16 @@ async def fetch_visible_worker_jobs(
 
     subject_filter = or_(*subject_predicates)
 
-    active_query = (
-        select(WorkerJobModel)
-        .where(
-            subject_filter,
-            WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
-        )
-        .order_by(WorkerJobModel.created_at.desc())
+    active_query = select(
+        literal(0).label("bucket"), *_VISIBLE_WORKER_JOB_COLUMNS
+    ).where(
+        subject_filter,
+        WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
     )
-    active_result = await session.execute(active_query)
-    active_jobs = list(active_result.scalars().all())
-
-    terminal_jobs: list[WorkerJobModel] = []
     if include_recent_terminal:
         cutoff = datetime.now(timezone.utc) - _RECENT_TERMINAL_WORKER_JOB_WINDOW
         terminal_query = (
-            select(WorkerJobModel)
+            select(literal(1).label("bucket"), *_VISIBLE_WORKER_JOB_COLUMNS)
             .where(
                 subject_filter,
                 WorkerJobModel.finished_at.is_not(None),
@@ -401,24 +418,31 @@ async def fetch_visible_worker_jobs(
             .order_by(WorkerJobModel.finished_at.desc())
             .limit(recent_limit)
         )
-        terminal_result = await session.execute(terminal_query)
-        terminal_jobs = list(terminal_result.scalars().all())
+        rows = (await session.execute(union_all(active_query, terminal_query))).all()
+    else:
+        rows = (await session.execute(active_query)).all()
 
+    # Order: active first, newest-created first (matches the previous ORDER
+    # BY case() ranking), then terminal, most-recently-finished first. Sorted
+    # here rather than in SQL so the branch LIMIT and the final ranking stay
+    # independent. ``recent_limit`` applies to terminal jobs only since active
+    # is naturally bounded by concurrency.
+    active = sorted(
+        (row for row in rows if row.bucket == 0),
+        key=lambda row: row.created_at,
+        reverse=True,
+    )
+    terminal = sorted(
+        (row for row in rows if row.bucket == 1),
+        key=lambda row: row.finished_at,
+        reverse=True,
+    )
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] = defaultdict(list)
-    # Order: active first (matches the previous ORDER BY case() ranking),
-    # then most-recent terminal. ``recent_limit`` applies to terminal
-    # jobs only since active is naturally bounded by concurrency.
-    for job in active_jobs:
-        if not job.subject_table or not job.subject_id:
+    for row in [*active, *terminal]:
+        if not row.subject_table or not row.subject_id:
             continue
-        jobs_by_subject[(job.subject_table, job.subject_id)].append(
-            build_visible_worker_job(job)
-        )
-    for job in terminal_jobs:
-        if not job.subject_table or not job.subject_id:
-            continue
-        jobs_by_subject[(job.subject_table, job.subject_id)].append(
-            build_visible_worker_job(job)
+        jobs_by_subject[(row.subject_table, row.subject_id)].append(
+            build_visible_worker_job(row)
         )
     return jobs_by_subject
 
