@@ -657,7 +657,9 @@ _FAKE_CHILD = textwrap.dedent(
     sentinel = "_oddish_harbor_event"
     for ev in ("start", "agent-start"):
         print(json.dumps({sentinel: True, "event": ev, "trial_id": payload.get("trial_id")}), flush=True)
-    print("harbor: some noisy log line that is not an event", flush=True)
+    # Helm setup can emit one JSON/log line larger than asyncio's 64 KiB
+    # default StreamReader limit. The parent must preserve the event stream.
+    print("harbor: " + "x" * (128 * 1024), flush=True)
     print(json.dumps({sentinel: True, "event": "end", "trial_id": payload.get("trial_id"),
                       "result": {"verifier_result": {"rewards": {"reward": 1.0}}}}), flush=True)
     open(payload["outcome_path"], "w").write(json.dumps(
