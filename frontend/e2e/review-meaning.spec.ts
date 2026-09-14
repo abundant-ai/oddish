@@ -305,7 +305,7 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
   });
 
-  test("review coverage separates unusable evaluations and runs from other experiments", async ({
+  test("analysis completion includes invalid runs without mixing experiment scope", async ({
     page,
   }) => {
     const original = tasks[0].trials![0];
@@ -324,25 +324,109 @@ test.describe("real components with local fixture API", () => {
     );
     await page.goto("/experiments/review-demo?task=task-a");
     await expect(
-      page.getByText("This experiment: 1/1 evaluated · v7", { exact: true })
+      page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
     ).toBeVisible();
-    await expect(
-      page.getByText("0/1 evaluated · 1 couldn’t be evaluated", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("1/1 analyzed", { exact: true })).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Experiment other-ex" })
     ).toHaveAttribute("href", "/experiments/other-experiment");
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
-    await expect(
-      page.getByText("1 run couldn’t be evaluated", { exact: true })
-    ).toHaveCount(0);
+    await expect(page.getByText("1 invalid run", { exact: true })).toHaveCount(
+      0
+    );
     await expect(
       page.getByText(
         /Missing access:|Inspects task instructions|fair agent failure does not/
       )
     ).toHaveCount(0);
+  });
+
+  test("verifier timeout retains completed trajectory analysis and its evidence", async ({
+    page,
+  }) => {
+    const original = tasks[0].trials![0];
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            ...original,
+            status: "failed",
+            reward: null,
+            analysis_status: "success",
+            analysis: {
+              classification: "HARNESS_ERROR",
+              subtype: "misgrade",
+              root_cause:
+                "The verifier timed out after 5400 seconds without producing a grade.",
+              evidence:
+                "The partial trajectory records the agent building and testing through step 1200.",
+            },
+          },
+        ],
+      })
+    );
+    await page.goto("/experiments/review-demo?task=task-a");
+    await expect(
+      page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByText("1 invalid run", { exact: true })).toHaveCount(
+      1
+    );
+    await page.getByText("GRADING ERROR", { exact: true }).click();
+    await expect(
+      page.getByText(
+        "The verifier timed out after 5400 seconds without producing a grade.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "The partial trajectory records the agent building and testing through step 1200.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /couldn’t be evaluated|COULD NOT EVALUATE RUN|ANALYSIS FAILED|^misgrade$/
+      )
+    ).toHaveCount(0);
+  });
+
+  test("analysis failure stays incomplete even when a previous classification exists", async ({
+    page,
+  }) => {
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            ...tasks[0].trials![0],
+            analysis_status: "failed",
+            analysis_error:
+              "Trajectory analysis worker stopped before saving its report.",
+          },
+        ],
+      })
+    );
+    await page.goto("/experiments/review-demo?task=task-a");
+    await expect(
+      page.getByText("This experiment: 0/1 analyzed · 1 analysis failed · v7", {
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(
+      page.getByText("ANALYSIS FAILED", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Trajectory analysis worker stopped before saving its report.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(page.getByText("1 good failure", { exact: true })).toHaveCount(
+      0
+    );
   });
 
   for (const sourceStatus of [null, "queued", "running", "failed", "success"]) {

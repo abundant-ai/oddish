@@ -546,7 +546,7 @@ export function TaskOverviewPanel({
                   : classification === "GOOD_SUCCESS"
                     ? `${count} agent${count === 1 ? "" : "s"} succeeded`
                     : classification === "HARNESS_ERROR"
-                      ? `${count} run${count === 1 ? "" : "s"} couldn’t be evaluated`
+                      ? `${count} invalid run${count === 1 ? "" : "s"}`
                       : classification === "BAD_SUCCESS"
                         ? `${count} invalid success${count === 1 ? "" : "es"}`
                         : `${count} task-caused failure${count === 1 ? "" : "s"}`}
@@ -644,7 +644,7 @@ export function TaskOverviewPanel({
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Run reviews
+            Trajectory analysis
           </h2>
           <div className="ml-auto">{executionReviewAction}</div>
           <span className="text-muted-foreground font-mono text-[11px]">
@@ -708,6 +708,9 @@ function TrialQaRow({
   onOpen: () => void;
 }) {
   const analysis = trial.analysis_status === "success" ? trial.analysis : null;
+  const gradingError =
+    analysis?.classification === "HARNESS_ERROR" &&
+    analysis.subtype === "misgrade";
   const running = isActivePipelineStatus(trial.analysis_status);
   const failed = !analysis && trial.analysis_status === "failed";
   const token = analysis
@@ -741,14 +744,16 @@ function TrialQaRow({
         )}
       >
         {running
-          ? "REVIEW RUNNING"
+          ? "ANALYSIS RUNNING"
           : failed
-            ? "REVIEW COULD NOT COMPLETE"
+            ? "ANALYSIS FAILED"
             : analysis
-              ? EXECUTION_LABELS[analysis.classification].toUpperCase()
-              : "NOT REVIEWED"}
+              ? gradingError
+                ? "GRADING ERROR"
+                : EXECUTION_LABELS[analysis.classification].toUpperCase()
+              : "NOT ANALYZED"}
       </span>
-      {analysis?.subtype ? (
+      {analysis?.subtype && !gradingError ? (
         <span
           className="text-muted-foreground min-w-0 truncate font-mono text-[10px]"
           title={analysis.subtype}
