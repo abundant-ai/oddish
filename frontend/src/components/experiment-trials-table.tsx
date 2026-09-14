@@ -1197,11 +1197,21 @@ export function ExperimentTrialsTable({
     // header inside the horizontally scrolling table.
     const updateHeaderPosition = () => {
       const bounds = container.getBoundingClientRect();
+      const pageHeaderBottom = Math.max(
+        0,
+        ...Array.from(
+          document.querySelectorAll("[data-page-sticky-header]"),
+          (element) => element.getBoundingClientRect().bottom
+        )
+      );
       const offset = Math.max(
         0,
-        Math.min(-bounds.top, bounds.height - header.offsetHeight)
+        Math.min(
+          pageHeaderBottom - bounds.top,
+          bounds.height - header.offsetHeight
+        )
       );
-      header.style.transform = `translateY(${offset}px)`;
+      header.style.top = `${offset}px`;
     };
     updateHeaderPosition();
     window.addEventListener("scroll", updateHeaderPosition, { passive: true });
@@ -1210,11 +1220,14 @@ export function ExperimentTrialsTable({
     observer.observe(container);
     observer.observe(header);
     observer.observe(document.body);
+    document
+      .querySelectorAll("[data-page-sticky-header]")
+      .forEach((element) => observer.observe(element));
     return () => {
       window.removeEventListener("scroll", updateHeaderPosition);
       window.removeEventListener("resize", updateHeaderPosition);
       observer.disconnect();
-      header.style.transform = "";
+      header.style.top = "";
     };
   }, [isLoading, tableOffset]);
   // Render real rows until their document offset is known.

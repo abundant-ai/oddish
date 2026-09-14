@@ -3,7 +3,10 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 export function ShareNav() {
   return (
-    <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
+    <nav
+      data-page-sticky-header
+      className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs"
+    >
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center justify-between px-4">
         <a
           href="https://abundant.ai"

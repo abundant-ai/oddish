@@ -136,7 +136,10 @@ export function Nav() {
   const isOrgAdmin = isOrgAdminRole(orgRole);
 
   return (
-    <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
+    <nav
+      data-page-sticky-header
+      className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs"
+    >
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-3 sm:px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
