@@ -168,6 +168,7 @@ const EFFORT_ORDER = [
   "high",
   "xhigh",
   "max",
+  "ultra",
   "ultracode",
 ];
 export function compareReasoningEffort(

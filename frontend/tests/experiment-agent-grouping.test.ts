@@ -88,3 +88,30 @@ test("efforts sort in execution order, not alphabetically", () => {
     ["low", "medium", "high", "xhigh"]
   );
 });
+
+test("new runner efforts sort with the existing effort levels", () => {
+  assert.deepEqual(
+    [
+      "ultracode",
+      "ultra",
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+      "minimal",
+      "none",
+    ].sort(compareReasoningEffort),
+    [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+      "ultracode",
+    ]
+  );
+});
