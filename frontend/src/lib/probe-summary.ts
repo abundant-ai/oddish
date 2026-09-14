@@ -85,7 +85,3 @@ export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   if (m === "result_focus") return "result_focus";
   return "none";
 }
-
-export function isTerminalProbeStatus(status: string): boolean {
-  return status === "success" || status === "failed";
-}

@@ -1348,69 +1348,6 @@ def build_slim_trial_response(
     )
 
 
-def build_slim_task_status_response(
-    task: TaskModel,
-    *,
-    include_empty_rewards: bool = True,
-    experiment_context_id: str | None = None,
-    effective_version_id: str | None | object = _VERSION_ID_UNSET,
-    gathered_trial_ids: set[str] | None = None,
-    qa_costs_by_trial_id: dict[str, float] | None = None,
-    exclusions: CostExclusions | None = None,
-) -> TaskStatusResponse:
-    """Build a task status response with slim per-trial payloads.
-
-    ``qa_costs_by_trial_id`` is the caller's already-resolved page of QA
-    costs (see :func:`oddish.core.endpoints.qa_cost.get_trial_qa_costs`);
-    None -> every trial's ``qa_cost_usd`` stays unresolved (None), not 0.0.
-    """
-    if effective_version_id is _VERSION_ID_UNSET:
-        effective_version_id = resolve_effective_version_id(
-            task,
-            experiment_context_id=experiment_context_id,
-            gathered_trial_ids=gathered_trial_ids,
-        )
-    task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = len(task_trials)
-    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
-    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
-    skipped = sum(1 for t in task_trials if t.status == TrialStatus.SKIPPED)
-    reward_success = sum(1 for t in task_trials if t.reward == 1)
-    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
-    reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [
-        build_slim_trial_response(
-            t,
-            task.task_path,
-            analysis=t.analysis,
-            error_message=t.error_message,
-            qa_cost_usd=(
-                qa_costs_by_trial_id.get(t.id)
-                if qa_costs_by_trial_id is not None
-                else None
-            ),
-            exclusions=exclusions,
-        )
-        for t in task_trials
-    ]
-
-    return _build_task_status_response(
-        task,
-        total=total,
-        completed=completed,
-        failed=failed,
-        skipped=skipped,
-        reward_success=reward_success,
-        reward_sum=reward_sum,
-        reward_total=reward_total,
-        include_empty_rewards=include_empty_rewards,
-        trials=trials,
-        jobs=[],
-        experiment_context_id=experiment_context_id,
-        trial_version_id=effective_version_id,
-    )
-
-
 async def fetch_trial_analysis_summaries(
     session: AsyncSession,
     *,

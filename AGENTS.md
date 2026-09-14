@@ -45,7 +45,7 @@ oddish/                         # Core Python package (CLI, server, workers, DB)
 │   ├── queue.py                # task/trial enqueue + worker_jobs enqueue helpers
 │   ├── schemas.py
 │   └── (shared modules: experiment.py, model_pricing.py, observability.py,
-│        registry_auth.py, task_timeouts.py, timing.py, backfill_queue_keys.py)
+│        registry_auth.py, task_timeouts.py, timing.py)
 ├── alembic/                    # Core DB migrations
 ├── env.example
 └── pyproject.toml
@@ -265,10 +265,11 @@ High-level flow:
 Agent capability analysis (the successful-vs-failing cohort comparison) has
 been removed: its endpoints, cohort blocks, and UI pane are gone, and nothing
 enqueues or handles `ANALYZER` jobs any more (the enum value survives only so
-historical rows stay readable). The output schema (`AgentCapabilitiesOutput` and sub-models) is
-preserved in `oddish.analyze.models`, and
-`oddish/src/oddish/analyze/prompts/agent_capabilities.txt` is kept, so the
-feature can return as a `'capabilities'` analysis trial.
+historical rows stay readable). The output schema (`AgentCapabilitiesOutput`
+and its sub-models) was removed from `oddish.analyze.models` once nothing
+referenced it; recover it from git history if the feature returns as a
+`'capabilities'` analysis trial. Only the prompt,
+`oddish/src/oddish/analyze/prompts/agent_capabilities.txt`, is still kept.
 Shared trial drawers paint terminal trials from the slim row already owned by
 the task or experiment page while the authoritative `GET /trials/{id}` resource
 loads. Trial controls prefetch that resource on pointer or keyboard intent, and
@@ -913,7 +914,6 @@ pip install oddish[all]       # everything including dev tools
 - Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Doc-store MCP server: `oddish-docstore-mcp` (see `oddish/src/oddish/mcp/README.md`)
-- Queue key backfill (one-off ops tool): `python -m oddish.backfill_queue_keys`
 
 ### Soft Delete
 

@@ -94,7 +94,6 @@ worker = [
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
-    "google-generativeai==0.8.6",
     "modal>=1.5.0",
     "dockerfile-parse>=2.0.1",
 ]
@@ -149,7 +148,6 @@ module = [
     "harbor.*",
     "asyncpg.*",
     "aioboto3.*",
-    "google.generativeai.*",
 ]
 ignore_missing_imports = true
 
