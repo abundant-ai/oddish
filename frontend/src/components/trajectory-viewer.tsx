@@ -20,7 +20,6 @@ import {
   ObservationBlock,
 } from "@/components/trajectory-blocks";
 import { TrajectorySummary } from "@/components/trajectory-summary";
-import { TrajectoryActivity } from "@/components/trajectory-activity";
 import {
   Tooltip,
   TooltipContent,
@@ -829,16 +828,7 @@ export function TrajectoryViewer({
     canRegenerate: canRegenerateSummary,
   });
   const summary = summaryQuery.data?.summary ?? null;
-  const summarySettled =
-    summaryQuery.error != null ||
-    summaryQuery.regenerationError != null ||
-    summary !== null ||
-    (summaryQuery.data != null &&
-      (summaryQuery.data.refresh === null ||
-        summaryQuery.data.refresh.status === "failed"));
-  const showUngroupedFallback = summary === null && summarySettled;
-  // Derived from the whole trajectory, so attribution stays put while the user
-  // searches, and shared with the Activity card so both agree on every owner.
+  // Keep summary highlights and step groups aligned while filtering.
   const renderableIds = useMemo(
     () => renderableStepIds(trajectory?.steps ?? []),
     [trajectory]
@@ -964,10 +954,6 @@ export function TrajectoryViewer({
         <p className="text-muted-foreground text-sm font-medium">
           No trajectory available
         </p>
-        <p className="text-muted-foreground/70 mx-auto mt-1 max-w-xs text-xs">
-          This trial doesn't have ATIF trajectory data. Trajectories are
-          recorded for agents that support the ATIF format.
-        </p>
       </div>
     );
   }
@@ -984,14 +970,6 @@ export function TrajectoryViewer({
         onRetry={() => void summaryQuery.mutate()}
         onRegenerate={() => void summaryQuery.regenerate()}
         renderableIds={renderableIds}
-        stepIdToIndex={stepIdToIndex}
-        onStepSelect={handleStepClick}
-      />
-      <TrajectoryActivity
-        trialId={trialId}
-        steps={trajectory.steps}
-        summary={summary}
-        showUngroupedFallback={showUngroupedFallback}
         stepIdToIndex={stepIdToIndex}
         onStepSelect={handleStepClick}
       />

@@ -25,3 +25,17 @@ export const useAuth = () =>
     () => identity
   );
 export const useOrganization = () => ({ organization: null, isLoaded: true });
+
+// Public dataset navigation renders a signed-out account in this fixture.
+export const useUser = () => ({
+  user: null,
+  isLoaded: true,
+  isSignedIn: false,
+});
+export const useClerk = () => ({ signOut: async () => {} });
+export const OrganizationSwitcher = () => null;
+export const SignInButton = ({
+  children,
+}: {
+  children: import("react").ReactNode;
+}) => children;

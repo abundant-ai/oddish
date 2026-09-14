@@ -971,15 +971,7 @@ export function TaskFilesPanel({
         !verdictInFlight &&
         !panel?.qa_active
       : panel?.can_run_qa);
-  const qaActionLabel =
-    panel?.has_analysis ||
-    verdictSource?.verdict_status ||
-    verdictSource?.verdict ||
-    (task?.trials ?? []).some(
-      (trial) => trial.analysis_status || trial.analysis
-    )
-      ? "Rerun execution review"
-      : "Run execution review";
+  const qaActionLabel = `Review runs${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1609,7 +1601,6 @@ export function TaskFilesPanel({
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
             <Loader2 className="h-3 w-3 animate-spin" />
-            Loading…
           </div>
         ) : null}
         {directory?.status === "error" ? (
@@ -1703,11 +1694,7 @@ export function TaskFilesPanel({
 
   const renderFileContent = () => {
     if (!selectedFile) {
-      return (
-        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          Select a file to view its contents
-        </div>
-      );
+      return null;
     }
 
     if (!selectedPreview && !previewError) {
@@ -1918,7 +1905,6 @@ export function TaskFilesPanel({
                           ? "bg-primary/20 text-primary"
                           : "hover:bg-muted/50 cursor-pointer"
                       }`}
-                      title="View task QA and aggregated trial QA"
                     >
                       <ListChecks
                         className="h-3.5 w-3.5 shrink-0"
@@ -1942,7 +1928,6 @@ export function TaskFilesPanel({
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="Browse task files"
                   >
                     <FolderOpen
                       className="h-3.5 w-3.5 shrink-0"
@@ -1958,12 +1943,13 @@ export function TaskFilesPanel({
                 </div>
               ) : null}
               {isListingLoading ? (
-                <p
+                <div
                   role="status"
-                  className="text-muted-foreground px-2 py-2 text-xs"
+                  aria-label="Loading files"
+                  className="px-2 py-2"
                 >
-                  Loading files…
-                </p>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                </div>
               ) : listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
@@ -2145,11 +2131,6 @@ export function TaskFilesPanel({
                         size="sm"
                         onClick={handleRunQA}
                         disabled={!canRunQA || isRunningQA}
-                        title={
-                          actionsReady
-                            ? "Reviews recorded runs and synthesizes the verdict for the default version; does not rerun solver trials."
-                            : "Loading latest task state."
-                        }
                         className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                       >
                         {isRunningQA ? (
@@ -2303,11 +2284,6 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
-                    title={
-                      actionsReady
-                        ? "Reruns solver trials in this task or experiment."
-                        : "Loading latest task state."
-                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw

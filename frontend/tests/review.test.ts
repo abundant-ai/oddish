@@ -204,8 +204,8 @@ for (const [label, is_good, expected] of [
         ),
         html
       );
-      assert.ok(!html.includes("Verdict outdated"), html);
-      assert.equal(html.includes("2 settled trials"), ungradedSettled === 2);
+      assert.ok(!html.includes("No result for this version"), html);
+      assert.equal(html.includes("2 completed runs"), ungradedSettled === 2);
     }
     const outdated = renderToStaticMarkup(
       React.createElement(exports.Chip, {
@@ -213,7 +213,7 @@ for (const [label, is_good, expected] of [
         ungradedSettled: 0,
       })
     );
-    assert.ok(outdated.includes("Verdict outdated"), outdated);
+    assert.ok(outdated.includes("No result for this version"), outdated);
   });
 }
 
@@ -232,53 +232,10 @@ test("missing and inconclusive verdicts remain unreviewed", () => {
 test("verdict failure copy does not rename execution-review failure", () => {
   assert.equal(
     badge.present!({ ...task, verdict_status: "failed" }, "", false).title,
-    "Verdict could not complete"
+    "Review couldn’t finish"
   );
   assert.equal(review.REVIEW_LABELS.error, "Review could not complete");
   assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
-});
-
-test("source review requires its own status, never a finding-count inference", () => {
-  assert.equal(
-    review.preTrialReviewLabel({ ...task, must_fix_count: 0 }),
-    "Not reviewed"
-  );
-  assert.equal(
-    review.preTrialReviewLabel({
-      ...task,
-      pre_trial_status: "failed",
-      must_fix_count: 0,
-    }),
-    "Could not complete"
-  );
-  assert.equal(
-    review.preTrialReviewLabel({
-      ...task,
-      pre_trial_status: "running",
-      must_fix_count: 2,
-    }),
-    "Running"
-  );
-  assert.equal(
-    review.preTrialReviewLabel({ ...task, pre_trial_status: "success" }),
-    "Completed"
-  );
-  assert.equal(
-    review.preTrialReviewLabel({
-      ...task,
-      pre_trial_status: "success",
-      must_fix_count: 0,
-    }),
-    "Passed"
-  );
-  assert.equal(
-    review.preTrialReviewLabel({
-      ...task,
-      pre_trial_status: "success",
-      must_fix_count: 2,
-    }),
-    "Findings"
-  );
 });
 
 test("post-trial outcomes preserve passed, failed, incomplete, and remaining review counts", () => {
@@ -331,39 +288,19 @@ test("post-trial outcomes preserve passed, failed, incomplete, and remaining rev
     ],
   };
   assert.equal(
-    review.postTrialReviewLabel(reviewed),
-    "2 passed · 2 failed · 2 could not complete · 1 running · 1 pending · 1 unreviewed"
-  );
-  assert.equal(review.postTrialReviewLabel(task), "No solver reviews loaded");
-});
-
-test("post-trial classifications require completed analysis, including legacy versionless rows", () => {
-  const trial = {
-    agent: "codex",
-    status: "success",
-    task_version_id: null,
-    analysis: { classification: "GOOD_SUCCESS" },
-  } as Trial;
-  const versionless = {
-    ...task,
-    trial_version_id: null,
-    current_version_id: "v2",
-    trials: [trial],
-  };
-  assert.equal(review.postTrialReviewLabel(versionless), "1 unreviewed");
-  assert.equal(
-    review.postTrialReviewLabel({
-      ...versionless,
-      trials: [{ ...trial, analysis_status: "success" }],
-    }),
-    "1 passed"
+    review.runReviewSummary(
+      reviewed.trials.filter(
+        (trial) => trial.task_version_id === reviewed.trial_version_id
+      )
+    ),
+    "4/9 evaluated · 2 with task issues · 2 couldn’t be evaluated · 1 reviewing · 1 queued"
   );
 });
 
 test("accepted and missing verdict chips have concise exact labels", () => {
   for (const [verdict, label] of [
     [{ verdict: "accept", is_good: true, confidence: null }, "Accepted"],
-    [null, "No verdict"],
+    [null, "No overall result"],
   ] as const) {
     const html = renderToStaticMarkup(
       React.createElement(exports.Chip, {
@@ -406,8 +343,8 @@ test("rejected verdict displays a single exact must-fix count on its findings bu
     })
   );
   assert.match(html, /<button[^>]*aria-label="Open findings for Broken task"/);
-  assert.equal((html.match(/1 Must Fix/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /Must Fix Finding/);
+  assert.equal((html.match(/1 Must fix/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /Must fix Finding/);
 });
 
 test("verdict summary hides empty categories and keeps clearing an active filter available", () => {
@@ -465,9 +402,87 @@ test("verdict summary hides empty categories and keeps clearing an active filter
       onReviewFilter: () => {},
     })
   );
-  assert.match(html, /Verdicts/);
+  assert.match(html, /QA results/);
   assert.match(html, /2 Accepted/);
-  assert.match(html, /1 Failed/);
+  assert.match(html, /1 Review error/);
   assert.doesNotMatch(html, /0 (Rejected|Pending|No verdict)/);
   assert.match(html, /Show all tasks/);
+});
+
+test("completed review records do not imply that every run was evaluated", () => {
+  const trials = Array.from(
+    { length: 15 },
+    (_, index) =>
+      ({
+        agent: "codex",
+        analysis_status: "success",
+        analysis: {
+          classification:
+            index < 8
+              ? "HARNESS_ERROR"
+              : index < 13
+                ? "GOOD_FAILURE"
+                : "GOOD_SUCCESS",
+        },
+      }) as Trial
+  );
+  assert.equal(review.runReviewCounts(trials).evaluated, 7);
+  assert.equal(review.runReviewCounts(trials).incomplete, 8);
+  assert.equal(
+    review.runReviewSummary(trials),
+    "7/15 evaluated · 8 couldn’t be evaluated"
+  );
+  assert.equal(review.EXECUTION_LABELS.GOOD_FAILURE, "Good failure");
+  assert.equal(review.runReviewSummary([]), "No runs");
+});
+
+test("routine fetch narration is absent while errors retain a retry action", () => {
+  const module: {
+    ExperimentResultsStatus?: React.ComponentType<Record<string, unknown>>;
+  } = {};
+  runInNewContext(
+    ts.transpileModule(
+      readFileSync(
+        new URL(
+          "../src/components/experiment-results-status.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+      {
+        compilerOptions: {
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+      }
+    ).outputText,
+    {
+      exports: module,
+      require: (name: string) =>
+        name === "react/jsx-runtime"
+          ? jsx
+          : {
+              Alert: box,
+              AlertDescription: box,
+              AlertTitle: box,
+              Button: box,
+            },
+    }
+  );
+  const render = (props: Record<string, unknown>) =>
+    renderToStaticMarkup(
+      React.createElement(module.ExperimentResultsStatus!, {
+        tasksLoaded: 25,
+        trialsLoaded: 1400,
+        onRetry: () => {},
+        ...props,
+      })
+    );
+  for (const complete of [false, true])
+    for (const isLoading of [false, true]) {
+      assert.equal(render({ complete, isLoading, hasError: false }), "");
+    }
+  const failure = render({ complete: true, isLoading: false, hasError: true });
+  assert.match(failure, /Could not refresh results/);
+  assert.match(failure, /Retry/);
 });

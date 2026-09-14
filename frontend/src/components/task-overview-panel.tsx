@@ -5,7 +5,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 
-import { EXECUTION_LABELS, findingHref, taskReviewStatus } from "@/lib/review";
+import {
+  EXECUTION_LABELS,
+  findingHref,
+  taskReviewStatus,
+  isReviewableTrial,
+  runReviewSummary,
+} from "@/lib/review";
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,7 +21,6 @@ import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
-import { isAgentTrial } from "@/lib/types";
 import type {
   AnalysisClassification,
   PreTrialFinding,
@@ -178,10 +183,7 @@ export function TaskOverviewPanel({
   // Host rows can include probes and superseded trials; filter them here too.
   const scoped = useMemo(() => {
     if (scopeTrials == null) return null;
-    return scopeTrials.filter(
-      (trial) =>
-        !trial.is_probe && isAgentTrial(trial) && !trial.superseded_by_trial_id
-    );
+    return scopeTrials.filter((trial) => isReviewableTrial(trial));
   }, [scopeTrials]);
   const fetchedById = useMemo(
     () => new Map((trials ?? []).map((trial) => [trial.id, trial])),
@@ -190,14 +192,14 @@ export function TaskOverviewPanel({
   // Show every trial of the version. The verdict is computed over all of
   // them, so a shorter list can hide the evidence behind it.
   const displayTrials = useMemo(() => {
-    if (scoped == null) return trials ?? null;
+    if (scoped == null) return trials?.filter(isReviewableTrial) ?? null;
     const inScope = new Set(scoped.map((trial) => trial.id));
     // Until the host's rows have loaded, rows from elsewhere would render
     // without their mark -- hold them back.
     const elsewhere = scopeLoading
       ? []
       : (trials ?? []).filter(
-          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id
+          (trial) => !inScope.has(trial.id) && isReviewableTrial(trial)
         );
     return [
       ...scoped.map((trial) => fetchedById.get(trial.id) ?? trial),
@@ -210,9 +212,7 @@ export function TaskOverviewPanel({
     const inScope = new Set(scoped.map((trial) => trial.id));
     return new Set(
       (trials ?? [])
-        .filter(
-          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id
-        )
+        .filter((trial) => !inScope.has(trial.id) && isReviewableTrial(trial))
         .map((trial) => trial.id)
     );
   }, [scoped, scopeLoading, trials]);
@@ -223,87 +223,83 @@ export function TaskOverviewPanel({
     return all.filter((trial) => trial.task_version === version);
   }, [displayTrials, version]);
 
-  const {
-    classificationCounts,
-    unanalyzedCount,
-    analyzedCount,
-    mergedFindings,
-    qaTrials,
-  } = useMemo(() => {
-    const byKey = new Map<string, SourcedFinding>();
-    const addTrial = (row: SourcedFinding, trial: Trial) => {
-      if (!row.trials.some((t) => t.id === trial.id)) row.trials.push(trial);
-    };
-    for (const item of checksFindings ?? []) {
-      const key = findingKey(item);
-      byKey.set(key, {
-        ...item,
-        id: key,
-        fromAudit: item.source !== "post_trial",
-        trials: [],
-      });
-    }
-    const counts = new Map<AnalysisClassification, number>();
-    const withQa: Trial[] = [];
-    let unanalyzed = 0;
-    for (const trial of versionTrials) {
-      if (!trial.analysis && !trial.analysis_status) {
-        unanalyzed += 1;
-        continue;
+  const { classificationCounts, unanalyzedCount, mergedFindings, qaTrials } =
+    useMemo(() => {
+      const byKey = new Map<string, SourcedFinding>();
+      const addTrial = (row: SourcedFinding, trial: Trial) => {
+        if (!row.trials.some((t) => t.id === trial.id)) row.trials.push(trial);
+      };
+      for (const item of checksFindings ?? []) {
+        const key = findingKey(item);
+        byKey.set(key, {
+          ...item,
+          id: key,
+          fromAudit: item.source !== "post_trial",
+          trials: [],
+        });
       }
-      withQa.push(trial);
-      const analysis = trial.analysis;
-      if (!analysis) continue;
-      counts.set(
-        analysis.classification,
-        (counts.get(analysis.classification) ?? 0) + 1
-      );
-      // Exploitation assessments are the trial→audit-finding join: an
-      // exploiting trial belongs on the audit row's "seen in" list. A
-      // not-exploited assessment only says the classifier looked — skip it.
-      for (const assessment of analysis.exploitation ?? []) {
-        if (!assessment.exploited || !assessment.links_to) continue;
-        const audited = byKey.get(assessment.links_to);
-        if (!audited) continue;
-        audited.exploited = true;
-        addTrial(audited, trial);
-      }
-      for (const item of analysis.action_items ?? []) {
-        // A post-trial item that links to an audit finding is the same
-        // defect seen from the trial side — fold it into that row. Ids
-        // can't make this join: the server hash includes the source.
-        const linked = item.links_to ? byKey.get(item.links_to) : undefined;
-        const existing = linked ?? byKey.get(findingKey(item));
-        if (existing) {
-          addTrial(existing, trial);
-          // One exploiting trial marks the finding exploited.
-          if (item.exploited) existing.exploited = true;
-        } else {
-          const key = findingKey(item);
-          byKey.set(key, {
-            ...item,
-            id: key,
-            fromAudit: false,
-            trials: [trial],
-          });
+      const counts = new Map<AnalysisClassification, number>();
+      const withQa: Trial[] = [];
+      let unanalyzed = 0;
+      for (const trial of versionTrials) {
+        if (!trial.analysis && !trial.analysis_status) {
+          if (!foreignIds?.has(trial.id)) unanalyzed += 1;
+          continue;
+        }
+        withQa.push(trial);
+        const analysis = trial.analysis;
+        if (!analysis || trial.analysis_status !== "success") continue;
+        if (!foreignIds?.has(trial.id)) {
+          counts.set(
+            analysis.classification,
+            (counts.get(analysis.classification) ?? 0) + 1
+          );
+        }
+        // Exploitation assessments are the trial→audit-finding join: an
+        // exploiting trial belongs on the audit row's "seen in" list. A
+        // not-exploited assessment only says the classifier looked — skip it.
+        for (const assessment of analysis.exploitation ?? []) {
+          if (!assessment.exploited || !assessment.links_to) continue;
+          const audited = byKey.get(assessment.links_to);
+          if (!audited) continue;
+          audited.exploited = true;
+          addTrial(audited, trial);
+        }
+        for (const item of analysis.action_items ?? []) {
+          // A post-trial item that links to an audit finding is the same
+          // defect seen from the trial side — fold it into that row. Ids
+          // can't make this join: the server hash includes the source.
+          const linked = item.links_to ? byKey.get(item.links_to) : undefined;
+          const existing = linked ?? byKey.get(findingKey(item));
+          if (existing) {
+            addTrial(existing, trial);
+            // One exploiting trial marks the finding exploited.
+            if (item.exploited) existing.exploited = true;
+          } else {
+            const key = findingKey(item);
+            byKey.set(key, {
+              ...item,
+              id: key,
+              fromAudit: false,
+              trials: [trial],
+            });
+          }
         }
       }
-    }
-    withQa.sort(
-      (a, b) =>
-        classificationRank(a) - classificationRank(b) ||
-        Number(foreignIds?.has(a.id) ?? false) -
-          Number(foreignIds?.has(b.id) ?? false) ||
-        a.created_at.localeCompare(b.created_at)
-    );
-    return {
-      classificationCounts: counts,
-      unanalyzedCount: unanalyzed,
-      analyzedCount: withQa.filter((trial) => trial.analysis).length,
-      mergedFindings: Array.from(byKey.values()),
-      qaTrials: withQa,
-    };
-  }, [versionTrials, checksFindings, foreignIds]);
+      withQa.sort(
+        (a, b) =>
+          classificationRank(a) - classificationRank(b) ||
+          Number(foreignIds?.has(a.id) ?? false) -
+            Number(foreignIds?.has(b.id) ?? false) ||
+          a.created_at.localeCompare(b.created_at)
+      );
+      return {
+        classificationCounts: counts,
+        unanalyzedCount: unanalyzed,
+        mergedFindings: Array.from(byKey.values()),
+        qaTrials: withQa,
+      };
+    }, [versionTrials, checksFindings, foreignIds]);
 
   // The rows handed to SeverityGroups carry only copy-safe fields — its
   // per-item copy button serializes the row as-is, so the trial objects
@@ -321,12 +317,11 @@ export function TaskOverviewPanel({
     () => new Map(mergedFindings.map((f) => [f.id ?? "", f])),
     [mergedFindings]
   );
-  const foreignShownCount = useMemo(
-    () =>
-      foreignIds
-        ? versionTrials.filter((trial) => foreignIds.has(trial.id)).length
-        : 0,
-    [foreignIds, versionTrials]
+  const experimentRuns = versionTrials.filter(
+    (trial) => !foreignIds?.has(trial.id)
+  );
+  const additionalRuns = versionTrials.filter((trial) =>
+    foreignIds?.has(trial.id)
   );
 
   const taskTrialHref = (trial: Trial): string | null => {
@@ -359,12 +354,9 @@ export function TaskOverviewPanel({
           SEEN IN
         </span>
         {sourced.fromAudit ? (
-          <span
-            className="border-border text-muted-foreground inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]"
-            title="Found by the source review of the task"
-          >
+          <span className="border-border text-muted-foreground inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]">
             <SearchCode className="h-3 w-3 shrink-0" aria-hidden="true" />
-            Source review
+            Task checks
           </span>
         ) : null}
         {(sourced.trials ?? []).map((trial) => {
@@ -403,27 +395,30 @@ export function TaskOverviewPanel({
   // that never got picked up.
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
-  const mustFixCount = findingItems.length;
-  const findingsSummary = checksLoading
-    ? "Loading…"
-    : checksLoadError
-      ? "Unavailable"
-      : checkState === "queued"
-        ? "Source review queued"
-        : checkState === "running"
-          ? "Source review running…"
-          : checkState === "failed"
-            ? "Source review could not complete"
-            : mergedFindings.length > 0
-              ? `${mergedFindings.length} finding${mergedFindings.length === 1 ? "" : "s"}${
-                  checkState === "unaudited" ? " · source not reviewed" : ""
-                }`
-              : checkState === "unaudited"
-                ? "Source not reviewed"
-                : "No blocking source defects found";
+  const mustFixCount = findingItems.filter(
+    (item) => item.tier === "must_fix"
+  ).length;
+  const findingsSummary =
+    mustFixCount > 0
+      ? `${mustFixCount} Must fix`
+      : findingItems.length > 0
+        ? `${findingItems.length} finding${findingItems.length === 1 ? "" : "s"}`
+        : checksLoading || !versionKnown || (trials == null && !trialsError)
+          ? "…"
+          : checksLoadError || trialsError
+            ? "Unavailable"
+            : checkState === "queued"
+              ? "Queued"
+              : checkState === "running"
+                ? "Running"
+                : checkState === "failed"
+                  ? "Couldn’t finish"
+                  : checkState === "unaudited"
+                    ? "Not checked"
+                    : "No required fixes";
 
   const findingsBody = () => {
-    if (checksLoading) {
+    if (checksLoading && findingItems.length === 0) {
       return (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
@@ -463,7 +458,7 @@ export function TaskOverviewPanel({
       <>
         {checkState === "failed" ? (
           <p className="font-mono text-[11px] break-all text-red-500">
-            {checksError || "The source review failed."}
+            {checksError || "Task checks couldn’t finish."}
           </p>
         ) : checkState === "running" && findingItems.length === 0 ? (
           <div className="flex flex-col gap-2">
@@ -472,19 +467,14 @@ export function TaskOverviewPanel({
             <Skeleton className="h-3 w-2/5" />
           </div>
         ) : null}
-        {findingsList ? (
-          findingsList
-        ) : checkState === "clean" ? (
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            {analyzedCount > 0
-              ? "The source review and execution review found no defects in this task."
-              : "The source review found no defects in this task's source."}
-          </p>
-        ) : checkState === "unaudited" ? (
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            The source review has not run on this version yet.
-          </p>
-        ) : null}
+        {findingsList && (
+          <div className="space-y-3">
+            <h2 className="text-sm font-medium">
+              Issues to fix ({findingItems.length})
+            </h2>
+            {findingsList}
+          </div>
+        )}
       </>
     );
   };
@@ -532,40 +522,15 @@ export function TaskOverviewPanel({
           </div>
         );
       }
-      return (
-        <p className="text-muted-foreground text-sm leading-relaxed">
-          {version != null
-            ? `No trials for v${version} yet.`
-            : "No trials for this task yet."}
-        </p>
-      );
+      return null;
     }
-    if (qaTrials.length === 0) {
-      // The verdict badge above already says "Running QA..." in this state;
-      // telling the user to run QA at the same time reads as broken.
-      if (qaActive) {
-        return (
-          <p className="text-muted-foreground flex items-center gap-1.5 text-sm leading-relaxed">
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            QA is running. Classifications and the verdict appear here when it
-            finishes.
-          </p>
-        );
-      }
-      return (
-        <p className="text-muted-foreground text-sm leading-relaxed">
-          Execution review has not run yet. Run QA to classify this task&apos;s
-          trials and synthesize a verdict.
-        </p>
-      );
-    }
+    if (qaTrials.length === 0) return null;
 
     return (
       <>
         {qaActive ? (
           <p className="text-muted-foreground flex items-center gap-1.5 font-mono text-[11px]">
-            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />A new QA run is
-            in progress. The results below are from the last run.
+            Previous results
           </p>
         ) : null}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -584,26 +549,35 @@ export function TaskOverviewPanel({
                 )}
               >
                 <Icon className="h-3 w-3" aria-hidden="true" />
-                {count} {EXECUTION_LABELS[classification].toLowerCase()}
+                {classification === "GOOD_FAILURE"
+                  ? `${count} good failure${count === 1 ? "" : "s"}`
+                  : classification === "GOOD_SUCCESS"
+                    ? `${count} agent${count === 1 ? "" : "s"} succeeded`
+                    : classification === "HARNESS_ERROR"
+                      ? `${count} run${count === 1 ? "" : "s"} couldn’t be evaluated`
+                      : classification === "BAD_SUCCESS"
+                        ? `${count} invalid success${count === 1 ? "" : "es"}`
+                        : `${count} task-caused failure${count === 1 ? "" : "s"}`}
               </span>
             );
           })}
           {unanalyzedCount > 0 ? (
             <span className="text-muted-foreground font-mono text-[10px]">
-              {unanalyzedCount} not analyzed
+              {unanalyzedCount} awaiting review
             </span>
           ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">
-          {qaTrials.map((trial) => (
-            <TrialQaRow
-              key={trial.id}
-              trial={trial}
-              foreign={foreignIds?.has(trial.id) ?? false}
-              onOpen={() => openTrial(trial)}
-            />
-          ))}
+          {qaTrials
+            .filter((trial) => !foreignIds?.has(trial.id))
+            .map((trial) => (
+              <TrialQaRow
+                key={trial.id}
+                trial={trial}
+                onOpen={() => openTrial(trial)}
+              />
+            ))}
         </div>
       </>
     );
@@ -613,6 +587,12 @@ export function TaskOverviewPanel({
     <div className={cn("flex flex-col", className)}>
       {verdictTask ? (
         <div className="border-border border-b p-4">
+          <div className="text-muted-foreground mb-2 text-xs">
+            QA result ·{" "}
+            {scopeTrials != null
+              ? "All runs for this task version"
+              : `v${version ?? "—"}`}
+          </div>
           <TaskVerdictBadge
             task={verdictTask}
             variant="inline"
@@ -620,7 +600,7 @@ export function TaskOverviewPanel({
             detail={
               taskReviewStatus(verdictTask) === "needs_fixes" &&
               mustFixCount > 0
-                ? `${mustFixCount} Must Fix`
+                ? `${mustFixCount} Must fix`
                 : undefined
             }
           />
@@ -634,14 +614,12 @@ export function TaskOverviewPanel({
         trials &&
         !findingItems.some((item) => item.id === selectedFinding) ? (
           <p role="alert" className="text-sm text-amber-700">
-            Finding {selectedFinding} is unavailable for v{version}. The review
-            may have been replaced or its historical evidence removed. This page
-            has not substituted another finding.
+            Finding {selectedFinding} is unavailable for v{version}.
           </p>
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Source review and findings
+            Task checks
           </h2>
           <span className="text-muted-foreground font-mono text-[11px]">
             {findingsSummary}
@@ -658,13 +636,10 @@ export function TaskOverviewPanel({
               disabled={checksRerunning || auditRunning || checksStateUnknown}
               onClick={onRerunChecks}
               className="text-muted-foreground hover:text-foreground border-border rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              title="Reviews the default version’s source. Completion can automatically queue execution review."
             >
               {checksRerunning
                 ? "Queuing…"
-                : checkState === "unaudited"
-                  ? "Run source review"
-                  : "Rerun source review"}
+                : `Check task${verdictTask?.current_version != null ? ` v${verdictTask.current_version}` : ""}`}
             </button>
           </div>
         </div>
@@ -673,72 +648,60 @@ export function TaskOverviewPanel({
           <p className="text-[11px] text-red-500">{checksQueueError}</p>
         ) : null}
 
-        <p className="text-muted-foreground text-xs">
-          Inspects task instructions, environment, and verifier source. Findings
-          also include linked execution evidence. Reruns review default v
-          {verdictTask?.current_version ?? "?"} and can automatically queue
-          execution review.
-        </p>
         {findingsBody()}
       </div>
 
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Execution review
+            Run reviews
           </h2>
           <div className="ml-auto">{executionReviewAction}</div>
           <span className="text-muted-foreground font-mono text-[11px]">
             {!versionKnown
               ? checksLoadError
                 ? "Unavailable"
-                : "Loading…"
+                : "…"
               : displayTrials == null
                 ? trialsError
                   ? "Unavailable"
-                  : "Loading…"
+                  : "…"
                 : versionTrials.length === 0 && scopeLoading
-                  ? "Loading…"
-                  : `${analyzedCount}/${versionTrials.length} trial${
-                      versionTrials.length === 1 ? "" : "s"
-                    } analyzed${version != null ? ` · v${version}` : ""}${
-                      foreignShownCount > 0
-                        ? ` · ${foreignShownCount} from outside this experiment`
-                        : ""
-                    }`}
+                  ? "…"
+                  : `${scopeTrials != null ? "This experiment: " : ""}${runReviewSummary(experimentRuns)}${version != null ? ` · v${version}` : ""}`}
           </span>
         </div>
-        <p className="text-muted-foreground text-xs">
-          Inspects recorded agent runs, verifier results, and trajectories. A
-          fair agent failure does not clear unrelated task defects. Reruns
-          review the default version’s recorded runs; they do not rerun solver
-          trials.
-        </p>
-        {(checksError ||
-          qaTrials.some(
-            (trial) =>
-              trial.analysis?.classification === "HARNESS_ERROR" ||
-              trial.analysis_error
-          )) && (
-          <details className="text-muted-foreground text-xs">
-            <summary className="cursor-pointer">
-              Missing access: choose the remedy from evidence
-            </summary>
-            <p className="mt-2">
-              Access omitted from the task requires a task fix. Broken execution
-              infrastructure requires repair and a new execution. Access
-              unavailable to the reviewer requires restoring evidence access and
-              rerunning the review. The stored error alone may not establish
-              which happened.
-            </p>
-          </details>
-        )}
         {executionReviewError && (
           <p role="alert" className="text-xs text-amber-700">
             {executionReviewError}
           </p>
         )}
         {trialQaBody()}
+        {additionalRuns.length > 0 && (
+          <section className="mt-3 space-y-2 border-t pt-3">
+            <h3 className="text-sm font-medium">Other experiments</h3>
+            <p className="text-muted-foreground text-xs">
+              {runReviewSummary(additionalRuns)}
+            </p>
+            {additionalRuns.map((trial) => (
+              <div key={trial.id} className="space-y-1">
+                {trial.experiment_id && (
+                  <a
+                    href={`/experiments/${encodeURIComponent(trial.experiment_id)}`}
+                    className="text-xs underline"
+                  >
+                    Experiment {trial.experiment_id.slice(0, 8)}
+                  </a>
+                )}
+                <TrialQaRow
+                  trial={trial}
+                  foreign
+                  onOpen={() => openTrial(trial)}
+                />
+              </div>
+            ))}
+          </section>
+        )}
       </div>
     </div>
   );
@@ -754,7 +717,7 @@ function TrialQaRow({
   foreign?: boolean;
   onOpen: () => void;
 }) {
-  const analysis = trial.analysis;
+  const analysis = trial.analysis_status === "success" ? trial.analysis : null;
   const running = isActivePipelineStatus(trial.analysis_status);
   const failed = !analysis && trial.analysis_status === "failed";
   const token = analysis
@@ -807,11 +770,8 @@ function TrialQaRow({
         {trialLabel(trial)}
       </span>
       {foreign ? (
-        <span
-          className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]"
-          title="This trial ran outside this experiment"
-        >
-          elsewhere
+        <span className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]">
+          Other experiment
         </span>
       ) : null}
       <button
@@ -822,11 +782,6 @@ function TrialQaRow({
           onOpen();
         }}
         className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors"
-        title={
-          foreign
-            ? `Open trial ${trial.name} in a new tab`
-            : `Open trial ${trial.name}`
-        }
       >
         View trial
         <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
