@@ -90,16 +90,6 @@ function taskFromOpen(open: TaskOpenResponse): Task {
   };
 }
 
-export function normalizedAgentModel(
-  value: Pick<Trial, "agent" | "model" | "is_probe">
-): Pick<Trial, "agent" | "model" | "is_probe"> {
-  return {
-    agent: value.agent.trim().toLowerCase(),
-    model: value.model?.trim().toLowerCase() ?? null,
-    is_probe: value.is_probe,
-  };
-}
-
 export function useTaskOpenReader(
   taskId: string,
   initialVersionId?: string | null
@@ -277,11 +267,10 @@ export function useTaskOpenReader(
     () => selectedVersion?.agent_models ?? [],
     [selectedVersion]
   );
-  const { agentCards, modelScopedAgents, realAgentCount, realTrialCount } =
-    useMemo(
-      () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
-      [exactAgentModels, trialsForVersion]
-    );
+  const { agentCards, realAgentCount, realTrialCount } = useMemo(
+    () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
+    [exactAgentModels, trialsForVersion]
+  );
   const revalidateReaderResources = useCallback(async () => {
     await Promise.all([
       mutate(),
@@ -307,7 +296,6 @@ export function useTaskOpenReader(
     isLoading,
     isSettingDefaultVersion,
     loadVersionHistory,
-    modelScopedAgents,
     open,
     openResource,
     realAgentCount,

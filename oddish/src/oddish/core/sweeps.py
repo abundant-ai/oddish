@@ -10,6 +10,7 @@ from oddish.config import (
     require_geometric_served_model_id,
     settings,
 )
+from oddish.reasoning_effort import normalize_reasoning_effort
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
@@ -42,7 +43,7 @@ def build_trial_specs_from_sweep(
     *,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
-    existing_counts: dict[tuple[str, str | None], int] | None = None,
+    existing_counts: dict[tuple[str, str | None, str | None], int] | None = None,
 ) -> list[TrialSpec]:
     trials: list[TrialSpec] = []
     effective_default_environment = submission.environment or default_environment
@@ -84,7 +85,18 @@ def build_trial_specs_from_sweep(
         n = config.n_trials
         if existing_counts is not None:
             norm_model = settings.normalize_trial_model(config.agent, config.model)
-            existing = existing_counts.get((config.agent, norm_model), 0)
+            existing = existing_counts.get(
+                (
+                    config.agent,
+                    norm_model,
+                    normalize_reasoning_effort(
+                        config.agent_config.kwargs.get("reasoning_effort")
+                        if config.agent_config
+                        else None
+                    ),
+                ),
+                0,
+            )
             n = max(0, config.n_trials - existing)
 
         for _ in range(n):
