@@ -39,6 +39,7 @@ from .model_hosts import (
     _CURSOR_RUNTIME_HOSTS,
     ANTIGRAVITY_RUNTIME_HOSTS,
     ANTIGRAVITY_STARTUP_HOSTS,
+    CODEX_INSTALL_HOSTS,
     outbound_hosts_for_model,
 )
 from .model_hosts import (
@@ -553,11 +554,20 @@ def _codex_profile(
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
-    hosts = _selected_transport_hosts(
-        agent_config,
-        resolved_env,
-        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
-        default_hosts=_OPENAI_RUNTIME_HOSTS,
+    hosts = tuple(
+        dict.fromkeys(
+            [
+                *_selected_transport_hosts(
+                    agent_config,
+                    resolved_env,
+                    base_url_keys=_consumed_base_url_keys_for_class(
+                        agent_class, agent_config
+                    ),
+                    default_hosts=_OPENAI_RUNTIME_HOSTS,
+                ),
+                *CODEX_INSTALL_HOSTS,
+            ]
+        )
     )
     return RestrictedNetworkProfile(
         outbound_hosts=hosts,
