@@ -134,11 +134,6 @@ async def fetch_slack_user_id_from_clerk(clerk_user_id: str) -> str | None:
     return _slack_user_id_from_clerk_payload(data)
 
 
-async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
-    identity = await fetch_github_identity_from_clerk(clerk_user_id)
-    return identity.username if identity else None
-
-
 async def _set_github_id_if_absent(
     session: AsyncSession | None, user: UserModel, github_id: str | None
 ) -> None:
@@ -316,19 +311,6 @@ async def _apply_user_github_identity(
         # Clerk unlinked GitHub: drop any stale id so the gate stops trusting it.
         user.github_id = None
         _mark_github_id_checked(user)
-
-
-async def ensure_user_github_identity(
-    session: AsyncSession,
-    user: UserModel,
-) -> None:
-    if not user.clerk_user_id or user.github_username:
-        return
-    identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
-    if identity and identity.username:
-        user.github_username = identity.username
-        await _set_github_id_if_absent(session, user, identity.github_id)
-        await session.flush()
 
 
 async def get_org_from_clerk_id(

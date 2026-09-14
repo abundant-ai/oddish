@@ -182,11 +182,6 @@ type PendingOpen = {
 /** One module-level latch: only the first open on a page can claim load time. */
 let pageLoadClaimed = false;
 
-/** Test seam — resets the page-load latch. */
-export function resetPageLoadAttribution(): void {
-  pageLoadClaimed = false;
-}
-
 /**
  * Whether the page is hidden right now.
  *

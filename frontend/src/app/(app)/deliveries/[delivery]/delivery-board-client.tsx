@@ -952,7 +952,7 @@ function TaskRow({
                           className="grid gap-x-6 gap-y-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"
                         >
                           <a
-                            className="block max-w-prose text-base leading-relaxed font-medium hover:underline sm:col-start-1"
+                            className="block min-w-0 max-w-prose text-base leading-relaxed font-medium break-words hover:underline sm:col-start-1"
                             href={
                               row.version != null
                                 ? findingHref(row.task_id, row.version, {
@@ -1047,8 +1047,11 @@ function TaskRow({
                         </li>
                       ))}
                       {checks.map((check) => (
-                        <li key={check.key} className="space-y-3 py-4">
-                          <p className="text-base font-medium">
+                        <li
+                          key={check.key}
+                          className="grid gap-x-6 gap-y-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"
+                        >
+                          <p className="text-base font-medium sm:col-start-1">
                             {!acknowledged && check.failure_labels?.length
                               ? check.failure_labels.join(" · ")
                               : `${
@@ -1063,7 +1066,7 @@ function TaskRow({
                                 } · ${acknowledged ? "Exception acknowledged" : "Requirement unmet"}`}
                           </p>
                           {(acknowledged || !check.failure_labels?.length) && (
-                            <p className="max-w-prose text-base leading-relaxed">
+                            <p className="min-w-0 max-w-prose text-base leading-relaxed break-words sm:col-start-1">
                               {check.detail}
                             </p>
                           )}
@@ -1075,7 +1078,7 @@ function TaskRow({
                               "verdict_ok",
                             ].includes(check.key) && (
                               <Link
-                                className="inline-block text-sm underline"
+                                className="justify-self-start text-sm underline underline-offset-4 sm:col-start-1"
                                 href={
                                   check.key === "min_rollouts"
                                     ? `/tasks/${encodeURIComponent(row.task_id)}?version=${row.version}`
@@ -1090,7 +1093,7 @@ function TaskRow({
                               </Link>
                             )}
                           {acknowledged ? (
-                            <p className="text-muted-foreground text-sm">
+                            <p className="text-muted-foreground text-sm sm:col-start-1">
                               Acknowledged by{" "}
                               {check.checked_by_name ??
                                 check.checked_by_user_id ??
@@ -1103,6 +1106,7 @@ function TaskRow({
                               <Button
                                 variant="outline"
                                 size="sm"
+                                className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
                                 disabled={
                                   frozen || !isAdmin || busy || !row.version_id
                                 }

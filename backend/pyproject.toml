@@ -51,6 +51,13 @@ dependencies = [
 
     # Profanity filter for org-scoped tag naming policies.
     "better-profanity>=0.7.0,<1.0",
+
+    # ``worker/gke_cluster_reaper.py`` imports ``google.auth`` and
+    # ``google.api_core`` directly. The Modal image gets the full GKE client
+    # stack from Harbor's ``gke`` extra (see modal_app.py); these pins keep the
+    # local and test environments carrying the same two packages.
+    "google-auth==2.48.0",
+    "google-api-core==2.25.2",
 ]
 
 [project.optional-dependencies]
