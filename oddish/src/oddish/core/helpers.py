@@ -43,7 +43,6 @@ from oddish.schemas import (
     VisibleWorkerJob,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -476,6 +475,7 @@ def build_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        reasoning_effort=trial.reasoning_effort,
         environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
@@ -569,6 +569,7 @@ def build_compact_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        reasoning_effort=trial.reasoning_effort,
         environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
@@ -1248,6 +1249,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.provider,
     TrialModel.queue_key,
     TrialModel.model,
+    TrialModel.reasoning_effort,
     TrialModel.status,
     TrialModel.attempts,
     TrialModel.max_attempts,
@@ -1312,6 +1314,7 @@ def build_slim_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        reasoning_effort=trial.reasoning_effort,
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,

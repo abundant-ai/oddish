@@ -35,6 +35,7 @@ from oddish.db import (
     TrialStatus,
     utcnow,
 )
+from oddish.reasoning_effort import normalize_reasoning_effort
 from oddish.schemas import (
     HarborConfig,
     TaskResponse,
@@ -73,9 +74,11 @@ async def _plan_append_trials(
     pinned to -- so the declarative N compares like with like instead of
     measuring this request against another version's trials.
     """
-    existing_counts: dict[tuple[str, str | None], int] | None = None
-    failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
-    if append_version_id is not None:
+    existing_counts: dict[tuple[str, str | None, str | None], int] | None = None
+    failed_trial_ids: dict[tuple[str, str | None, str | None], list[str]] = defaultdict(
+        list
+    )
+    if append_version_id is not None and not submission.add_trials:
         reconcile_where = [
             TrialModel.task_id == task.id,
             TrialModel.task_version_id == append_version_id,
@@ -89,7 +92,11 @@ async def _plan_append_trials(
         )
         existing_counts = defaultdict(int)
         for existing_trial in existing_trials_result.scalars():
-            key = (existing_trial.agent, existing_trial.model)
+            key = (
+                existing_trial.agent,
+                existing_trial.model,
+                existing_trial.reasoning_effort,
+            )
             if existing_trial.status == TrialStatus.FAILED:
                 failed_trial_ids[key].append(existing_trial.id)
             else:
@@ -107,10 +114,22 @@ async def _plan_append_trials(
     # failed attempt for that agent/model to the replacement rows so old
     # duplicate failures collapse out of the default UI while remaining
     # directly inspectable as immutable history.
-    replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(list)
+    replacement_positions: dict[tuple[str, str | None, str | None], list[int]] = (
+        defaultdict(list)
+    )
     for index, spec in enumerate(trials):
         normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
-        replacement_positions[(spec.agent, normalized_model)].append(index)
+        replacement_positions[
+            (
+                spec.agent,
+                normalized_model,
+                normalize_reasoning_effort(
+                    spec.agent_config.kwargs.get("reasoning_effort")
+                    if spec.agent_config
+                    else None
+                ),
+            )
+        ].append(index)
     supersede_by_spec: list[list[str]] = [[] for _ in trials]
     for key, old_ids in failed_trial_ids.items():
         positions = replacement_positions.get(key, [])

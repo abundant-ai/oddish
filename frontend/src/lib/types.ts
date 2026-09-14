@@ -150,6 +150,7 @@ export interface Trial {
   provider: string;
   queue_key?: string;
   model: string | null;
+  reasoning_effort?: string | null;
   environment?: string | null;
   status: TrialStatus;
   attempts: number;
@@ -521,6 +522,7 @@ export interface TaskOpenVerdict {
 export interface TaskOpenAgentModelSummary {
   agent: string;
   model: string | null;
+  reasoning_effort?: string | null;
   providers: string[];
   is_probe: boolean;
   trial_count: number;
@@ -590,6 +592,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  reasoning_effort?: string | null;
   kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
