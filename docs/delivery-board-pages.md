@@ -48,6 +48,39 @@ scheduled progress recording still check every member. Reads do not start QA,
 write acknowledgments, or persist readiness. Frozen deliveries paginate their
 saved snapshot without recomputing current task evidence.
 
+## Task expansion
+
+`GET /deliveries/{id}/tasks/{task_id}` returns one member's full
+`DeliveryTaskBoardRow`. Active deliveries run the existing approval calculator
+with only that task in scope and omit progress history. A nonmember or a delivery
+in another organization returns 404. Hosted reads use the same authorized read
+session and check organization approval on every request. Finalized deliveries
+read the stored row from their snapshot; a missing finalized snapshot returns 409
+instead of substituting live evidence. Deploy this endpoint before its frontend.
+No database migration is required for this first stage.
+
+For a task already on the loaded page, changing `task` in the URL immediately
+expands the row and starts its detail and history reads independently. The browser
+keeps the existing SWR page key when the rows, filters, grouping and owner scope
+are equivalent. It does not copy the board into an alias cache entry. Off-page
+links and changes to an out-of-filter exception still use the page endpoint to
+resolve membership, pagination and the exception correctly. Back/Forward uses
+that same cache-matching rule. Stale pages can still refresh in the background.
+
+The table response owns checks, acknowledgment state and version identity; the
+single-task response supplies finding bodies for matching task, delivery-member,
+version and finding IDs. A changed version displays a refresh action instead of
+attaching another version's evidence. Task-detail failures retain the expanded
+row and expose a task-only retry. Mutations are disabled until matching details
+arrive. Writes invalidate older in-flight detail responses as well as page
+responses. The board poll refreshes only the expanded task's details and history;
+collapsed rows do not poll details, and frozen rows use their snapshot directly.
+
+The full-page calculation and its 15-second poll still exist. Persisted
+per-member delivery summaries, invalidation on evidence changes, and migration /
+backfill are a separate second stage; this change removes the full-page request
+from visible-row expansion, not from a cold delivery-page load.
+
 ## URL and response contracts
 
 | Parameter | Behavior |
@@ -125,7 +158,7 @@ separate React state is needed to maintain this distinction.
 
 History prefetch begins after 150 ms of row hover or keyboard focus, with at most
 two active speculative reads. Opening history shares its pending request.
-The delivery poll remains the sole timer and refreshes only expanded history.
+The delivery poll remains the sole timer and refreshes only expanded task details and history.
 
 ## Validation
 
@@ -142,6 +175,14 @@ timestamp ties, missing completion times, superseded QA, and ineligible newer
 runs. `test_delivery_qa.py` checks that large instruction text stays unloaded,
 an already-loaded configuration remains intact, and malformed projected evidence
 still produces an outdated QA status.
+
+The scoped task tests compare full finding bodies and checks against the complete
+board and verify that only one version reaches the evidence collector (at most
+six core SELECTs, no progress-history read). They cover missing membership,
+organization isolation, frozen evidence and missing finalized snapshots. Browser
+tests gate a task response to prove expansion and task switching do not wait for
+it or issue an extra delivery-page request; task-only retries and version
+mismatches are covered separately.
 
 `backend/tests/test_delivery_page_routes.py` exercises actual HTTP query parsing
 and cached-identity approval revocation against PostgreSQL. The existing delivery,
