@@ -624,6 +624,8 @@ export interface PreTrialFinding {
   source?: "pre_trial" | "post_trial";
   id?: string | null;
   tier?: string | null;
+  /** Historical findings stored their tier under this field. */
+  severity?: string | null;
   dimension?: string | null;
   problem_type?: string | null;
   file?: string | null;
