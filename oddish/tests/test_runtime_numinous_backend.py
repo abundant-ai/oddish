@@ -15,8 +15,7 @@ def test_capabilities_shape_gpu_lane_off_by_default(monkeypatch) -> None:
     # locks the opt-in shape in.
     from oddish.config import settings
 
-    monkeypatch.setattr(settings, "numinous_gpu_enabled", False,
-                        raising=False)
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", False, raising=False)
     caps = NuminousBackend().capabilities()
     assert caps.gpu is None
     assert caps.private_registry_pull is True
@@ -32,8 +31,7 @@ def test_capabilities_shape_gpu_lane_on_reports_h100(monkeypatch) -> None:
     from oddish.config import settings
     from oddish.runtime.ports import GpuSupport
 
-    monkeypatch.setattr(settings, "numinous_gpu_enabled", True,
-                        raising=False)
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", True, raising=False)
     caps = NuminousBackend().capabilities()
     assert isinstance(caps.gpu, GpuSupport)
     # H100 is the SWE-marathon headline; it MUST be present.
@@ -49,8 +47,7 @@ def test_capabilities_shape_gpu_lane_on_reports_h100(monkeypatch) -> None:
     assert caps.memory_snapshot_fork is True
 
 
-def test_gpu_lane_flag_is_independent_of_the_backend_enable_flag(
-        monkeypatch) -> None:
+def test_gpu_lane_flag_is_independent_of_the_backend_enable_flag(monkeypatch) -> None:
     # numinous_enabled controls whether the backend registers at all;
     # numinous_gpu_enabled controls whether it accepts GPU work. This must
     # be TWO separate flags so a customer who has us for CPU-only trials
@@ -58,8 +55,7 @@ def test_gpu_lane_flag_is_independent_of_the_backend_enable_flag(
     from oddish.config import settings
 
     monkeypatch.setattr(settings, "numinous_enabled", True, raising=False)
-    monkeypatch.setattr(settings, "numinous_gpu_enabled", False,
-                        raising=False)
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", False, raising=False)
     assert NuminousBackend().capabilities().gpu is None
 
 
@@ -104,8 +100,12 @@ async def test_teardown_verifies_proof(monkeypatch) -> None:
         assert request.method == "DELETE"
         assert request.url.path == "/v1/sandboxes/sbx_1"
         return httpx.Response(
-            200, json={"id": "sbx_1", "state": "terminated",
-                       "teardown_proof": {"verified_absent": True}}
+            200,
+            json={
+                "id": "sbx_1",
+                "state": "terminated",
+                "teardown_proof": {"verified_absent": True},
+            },
         )
 
     transport = httpx.MockTransport(handler)
@@ -128,8 +128,12 @@ async def test_teardown_200_without_proof_is_success(monkeypatch) -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"id": "sbx_2", "state": "terminated",
-                       "teardown_proof": {"verified_absent": False}}
+            200,
+            json={
+                "id": "sbx_2",
+                "state": "terminated",
+                "teardown_proof": {"verified_absent": False},
+            },
         )
 
     transport = httpx.MockTransport(handler)
@@ -152,3 +156,73 @@ def test_registry_excludes_numinous_by_default() -> None:
     from oddish.runtime.registry import REGISTERED_BACKENDS
 
     assert "numinous" not in REGISTERED_BACKENDS
+
+
+@pytest.mark.asyncio
+async def test_settle_trial_puts_final_verdict(monkeypatch) -> None:
+    """The trial's final word goes to PUT /v1/trials/{id}/outcome: a reward
+    when there is one, else the status as the label; force so a re-settled
+    trial takes oddish's latest verdict."""
+    import httpx
+
+    seen: list[tuple[str, str, dict]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen.append((request.method, request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"id": "t-1"})
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = transport
+        return orig_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    b = NuminousBackend()
+    assert await b.settle_trial("zstd-decoder-1", reward=1.0, status="success") is True
+    assert await b.settle_trial("zstd-decoder-2", reward=None, status="failed") is True
+    assert await b.settle_trial("", reward=1.0, status="success") is False
+    assert seen == [
+        (
+            "PUT",
+            "/v1/trials/zstd-decoder-1/outcome",
+            {
+                "value": 1.0,
+                "label": None,
+                "kind": "reward",
+                "status": "success",
+                "force": True,
+            },
+        ),
+        (
+            "PUT",
+            "/v1/trials/zstd-decoder-2/outcome",
+            {
+                "value": None,
+                "label": "failed",
+                "kind": "reward",
+                "status": "failed",
+                "force": True,
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_settle_trial_never_raises(monkeypatch) -> None:
+    import httpx
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: orig_client(**{**kw, "transport": transport})
+    )
+    assert (
+        await NuminousBackend().settle_trial("t", reward=0.0, status="success") is False
+    )
