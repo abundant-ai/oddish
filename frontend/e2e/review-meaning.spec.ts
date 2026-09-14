@@ -77,6 +77,110 @@ test.describe("real components with local fixture API", () => {
     });
   }
 
+  for (const count of [25, 250]) {
+    test(`${count} task headers follow page scrolling and horizontal columns`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 800, height: 720 });
+      await page.goto(`/experiments/review-demo?scenario=scroll-${count}`);
+      await page.evaluate(() => {
+        for (const [height, top] of [
+          [28, 0],
+          [56, 28],
+        ]) {
+          const bar = document.createElement("nav");
+          bar.dataset.pageStickyHeader = "";
+          Object.assign(bar.style, {
+            position: "fixed",
+            top: `${top}px`,
+            height: `${height}px`,
+            left: "0",
+            right: "0",
+            zIndex: "50",
+            background: "white",
+          });
+          document.body.prepend(bar);
+        }
+      });
+      const header = page.locator("thead");
+      await expect(page.locator("tbody tr[data-index]").first()).toBeVisible();
+      await page.evaluate(() => {
+        const table = document.querySelector("table")!;
+        window.scrollTo(
+          0,
+          table.getBoundingClientRect().top + window.scrollY + 500
+        );
+      });
+      await expect
+        .poll(() =>
+          header.evaluate((element) => element.getBoundingClientRect().top)
+        )
+        .toBeCloseTo(84, 0);
+      const agentHeader = header.locator("th").nth(1);
+      const taskHeader = header.locator("th").first();
+      const taskLeft = await taskHeader.evaluate(
+        (element) => element.getBoundingClientRect().left
+      );
+      const before = await agentHeader.evaluate(
+        (element) => element.getBoundingClientRect().left
+      );
+      const distance = await page.locator("table").evaluate((table) => {
+        const wrapper = table.parentElement!;
+        wrapper.scrollLeft = 120;
+        return wrapper.scrollLeft;
+      });
+      expect(distance).toBeGreaterThan(0);
+      await expect
+        .poll(() =>
+          agentHeader.evaluate(
+            (element) => element.getBoundingClientRect().left
+          )
+        )
+        .toBeCloseTo(before - distance, 0);
+      await expect
+        .poll(() =>
+          taskHeader.evaluate((element) => element.getBoundingClientRect().left)
+        )
+        .toBeCloseTo(taskLeft, 0);
+      await expect(
+        header.getByRole("button", { name: "Toggle task sort" })
+      ).toBeInViewport();
+      await header.getByRole("button", { name: "Toggle task sort" }).click();
+      await expect
+        .poll(() =>
+          header.evaluate((element) => element.getBoundingClientRect().top)
+        )
+        .toBeCloseTo(84, 0);
+      await page.setViewportSize({ width: 1000, height: 720 });
+      await expect
+        .poll(() =>
+          header.evaluate((element) => element.getBoundingClientRect().top)
+        )
+        .toBeCloseTo(84, 0);
+      await page.evaluate(() => {
+        const spacer = document.createElement("div");
+        spacer.style.height = "1000px";
+        document.body.append(spacer);
+        const table = document.querySelector("table")!;
+        window.scrollTo(
+          0,
+          table.getBoundingClientRect().bottom + window.scrollY - 30
+        );
+      });
+      await expect
+        .poll(() =>
+          header.evaluate((element) => element.getBoundingClientRect().bottom)
+        )
+        .toBeCloseTo(30, 0);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await expect
+        .poll(() =>
+          header.evaluate((element) => element.getBoundingClientRect().top)
+        )
+        .toBeGreaterThan(0);
+    });
+  }
+
   test("crossing the row threshold keeps the table origin aligned while scrolled", async ({
     page,
   }) => {

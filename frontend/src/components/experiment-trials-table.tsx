@@ -702,6 +702,7 @@ export function ExperimentTrialsTable({
     Record<string, number>
   >({});
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
+  const tableHeaderRef = useRef<HTMLTableSectionElement | null>(null);
   const tableBodyRef = useRef<HTMLTableSectionElement | null>(null);
   const resizeRef = useRef<{
     columnKey: "task" | string;
@@ -1186,6 +1187,49 @@ export function ExperimentTrialsTable({
       observer.observe(body.previousElementSibling);
     return () => observer.disconnect();
   }, [isLoading]);
+  useLayoutEffect(() => {
+    const container = tableContainerRef.current;
+    const header = tableHeaderRef.current;
+    if (!container || !header) return;
+
+    // Horizontal overflow makes this wrapper the CSS sticky scroll container.
+    // Follow page scrolling explicitly while keeping one aligned, interactive
+    // header inside the horizontally scrolling table.
+    const updateHeaderPosition = () => {
+      const bounds = container.getBoundingClientRect();
+      const pageHeaderBottom = Math.max(
+        0,
+        ...Array.from(
+          document.querySelectorAll("[data-page-sticky-header]"),
+          (element) => element.getBoundingClientRect().bottom
+        )
+      );
+      const offset = Math.max(
+        0,
+        Math.min(
+          pageHeaderBottom - bounds.top,
+          bounds.height - header.offsetHeight
+        )
+      );
+      header.style.top = `${offset}px`;
+    };
+    updateHeaderPosition();
+    window.addEventListener("scroll", updateHeaderPosition, { passive: true });
+    window.addEventListener("resize", updateHeaderPosition);
+    const observer = new ResizeObserver(updateHeaderPosition);
+    observer.observe(container);
+    observer.observe(header);
+    observer.observe(document.body);
+    document
+      .querySelectorAll("[data-page-sticky-header]")
+      .forEach((element) => observer.observe(element));
+    return () => {
+      window.removeEventListener("scroll", updateHeaderPosition);
+      window.removeEventListener("resize", updateHeaderPosition);
+      observer.disconnect();
+      header.style.top = "";
+    };
+  }, [isLoading, tableOffset]);
   // Render real rows until their document offset is known.
   const shouldVirtualize =
     filteredTasks.length >= VIRTUALIZATION_THRESHOLD && tableOffset !== null;
@@ -2237,7 +2281,10 @@ export function ExperimentTrialsTable({
                   />
                 ))}
               </colgroup>
-              <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
+              <TableHeader
+                ref={tableHeaderRef}
+                className="relative z-20 bg-[color:var(--paper-surface-2)]"
+              >
                 <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
                     className="relative sticky left-0 z-30 h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-3 font-mono font-bold text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3"

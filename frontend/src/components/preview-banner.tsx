@@ -61,7 +61,10 @@ export function PreviewBanner() {
   const prText = prTitle ? `${prLabel}: ${prTitle}` : prLabel;
 
   return (
-    <div className="sticky top-0 z-50 h-[var(--preview-banner-h)] border-b border-amber-400/40 bg-amber-100 text-amber-950 dark:border-amber-300/25 dark:bg-amber-500/15 dark:text-amber-100">
+    <div
+      data-page-sticky-header
+      className="sticky top-0 z-50 h-[var(--preview-banner-h)] border-b border-amber-400/40 bg-amber-100 text-amber-950 dark:border-amber-300/25 dark:bg-amber-500/15 dark:text-amber-100"
+    >
       <div className="mx-auto flex h-full max-w-(--breakpoint-2xl) items-center justify-center gap-x-2 overflow-hidden px-4 text-[11px] leading-none whitespace-nowrap">
         <span className="font-semibold tracking-wider uppercase">Preview</span>
         {prUrl ? (
@@ -71,7 +74,7 @@ export function PreviewBanner() {
               href={prUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className={`min-w-0 max-w-sm truncate font-medium ${linkClass}`}
+              className={`max-w-sm min-w-0 truncate font-medium ${linkClass}`}
             >
               {prText}
             </a>
