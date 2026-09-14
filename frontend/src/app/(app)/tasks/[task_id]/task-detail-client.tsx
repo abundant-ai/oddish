@@ -1132,13 +1132,7 @@ export function TaskDetailClient({
             task={task}
             variant="summary"
             rejectionSource={
-              [
-                ...(selectedVersion?.retained_findings ?? []),
-                ...(selectedVersion?.pre_trial_findings ?? []),
-              ].some(
-                (item) =>
-                  item.tier === "must_fix" && item.source !== "post_trial"
-              )
+              (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
                 ? "Pre-trial audit"
                 : (task.must_fix_count ?? 0) > 0
                   ? "Run review"

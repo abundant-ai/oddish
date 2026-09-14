@@ -1049,11 +1049,8 @@ async def _compute_board(
                         title=item["title"],
                         source=item["source"],
                         finding_id=(
-                            str(
-                                item["finding"].get("links_to") or item["finding"]["id"]
-                            )
-                            if item["finding"].get("links_to")
-                            or item["finding"].get("id") is not None
+                            str(item["finding"]["id"])
+                            if item["finding"].get("id") is not None
                             else None
                         ),
                         file=item["finding"].get("file"),

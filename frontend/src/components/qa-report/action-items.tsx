@@ -120,12 +120,18 @@ export function FindingList({
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!selectedFinding) return;
-    const item = Array.from(
+    const matches = Array.from(
       root.current?.querySelectorAll<HTMLElement>("[data-finding]") ?? []
-    ).find((node) => node.dataset.finding === selectedFinding);
-    const group = item?.closest("details");
-    if (group) group.open = true;
-    item?.scrollIntoView({ block: "center" });
+    ).filter(
+      (node) =>
+        node.dataset.finding === selectedFinding ||
+        node.dataset.findingLink === selectedFinding
+    );
+    for (const item of matches) {
+      const disclosure = item.closest("details");
+      if (disclosure) disclosure.open = true;
+    }
+    matches[0]?.scrollIntoView({ block: "center" });
   }, [selectedFinding, items]);
   const ordered = TIER_ORDER.flatMap((tier) =>
     items.filter((item) => (item.tier ?? "optional") === tier)
@@ -141,6 +147,7 @@ export function FindingList({
           <details
             key={key}
             data-finding={item.id}
+            data-finding-link={item.links_to}
             className={cn(
               "group border-border bg-background/40 rounded-lg border",
               item.id === selectedFinding && "ring-1 ring-amber-500/40"

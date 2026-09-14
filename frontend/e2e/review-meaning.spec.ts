@@ -941,9 +941,15 @@ test("task-page findings are counted and open independently", async ({
     async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      const version = data.selected_version ?? data.version;
-      version.pre_trial_findings = [first, second];
-      version.retained_findings = [first];
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 2;
+        data.selected_version.pre_trial_must_fix_count = 2;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [first, second];
+        data.version.retained_findings = [first];
+      }
       await route.fulfill({ json: data });
     }
   );
@@ -994,9 +1000,15 @@ test("linked retained must-fix survives a historical optional audit finding", as
     async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      const version = data.selected_version ?? data.version;
-      version.pre_trial_findings = [audit];
-      version.retained_findings = [retained];
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 1;
+        data.selected_version.pre_trial_must_fix_count = 0;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [audit];
+        data.version.retained_findings = [retained];
+      }
       await route.fulfill({ json: data });
     }
   );
@@ -1027,9 +1039,15 @@ test("rejection without structured findings keeps its reason behind a disclosure
     async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      const version = data.selected_version ?? data.version;
-      version.pre_trial_findings = [];
-      version.retained_findings = [];
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 0;
+        data.selected_version.pre_trial_must_fix_count = 0;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [];
+        data.version.retained_findings = [];
+      }
       data.task.verdict = {
         is_good: false,
         verdict: "reject",
@@ -1054,3 +1072,96 @@ test("rejection without structured findings keeps its reason behind a disclosure
   await disclosure.locator("summary").click();
   await expect(disclosure.getByText(reason, { exact: true })).toBeVisible();
 });
+
+test("a first run-review finding is counted without detailed findings in open", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const finding = {
+    id: "new-run-fix",
+    tier: "must_fix",
+    source: "post_trial",
+    title: "Run exposed a verifier defect",
+    detail: "Run evidence",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.selected_version) {
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+        data.selected_version.must_fix_count = 1;
+        data.selected_version.pre_trial_must_fix_count = 0;
+      } else {
+        data.version.pre_trial_findings = [];
+        data.version.retained_findings = [];
+      }
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.route("**/api/tasks/task-a/trials?**", (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...tasks[0].trials![0],
+          analysis: {
+            ...tasks[0].trials![0].analysis!,
+            action_items: [finding],
+          },
+        },
+      ],
+    })
+  );
+  await page.goto("/tasks/task-a");
+  await expect(
+    page.getByText("Rejected · Run review", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: finding.title, exact: true })
+  ).toBeVisible();
+});
+
+for (const address of ["retained-fix", "historical-audit"]) {
+  test(`finding link ${address} opens the retained required fix`, async ({
+    page,
+  }) => {
+    test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+    await page.route(/\/api\/tasks\/task-a\/panel(?:\?|$)/, async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.version.pre_trial_findings = [
+        {
+          id: "historical-audit",
+          tier: "optional",
+          title: "Historical audit finding",
+        },
+      ];
+      data.version.retained_findings = [
+        {
+          id: "retained-fix",
+          links_to: "historical-audit",
+          tier: "must_fix",
+          source: "post_trial",
+          title: "Required retained fix",
+          detail: "Required fix evidence",
+        },
+      ];
+      await route.fulfill({ json: data });
+    });
+    await page.goto(
+      `/tasks/task-a?version=7&drawer=task&taskPane=overview&finding=${address}`
+    );
+    await expect(
+      page.locator('details[data-finding="retained-fix"]')
+    ).toHaveAttribute("open", "");
+    await expect(
+      page.getByText("Required fix evidence", { exact: true })
+    ).toBeVisible();
+  });
+}

@@ -59,20 +59,9 @@ function taskFromOpen(open: TaskOpenResponse): Task {
   const failed = selected?.failed_count ?? 0;
   const skipped = selected?.skipped_count ?? 0;
   const total = selected?.trial_count ?? 0;
-  const findings = new Map(
-    [
-      ...(selected?.retained_findings ?? []),
-      ...(selected?.pre_trial_findings ?? []),
-    ].map((item) => [
-      item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`,
-      item,
-    ])
-  );
   return {
     ...open.task,
-    must_fix_count: selected
-      ? [...findings.values()].filter((item) => item.tier === "must_fix").length
-      : null,
+    must_fix_count: selected?.must_fix_count ?? null,
     experiment_id: "",
     experiment_name: "",
     verdict: open.task.verdict

@@ -1914,6 +1914,9 @@ class TaskOpenAgentModelSummary(BaseModel):
 class TaskOpenVersionSummary(TaskVersionRollup):
     """Selected-version fields owned by the bounded task-open resource."""
 
+    must_fix_count: int = 0
+    pre_trial_must_fix_count: int = 0
+
     user_tags: list[UserTagRef] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     agent_models: list[TaskOpenAgentModelSummary] = Field(default_factory=list)
