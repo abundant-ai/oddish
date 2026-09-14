@@ -87,12 +87,12 @@ IDENTITY_SQL = text(
       WITH stored_raw AS (
         SELECT report->'finding' AS item, 0 AS priority, ord, report->>'source' = 'pre_trial' AS from_audit
         FROM task_versions v,
-          jsonb_array_elements(COALESCE(v.reported_findings, '[]'::jsonb)) WITH ORDINALITY AS reports(report, ord)
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.reported_findings) = 'array' THEN v.reported_findings ELSE '[]'::jsonb END) WITH ORDINALITY AS reports(report, ord)
         WHERE v.id = i.selected_version_id
         UNION ALL
         SELECT item, 1 AS priority, ord, true AS from_audit
         FROM task_versions v,
-          jsonb_array_elements(COALESCE(NULLIF(v.pre_trial->'items', 'null'::jsonb), '[]'::jsonb)) WITH ORDINALITY AS audit(item, ord)
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.pre_trial->'items') = 'array' THEN v.pre_trial->'items' ELSE '[]'::jsonb END) WITH ORDINALITY AS audit(item, ord)
         WHERE v.id = i.selected_version_id
       ), stored AS (
         SELECT DISTINCT ON (finding_key) finding_key, item, priority, from_audit
@@ -105,7 +105,7 @@ IDENTITY_SQL = text(
         SELECT item, COALESCE(item->>'id', COALESCE(item->>'tier', '') || '|' || COALESCE(item->>'title', '') || '|' || COALESCE(item->>'file', '')) AS finding_key,
           tr.created_at, tr.id, ord
         FROM trials tr,
-          jsonb_array_elements(COALESCE(NULLIF(tr.analysis->'action_items', 'null'::jsonb), '[]'::jsonb)) WITH ORDINALITY AS actions(item, ord)
+          jsonb_array_elements(CASE WHEN jsonb_typeof(tr.analysis->'action_items') = 'array' THEN tr.analysis->'action_items' ELSE '[]'::jsonb END) WITH ORDINALITY AS actions(item, ord)
         WHERE tr.task_id = i.task_id AND tr.task_version_id = i.selected_version_id
           AND (i.org_id IS NULL OR tr.org_id = i.org_id)
           AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL

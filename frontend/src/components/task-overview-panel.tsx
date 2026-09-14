@@ -599,7 +599,10 @@ export function TaskOverviewPanel({
         !checksLoading &&
         !trialsError &&
         trials &&
-        !findingItems.some((item) => item.id === selectedFinding) ? (
+        !findingItems.some(
+          (item) =>
+            item.id === selectedFinding || item.links_to === selectedFinding
+        ) ? (
           <p role="alert" className="text-sm text-amber-700">
             Finding {selectedFinding} is unavailable for v{version}.
           </p>
