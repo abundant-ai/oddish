@@ -240,6 +240,20 @@ export function deliveryPageQuery(params: Pick<URLSearchParams, "get">) {
   });
 }
 
+/** IDs across the full delivery take precedence over legacy task names,
+ * including when the matching member is not on the loaded page. */
+export function focusedDeliveryTask(
+  page: DeliveryPageResponse,
+  focusTask: string | null
+) {
+  return (
+    page.tasks.find((row) => row.task_id === focusTask) ??
+    (!page.member_task_ids.includes(focusTask ?? "")
+      ? page.tasks.find((row) => row.task_name === focusTask)
+      : undefined)
+  );
+}
+
 /** Reuse a loaded table when only its expanded row changes. Off-page links and
  * filter exceptions still use the server to locate the correct page. */
 export function deliveryPageContainsView(
@@ -257,11 +271,7 @@ export function deliveryPageContainsView(
     loaded.groupBy !== requested.groupBy
   )
     return false;
-  const focus =
-    page.tasks.find((row) => row.task_id === requested.focusTask) ??
-    (!page.member_task_ids.includes(requested.focusTask ?? "")
-      ? page.tasks.find((row) => row.task_name === requested.focusTask)
-      : undefined);
+  const focus = focusedDeliveryTask(page, requested.focusTask);
   if (page.focus_outside_filters && focus?.task_id !== page.focus_task_id)
     return false;
   if (requested.focusTask) return Boolean(focus);
