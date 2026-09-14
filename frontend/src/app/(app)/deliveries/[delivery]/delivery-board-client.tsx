@@ -23,6 +23,7 @@ import {
   deliveryViewQuery,
   deliveryPageQuery,
   deliveryPageContainsView,
+  focusedDeliveryTask,
   DELIVERY_STATES,
   deliveryTaskState,
   deliveryTaskLabels,
@@ -1421,9 +1422,7 @@ function DeliveryBoardContent({
       onSuccess: (board) => {
         // One polling owner: revalidate only the expanded history after each
         // successful board read, including reads following local mutations.
-        const expanded = board.tasks.find(
-          (row) => row.task_id === focusTask || row.task_name === focusTask
-        );
+        const expanded = focusedDeliveryTask(board, focusTask);
         if (expanded && !board.frozen) {
           void mutateResource(
             (key) =>
@@ -1718,11 +1717,7 @@ function DeliveryBoardContent({
   const displayedView = parseDeliveryView(new URLSearchParams(displayedQuery));
   const frozen = data.frozen;
   const owners = new Map(Object.entries(data.owners));
-  const focusedTask =
-    data.tasks.find((row) => row.task_id === focusTask) ??
-    (!data.member_task_ids.includes(focusTask ?? "")
-      ? data.tasks.find((row) => row.task_name === focusTask)
-      : undefined);
+  const focusedTask = focusedDeliveryTask(data, focusTask);
   const focusOutsideFilters =
     data.focus_outside_filters && focusedTask?.task_id === data.focus_task_id;
   const groupLabel = (row: DeliveryTaskBoardRow) =>
