@@ -111,12 +111,23 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         # over the direct Anthropic API as ``anthropic/<id>`` (see
         # _to_litellm_claude_model_id), so scope the matching ANTHROPIC_API_KEY
         # rather than the Bedrock routing flag they can't use.
-        if not _agent_invokes_bedrock(agent):
+        #
+        # claude-code under claude_code_force_direct_api is the same case: the
+        # runner blanks the Bedrock env and rewrites the model to the direct
+        # Anthropic id, so a bundle carrying the routing flag would contradict
+        # the transport the trial was already routed to. The flag is merged into
+        # the agent env after that blanking, which would leave the CLI asking
+        # Bedrock for an id only api.anthropic.com knows. Scope the key the
+        # trial will actually authenticate with instead.
+        if not _agent_invokes_bedrock(agent) or (
+            _agent_is_claude_code(agent)
+            and bool(getattr(settings, "claude_code_force_direct_api", False))
+        ):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}
-        # claude-code and SingleLLMAgent invoke Bedrock with AWS credentials,
-        # not a single API key; scoping those needs STS (a future enhancement).
-        # Carry only the routing flag; dual-read keeps ambient AWS credentials.
+        # SingleLLMAgent invokes Bedrock with AWS credentials, not a single API
+        # key; scoping those needs STS (a future enhancement). Carry only the
+        # routing flag; dual-read keeps ambient AWS credentials.
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)

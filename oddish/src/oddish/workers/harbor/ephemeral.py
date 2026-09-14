@@ -11,7 +11,6 @@ import site
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -96,47 +95,18 @@ def _claude_code_on_direct_anthropic(agent: str, is_probe: bool) -> bool:
     ).strip().lower() and _claude_code_forces_direct_api(is_probe)
 
 
-def _child_bedrock_mode(
-    runtime_env: Mapping[str, str], extra_agent_env: Mapping[str, str] | None
-) -> bool:
-    """Mirror Harbor's Bedrock-mode check against the env the child really gets.
-
-    ``extra_agent_env`` is merged last in ``_entry._build_job_config``, so a
-    job-scoped credential bundle can put ``CLAUDE_CODE_USE_BEDROCK=1`` back
-    after ``_runtime_env_overrides`` blanked it. A key absent from both layers
-    is inherited from the worker, whose image sets Bedrock on, so only an
-    explicit blank counts as off.
-    """
-    merged = {**dict(runtime_env), **dict(extra_agent_env or {})}
-    if merged.get("CLAUDE_CODE_USE_BEDROCK", "1").strip() == "1":
-        return True
-    return bool(merged.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-
-
-def _child_model_name(
-    *,
-    agent: str,
-    model: str | None,
-    is_probe: bool,
-    runtime_env: Mapping[str, str],
-    extra_agent_env: Mapping[str, str] | None,
-) -> str | None:
+def _child_model_name(*, agent: str, model: str | None, is_probe: bool) -> str | None:
     """Resolve the model id for the transport the child will actually use.
 
     Bedrock inference-profile ids and direct Anthropic API ids are disjoint
     namespaces: ``global.anthropic.claude-opus-5`` resolves only on Bedrock, and
     ``claude-opus-5`` only on api.anthropic.com. Oddish stores every Claude
     trial under the Bedrock id, so a child moved onto the direct API needs the
-    id converted or the very first request 404s. The in-process path pairs the
-    same two decisions in ``_build_agent_config``.
-
-    Read the merged child env rather than the ambient setting alone: whatever
-    ends up routing the child has to pick the id, or the rewrite lands on a
-    trial that a later env layer put back on Bedrock.
+    id converted or the very first request 404s. The in-process path rewrites
+    under this same predicate in ``_build_agent_config``, and the two must not
+    disagree: which dispatch path ran a trial is an Oddish scheduling detail.
     """
     if not _claude_code_on_direct_anthropic(agent, is_probe):
-        return model
-    if _child_bedrock_mode(runtime_env, extra_agent_env):
         return model
     return to_anthropic_api_model_id(model)
 
@@ -183,26 +153,12 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
-    # Resolve the routing env first: the model id has to follow whatever
-    # transport the merged child env selects.
-    runtime_env = _runtime_env_overrides(
-        agent=agent,
-        model=model,
-        raw_harbor_config=raw_harbor_config,
-        is_probe=is_probe,
-    )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
-        "model": _child_model_name(
-            agent=agent,
-            model=model,
-            is_probe=is_probe,
-            runtime_env=runtime_env,
-            extra_agent_env=extra_agent_env,
-        ),
+        "model": _child_model_name(agent=agent, model=model, is_probe=is_probe),
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": raw_harbor_config.get("agent_config") or {},
         "verifier": raw_harbor_config.get("verifier") or {},
@@ -224,7 +180,12 @@ def _build_payload(
             else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
-        "runtime_env": runtime_env,
+        "runtime_env": _runtime_env_overrides(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+        ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
         "extra_agent_env": extra_agent_env or {},

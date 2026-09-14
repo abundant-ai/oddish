@@ -35,6 +35,7 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
         gemini_api_key=None,
         meta_api_key=None,
         geometric_api_key=None,
+        claude_code_force_direct_api=False,
     )
     base.update(keys)
     ns = types.SimpleNamespace(**base)
@@ -185,12 +186,47 @@ def test_scoped_model_env_geometric_only_carries_geometric_key() -> None:
 
 
 def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
-    # claude-code invokes Bedrock directly and keeps the routing-flag behavior.
-    settings = _fake_settings(anthropic_api_key="sk-ant")
+    # With Bedrock routing left in place, claude-code invokes Bedrock directly
+    # and keeps the routing-flag behavior.
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
+    )
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="claude-code",
         model="global.anthropic.claude-opus-4-8",
+        settings=settings,
+    )
+    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+
+
+def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key() -> None:
+    # Under the force-direct mitigation the runner blanks the Bedrock env and
+    # rewrites the model to the direct Anthropic id. A bundle carrying the
+    # routing flag would be merged into the agent env after that blanking and
+    # send the CLI to Bedrock with an id only api.anthropic.com resolves, so
+    # scope the key the trial actually authenticates with.
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant", claude_code_force_direct_api=True
+    )
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct() -> None:
+    # The mitigation is claude-code only; SingleLLMAgent still invokes Bedrock.
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant", claude_code_force_direct_api=True
+    )
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="single-llm",
+        model="global.anthropic.claude-opus-5",
         settings=settings,
     )
     assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}

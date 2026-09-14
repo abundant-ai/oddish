@@ -1072,30 +1072,3 @@ def test_dispatch_paths_agree_on_the_claude_model_id(monkeypatch):
     )
 
     assert payload["model"] == in_process.model_name == "claude-opus-5"
-
-
-def test_build_payload_keeps_bedrock_model_when_scoped_env_restores_bedrock(
-    monkeypatch,
-):
-    """A job-scoped bundle can switch the child back to Bedrock after blanking.
-
-    ``job_tokens.scoped_model_env`` returns ``CLAUDE_CODE_USE_BEDROCK=1`` for a
-    Bedrock-classified claude-code job, and ``_entry._build_job_config`` merges
-    ``extra_agent_env`` last. The model id has to follow that final decision,
-    because ``claude-opus-5`` is not a valid Bedrock identifier.
-    """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
-    payload = _build_payload(
-        task_path=Path("/tmp/task"),
-        jobs_dir=Path("/tmp/jobs"),
-        outcome_path=Path("/tmp/jobs/outcome.json"),
-        agent="claude-code",
-        model="global.anthropic.claude-opus-5",
-        environment=EnvironmentType.DOCKER,
-        raw_harbor_config=dict(_EPHEMERAL_HC),
-        is_probe=False,
-        extra_agent_env={"CLAUDE_CODE_USE_BEDROCK": "1"},
-    )
-
-    assert payload["model"] == "global.anthropic.claude-opus-5"
