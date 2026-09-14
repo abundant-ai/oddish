@@ -84,6 +84,10 @@ def hash_idempotency_key(raw_key: str) -> str:
 
 def compute_request_hash(submission: Any) -> str:
     payload = submission.model_dump(mode="json")
+    # Existing declarative requests must keep their pre-add_trials hash across
+    # deployment; only the explicit additive operation changes request identity.
+    if not payload.get("add_trials"):
+        payload.pop("add_trials", None)
     # Drop an absent github_id so an honest retry that never sent it hashes the
     # same as the original (linkage idempotency guard).
     if payload.get("github_id") is None:

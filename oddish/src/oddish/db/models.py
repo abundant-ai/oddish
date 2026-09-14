@@ -33,9 +33,16 @@ from sqlalchemy import column as sql_column
 from sqlalchemy import event as sa_event
 from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.ext.hybrid import hybrid_property
+
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
+
+from oddish.reasoning_effort import (
+    configured_reasoning_effort,
+    reasoning_effort_expression,
+)
 
 
 def utcnow() -> datetime:
@@ -1020,6 +1027,15 @@ class TrialModel(TimestampedMixin, Base):
 
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    @hybrid_property
+    def reasoning_effort(self) -> str | None:
+        return configured_reasoning_effort(self.harbor_config)
+
+    @reasoning_effort.inplace.expression
+    @classmethod
+    def _reasoning_effort_expression(cls):
+        return reasoning_effort_expression(cls.harbor_config)
 
     # Concrete Harbor commit SHA this trial executed against (denormalized,
     # indexed projection of harbor_config["resolved_sha"]; stamped at creation).

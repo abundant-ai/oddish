@@ -50,6 +50,7 @@ import {
   parseLineRange,
   type LineRange,
 } from "@/lib/line-range";
+import { experimentModelLabel } from "@/lib/experiment-agent-grouping";
 import { sameFilePath } from "@/lib/file-path";
 
 /**
@@ -526,6 +527,10 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`-m ${trial.queue_key || trial.model}`);
   }
 
+  if (trial.reasoning_effort) {
+    const effort = trial.reasoning_effort.replace(/'/g, "'\\''");
+    parts.push(`--agent-kwarg 'reasoning_effort=${effort}'`);
+  }
   return parts.join(" ");
 }
 
@@ -1273,9 +1278,9 @@ export function TrialDetailPanel({
           <span className="flex max-w-full min-w-0 flex-1 basis-52 items-center gap-1.5">
             <span
               className="min-w-0 flex-1 truncate"
-              title={trial.model ?? undefined}
+              title={experimentModelLabel(trial.model, trial.reasoning_effort)}
             >
-              {trial.model ?? "—"}
+              {experimentModelLabel(trial.model, trial.reasoning_effort)}
             </span>
             {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           </span>

@@ -108,6 +108,7 @@ def build_experiment_trial_cell(
         name=str(row["name"]),
         agent=str(row["agent"]),
         model=normalized_model,
+        reasoning_effort=row.get("reasoning_effort"),
         provider=str(row["provider"]),
         queue_key=settings.normalize_queue_key(str(row["queue_key"])),
         status=row["status"],
@@ -336,7 +337,9 @@ def _experiment_task_rows(
             review_version,
             and_(
                 review_version.id
-                == func.coalesce(stats.c.trial_version_id, TaskModel.current_version_id),
+                == func.coalesce(
+                    stats.c.trial_version_id, TaskModel.current_version_id
+                ),
                 review_version.deleted_at.is_(None),
             ),
         )
@@ -399,7 +402,9 @@ async def _experiment_summary(
     active_trials = active_scope.trials
     published_verdict = or_(
         tasks.c.verdict_status.is_(None),
-        tasks.c.verdict_status.not_in((*_ACTIVE_VERDICT_STATUSES, VerdictStatus.FAILED)),
+        tasks.c.verdict_status.not_in(
+            (*_ACTIVE_VERDICT_STATUSES, VerdictStatus.FAILED)
+        ),
     )
     summary_result = await session.execute(
         select(
