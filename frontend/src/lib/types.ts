@@ -1404,6 +1404,7 @@ export interface Customer {
 }
 
 export interface DeliveryCheckResult {
+  failure_labels?: string[];
   key: string;
   kind: "automated" | "manual";
   label: string;

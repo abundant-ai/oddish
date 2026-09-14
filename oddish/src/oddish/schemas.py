@@ -2679,6 +2679,8 @@ class DeliveryListItem(DeliveryResponse):
 
 
 class DeliveryCheckResult(BaseModel):
+    # Short unmet requirements; absent in older finalized snapshots.
+    failure_labels: list[str] = Field(default_factory=list)
     key: str
     kind: DeliveryCheckKind
     label: str

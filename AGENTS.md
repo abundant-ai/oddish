@@ -2416,3 +2416,5 @@ Delivery legacy `filter=blocked` links include Needs work and QA incomplete,
 excluding Needs sign-off and Ready. Verdict provenance on delivery boards and
 task QA history orders by completion time (creation time when absent), then
 creation time and trial ID descending to resolve ties consistently.
+
+Delivery check responses include `failure_labels`, a list of concise unmet requirements derived from the configured check thresholds and the reviewed version. Passing, waived, and disabled checks contribute no row badges. The frontend uses these labels without parsing `detail`; older snapshots without the field use check-specific labels without invented counts. Delivery state keys and readiness rules are unchanged; the `qa_incomplete` grouping is displayed as "Checks needed", while task rows show the individual requirements even when grouped by state.

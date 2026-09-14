@@ -1276,6 +1276,9 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
     checks = _checks(board, task.id)
     assert checks["verdict_ok"].status == "pass"
     assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    assert checks["min_rollouts"].failure_labels == (
+        [] if custom_minimum else [f"Runs: {run_count}/5", "Agents: 1/3"]
+    )
     if not custom_minimum:
         assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
         assert not board.ready
@@ -1321,7 +1324,7 @@ async def test_completed_source_review_can_block_a_fair_agent_failure(session):
     row = board.tasks[0]
     checks = {check.key: check for check in row.checks}
     assert checks["pre_trial_passed"].status == "pass"
-    assert "source review completed" in checks["pre_trial_passed"].detail
+    assert "pre-trial audit completed" in checks["pre_trial_passed"].detail
     assert "defect checks are separate" in checks["pre_trial_passed"].detail
     assert checks["no_must_fix"].status == "fail"
     assert checks["signoff"].status == "fail"
@@ -1500,3 +1503,32 @@ async def test_member_verdict_lookup_preserves_eligibility(session, newer_run):
         )
         history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
         assert history.verdict_version_id == expected.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audit_status, label",
+    [
+        (None, "Pre-trial audit needed"),
+        (VerdictStatus.QUEUED, "Pre-trial audit queued"),
+        (VerdictStatus.RUNNING, "Pre-trial audit running"),
+        (VerdictStatus.FAILED, "Pre-trial audit failed"),
+        (VerdictStatus.SUCCESS, None),
+    ],
+)
+async def test_delivery_failure_labels_identify_audit_state(
+    session, audit_status, label
+):
+    task, version, _ = await _green_task(session, "audit-label")
+    version.pre_trial_status = audit_status
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="audit-label", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["pre_trial_passed"]
+    assert check.failure_labels == ([] if label is None else [label])
+    assert check.status == ("pass" if label is None else "fail")

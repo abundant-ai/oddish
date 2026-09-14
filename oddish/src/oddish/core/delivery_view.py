@@ -18,7 +18,7 @@ from oddish.schemas import (
 
 STATE_LABELS = {
     "needs_work": "Needs work",
-    "qa_incomplete": "QA incomplete",
+    "qa_incomplete": "Checks needed",
     "awaiting_signoff": "Needs sign-off",
     "ready": "Ready",
 }

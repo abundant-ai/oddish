@@ -31,7 +31,7 @@ export const DELIVERY_STATES = {
     background: "bg-red-500/10",
   },
   qa_incomplete: {
-    label: "QA incomplete",
+    label: "Checks needed",
     tone: "text-amber-700 dark:text-amber-400",
     background: "bg-amber-500/10",
   },
@@ -70,6 +70,31 @@ export function deliveryTaskState(
   }
   if (failedChecks.length) return "qa_incomplete";
   return row.ready ? "ready" : "awaiting_signoff";
+}
+
+/** Keep missing delivery requirements visible without parsing check prose. */
+export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
+  const defects = row.defects.filter((finding) => !finding.acknowledged).length;
+  if (defects > 0) return [`Rejected: ${defects} Must Fix`];
+  const labels = row.checks
+    .filter((check) => check.kind === "automated" && check.status === "fail")
+    .flatMap((check) =>
+      check.failure_labels?.length
+        ? check.failure_labels
+        : [
+            {
+              pre_trial_passed: "Pre-trial audit needed",
+              min_rollouts: "Run requirements unmet",
+              verdict_ok:
+                row.qa.status === "needs_fixes" ? "Rejected" : "Verdict needed",
+              task_exists: "Task missing",
+              no_must_fix: "Finding decisions needed",
+            }[check.key] ?? check.label,
+          ]
+    );
+  return labels.length
+    ? [...new Set(labels)]
+    : [DELIVERY_STATES[deliveryTaskState(row)].label];
 }
 
 /** Ownership scopes current counts and rows, including completed tasks. */

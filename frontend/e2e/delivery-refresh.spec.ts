@@ -1056,7 +1056,7 @@ test("owner, state, and history share one scope across server pages; finalize st
   const overview = page.getByLabel("Delivery overview");
   for (const [label, count] of [
     ["Needs work", "1"],
-    ["QA incomplete", "2"],
+    ["Checks needed", "2"],
     ["Needs sign-off", "1"],
     ["Ready", "2"],
   ]) {
@@ -1668,6 +1668,67 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(page.getByRole("button", { name: `Rerun QA (${count})` })).toBeEnabled();
+    expect(state.writes).toEqual([]);
+  });
+}
+
+
+for (const group of ["none", "state"]) {
+  test(`delivery row names each missing requirement when grouped by ${group}`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks[0].checks = [
+      {
+        key: "pre_trial_passed",
+        kind: "automated",
+        status: "fail",
+        label: "Audit",
+        detail: "Old verbose audit explanation",
+        failure_labels: ["Pre-trial audit running"],
+      },
+      {
+        key: "min_rollouts",
+        kind: "automated",
+        status: "fail",
+        label: "Runs",
+        detail: "Old verbose coverage explanation",
+        failure_labels: ["Runs: 2/8", "Agents: 1/4"],
+      },
+      {
+        key: "verdict_ok",
+        kind: "automated",
+        status: "fail",
+        label: "Verdict",
+        detail: "Old verbose verdict explanation",
+        failure_labels: ["Verdict needed"],
+      },
+    ];
+    await page.goto(`/?group=${group}`);
+    const row = page
+      .getByRole("row")
+      .filter({ has: page.getByRole("link", { name: "Task A", exact: true }) });
+    for (const label of [
+      "Pre-trial audit running",
+      "Runs: 2/8",
+      "Agents: 1/4",
+      "Verdict needed",
+    ])
+      await expect(row.getByText(label, { exact: true })).toBeVisible();
+    await expect(page.getByText("QA incomplete", { exact: true })).toHaveCount(
+      0
+    );
+    await row.click();
+    await expect(
+      page.getByRole("link", { name: "Open pre-trial audit", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "View runs", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Open run review", exact: true })
+    ).toBeVisible();
+    await expect(page.getByText(/Old verbose/)).toHaveCount(0);
     expect(state.writes).toEqual([]);
   });
 }
