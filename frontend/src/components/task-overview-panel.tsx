@@ -554,7 +554,9 @@ export function TaskOverviewPanel({
                     ? `${count} agent${count === 1 ? "" : "s"} succeeded`
                     : classification === "HARNESS_ERROR"
                       ? `${count} run${count === 1 ? "" : "s"} couldn’t be evaluated`
-                      : `${count} ${EXECUTION_LABELS[classification].toLowerCase()}${count === 1 ? "" : "s"}`}
+                      : classification === "BAD_SUCCESS"
+                        ? `${count} invalid success${count === 1 ? "" : "es"}`
+                        : `${count} task-caused failure${count === 1 ? "" : "s"}`}
               </span>
             );
           })}

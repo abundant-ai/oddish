@@ -365,6 +365,30 @@ test.describe("real components with local fixture API", () => {
     });
   }
 
+  for (const count of [1, 2]) {
+    test(`invalid-success review count uses the correct plural for ${count}`, async ({
+      page,
+    }) => {
+      const original = tasks[0].trials![0];
+      await page.route("**/api/tasks/task-a/trials?**", (route) =>
+        route.fulfill({
+          json: Array.from({ length: count }, (_, index) => ({
+            ...original,
+            id: `invalid-${index}`,
+            analysis: { classification: "BAD_SUCCESS" },
+          })),
+        })
+      );
+      await page.goto("/tasks/task-a?version=7&drawer=task&taskPane=overview");
+      await expect(
+        page.getByText(
+          count === 1 ? "1 invalid success" : "2 invalid successes",
+          { exact: true }
+        )
+      ).toBeVisible();
+    });
+  }
+
   test("blocker opens exact finding, file, line and preserves browser history", async ({
     page,
     context,
