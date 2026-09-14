@@ -22,6 +22,7 @@ import {
   parseDeliveryView,
   deliveryViewQuery,
   deliveryPageQuery,
+  deliveryPageContainsView,
   DELIVERY_STATES,
   deliveryTaskState,
   deliveryTaskLabels,
@@ -599,7 +600,9 @@ function QAHistoryVersionRow({
 }
 
 function TaskRow({
-  row,
+  row: summary,
+  deliveryId,
+  onRefresh,
   frozen,
   isAdmin,
   focused,
@@ -615,13 +618,15 @@ function TaskRow({
   onRemove,
   groupBy,
   canEditWork,
-  busy,
+  busy: pageBusy,
   onClaim,
   onRelease,
   onSaveWork,
   pendingChecks,
 }: {
   row: DeliveryTaskBoardRow;
+  deliveryId: string;
+  onRefresh: () => Promise<unknown>;
   frozen: boolean;
   isAdmin: boolean;
   // True when the page URL's ?task= names this row: it opens expanded
@@ -655,6 +660,42 @@ function TaskRow({
   }) => Promise<void>;
 }) {
   const expanded = focused;
+  const {
+    data: details,
+    error: detailsError,
+    mutate: retryDetails,
+  } = useSWR<DeliveryTaskBoardRow>(
+    expanded && !frozen
+      ? `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(summary.task_id)}?version=${encodeURIComponent(summary.version_id ?? "")}`
+      : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      revalidateOnMount: true,
+    }
+  );
+  const matchingDetails =
+    details?.task_id === summary.task_id &&
+    details.delivery_task_id === summary.delivery_task_id &&
+    details.version_id === summary.version_id;
+  // The table response owns checks and acknowledgments, including per-check
+  // update progress. The task read supplies only full bodies for those same
+  // finding identities; an earlier detail response cannot undo a board write.
+  const row = matchingDetails
+    ? {
+        ...summary,
+        defects: summary.defects.map((defect) => ({
+          ...defect,
+          finding:
+            details.defects.find((item) => item.id === defect.id)?.finding ??
+            defect.finding,
+        })),
+      }
+    : summary;
+  const detailsReady = frozen || matchingDetails;
+  const busy = pageBusy || (expanded && !detailsReady);
+
   const openDefects = row.defects.filter((defect) => !defect.acknowledged);
   const taskHref = `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}&drawer=task&taskPane=overview` : ""}`;
   const state = DELIVERY_STATES[deliveryTaskState(row)];
@@ -818,6 +859,27 @@ function TaskRow({
             className="pb-6 whitespace-normal"
           >
             <div className="max-w-4xl space-y-3">
+              {detailsError ? (
+                <div role="alert" className="text-sm">
+                  Could not load task details.{" "}
+                  <Button variant="link" onClick={() => void retryDetails()}>
+                    Retry task details
+                  </Button>
+                </div>
+              ) : !detailsReady ? (
+                details ? (
+                  <div role="status" className="text-sm">
+                    Task version changed.{" "}
+                    <Button variant="link" onClick={() => void onRefresh()}>
+                      Refresh delivery
+                    </Button>
+                  </div>
+                ) : (
+                  <p role="status" className="text-muted-foreground text-sm">
+                    Loading task details…
+                  </p>
+                )
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <DeliveryQAStatusBadge qa={row.qa} />
                 {groupBy === "owner" &&
@@ -1174,7 +1236,7 @@ function TaskRow({
                   frozen={frozen}
                 />
               </DeliveryDisclosure>
-              {isAdmin && !frozen && (
+              {isAdmin && !frozen && detailsReady && (
                 <DeliveryDisclosure panel="actions">
                   <summary className="cursor-pointer py-2 text-sm">
                     Task actions
@@ -1311,7 +1373,25 @@ function DeliveryBoardContent({
     new Map()
   );
   const query = deliveryPageQuery(searchParams);
-  const resourceKey = `/api/deliveries/${encodeURIComponent(deliveryId)}/view${query}`;
+  const pagePrefix = `/api/deliveries/${encodeURIComponent(deliveryId)}/view`;
+  let resourceKey = `${pagePrefix}${query}`;
+  // Keep the existing SWR subscription for an equivalent table. Expansion
+  // selects a separate task resource; it must not refetch 2,297 sibling rows.
+  for (const key of cache.keys()) {
+    if (
+      typeof key !== "string" ||
+      (key !== pagePrefix && !key.startsWith(`${pagePrefix}?`))
+    )
+      continue;
+    const page = cache.get(key)?.data as DeliveryPageResponse | undefined;
+    if (
+      page &&
+      deliveryPageContainsView(page, key.slice(pagePrefix.length), query)
+    ) {
+      resourceKey = key;
+      break;
+    }
+  }
   const { data, error, isValidating, mutate } = useSWR<
     DeliveryPageResponse & {
       requestKey: string;
@@ -1346,6 +1426,13 @@ function DeliveryBoardContent({
         );
         if (expanded && !board.frozen) {
           void mutateResource(
+            (key) =>
+              typeof key === "string" &&
+              key.startsWith(
+                `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(expanded.task_id)}?`
+              )
+          );
+          void mutateResource(
             `/api/tasks/${encodeURIComponent(expanded.task_id)}/qa-history`,
             undefined,
             { populateCache: false, throwOnError: false }
@@ -1374,6 +1461,17 @@ function DeliveryBoardContent({
     const isDeliveryPage = (key: unknown) =>
       typeof key === "string" &&
       key.startsWith(`/api/deliveries/${encodeURIComponent(deliveryId)}/view`);
+    const isTaskDetail = (key: unknown) =>
+      typeof key === "string" &&
+      key.startsWith(
+        `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/`
+      );
+    // Invalidate pre-write detail responses too, retaining the visible evidence.
+    await mutateResource(
+      isTaskDetail,
+      (current: DeliveryTaskBoardRow | undefined) => current,
+      { revalidate: false }
+    );
     // Mark every cached page stale and invalidate pre-write requests, retaining
     // displayed data on errors. An inactive page refreshes on its next activation.
     await mutateResource(
@@ -1386,7 +1484,10 @@ function DeliveryBoardContent({
     // mutation data returns before revalidation and loses per-check progress.
     // SWR catches read failures in revalidation and publishes them as `error`;
     // throwOnError controls mutation-data failures, not this read-only form.
-    return mutateResource(isDeliveryPage);
+    return Promise.all([
+      mutateResource(isDeliveryPage),
+      mutateResource(isTaskDetail),
+    ]);
   }
 
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1617,10 +1718,13 @@ function DeliveryBoardContent({
   const displayedView = parseDeliveryView(new URLSearchParams(displayedQuery));
   const frozen = data.frozen;
   const owners = new Map(Object.entries(data.owners));
-  const focusedTask = data.tasks.find(
-    (row) => row.task_id === data.focus_task_id
-  );
-  const focusOutsideFilters = data.focus_outside_filters;
+  const focusedTask =
+    data.tasks.find((row) => row.task_id === focusTask) ??
+    (!data.member_task_ids.includes(focusTask ?? "")
+      ? data.tasks.find((row) => row.task_name === focusTask)
+      : undefined);
+  const focusOutsideFilters =
+    data.focus_outside_filters && focusedTask?.task_id === data.focus_task_id;
   const groupLabel = (row: DeliveryTaskBoardRow) =>
     displayedView.groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
@@ -2182,6 +2286,8 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
+                            deliveryId={deliveryId}
+                            onRefresh={refreshBoard}
                             pendingChecks={pendingChecks}
                             groupBy={displayedView.groupBy}
                             busy={busy || changingView}

@@ -8,6 +8,7 @@ async function controlledAPI(page: Page) {
     history: history(),
     failBoard: false,
     failHistory: false,
+    detailReads: 0,
     reads: { board: 0, history: 0 },
     writes: [] as { path: string; body: Record<string, unknown> }[],
   };
@@ -60,6 +61,16 @@ async function controlledAPI(page: Page) {
         json: state.failHistory ? { detail: "history offline" } : state.history,
       });
     }
+    if (path.startsWith("/api/deliveries/refresh-test/tasks/")) {
+      state.detailReads++;
+      const task = state.board.tasks.find((row) =>
+        path.endsWith(`/${row.task_id}`)
+      );
+      return route.fulfill({
+        status: task ? 200 : 404,
+        json: task ?? { detail: "Not a delivery member" },
+      });
+    }
     if (path === "/api/deliveries/refresh-test/selection") {
       return route.fulfill({
         json: selectionFixture(
@@ -96,11 +107,17 @@ async function tick(page: Page) {
   await page.clock.fastForward(15000);
 }
 
-test("streams the delivery placeholder while awaiting server data", async ({ page }) => {
+test("streams the delivery placeholder while awaiting server data", async ({
+  page,
+}) => {
   const state = await controlledAPI(page);
   await page.goto("/?seed=slow", { waitUntil: "commit" });
-  await expect(page.getByRole("status", { name: "Loading deliveries" })).toBeVisible();
-  await expect(page.getByRole("status", { name: "Loading deliveries" })).toBeHidden();
+  await expect(
+    page.getByRole("status", { name: "Loading deliveries" })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status", { name: "Loading deliveries" })
+  ).toBeHidden();
   await expect(page.getByText("Task A", { exact: true })).toBeVisible();
   expect(state.reads.board).toBe(0);
 });
@@ -481,25 +498,30 @@ test("local add, remove and sign-off refresh immediately and checks carry the vi
   expect(state.writes.some((w) => w.path.endsWith("/qa/retry"))).toBe(false);
 });
 
-test("reads are bounded to one board and one expanded history per interval", async ({
+test("polling reads one board and only the expanded task details and history", async ({
   page,
 }) => {
   const state = await controlledAPI(page);
   await openBoard(page);
+  await expect.poll(() => state.detailReads).toBe(1);
   for (let i = 0; i < 4; i++) {
     const reads = { ...state.reads };
+    const detailReads = state.detailReads;
     await tick(page);
     await expect.poll(() => state.reads.history).toBe(reads.history + 1);
     expect(state.reads.board).toBe(reads.board + 1);
+    await expect.poll(() => state.detailReads).toBe(detailReads + 1);
   }
   await page
     .getByRole("row")
     .filter({ has: page.getByRole("link", { name: "Task A", exact: true }) })
     .click();
   const reads = { ...state.reads };
+  const detailReads = state.detailReads;
   await tick(page);
   await expect.poll(() => state.reads.board).toBe(reads.board + 1);
   expect(state.reads.history).toBe(reads.history);
+  expect(state.detailReads).toBe(detailReads);
   expect(state.writes).toEqual([]);
 });
 
@@ -1643,13 +1665,20 @@ test("history starts on intent and opening consumes the same pending read", asyn
 });
 
 for (const count of [1, 11]) {
-  test(`refresh updates ${count} selected tasks and preserves selected versions`, async ({ page }) => {
+  test(`refresh updates ${count} selected tasks and preserves selected versions`, async ({
+    page,
+  }) => {
     const state = await controlledAPI(page);
     state.board.tasks = Array.from({ length: count }, (_, i) => ({
-      ...taskRow(), task_id: `task-${i}`, delivery_task_id: `member-${i}`, task_name: `Task ${i}`,
+      ...taskRow(),
+      task_id: `task-${i}`,
+      delivery_task_id: `member-${i}`,
+      task_name: `Task ${i}`,
     }));
     await page.goto("/?per_page=10");
-    await page.getByRole("checkbox", { name: "Select all tasks in this view" }).click();
+    await page
+      .getByRole("checkbox", { name: "Select all tasks in this view" })
+      .click();
     const signoff = page.getByRole("button", { name: "Sign off", exact: true });
     await expect(signoff).toBeDisabled();
     for (const row of state.board.tasks) row.checks[0].status = "pass";
@@ -1660,18 +1689,21 @@ for (const count of [1, 11]) {
     last.qa.status = "running";
     await tick(page);
     await expect(signoff).toBeDisabled();
-    await expect(page.getByRole("button", { name: `Rerun QA (${count - 1})` })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: `Rerun QA (${count - 1})` })
+    ).toBeVisible();
     last.checks[0].status = "pass";
     last.qa.status = "never";
     last.version_id = "version-8";
     last.version = 8;
     await tick(page);
     await expect(signoff).toBeDisabled();
-    await expect(page.getByRole("button", { name: `Rerun QA (${count})` })).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: `Rerun QA (${count})` })
+    ).toBeEnabled();
     expect(state.writes).toEqual([]);
   });
 }
-
 
 for (const group of ["none", "state"]) {
   test(`delivery row names each missing requirement when grouped by ${group}`, async ({
@@ -1732,3 +1764,168 @@ for (const group of ["none", "state"]) {
     expect(state.writes).toEqual([]);
   });
 }
+
+test("visible task expansion opens before its details without a delivery read", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.goto("/?source=agent");
+  await expect(
+    page.getByRole("button", { name: "Review Task A", exact: true })
+  ).toBeVisible();
+  const reads = state.reads.board;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let detailReads = 0;
+  await page.route(
+    "**/api/deliveries/refresh-test/tasks/task-a?*",
+    async (route) => {
+      detailReads++;
+      await gate;
+      return route.fallback();
+    }
+  );
+  try {
+    await page
+      .getByRole("button", { name: "Review Task A", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Collapse Task A", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("Loading task details…", { exact: true })
+    ).toBeVisible();
+    await expect.poll(() => detailReads).toBe(1);
+    expect(state.reads.board).toBe(reads);
+    await expect(page).toHaveURL(/source=agent&task=task-a/);
+    await page
+      .getByRole("button", { name: "Collapse Task A", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Review Task A", exact: true })
+    ).toBeVisible();
+    expect(state.reads.board).toBe(reads);
+    await page.goBack();
+    await expect(
+      page.getByRole("button", { name: "Collapse Task A", exact: true })
+    ).toBeVisible();
+    expect(state.reads.board).toBe(reads);
+  } finally {
+    release();
+  }
+  await expect(
+    page.getByText("Loading task details…", { exact: true })
+  ).toHaveCount(0);
+});
+
+test("task detail failure has a task-only retry", async ({ page }) => {
+  const state = await controlledAPI(page);
+  let failed = true;
+  await page.route(
+    "**/api/deliveries/refresh-test/tasks/task-a?*",
+    async (route) => {
+      if (failed)
+        return route.fulfill({
+          status: 503,
+          json: { detail: "details offline" },
+        });
+      return route.fallback();
+    }
+  );
+  await page.goto("/?task=task-a");
+  await expect(
+    page.getByText("Could not load task details.", { exact: false })
+  ).toBeVisible();
+  const reads = state.reads.board;
+  failed = false;
+  await page.getByRole("button", { name: "Retry task details" }).click();
+  await expect(
+    page.getByRole("button", { name: "Retry task details" })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("checkbox", { name: "Task sign-off", exact: true })
+  ).toBeVisible();
+  expect(state.reads.board).toBe(reads);
+});
+
+test("a different task version is not displayed as the selected version", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  await page.route(
+    "**/api/deliveries/refresh-test/tasks/task-a?*",
+    async (route) => {
+      return route.fulfill({
+        json: { ...state.board.tasks[0], version_id: "task-a-v8", version: 8 },
+      });
+    }
+  );
+  await page.goto("/?task=task-a");
+  await expect(
+    page.getByRole("button", { name: "Refresh delivery", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "Task sign-off", exact: true })
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Collapse Task A", exact: true })
+  ).toBeVisible();
+});
+
+test("switching visible tasks never waits for the previous task response", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  state.board.tasks.push({
+    ...taskRow(),
+    task_id: "task-b",
+    task_name: "Task B",
+    delivery_task_id: "member-b",
+    version_id: "task-b-v7",
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = false;
+  await page.route(
+    "**/api/deliveries/refresh-test/tasks/task-a?*",
+    async (route) => {
+      started = true;
+      await gate;
+      return route.fallback();
+    }
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Review Task A", exact: true })
+  ).toBeVisible();
+  const reads = state.reads.board;
+  try {
+    await page
+      .getByRole("button", { name: "Review Task A", exact: true })
+      .click();
+    await expect.poll(() => started).toBe(true);
+    await page
+      .getByRole("button", { name: "Review Task B", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Collapse Task B", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("Loading task details…", { exact: true })
+    ).toHaveCount(0);
+    expect(state.reads.board).toBe(reads);
+  } finally {
+    release();
+  }
+  await expect(
+    page.getByRole("button", { name: "Collapse Task B", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review Task A", exact: true })
+  ).toBeVisible();
+  expect(state.reads.board).toBe(reads);
+});

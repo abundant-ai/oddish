@@ -18,6 +18,7 @@ from oddish.core.deliveries import (
     delete_delivery_core,
     finalize_delivery_core,
     get_delivery_board_core,
+    get_delivery_task_core,
     get_task_qa_history_core,
     list_customers_core,
     list_deliveries_core,
@@ -39,6 +40,7 @@ from oddish.schemas import (
     DeliveryResponse,
     DeliverySelectionItem,
     DeliveryTasksAdd,
+    DeliveryTaskBoardRow,
     DeliveryViewQuery,
     ManualCheckSet,
     QAWorkClaim,
@@ -116,6 +118,16 @@ async def get_delivery_selection(
         )
         board.qa_viewer_user_id = "local"
         return delivery_selection(board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/tasks/{task_id}", response_model=DeliveryTaskBoardRow
+)
+async def get_delivery_task(delivery_id: str, task_id: str) -> DeliveryTaskBoardRow:
+    async with get_read_session() as session:
+        return await get_delivery_task_core(
+            session, delivery_id=delivery_id, org_id=None, task_id=task_id
+        )
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)
