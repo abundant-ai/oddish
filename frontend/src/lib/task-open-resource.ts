@@ -70,6 +70,7 @@ export function taskOpenFromBrowse(browse: TaskBrowseItem): TaskOpenResource {
     error_kind: trial.error_message ? "error" : null,
     is_probe: false,
     is_billed: false,
+    has_trajectory: false,
     created_at: browse.last_run_at ?? "",
   }));
   const status =

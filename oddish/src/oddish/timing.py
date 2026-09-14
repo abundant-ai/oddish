@@ -19,6 +19,14 @@ _PHASE_DESCRIPTIONS = {
     "db_sql": "SQL execution",
     "external_http": "External HTTP",
     "db_commit": "Database commit",
+    "storage_head": "Storage metadata requests",
+    "storage_client_init": "Storage client initialization",
+    "trajectory_cache_wait": "Wait for another trajectory reader",
+    "storage_get": "Storage GET to response headers",
+    "storage_read": "Storage response body reads",
+    "storage_delete": "Storage batch deletes",
+    "storage_list": "Storage object listings",
+    "archive_parse": "Archive decompression and extraction",
     "handler_db": "Handler database total",
     "handler_total": "Handler time to response start",
     "backend_total": "Backend time to response start",
@@ -37,6 +45,13 @@ class RequestTiming:
     status_code: int | None = None
     cache_hit: bool | None = None
     handler_started_at: float | None = None
+    storage_request_count: int = 0
+    storage_bytes: int = 0
+    archive_bytes: int = 0
+    archive_cache_hit: bool | None = None
+    trajectory_cache_hit: bool | None = None
+    file_source: str | None = None
+    file_bytes: int | None = None
 
     def record(
         self, name: str, duration_ms: float, *, stage: str | None = None

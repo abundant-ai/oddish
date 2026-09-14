@@ -5,7 +5,7 @@ Two numbers per experiment, answering two different questions:
 * ``cost_*`` -- what did the work on this page cost? Every trial the page can
   render counts: trials homed in the experiment (``trials.experiment_id``) and
   trials gathered into it (``experiment_trials``) -- the same membership the
-  grid applies (``trial_in_experiment``). A collection assembled entirely from
+  grid applies (``experiment_trial_scope``). A collection assembled entirely from
   other experiments' work therefore shows the real price of that work, not a
   blank tile. ``task_experiments`` link rows deliberately do NOT widen this:
   they exist so shared/collected TASK rows appear, but the grid still scopes
@@ -74,14 +74,16 @@ already-clamped inputs), so pricing lives in exactly one place.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.cost_exclusions import excluded_spend_filter, load_cost_exclusions
 from oddish.core.endpoints.qa_cost import get_experiment_qa_cost_totals
-from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db.models import TrialModel
+from oddish.core.experiment_membership import experiment_trial_scope
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
 
@@ -98,30 +100,49 @@ def _non_negative(column):
     return case((column > 0, column), else_=0)
 
 
-_INPUT = _non_negative(func.coalesce(TrialModel.input_tokens, 0))
-_OUTPUT = _non_negative(func.coalesce(TrialModel.output_tokens, 0))
-_CACHED = _non_negative(func.coalesce(TrialModel.cache_tokens, 0))
-_CACHE_WRITE = _non_negative(func.coalesce(TrialModel.cache_write_tokens, 0))
+@dataclass(frozen=True)
+class _CostTerms:
+    """Per-row pricing terms over one ``TrialModel`` entity or alias."""
 
-# max(0, input - cached - cache_write), per row.
-_uncached_input = _non_negative(_INPUT - _CACHED - _CACHE_WRITE)
+    input: Any
+    output: Any
+    cached: Any
+    cache_write: Any
+    uncached_input: Any
+    has_native_cost: Any
+    has_token_usage: Any
+    estimated_row: Any
 
-_HAS_NATIVE_COST = TrialModel.cost_usd.isnot(None)
 
-# Matches the frontend usage fold: a trial contributes when either reported
-# input or output usage, and the displayed total is input + output tokens.
-_HAS_TOKEN_USAGE = or_(
-    TrialModel.input_tokens.isnot(None), TrialModel.output_tokens.isnot(None)
-)
-
-# Mirrors ``_resolve_trial_cost`` + ``estimate_cost_usd``: the former bails when
-# both token columns are NULL, the latter when no billable token bucket is
-# positive. A trial failing either resolves to no cost at all.
-_ESTIMATED_ROW = and_(
-    TrialModel.cost_usd.is_(None),
-    or_(TrialModel.input_tokens.isnot(None), TrialModel.output_tokens.isnot(None)),
-    or_(_INPUT > 0, _OUTPUT > 0, _CACHE_WRITE > 0),
-)
+def _cost_terms(trial: Any) -> _CostTerms:
+    input_ = _non_negative(func.coalesce(trial.input_tokens, 0))
+    output = _non_negative(func.coalesce(trial.output_tokens, 0))
+    cached = _non_negative(func.coalesce(trial.cache_tokens, 0))
+    cache_write = _non_negative(func.coalesce(trial.cache_write_tokens, 0))
+    return _CostTerms(
+        input=input_,
+        output=output,
+        cached=cached,
+        cache_write=cache_write,
+        # max(0, input - cached - cache_write), per row.
+        uncached_input=_non_negative(input_ - cached - cache_write),
+        has_native_cost=trial.cost_usd.isnot(None),
+        # Matches the frontend usage fold: a trial contributes when either
+        # reported input or output usage, and the displayed total is input +
+        # output tokens.
+        has_token_usage=or_(
+            trial.input_tokens.isnot(None), trial.output_tokens.isnot(None)
+        ),
+        # Mirrors ``_resolve_trial_cost`` + ``estimate_cost_usd``: the former
+        # bails when both token columns are NULL, the latter when no billable
+        # token bucket is positive. A trial failing either resolves to no cost
+        # at all.
+        estimated_row=and_(
+            trial.cost_usd.is_(None),
+            or_(trial.input_tokens.isnot(None), trial.output_tokens.isnot(None)),
+            or_(input_ > 0, output > 0, cache_write > 0),
+        ),
+    )
 
 
 def _sum_when(condition, value):
@@ -134,7 +155,7 @@ def experiment_cost_groups_select(
     """One row per ``(agent, model, billed, owned)`` bucket of the member trials.
 
     Membership is the only filter: a trial counts iff it is homed in this
-    experiment or gathered into it -- ``trial_in_experiment``, the same
+    experiment or gathered into it -- ``experiment_trial_scope``, the same
     predicate the grid scopes trials with, so the tile prices exactly the work
     the page can render (module docstring explains why ``task_experiments``
     links don't widen it). The single WHERE counts a trial once even when it
@@ -143,36 +164,45 @@ def experiment_cost_groups_select(
     trial-soft-delete filtering: those hide trials from the grid, but the
     spend is real and already billed.
     """
-    billed = TrialModel.billed_user_id.isnot(None)
-    owned = TrialModel.experiment_id == experiment_id
-    excluded = excluded_spend_filter()
-    member = trial_in_experiment(experiment_id)
+    # Membership is a FROM clause, not a WHERE predicate: the scope's UNION
+    # ALL seeks this experiment's rows through their indexes, where filtering
+    # ``trials`` with ``trial_in_experiment`` scanned the whole table.
+    scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    trial = scope.trials
+    terms = _cost_terms(trial)
+    billed = trial.billed_user_id.isnot(None)
+    owned = trial.experiment_id == experiment_id
+    excluded = excluded_spend_filter(trial)
 
-    query = (
+    return (
         select(
-            TrialModel.agent.label("agent"),
-            TrialModel.model.label("model"),
+            trial.agent.label("agent"),
+            trial.model.label("model"),
             billed.label("billed"),
             owned.label("owned"),
             excluded.label("excluded"),
             func.count().label("trial_count"),
-            func.count(case((_HAS_NATIVE_COST, 1))).label("native_count"),
-            _sum_when(_HAS_NATIVE_COST, TrialModel.cost_usd).label("native_cost_usd"),
-            func.count(case((_HAS_TOKEN_USAGE, 1))).label("token_trial_count"),
-            _sum_when(_HAS_TOKEN_USAGE, _INPUT + _OUTPUT).label("token_count"),
-            func.count(case((_ESTIMATED_ROW, 1))).label("estimated_count"),
-            _sum_when(_ESTIMATED_ROW, _uncached_input).label("uncached_input_tokens"),
-            _sum_when(_ESTIMATED_ROW, _CACHED).label("cached_tokens"),
-            _sum_when(_ESTIMATED_ROW, _CACHE_WRITE).label("cache_write_tokens"),
-            _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
+            func.count(case((terms.has_native_cost, 1))).label("native_count"),
+            _sum_when(terms.has_native_cost, trial.cost_usd).label("native_cost_usd"),
+            func.count(case((terms.has_token_usage, 1))).label("token_trial_count"),
+            _sum_when(terms.has_token_usage, terms.input + terms.output).label(
+                "token_count"
+            ),
+            func.count(case((terms.estimated_row, 1))).label("estimated_count"),
+            _sum_when(terms.estimated_row, terms.uncached_input).label(
+                "uncached_input_tokens"
+            ),
+            _sum_when(terms.estimated_row, terms.cached).label("cached_tokens"),
+            _sum_when(terms.estimated_row, terms.cache_write).label(
+                "cache_write_tokens"
+            ),
+            _sum_when(terms.estimated_row, terms.output).label("output_tokens"),
         )
-        .where(member)
-        .group_by(TrialModel.agent, TrialModel.model, billed, owned, excluded)
+        .select_from(trial)
+        .where(*scope.member_predicates())
+        .group_by(trial.agent, trial.model, billed, owned, excluded)
         .execution_options(include_deleted=True)
     )
-    if org_id is not None:
-        query = query.where(TrialModel.org_id == org_id)
-    return query
 
 
 def _estimated_group_cost(agent: str | None, model: str | None, row) -> float | None:

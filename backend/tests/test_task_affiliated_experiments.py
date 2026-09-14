@@ -87,7 +87,9 @@ async def test_public_task_payload_lists_only_public_experiments():
                        ('exp-pub2','Second Public','org1',true,'tok-pub2',now(),now()),
                        ('exp-priv','Aardvark Secret','org1',false,null,now(),now());
                 insert into tasks (id,name,org_id,"user",priority,status,task_path,tags,run_analysis,run_probe,created_at,updated_at)
-                values ('t1','task','org1','u','LOW','COMPLETED','p','{}'::jsonb,false,false,now(),now());
+                values ('t1','task','org1','private-owner','LOW','COMPLETED','p',
+                        '{"github_meta":"{\\"category\\":\\"JS\\",\\"github_username\\":\\"private-owner\\",\\"repository\\":\\"private/repository\\"}"}'::jsonb,
+                        false,false,now(),now());
                 insert into task_experiments (task_id,experiment_id,created_at)
                 values ('t1','exp-pub',now()),
                        ('t1','exp-pub2',now()),
@@ -118,6 +120,16 @@ async def test_public_task_payload_lists_only_public_experiments():
                 assert resp.experiment_id == "exp-pub"
                 assert resp.experiment_name == "Public Exp"
                 assert resp.experiment_is_public is True
+                payload = resp.model_dump()
+                assert "user" not in payload
+                assert "github_username" not in payload
+                assert "link" not in payload
+                assert "experiment_owner" not in payload
+                assert "experiment_link" not in payload
+                assert "jobs" not in payload
+                assert payload["github_meta"] == {"category": "JS"}
+                assert "private-owner" not in resp.model_dump_json()
+                assert "private/repository" not in resp.model_dump_json()
         finally:
             conn_mod.engine, conn_mod.async_session_maker = old_engine, old_maker
     finally:

@@ -26,6 +26,8 @@ def _clerk_secret_set(monkeypatch):
     that exercises the fetch path needs a secret present; the secret-unset test
     overrides this in its own body."""
     monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    monkeypatch.setattr(job, "_retry_after", 0.0)
+    monkeypatch.setattr(job, "_deferred_users", 0)
 
 
 def _mock_clerk_http(monkeypatch, handler) -> None:
@@ -810,3 +812,46 @@ async def test_fresh_marker_rows_excluded_from_scan(monkeypatch) -> None:
         assert await _checked_at_of(user.id) == fresh
     finally:
         await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_failed_batch_backs_off_without_changing_identity_and_recovers(
+    org_with_users,
+    monkeypatch,
+):
+    _, add = org_with_users
+    users = [await add() for _ in range(job.ALL_FAILED_ABORT_FLOOR)]
+    requests = []
+    available = False
+
+    def handler(request):
+        requests.append(request.url.path)
+        if not available:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"external_accounts": []})
+
+    _mock_clerk_http(monkeypatch, handler)
+    now = [1000.0]
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(job, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    failed = await job.backfill_github_id(delay_seconds=0)
+    assert failed.failed == len(users)
+    assert len(requests) == len(users)
+    deferred = await job.backfill_github_id(delay_seconds=0)
+    assert deferred.deferred == len(users)
+    assert deferred.scanned == 0
+    assert len(requests) == len(users)
+    for user in users:
+        assert await _checked_at_of(user.id) is None
+        assert await _github_id_of(user.id) is None
+
+    now[0] += job.FAILURE_RETRY_SECONDS + 1
+    available = True
+    recovered = await job.backfill_github_id(delay_seconds=0)
+    assert recovered.failed == recovered.deferred == 0
+    assert recovered.skipped == len(users)
+    assert len(requests) == 2 * len(users)
+    for user in users:
+        assert await _checked_at_of(user.id) is not None

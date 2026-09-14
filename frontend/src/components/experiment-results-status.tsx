@@ -1,0 +1,66 @@
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import type { ExperimentPageSummary } from "@/lib/types";
+
+export function ExperimentResultsStatus({
+  summary,
+  tasksLoaded,
+  trialsLoaded,
+  complete,
+  isLoading,
+  hasError,
+  fatalError,
+  onRetry,
+}: {
+  summary?: ExperimentPageSummary | null;
+  tasksLoaded: number;
+  trialsLoaded: number;
+  complete: boolean;
+  isLoading: boolean;
+  hasError: boolean;
+  fatalError?: { title: string; description: string };
+  onRetry: () => void;
+}) {
+  const counts = summary ? (
+    <span>
+      {tasksLoaded.toLocaleString()} of {summary.task_count.toLocaleString()}{" "}
+      tasks loaded · {trialsLoaded.toLocaleString()} of{" "}
+      {summary.trial_count.toLocaleString()} trial results loaded
+    </span>
+  ) : null;
+
+  if (hasError) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>
+          {fatalError?.title ??
+            (complete
+              ? "Could not refresh results"
+              : "Results download incomplete")}
+        </AlertTitle>
+        <AlertDescription className="flex flex-wrap items-center gap-2">
+          {fatalError ? (
+            <span>{fatalError.description}</span>
+          ) : (
+            <>
+              {complete && <span>Showing the last complete results.</span>}
+              {counts}
+            </>
+          )}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-7"
+            onClick={onRetry}
+            disabled={isLoading}
+          >
+            {isLoading ? "Retrying…" : "Retry"}
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return null;
+}

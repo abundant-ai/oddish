@@ -24,6 +24,7 @@ function firstParam(value: string | string[] | undefined): string {
 async function getInitialDashboardData(
   requestParams: DashboardRequestParams
 ): Promise<DashboardResponse | null> {
+  const requestId = crypto.randomUUID();
   try {
     const authObj = await auth();
     if (!authObj?.userId) {
@@ -40,19 +41,27 @@ async function getInitialDashboardData(
       "",
       buildDashboardBackendParams(requestParams)
     );
+    const headers = new Headers(getAuthHeaders(token));
+    headers.set("X-Request-ID", requestId);
     const response = await fetch(url, {
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers,
     });
     if (!response.ok) {
-      console.error(
-        `[dashboard/page] Failed initial dashboard fetch: ${response.status}`
-      );
+      const upstreamBody = (await response.text()).slice(0, 2_000);
+      console.error("[dashboard/page] Initial dashboard fetch failed", {
+        requestId: response.headers.get("x-request-id") ?? requestId,
+        upstreamStatus: response.status,
+        upstreamBody,
+      });
       return null;
     }
     return (await response.json()) as DashboardResponse;
   } catch (error) {
-    console.error("[dashboard/page] Initial dashboard fetch failed", error);
+    console.error("[dashboard/page] Initial dashboard fetch failed", {
+      requestId,
+      error,
+    });
     return null;
   }
 }
@@ -108,10 +117,7 @@ export default async function DashboardPage({
     "min_duration_seconds",
     "max_duration_seconds"
   );
-  const [minTools, maxTools] = metricRange(
-    "min_tool_calls",
-    "max_tool_calls"
-  );
+  const [minTools, maxTools] = metricRange("min_tool_calls", "max_tool_calls");
   const pageNumber = Math.max(
     1,
     Number.parseInt(firstParam(params.page), 10) || 1

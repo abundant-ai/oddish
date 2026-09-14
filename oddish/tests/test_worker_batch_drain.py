@@ -109,7 +109,13 @@ async def test_drain_passes_slot_and_hooks_through():
         modal_function_call_id,
         post_success_hooks,
         harbor_variant_id="default",
+        worker_billing_spec=None,
+        priority_class=None,
+        org_id=None,
     ):
+        assert priority_class is True
+        assert org_id == "org-a"
+        assert worker_billing_spec is None
         seen.append((queue_key, worker_id, queue_slot, modal_function_call_id))
         return len(seen) < 2
 
@@ -121,6 +127,8 @@ async def test_drain_passes_slot_and_hooks_through():
         budget_seconds=1000.0,
         modal_function_call_id="fc-123",
         post_success_hooks=hooks,
+        priority_class=True,
+        org_id="org-a",
         _run_job=run_job,
         _now=lambda: 0.0,
     )
@@ -129,3 +137,46 @@ async def test_drain_passes_slot_and_hooks_through():
         ("analysis-key", "worker-1", 7, "fc-123"),
         ("analysis-key", "worker-1", 7, "fc-123"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_drain_retains_policy_and_resources_for_every_claim():
+    from oddish.costs.recorder import WorkerBillingSpec
+
+    spec = WorkerBillingSpec(
+        0.6, 3072, True, cpu_limit=17, configuration="candidate-cpu0.6-mem3072"
+    )
+    seen = []
+
+    async def run_job(key, **kwargs):
+        seen.append(kwargs)
+        return len(seen) < 4
+
+    assert (
+        await drain_worker_jobs(
+            "m",
+            worker_id="w",
+            queue_slot=1,
+            budget_seconds=1000,
+            modal_function_call_id="fc-candidate",
+            org_id="org-a",
+            priority_class=False,
+            resource_candidate=True,
+            candidate_configuration=spec.configuration,
+            worker_billing_spec=spec,
+            _run_job=run_job,
+            _now=lambda: 0,
+        )
+        == 3
+    )
+    assert len(seen) == 4
+    assert all(
+        k["resource_candidate"] and k["candidate_configuration"] == spec.configuration
+        for k in seen
+    )
+    assert all(
+        k["worker_billing_spec"] is spec
+        and k["modal_function_call_id"] == "fc-candidate"
+        for k in seen
+    )
+    assert all(k["org_id"] == "org-a" and k["priority_class"] is False for k in seen)

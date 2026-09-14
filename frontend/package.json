@@ -2,6 +2,7 @@
   "name": "oddish-frontend",
   "version": "0.1.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "packageManager": "pnpm@10.0.0",
   "scripts": {
     "dev": "next dev",
@@ -13,6 +14,7 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "test:e2e": "playwright test",
+    "test:e2e:delivery": "playwright test -c playwright.delivery.config.ts",
     "typecheck:e2e": "tsc -p e2e/tsconfig.json --noEmit"
   },
   "//": [

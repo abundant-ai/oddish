@@ -10,11 +10,10 @@ The instruction is now uploaded as a file and read back via ``"$(cat ...)"``.
 from __future__ import annotations
 
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
-
+import tomllib
 from oddish.workers.agents import grok_build as grok_build_module
 from oddish.workers.agents.grok_build import (
     _PROMPT_PATH,
@@ -35,6 +34,52 @@ def test_build_config_toml_defaults_to_responses_backend(tmp_path):
     assert 'api_backend = "responses"' in config
     assert "chat_completions" not in config
     assert config.count("context_window = 256000") == 2
+    assert "auto_update = false" in config
+
+
+def test_learnability_model_pins_grok_cli_1_0_0(tmp_path):
+    """v9m-rl-learnability-tp8 404s on grok CLI 1.0.13; pin the last working CLI."""
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8"
+    )
+    assert agent._version == "1.0.0"
+
+
+def test_explicit_version_kwarg_overrides_learnability_pin(tmp_path):
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9m-rl-learnability-tp8",
+        version="1.0.5",
+    )
+    assert agent._version == "1.0.5"
+
+
+def test_other_xai_models_do_not_pin_cli_version(tmp_path):
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/grok-4.6")
+    assert agent._version is None
+
+
+@pytest.mark.asyncio
+async def test_install_passes_pinned_cli_version_to_install_sh(tmp_path, monkeypatch):
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8"
+    )
+    commands: list[str] = []
+
+    async def _fake_exec_as_root(self, environment, *, command, **kwargs):
+        return None
+
+    async def _fake_exec_as_agent(self, environment, *, command, **kwargs):
+        commands.append(command)
+
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _fake_exec_as_root)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _fake_exec_as_agent)
+
+    await agent.install(environment=object())
+
+    assert commands
+    assert "bash -s 1.0.0" in commands[-1]
+    assert "install.sh" in commands[-1]
 
 
 def test_build_config_toml_applies_api_backend_override(tmp_path):
@@ -183,11 +228,11 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     # the rate limit because xAI's buckets refill. One resume arm per fallback
     # variant, so the resume replays whichever flag set actually ran.
     assert (
-        f"grep -Eqi {grok_build_module._RESUMABLE_ERROR_PATTERN}"  # noqa: SLF001
+        f"grep -Eqi {grok_build_module._RESUMABLE_ERROR_PATTERN}"
         in command
     )
     assert command.count("grok -c -p") == 6
-    assert f"resumes -lt {grok_build_module._MAX_RESUMES}" in command  # noqa: SLF001
+    assert f"resumes -lt {grok_build_module._MAX_RESUMES}" in command
     # The resume appends to the streamed event log and re-sends a short inline
     # continuation, never the staged instruction.
     assert command.count(">>/logs/agent/grok-build.json") == 6
@@ -358,7 +403,7 @@ async def test_shell_resumes_rate_limit(tmp_path, monkeypatch):
     assert rc != 0
     # Initial arm + the bounded resumes; a stub that is always limited
     # exhausts the budget rather than looping forever.
-    assert len(calls) == 1 + grok_build_module._MAX_RESUMES  # noqa: SLF001
+    assert len(calls) == 1 + grok_build_module._MAX_RESUMES
 
 
 @pytest.mark.asyncio

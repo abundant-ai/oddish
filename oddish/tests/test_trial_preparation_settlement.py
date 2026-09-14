@@ -2,10 +2,12 @@
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from oddish.db import TrialStatus
+from oddish.workers.harbor.outcome import HarborOutcome
 from oddish.workers.queue import trial_handler
 
 
@@ -21,7 +23,14 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
         trial_agent="claude-code",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "qa_eval", "extra_instructions": "brief"},
+        trial_harbor_config={
+            "extra_instructions": "brief",
+            "analysis_payload": {
+                "trial_ids": ["source-1"],
+                "with_verdict": False,
+            },
+        },
+        trial_kind="qa_eval",
         task_version=7,
         org_id="org-1",
     )
@@ -29,7 +38,10 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
     async def resolve_task_directory(**_kwargs):
         return source_task, temp_root, prepared.task_s3_key
 
-    async def mint_probe_creds(**_kwargs):
+    minted = {}
+
+    async def mint_probe_creds(**kwargs):
+        minted.update(kwargs)
         return "key-1", {"ODDISH_API_KEY": "secret"}
 
     monkeypatch.setattr(trial_handler, "resolve_task_directory", resolve_task_directory)
@@ -43,6 +55,7 @@ async def test_analysis_probe_env_pins_task_version(monkeypatch, tmp_path):
 
     assert task.probe_agent_env["ODDISH_PROBE_TASK_ID"] == "task-1"
     assert task.probe_agent_env["ODDISH_PROBE_TASK_VERSION"] == "7"
+    assert minted["bound_analysis_trial_id"] == "task-1-4"
 
 
 @pytest.mark.asyncio
@@ -60,9 +73,9 @@ async def test_summarize_materialization_failure_removes_task_copy(
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
         trial_harbor_config={
-            "mode": "summarize",
             "extra_instructions": "materialized at pickup",
         },
+        trial_kind="summarize",
         org_id="org-1",
     )
     copy_root = tmp_path / "prepared-copy"
@@ -144,7 +157,8 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
         trial_agent="single-llm",
         trial_model="anthropic/claude-sonnet-4-6",
         trial_environment="docker",
-        trial_harbor_config={"mode": "summarize"},
+        trial_harbor_config={"extra_instructions": "materialized at pickup"},
+        trial_kind="summarize",
         org_id="org-1",
         trial_attempt=2,
     )
@@ -198,4 +212,151 @@ async def test_run_trial_job_settles_task_preparation_error(monkeypatch):
     assert settlement["execution"].retryable is True
     assert settlement["execution"].execution_error == (
         "ValueError: summarize target trajectory is missing"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_enabled", [False, True])
+async def test_run_trial_job_keeps_successful_upload_when_analysis_validation_fails(
+    monkeypatch, tmp_path, gateway_enabled
+):
+    """Uploaded diagnostics remain authoritative when the required artifact is bad."""
+    from oddish.workers.queue import model_gateway
+
+    monkeypatch.setattr(
+        trial_handler.settings, "qa_model_routing_enabled", gateway_enabled
+    )
+    gateway_env = {
+        "ANTHROPIC_API_KEY": "worker.gateway-token",
+        "ODDISH_QA_MODEL_ROUTED": "1",
+    }
+    mint_gateway = AsyncMock(return_value=gateway_env)
+    revoke_gateway = AsyncMock()
+    monkeypatch.setattr(model_gateway, "mint_gateway_env", mint_gateway)
+    monkeypatch.setattr(trial_handler, "_revoke_job_credentials", revoke_gateway)
+    trial_id = "task-1-4"
+    job_dir = tmp_path / "harbor-job"
+    job_dir.mkdir()
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=str(tmp_path / "task"),
+        task_s3_key="tasks/task-1/v1.tar.gz",
+        task_id="task-1",
+        trial_agent="claude-code" if gateway_enabled else "single-llm",
+        trial_model="anthropic/claude-sonnet-5"
+        if gateway_enabled
+        else "anthropic/claude-sonnet-4-6",
+        trial_environment="docker",
+        trial_harbor_config={"extra_instructions": "classify the task"},
+        trial_kind="qa",
+        org_id="org-1",
+        trial_attempt=2,
+    )
+    prepared_attempt = trial_handler.PreparedTrialAttempt(
+        task=trial_handler.PreparedTrialTask(
+            task_path=tmp_path / "task",
+            temp_task_dir=None,
+            resolved_task_s3_key=prepared.task_s3_key,
+            probe_extra_instructions=None,
+            probe_agent_env=None,
+            probe_key_id=None,
+        ),
+        byok_env=None,
+        sandbox_launch=None,
+        cost_state=SimpleNamespace(),
+    )
+    outcome = HarborOutcome(
+        reward=0.0,
+        error=None,
+        exit_code=1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=job_dir,
+    )
+    execution = trial_handler.TrialExecutionResult(
+        outcome=outcome,
+        execution_error=None,
+    )
+    upload_prefix = "tasks/task-1/trials/task-1-4/analysis-qa/attempt-2/harbor-job/"
+
+    @asynccontextmanager
+    async def trial_session(_trial_id, **_kwargs):
+        yield (
+            SimpleNamespace(),
+            SimpleNamespace(
+                id=trial_id,
+                status=TrialStatus.RUNNING,
+                agent="single-llm",
+                idempotency_key=None,
+            ),
+        )
+
+    monkeypatch.setattr(trial_handler, "_trial_session", trial_session)
+    monkeypatch.setattr(
+        trial_handler, "_prepare_trial_run", AsyncMock(return_value=prepared)
+    )
+    monkeypatch.setattr(
+        trial_handler,
+        "_prepare_claimed_trial_attempt",
+        AsyncMock(return_value=prepared_attempt),
+    )
+    monkeypatch.setattr(
+        trial_handler, "_execute_trial", AsyncMock(return_value=execution)
+    )
+    monkeypatch.setattr(trial_handler, "_settle_compute_costs", AsyncMock())
+    monkeypatch.setattr(trial_handler, "_heartbeat_trial_execution", AsyncMock())
+    storage = SimpleNamespace(
+        upload_trial_results=AsyncMock(return_value=upload_prefix)
+    )
+    monkeypatch.setattr(trial_handler, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(
+        trial_handler,
+        "validate_uploaded_analysis_artifacts",
+        AsyncMock(side_effect=ValueError("qa_result.json is missing")),
+    )
+    monkeypatch.setattr(
+        trial_handler, "_qa_artifact_validation_error", Mock(return_value=None)
+    )
+    settle_trial_attempt = AsyncMock(return_value=False)
+    monkeypatch.setattr(trial_handler, "_settle_trial_attempt", settle_trial_attempt)
+    monkeypatch.setattr(trial_handler, "_release_prepared_trial_attempt", AsyncMock())
+    cleanup_uploaded_job_dir = Mock()
+    monkeypatch.setattr(
+        trial_handler,
+        "_cleanup_uploaded_job_dir",
+        cleanup_uploaded_job_dir,
+    )
+    monkeypatch.setattr(trial_handler, "_cleanup_trial_wrapper_dirs", Mock())
+
+    from oddish.integrations import sauron
+
+    monkeypatch.setattr(
+        sauron,
+        "get_sauron_uploader",
+        lambda: SimpleNamespace(is_enabled=lambda: False),
+    )
+
+    returned = await trial_handler.run_trial_job(
+        trial_id,
+        prepared.trial_model,
+        worker_job_id="job-1",
+        worker_job_attempt=2,
+    )
+
+    if gateway_enabled:
+        mint_gateway.assert_awaited_once_with("job-1", 2)
+        revoke_gateway.assert_awaited_once_with("job-1", trial_id, attempt=2)
+        assert (
+            trial_handler._execute_trial.await_args.kwargs["extra_agent_env"]
+            == gateway_env
+        )
+    else:
+        mint_gateway.assert_not_awaited()
+        revoke_gateway.assert_not_awaited()
+    assert returned is outcome
+    cleanup_uploaded_job_dir.assert_called_once_with(job_dir, trial_id)
+    settlement = settle_trial_attempt.await_args.kwargs
+    assert settlement["trial_s3_key"] == upload_prefix
+    assert settlement["artifact_upload_error"] == (
+        "Uploaded trial artifacts failed validation: "
+        "ValueError: qa_result.json is missing"
     )

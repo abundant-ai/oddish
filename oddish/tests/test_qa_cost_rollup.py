@@ -28,7 +28,9 @@ from oddish.core.endpoints.qa_cost import (  # noqa: E402
     get_task_qa_costs,
     get_trial_qa_costs,
 )
-from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks  # noqa: E402
+from oddish.core.endpoints.experiment_page import (  # noqa: E402
+    get_experiment_trial_page_core,
+)
 from oddish.core.endpoints.trials import (  # noqa: E402
     get_trial_by_index_core,
     get_trial_response_for_org_core,
@@ -566,30 +568,6 @@ async def test_trial_detail_by_index_populates_qa_cost_usd(session):
 
 
 @pytest.mark.asyncio
-async def test_slim_tasks_populate_per_trial_qa_cost(session):
-    """The experiment grid's slim per-trial payload carries ``qa_cost_usd``."""
-    task, experiment = await _fixture(session, "slim-qa")
-    with_qa, without_qa = _trial(task, experiment), _trial(task, experiment)
-    session.add_all([with_qa, without_qa])
-    # A normal experiment owns its task via the association table directly.
-    await session.execute(
-        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
-    )
-    await session.flush()
-    session.add(_qa_row(cost_usd=0.04, trial_id=with_qa.id))
-    await session.flush()
-
-    responses = await list_experiment_slim_tasks(
-        session, experiment_id=experiment.id, org_id=_ORG
-    )
-
-    task_resp = next(r for r in responses if r.id == task.id)
-    by_id = {t.id: t for t in (task_resp.trials or [])}
-    assert by_id[with_qa.id].qa_cost_usd == pytest.approx(0.04)
-    assert by_id[without_qa.id].qa_cost_usd is None
-
-
-@pytest.mark.asyncio
 async def test_authenticated_trial_lists_label_model_exclusions(session):
     task, experiment = await _fixture(session, "excluded-labels")
     trial = _trial(task, experiment)
@@ -601,7 +579,7 @@ async def test_authenticated_trial_lists_label_model_exclusions(session):
     )
     await session.flush()
 
-    slim = await list_experiment_slim_tasks(
+    page = await get_experiment_trial_page_core(
         session, experiment_id=experiment.id, org_id=_ORG
     )
     experiment_trials = await list_experiment_trials_for_org(
@@ -609,8 +587,8 @@ async def test_authenticated_trial_lists_label_model_exclusions(session):
     )
     task_trials = await list_task_trials_for_task(session, task.id)
 
-    slim_trial = next(t for row in slim for t in (row.trials or []) if t.id == trial.id)
-    assert slim_trial.cost_exclusion_reason == REASON_MODEL
+    page_trial = next(row for row in page.trials if row.id == trial.id)
+    assert page_trial.cost_exclusion_reason == REASON_MODEL
     assert (
         next(t for t in experiment_trials if t.id == trial.id).cost_exclusion_reason
         == REASON_MODEL
@@ -619,40 +597,6 @@ async def test_authenticated_trial_lists_label_model_exclusions(session):
         next(t for t in task_trials if t.id == trial.id).cost_exclusion_reason
         == REASON_MODEL
     )
-
-
-@pytest.mark.asyncio
-async def test_slim_tasks_resolve_qa_costs_in_one_query_for_the_page(
-    session, monkeypatch
-):
-    """The grid pages many tasks/trials at once; QA must not fan out per trial."""
-    task, experiment = await _fixture(session, "slim-batch")
-    trials = [_trial(task, experiment) for _ in range(4)]
-    session.add_all(trials)
-    await session.execute(
-        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
-    )
-    await session.flush()
-    session.add_all([_qa_row(cost_usd=0.01, trial_id=t.id) for t in trials])
-    await session.flush()
-
-    import oddish.core.endpoints.tasks_query as tasks_query_mod
-
-    call_count = 0
-    real_get_trial_qa_costs = tasks_query_mod.get_trial_qa_costs
-
-    async def _counting_get_trial_qa_costs(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        return await real_get_trial_qa_costs(*args, **kwargs)
-
-    monkeypatch.setattr(
-        tasks_query_mod, "get_trial_qa_costs", _counting_get_trial_qa_costs
-    )
-
-    await list_experiment_slim_tasks(session, experiment_id=experiment.id, org_id=_ORG)
-
-    assert call_count == 1
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from typing import Any
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from harbor.utils.trajectory_utils import format_trajectory_json
 
 from .grok_build_session import (
     GROK_SESSION_CAPTURE_DIRNAME,
@@ -18,12 +19,16 @@ from .grok_build_session import (
 )
 from .grok_build_trajectory import write_grok_build_trajectory_if_richer
 
-from harbor.utils.trajectory_utils import format_trajectory_json
-
-
 _OUTPUT_FILENAME = "grok-build.json"
 _STDERR_FILENAME = "grok-build.stderr.log"
 _DEFAULT_MODEL = "v9m-rl-learnability-tp8"
+# grok CLI 1.0.13 (current ``install.sh`` stable) 404s this first-party
+# learnability model on both Responses and Chat Completions. 1.0.0 is the
+# last pin known to reach it (``api_backend = responses``). Pass
+# ``--agent-kwarg version=…`` to override; ``version=null`` / empty keeps
+# whatever ``install.sh`` currently ships.
+_LEARNABILITY_CLI_PIN = "1.0.0"
+_LEARNABILITY_MODELS = frozenset({"v9m-rl-learnability-tp8"})
 _XAI_BASE_URL = "https://api.x.ai/v1"
 _XAI_API_KEY_ENV = "XAI_API_KEY"
 # Optional comma-separated key pool; one key is drawn per trial to spread load
@@ -117,7 +122,7 @@ _RESUME_PROMPT = (
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
-def _positive_int(name: str, value: int | float | str | None) -> int | None:
+def _positive_int(name: str, value: float | str | None) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, bool):
@@ -146,7 +151,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         *args: Any,
         reasoning_effort: str | None = "high",
         api_backend: str | None = None,
-        context_window: int | float | str | None = _DEFAULT_CONTEXT_WINDOW,
+        context_window: float | str | None = _DEFAULT_CONTEXT_WINDOW,
         max_retries: int | str | None = None,
         inference_idle_timeout_secs: int | str | None = None,
         background_wait_sec: int | str | None = None,
@@ -154,6 +159,8 @@ class OddishGrokBuild(BaseInstalledAgent):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._api_key: str | None = None
+        if self._version is None and self._resolve_model() in _LEARNABILITY_MODELS:
+            self._version = _LEARNABILITY_CLI_PIN
         self.reasoning_effort = reasoning_effort
         normalized_backend = (api_backend or "").strip()
         if normalized_backend and normalized_backend not in _VALID_API_BACKENDS:
@@ -203,11 +210,12 @@ class OddishGrokBuild(BaseInstalledAgent):
                 "fi"
             ),
         )
+        version_arg = f" -s {shlex.quote(self._version)}" if self._version else ""
         await self.exec_as_agent(
             environment,
             command=(
                 "set -euo pipefail; "
-                "curl -fsSL https://x.ai/cli/install.sh | bash; "
+                f"curl -fsSL https://x.ai/cli/install.sh | bash{version_arg}; "
                 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; '
                 "command -v grok; "
                 "grok --version"
@@ -266,6 +274,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"image_description = {quoted_model}",
                 "[cli]",
                 'installer = "internal"',
+                "auto_update = false",
                 f"[model.{self._toml_table_key(model)}]",
                 f"name = {quoted_model}",
                 f"model = {quoted_model}",

@@ -67,6 +67,7 @@ class _Ctx:
 
 def _install(monkeypatch, session):
     monkeypatch.setattr(notif_router, "get_session", lambda: _Ctx(session))
+    monkeypatch.setattr(notif_router, "get_read_session", lambda: _Ctx(session))
 
 
 def _user_auth():

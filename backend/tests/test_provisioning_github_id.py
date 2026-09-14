@@ -68,7 +68,9 @@ def _mock_clerk_http(monkeypatch, handler) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["no_secret", "http_404", "http_500", "transport_error"])
+@pytest.mark.parametrize(
+    "mode", ["no_secret", "http_404", "http_500", "transport_error"]
+)
 async def test_fetch_returns_none_for_nondefinitive_errors(monkeypatch, mode) -> None:
     """Non-definitive Clerk failures return None so callers retry later. A 404 is
     deliberately in this bucket: it is indistinguishable from a misconfigured
@@ -83,6 +85,7 @@ async def test_fetch_returns_none_for_nondefinitive_errors(monkeypatch, mode) ->
         elif mode == "http_500":
             _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(500))
         else:
+
             def _boom(_req):
                 raise httpx.ConnectError("no route")
 
@@ -316,6 +319,7 @@ async def test_refresh_stale_marker_refetches_and_claims_github_id(monkeypatch) 
 async def test_refresh_stale_marker_still_no_github_restamps(monkeypatch) -> None:
     """A stale marker + still-no-github answer re-fetches and re-stamps the marker
     with a fresh timestamp (so the TTL window restarts)."""
+
     async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
         return ClerkGithubIdentity(None, None, None)
 
@@ -355,7 +359,9 @@ async def test_refresh_none_answer_stamps_nothing_then_fills_later(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_refresh_username_no_id_stamps_nothing_then_fills_later(monkeypatch) -> None:
+async def test_refresh_username_no_id_stamps_nothing_then_fills_later(
+    monkeypatch,
+) -> None:
     """A partial Clerk answer (username present, id absent) is NOT a definitive
     no-github: it stamps nothing and stays eligible; a later fetch that reports
     the id fills github_id."""
@@ -377,7 +383,9 @@ async def test_refresh_username_no_id_stamps_nothing_then_fills_later(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_refresh_handleless_stale_marker_refetches_and_claims(monkeypatch) -> None:
+async def test_refresh_handleless_stale_marker_refetches_and_claims(
+    monkeypatch,
+) -> None:
     """Handle-less user with a STALE marker re-fetches Clerk and claims a
     now-present github_id (self-heal once the TTL lapses)."""
     called = False
@@ -616,9 +624,21 @@ async def test_set_github_id_savepoint_swallows_concurrent_race(org_id) -> None:
                 )
             )
 
+    both_read = asyncio.Barrier(2)
+
     async def _claim(uid: str) -> str | None:
         async with get_session() as session:
             user = await session.get(UserModel, uid)
+            execute = session.execute
+
+            async def read_before_either_claims(*args, **kwargs):
+                result = await execute(*args, **kwargs)
+                await both_read.wait()
+                return result
+
+            # Both clash queries must see no holder, forcing the loser through
+            # savepoint rollback and its expired-attribute logging path.
+            session.execute = read_before_either_claims
             await _set_github_id_if_absent(session, user, "raced")
             return user.github_id
 
@@ -673,3 +693,48 @@ async def test_concurrent_first_login_adopts_one_user(monkeypatch, org_id) -> No
             .where(UserModel.email == email)
         )
         assert [user.id for user in rows.scalars()] == [user_ids[0]]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_existing_identity_reads_only_user_and_org(monkeypatch, org_id):
+    """An identity cache miss must not load the org's users or API keys."""
+    from sqlalchemy import event
+    import oddish.db.connection as connection
+
+    clerk_user_id = f"clerk_{uuid.uuid4().hex}"
+    clerk_org_id = f"org_{uuid.uuid4().hex}"
+    async with get_session() as session:
+        org = await session.get(OrganizationModel, org_id)
+        org.clerk_org_id = clerk_org_id
+        session.add(
+            UserModel(
+                id=f"u_{uuid.uuid4().hex}",
+                clerk_user_id=clerk_user_id,
+                org_id=org_id,
+                email=f"{clerk_user_id}@test.invalid",
+                role=UserRole.MEMBER,
+                github_username="fixture",
+                github_id=f"github_{uuid.uuid4().hex}",
+                github_id_checked_at=datetime.now(timezone.utc),
+            )
+        )
+
+    statements = []
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(connection.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with get_session() as session:
+            user, org = await prov.get_or_create_user_from_clerk(
+                clerk_user_id, clerk_org_id, None, "member"
+            )
+            assert user.org_id == org.id == org_id
+            assert user.role == UserRole.MEMBER
+    finally:
+        event.remove(connection.engine.sync_engine, "before_cursor_execute", capture)
+    assert len(statements) == 2, statements
+    assert all("api_keys" not in statement for statement in statements)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -50,3 +51,55 @@ def test_public_task_endpoint_uses_public_only_resolver(monkeypatch):
     )
     assert captured["public_only"] is True
     assert captured["task_ids"] == ["task-1", "task-2"]
+
+
+def test_public_task_response_drops_private_fields_and_metadata():
+    from oddish.core.sharing.public_projection import public_task_github_meta
+    from oddish.schemas import PublicTaskStatusResponse
+
+    now = datetime.now(UTC)
+    source = {
+        "id": "task-1",
+        "name": "Public task",
+        "status": "completed",
+        "priority": "low",
+        "user": "private-owner",
+        "github_username": "private-owner",
+        "github_meta": {
+            "category": "JS",
+            "github_username": "private-owner",
+            "repository": "private/repository",
+        },
+        "link": "https://secret.example/task",
+        "task_path": "tasks/public-task",
+        "experiment_id": "experiment-1",
+        "experiment_name": "Public experiment",
+        "experiment_owner": "private-owner",
+        "experiment_link": "https://secret.example/experiment",
+        "total": 0,
+        "completed": 0,
+        "failed": 0,
+        "progress": "0/0 completed",
+        "jobs": [{"id": "private-worker-job"}],
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+    }
+
+    response = PublicTaskStatusResponse.model_validate(source)
+    response.github_meta = public_task_github_meta(response.github_meta)
+    payload = response.model_dump()
+
+    for private_field in (
+        "user",
+        "github_username",
+        "link",
+        "experiment_owner",
+        "experiment_link",
+        "jobs",
+    ):
+        assert private_field not in payload
+    assert payload["github_meta"] == {"category": "JS"}
+    assert "private-owner" not in response.model_dump_json()
+    assert "private/repository" not in response.model_dump_json()

@@ -54,6 +54,9 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      # Allow the live resource experiment to admit up to ten workers.
+      # Sampling and the active worker cap remain database controls.
+      ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS: "10"
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
       # Numinous Cloud execution backend (merged in #1344). Disabled in prod:
@@ -91,6 +94,9 @@ jobs:
       ODDISH_EC2_ROOT_VOLUME_SIZE_GB: "80"
       ODDISH_EC2_USE_PUBLIC_IP: "true"
       ODDISH_EC2_BOOTSTRAP_DOCKER: "true"
+      # Admission ceiling only; AWS vCPU, instance, Elastic IP, and subnet
+      # address quotas must independently support this fleet size.
+      ODDISH_EC2_MAX_CONCURRENT_INSTANCES: "100"
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op

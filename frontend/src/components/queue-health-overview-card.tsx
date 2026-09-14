@@ -26,7 +26,7 @@ import type {
   QueueHealthResponse,
   QueueRuntimeComponentStatus,
 } from "@/lib/types";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import {
   Activity,
@@ -64,7 +64,7 @@ function bool(payload: Record<string, unknown>, key: string): boolean {
 // single skipped tick doesn't cry wolf.
 const STALE_THRESHOLD_SECONDS = 600;
 
-function DispatcherTile({
+export function DispatcherTile({
   status,
 }: {
   status: QueueRuntimeComponentStatus | null;
@@ -111,7 +111,7 @@ function DispatcherTile({
   );
 }
 
-function ReconcilerTile({
+export function ReconcilerTile({
   status,
 }: {
   status: QueueRuntimeComponentStatus | null;
@@ -344,7 +344,7 @@ function CapacityTable({
     const saved: string[] = [];
     for (const row of dirtyRows) {
       const limit = Number(drafts[row.queue_key]);
-      const response = await fetch("/api/admin/concurrency", {
+      const response = await apiFetch("/api/admin/concurrency", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         // Clearing the override back to the deploy default is expressed as null.
@@ -627,7 +627,7 @@ export function QueueHealthOverviewCard({
         </div>
         <p className="text-muted-foreground text-xs">
           {canManageConcurrency
-            ? "Is the queue keeping up? Throughput, per-model capacity fill, and platform heartbeats."
+            ? "Is the queue keeping up? Throughput and per-model capacity fill."
             : "Your organization’s queue activity and throughput."}
         </p>
       </CardHeader>
@@ -646,13 +646,6 @@ export function QueueHealthOverviewCard({
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
-            {canManageConcurrency && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <DispatcherTile status={data.dispatcher} />
-                <ReconcilerTile status={data.reconciler} />
-              </div>
-            )}
-
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">

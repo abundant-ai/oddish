@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import and_, select
-from sqlalchemy.orm import selectinload
-
-from oddish.core.experiment_membership import gathered_trial_ids_select
+from sqlalchemy import select
+from oddish.core.endpoints.experiment_page import (
+    get_public_experiment_focus_core,
+    get_public_experiment_open_core,
+    get_public_experiment_trial_page_core,
+)
+from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.model_display_names import (
     apply_model_display_names,
     experiment_display_names,
     mask_trajectory_model_names,
 )
+from oddish.core.sharing.public_projection import public_task_github_meta
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_live import read_trial_live
 from oddish.core.task_files import resolve_task_file_source
@@ -39,14 +44,18 @@ from .helpers import (
 )
 from oddish.db import (
     ExperimentModel,
-    TaskModel,
     TrialModel,
-    get_session,
+    get_read_session,
     task_experiments,
 )
 from oddish.schemas import (
+    ExperimentCostTotals,
+    ExperimentTrialPageResponse,
+    PublicExperimentFocusResponse,
     PublicExperimentListItem,
+    PublicExperimentOpenResponse,
     PublicExperimentResponse,
+    PublicTaskStatusResponse,
     TaskBrowseExperiment,
     TaskStatusResponse,
     TrialResponse,
@@ -86,7 +95,7 @@ def _user_tag_refs(views) -> list[UserTagRef]:
 
 async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialModel:
     """Load a public trial, then release the DB session before artifact I/O."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -103,7 +112,7 @@ async def _detached_public_trial_with_display_names(
     :func:`_get_detached_public_trial` releases it. The experiment is loaded
     once here and handed to the trial lookup so it isn't re-queried.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         experiment = await get_public_experiment(session, public_token)
         if not experiment:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -139,7 +148,7 @@ async def list_public_experiments(
 )
 async def get_public_experiment_info(public_token: str) -> PublicExperimentResponse:
     """Get public experiment metadata by share token."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         experiment = await get_public_experiment(session, public_token)
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
@@ -148,6 +157,91 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
             name=experiment.name,
             public_token=experiment.public_token or public_token,
             description=experiment.description,
+        )
+
+
+@router.get(
+    "/public/experiments/{public_token}/cost-totals",
+    response_model=ExperimentCostTotals,
+)
+async def get_public_experiment_cost_totals(
+    public_token: str,
+) -> ExperimentCostTotals:
+    async with get_read_session() as session:
+        experiment = await get_public_experiment(session, public_token)
+        if experiment is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        return await get_experiment_cost_totals(
+            session,
+            experiment_id=experiment.id,
+            org_id=experiment.org_id,
+        )
+
+
+@router.get("/public/experiments/{public_token}/results")
+async def get_public_experiment_results(public_token: str):
+    from oddish.core.endpoints.experiment_page import experiment_results_response
+
+    return await experiment_results_response(public_token=public_token)
+
+
+@router.get(
+    "/public/experiments/{public_token}/open",
+    response_model=PublicExperimentOpenResponse,
+)
+async def get_public_experiment_open(
+    public_token: str,
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    before_created_at: datetime | None = None,
+    before_task_id: str | None = None,
+    include_summary: bool = True,
+) -> PublicExperimentOpenResponse:
+    async with get_read_session() as session:
+        return await get_public_experiment_open_core(
+            session,
+            public_token=public_token,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_task_id=before_task_id,
+            include_summary=include_summary,
+        )
+
+
+@router.get(
+    "/public/experiments/{public_token}/focus",
+    response_model=PublicExperimentFocusResponse,
+)
+async def get_public_experiment_focus(
+    public_token: str,
+    task: str | None = None,
+    trial: str | None = None,
+) -> PublicExperimentFocusResponse:
+    async with get_read_session() as session:
+        return await get_public_experiment_focus_core(
+            session,
+            public_token=public_token,
+            task_selector=task,
+            trial_id=trial,
+        )
+
+
+@router.get(
+    "/public/experiments/{public_token}/trial-page",
+    response_model=ExperimentTrialPageResponse,
+)
+async def get_public_experiment_trial_page(
+    public_token: str,
+    limit: Annotated[int, Query(ge=1, le=250)] = 250,
+    before_created_at: datetime | None = None,
+    before_trial_id: str | None = None,
+) -> ExperimentTrialPageResponse:
+    async with get_read_session() as session:
+        return await get_public_experiment_trial_page_core(
+            session,
+            public_token=public_token,
+            limit=limit,
+            before_created_at=before_created_at,
+            before_trial_id=before_trial_id,
         )
 
 
@@ -192,7 +286,7 @@ async def _public_experiment_refs(
 
 
 def _apply_public_experiments(
-    response: TaskStatusResponse,
+    response: TaskStatusResponse | PublicTaskStatusResponse,
     refs: list[tuple[str, str, datetime | None]],
     *,
     preferred_id: str | None = None,
@@ -215,113 +309,16 @@ def _apply_public_experiments(
 
 
 @router.get(
-    "/public/experiments/{public_token}/tasks", response_model=list[TaskStatusResponse]
-)
-async def list_public_experiment_tasks(
-    public_token: str,
-    limit: int = 200,
-    offset: int = 0,
-) -> list[TaskStatusResponse]:
-    """List tasks (with trials) for a public experiment."""
-    async with get_session() as session:
-        experiment = await get_public_experiment(session, public_token)
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
-
-        query = (
-            select(TaskModel)
-            .options(
-                selectinload(TaskModel.trials),
-                selectinload(TaskModel.experiments),
-            )
-            .where(
-                TaskModel.experiments.any(
-                    and_(
-                        ExperimentModel.public_token == public_token,
-                        ExperimentModel.is_public == True,  # noqa: E712
-                    )
-                )
-            )
-            .order_by(TaskModel.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-
-        result = await session.execute(query)
-        tasks = result.scalars().all()
-
-        exp_id_result = await session.execute(
-            select(ExperimentModel.id).where(
-                ExperimentModel.public_token == public_token,
-                ExperimentModel.is_public == True,  # noqa: E712
-            )
-        )
-        exp_id = exp_id_result.scalar_one_or_none()
-        from sqlalchemy.orm.attributes import set_committed_value
-
-        gathered_ids: set[str] = set()
-        if exp_id:
-            gathered_ids = set(
-                (await session.execute(gathered_trial_ids_select(exp_id)))
-                .scalars()
-                .all()
-            )
-
-        for task in tasks:
-            # Scope to this experiment's trials (home or gathered) and never
-            # expose probes — probes are experimental and stay out of the
-            # public share view, gathered or not.
-            filtered = [
-                t
-                for t in task.trials
-                if not t.is_probe
-                and t.kind == "agent"
-                and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
-            ]
-            set_committed_value(task, "trials", filtered)
-
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=[trial for task in tasks for trial in task.trials],
-        )
-        user_tags_by_task = await _hydrate_public_user_tags(
-            session, task_ids=[task.id for task in tasks]
-        )
-        responses = [
-            build_task_status_response(
-                task,
-                queue_info_by_trial_id=queue_info_by_trial_id,
-                experiment_context_id=exp_id,
-                gathered_trial_ids=gathered_ids,
-            )
-            for task in tasks
-        ]
-        public_exps = await _public_experiment_refs(
-            session, [task.id for task in tasks]
-        )
-        for resp, task in zip(responses, tasks):
-            resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-            _apply_public_experiments(
-                resp, public_exps.get(task.id, []), preferred_id=exp_id
-            )
-        apply_model_display_names(
-            [trial for resp in responses for trial in (resp.trials or [])],
-            experiment_display_names(experiment),
-        )
-        return responses
-
-
-@router.get(
     "/public/experiments/{public_token}/tasks/{task_id}",
-    response_model=TaskStatusResponse,
+    response_model=PublicTaskStatusResponse,
 )
 async def get_public_task_status(
     public_token: str,
     task_id: str,
     include_trials: bool = True,
-) -> TaskStatusResponse:
+) -> PublicTaskStatusResponse:
     """Get task status for a public experiment."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
@@ -343,10 +340,10 @@ async def get_public_task_status(
         _apply_public_experiments(
             response, public_exps.get(task.id, []), preferred_id=exp.id
         )
-        apply_model_display_names(
-            response.trials or [], experiment_display_names(exp)
-        )
-        return response
+        apply_model_display_names(response.trials or [], experiment_display_names(exp))
+        public_response = PublicTaskStatusResponse.model_validate(response)
+        public_response.github_meta = public_task_github_meta(response.github_meta)
+        return public_response
 
 
 @router.get(
@@ -361,7 +358,7 @@ async def list_public_task_trials(
     Probes are experimental and never exposed publicly, so this always
     filters to real attempts (``probe=False``) regardless of caller input.
     """
-    async with get_session() as session:
+    async with get_read_session() as session:
         trials = await list_task_trials_for_public_experiment(
             session, public_token, task_id
         )
@@ -384,7 +381,7 @@ async def get_public_trial_live(
     attempt: int | None = Query(None),
     after_seq: int = Query(0),
 ) -> dict:
-    async with get_session() as session:
+    async with get_read_session() as session:
         trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
@@ -477,20 +474,34 @@ async def list_public_task_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    inline: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
+    directories: Annotated[
+        list[str] | None,
+        Query(
+            max_length=8,
+            description="Repeat for 1–8 directory pages; empty means root",
+        ),
+    ] = None,
+    previews: bool = Query(
+        False, description="Include bounded small text previews in directory batches"
+    ),
     stream: bool = Query(
         False,
         description="Stream NDJSON: the file tree first, then file contents",
     ),
 ):
     """List all files in a public task's S3 directory."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
+
+    if (directories is not None or previews) and stream:
+        raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -501,20 +512,29 @@ async def list_public_task_files(
                 limit=limit,
                 cursor=cursor,
                 presign=presign,
-                task_s3_prefix=task_s3_prefix,
-                version=version,
+                task_s3_prefix=source.task_s3_prefix,
+                expanded=source.expanded,
+                expanded_manifest_key=source.expanded_manifest_key,
+                source_hash=source.content_hash,
+                version=source.version,
             )
         )
 
     return await list_task_files_s3(
         task_id=task_id,
+        **({"directories": directories} if directories is not None else {}),
+        **({"previews": True} if previews else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,
         cursor=cursor,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        version=version,
+        inline=inline,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
     )
 
 
@@ -528,11 +548,11 @@ async def get_public_task_file_content(
     max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific public task file from S3."""
-    async with get_session() as session:
+    async with get_read_session() as session:
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        version, task_s3_prefix = await resolve_task_file_source(
+        source = await resolve_task_file_source(
             session, task_id=task_id, version=version
         )
 
@@ -540,7 +560,10 @@ async def get_public_task_file_content(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
-        task_s3_prefix=task_s3_prefix,
-        version=version,
+        task_s3_prefix=source.task_s3_prefix,
+        expanded=source.expanded,
+        expanded_manifest_key=source.expanded_manifest_key,
+        source_hash=source.content_hash,
+        version=source.version,
         max_bytes=max_bytes,
     )

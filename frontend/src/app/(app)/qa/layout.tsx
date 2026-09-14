@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useAppPathname, useOrgHref } from "@/lib/use-org-href";
 
 const CONFIG_TABS = [
   { href: "/qa/skills", label: "Skills" },
@@ -10,7 +10,8 @@ const CONFIG_TABS = [
 ];
 
 export default function QaLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+  const pathname = useAppPathname();
+  const orgHref = useOrgHref();
   const runProbeActive = pathname === "/qa/run";
   const runsActive = pathname.startsWith("/qa/runs");
 
@@ -23,7 +24,7 @@ export default function QaLayout({ children }: { children: React.ReactNode }) {
           asChild
           className="border border-transparent data-[active=true]:border-[#85b85c]/25"
         >
-          <Link href="/qa/run" data-active={runProbeActive}>
+          <Link href={orgHref("/qa/run")} data-active={runProbeActive}>
             Run Probe
           </Link>
         </Button>
@@ -34,7 +35,7 @@ export default function QaLayout({ children }: { children: React.ReactNode }) {
           asChild
           className="border border-transparent data-[active=true]:border-[#85b85c]/25"
         >
-          <Link href="/qa/runs" data-active={runsActive}>
+          <Link href={orgHref("/qa/runs")} data-active={runsActive}>
             Probe Runs
           </Link>
         </Button>
@@ -49,7 +50,7 @@ export default function QaLayout({ children }: { children: React.ReactNode }) {
               asChild
               className="border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
-              <Link href={t.href} data-active={active}>
+              <Link href={orgHref(t.href)} data-active={active}>
                 {t.label}
               </Link>
             </Button>

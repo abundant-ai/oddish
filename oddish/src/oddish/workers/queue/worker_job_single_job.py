@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,11 +39,14 @@ from oddish.observability import record_worker_job_transition
 from oddish.workers.jobs.registry import (
     HANDLERS,
     JobOutcome,
+    JobHandler,
     NoHandlerRegisteredError,
     get_handler,
 )
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
+
+from oddish.workers.queue.resource_rollout import COHORT_SQL, load_rollout
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,35 @@ logger = logging.getLogger(__name__)
 # GitHub notifications (trial / analysis / verdict) without pushing
 # backend-specific concerns into this module.
 PostSuccessHooks = dict[WorkerJobKind, Callable[[str], Awaitable[None]]]
+
+
+class JobAccessDenied(Exception):
+    """A host revoked authorization; this job must not retry."""
+
+
+async def run_authorized_handler(
+    job: ClaimedWorkerJob,
+    handler: JobHandler,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None,
+    *,
+    poll_seconds: float = 15.0,
+) -> JobOutcome:
+    """Check host policy before execution and stop work if authorization is lost."""
+    if authorize_job is None:
+        return await handler.run(job)
+    await authorize_job(job)
+    execution = asyncio.create_task(handler.run(job))
+    try:
+        while True:
+            done, _ = await asyncio.wait({execution}, timeout=poll_seconds)
+            if done:
+                return await execution
+            await authorize_job(job)
+    finally:
+        if not execution.done():
+            execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+
 
 TRIAL_RETRY_BASE_DELAY_SECONDS = 30.0
 TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS = 300.0
@@ -151,7 +185,7 @@ def calculate_trial_retry_delay_seconds(
 #     is 0 for every row, so ORDER BY collapses to
 #     ``priority DESC, created_at ASC`` (plain FIFO with priority).
 # ---------------------------------------------------------------------------
-_CLAIM_WORKER_JOB_SQL = """
+_CLAIM_WORKER_JOB_SQL = f"""
 WITH capacity AS (
     SELECT provider, slot
     FROM sandbox_capacity_leases
@@ -197,8 +231,17 @@ candidate AS (
       AND  wj.kind::text = ANY($10::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
+      AND  ($11::boolean IS NULL OR (
+          (wj.priority > 0) = $11 AND wj.org_id IS NOT DISTINCT FROM $12::text
+      ))
       AND  tr.deleted_at IS NULL
       AND  tk.deleted_at IS NULL
+      AND ($13::boolean IS NULL OR $13 = ({COHORT_SQL.format(fraction="$14")}))
+      AND (NOT COALESCE($13, false) OR EXISTS (
+          SELECT 1 FROM queue_slots qs
+          WHERE qs.queue_key = $1 AND qs.slot = $3 AND qs.locked_by = $2
+            AND qs.resource_candidate AND qs.locked_until > NOW()
+      ))
     ORDER  BY wj.priority DESC,
               COALESCE(rpg.running_count, 0) ASC,
               wj.created_at ASC
@@ -221,6 +264,25 @@ claimed AS (
     RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
               attempts, max_attempts, queue_key, org_id, parent_job_id,
               harbor_variant_id, execution_lane, claimed_at
+),
+recorded_resources AS (
+    INSERT INTO worker_resource_attempts (
+        worker_job_id, attempt, configuration, modal_function_call_id,
+        cpu_request, cpu_limit, memory_mb, nonpreemptible, claimed_at
+    )
+    SELECT id, attempts, $15::jsonb->>'configuration', $4,
+           ($15::jsonb->>'cpu_cores')::double precision,
+           ($15::jsonb->>'cpu_limit')::double precision,
+           ($15::jsonb->>'memory_mb')::integer,
+           ($15::jsonb->>'nonpreemptible')::boolean, claimed_at
+    FROM claimed WHERE $15::jsonb IS NOT NULL
+),
+cleared_launch AS (
+    UPDATE queue_slots AS qs
+    SET launch_demand = NULL
+    FROM claimed
+    WHERE qs.queue_key = $1 AND qs.slot = $3 AND qs.locked_by = $2
+      AND qs.launch_demand IS NOT NULL
 ),
 bound_capacity AS (
     UPDATE sandbox_capacity_leases AS lease
@@ -368,10 +430,19 @@ async def claim_single_worker_job(
     modal_function_call_id: str | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
+    worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
+
+    Hosted launches additionally scope claims to the allocated org and priority
+    class. The existing priority/user/FIFO order applies inside that scope;
+    unscoped callers retain the original claim behavior.
 
     Returns ``None`` if no row was available. The claim is scoped to
     ``harbor_variant_id`` so a worker only picks up jobs of the Harbor variant
@@ -393,19 +464,44 @@ async def claim_single_worker_job(
 
     connection = await _open_connection()
     try:
-        row = await connection.fetchrow(
-            _CLAIM_WORKER_JOB_SQL,
-            queue_key,
-            worker_id,
-            queue_slot,
-            modal_function_call_id,
-            harbor_variant_id,
-            execution_lane,
-            capacity_provider,
-            capacity_slot,
-            SANDBOX_CAPACITY_LEASE_SECONDS,
-            sorted(kind.value for kind in HANDLERS),
-        )
+        async with (
+            connection.transaction()
+            if resource_candidate is not None
+            else nullcontext()
+        ):
+            fraction = 0.0
+            if resource_candidate is not None:
+                if candidate_configuration is None:
+                    raise ValueError(
+                        "Hosted resource routing requires a candidate configuration"
+                    )
+                fraction, _ = await load_rollout(
+                    connection, configuration=candidate_configuration, lock=True
+                )
+            if resource_candidate and fraction <= 0:
+                return None
+            row = await connection.fetchrow(
+                _CLAIM_WORKER_JOB_SQL,
+                queue_key,
+                worker_id,
+                queue_slot,
+                modal_function_call_id,
+                harbor_variant_id,
+                execution_lane,
+                capacity_provider,
+                capacity_slot,
+                SANDBOX_CAPACITY_LEASE_SECONDS,
+                sorted(kind.value for kind in HANDLERS),
+                priority_class,
+                org_id,
+                resource_candidate,
+                fraction,
+                (
+                    json.dumps(asdict(worker_billing_spec))
+                    if worker_billing_spec is not None
+                    else None
+                ),
+            )
     finally:
         await connection.close()
 
@@ -416,7 +512,6 @@ async def claim_single_worker_job(
     if isinstance(raw_payload, str):
         # asyncpg returns JSONB as str unless a codec is registered on
         # this connection. Be defensive.
-        import json
 
         payload = json.loads(raw_payload) if raw_payload else {}
     else:
@@ -612,10 +707,15 @@ async def run_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
@@ -645,10 +745,27 @@ async def run_single_worker_job(
             capacity_provider=capacity_provider,
             capacity_slot=capacity_slot,
         )
+    if priority_class is not None:
+        claim_kwargs.update(priority_class=priority_class, org_id=org_id)
+    if resource_candidate is not None or worker_billing_spec is not None:
+        claim_kwargs.update(
+            resource_candidate=resource_candidate,
+            candidate_configuration=candidate_configuration,
+            worker_billing_spec=worker_billing_spec,
+        )
     job = await claim_single_worker_job(queue_key, **claim_kwargs)
     if job is None:
         return False
 
+    logger.info(
+        "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
+        job.id,
+        job.attempts,
+        worker_billing_spec.configuration if worker_billing_spec else "unreported",
+        modal_function_call_id,
+        worker_billing_spec.cpu_cores if worker_billing_spec else None,
+        worker_billing_spec.memory_mb if worker_billing_spec else None,
+    )
     attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
     attempt_started_monotonic = time.monotonic()
 
@@ -676,7 +793,9 @@ async def run_single_worker_job(
         try:
             # Handlers receive the claimed projection; they can hydrate a
             # full ORM row if they need more columns.
-            outcome = await handler.run(job)  # type: ignore[arg-type]
+            outcome = await run_authorized_handler(job, handler, authorize_job)
+        except JobAccessDenied as exc:
+            outcome = JobOutcome.fail(str(exc), retryable=False)
         except asyncio.CancelledError:
             console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
             # This attempt's compute is over; close its worker span at cancel time
@@ -760,10 +879,15 @@ async def drain_worker_jobs(
     budget_seconds: float,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    authorize_job: Callable[[ClaimedWorkerJob], Awaitable[None]] | None = None,
     harbor_variant_id: str | None = "default",
     execution_lane: str | None = "default",
+    priority_class: bool | None = None,
+    org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
@@ -799,11 +923,20 @@ async def drain_worker_jobs(
             "harbor_variant_id": harbor_variant_id,
             "worker_billing_spec": worker_billing_spec,
         }
+        if authorize_job is not None:
+            run_kwargs["authorize_job"] = authorize_job
         if execution_lane != "default" or capacity_provider is not None:
             run_kwargs.update(
                 execution_lane=execution_lane,
                 capacity_provider=capacity_provider,
                 capacity_slot=capacity_slot,
+            )
+        if priority_class is not None:
+            run_kwargs.update(priority_class=priority_class, org_id=org_id)
+        if resource_candidate is not None:
+            run_kwargs.update(
+                resource_candidate=resource_candidate,
+                candidate_configuration=candidate_configuration,
             )
         job_found = await run_job(queue_key, **run_kwargs)
         if not job_found:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import text
 
+from oddish.core.cost_exclusions import CostExclusions, load_cost_exclusions
 from oddish.db.connection import get_read_session, get_session
 
 
@@ -29,6 +30,16 @@ async def test_read_session_has_no_enclosing_transaction():
         first = await session.scalar(text("SELECT txid_current()"))
         second = await session.scalar(text("SELECT txid_current()"))
     assert first != second
+
+
+@pytest.mark.asyncio
+async def test_read_session_loads_cost_exclusions_without_a_savepoint():
+    """Autocommit readers cannot issue SAVEPOINT outside a transaction."""
+    async with get_read_session() as session:
+        assert session.info["oddish_read_autocommit"] is True
+        exclusions = await load_cost_exclusions(session)
+
+    assert isinstance(exclusions, CostExclusions)
 
 
 @pytest.mark.asyncio
@@ -60,9 +71,7 @@ async def test_read_session_still_applies_soft_delete_filter():
     try:
         async with get_read_session() as session:
             filtered = await session.scalar(
-                select(ExperimentModel.id).where(
-                    ExperimentModel.id == experiment_id
-                )
+                select(ExperimentModel.id).where(ExperimentModel.id == experiment_id)
             )
             unfiltered = await session.scalar(
                 select(ExperimentModel.id)
@@ -76,4 +85,47 @@ async def test_read_session_still_applies_soft_delete_filter():
             await session.execute(
                 text("DELETE FROM experiments WHERE id = :id"),
                 {"id": experiment_id},
+            )
+
+
+@pytest.mark.asyncio
+async def test_read_session_refuses_to_flush_writes():
+    """A read handler that grows a write fails loudly instead of autocommitting.
+
+    Without the guard, autoflush before the next query would apply the UPDATE
+    as its own implicit transaction with nothing to roll it back.
+    """
+    from oddish.db import ExperimentModel
+    from sqlalchemy import select
+
+    experiment_id = "read-session-write-guard-probe"
+    async with get_session() as session:
+        session.add(
+            ExperimentModel(
+                id=experiment_id, org_id="org-read-session-test", name="guard probe"
+            )
+        )
+
+    try:
+        async with get_read_session() as session:
+            experiment = await session.scalar(
+                select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+            )
+            experiment.name = "mutated on the read session"
+            with pytest.raises(RuntimeError, match="read-only"):
+                await session.flush()
+            session.expunge(experiment)
+        async with get_read_session() as session:
+            assert (
+                await session.scalar(
+                    select(ExperimentModel.name).where(
+                        ExperimentModel.id == experiment_id
+                    )
+                )
+                == "guard probe"
+            )
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                text("DELETE FROM experiments WHERE id = :id"), {"id": experiment_id}
             )

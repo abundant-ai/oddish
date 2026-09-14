@@ -12,11 +12,11 @@ import tarfile
 import tempfile
 import threading
 import time
-from datetime import datetime
-from fnmatch import fnmatch
-from pathlib import Path
 from collections import Counter
 from collections.abc import Iterable, MutableMapping, MutableSequence
+from datetime import UTC, datetime
+from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -24,6 +24,13 @@ import tomlkit
 import tomlkit.exceptions
 import typer
 import yaml
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.task.config import TaskConfig
+from harbor.models.task.task import Task
+from harbor.models.trial.config import AgentConfig
+from harbor.models.trial.result import TrialResult
+from harbor.publisher.packager import Packager
+from harbor.viewer.scanner import JobScanner
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
@@ -36,14 +43,6 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from harbor.models.environment_type import EnvironmentType
-from harbor.models.task.config import TaskConfig
-from harbor.models.task.task import Task
-from harbor.models.trial.config import AgentConfig
-from harbor.models.trial.result import TrialResult
-from harbor.publisher.packager import Packager
-from harbor.viewer.scanner import JobScanner
-
 from oddish.cli._concurrency import (
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
@@ -55,16 +54,16 @@ from oddish.cli._concurrency import (
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
-from oddish.cli.config import get_auth_headers, error_console
-from oddish.core.idempotency import compute_sweep_idempotency_key
+from oddish.cli.config import error_console, get_auth_headers
 from oddish.core.harbor_artifacts import (
     build_trial_result,
-    detect_trajectory,
     extract_ctrf_summary,
-    extract_trial_result_fields,
     extract_trajectory_metrics,
+    extract_trial_result_fields,
     extract_verifier_metrics,
+    write_trial_selection_manifest,
 )
+from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -668,10 +667,9 @@ def _parse_retry_after(response: httpx.Response) -> float | None:
         return None
     if when is None:
         return None
-    from datetime import timezone
 
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return max(0.0, (when - datetime.now(when.tzinfo)).total_seconds())
 
 
@@ -1728,8 +1726,6 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 def trial_result_to_import_spec(
     trial_result: TrialResult,
     *,
-    has_trajectory: bool | None = None,
-    total_steps: int | None = None,
     artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
@@ -1740,7 +1736,10 @@ def trial_result_to_import_spec(
     """
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
-    fields = extract_trial_result_fields(trial_result, artifact_dir=artifact_dir)
+    trajectory = (
+        extract_trajectory_metrics(artifact_dir) if artifact_dir is not None else None
+    )
+    fields = extract_trial_result_fields(trial_result, trajectory=trajectory)
 
     # Prefer the fully-qualified ``provider/model`` string from the
     # trial's harbor config so imported rows land in the same model
@@ -1762,14 +1761,6 @@ def trial_result_to_import_spec(
             model_id = model_info.name
     else:
         model_id = None
-
-    if total_steps is None:
-        total_steps = fields.total_steps
-    if has_trajectory is None:
-        has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
-    trajectory_metrics = (
-        extract_trajectory_metrics(artifact_dir) if artifact_dir else None
-    )
 
     result_payload = None
     if artifact_dir is not None:
@@ -1801,19 +1792,15 @@ def trial_result_to_import_spec(
         "input_tokens": fields.input_tokens,
         "cache_tokens": fields.cache_tokens,
         "output_tokens": fields.output_tokens,
-        "total_steps": total_steps,
+        "total_steps": fields.total_steps,
         "trajectory_duration_seconds": (
-            trajectory_metrics.trajectory_duration_seconds
-            if trajectory_metrics
-            else None
+            trajectory.trajectory_duration_seconds if trajectory else None
         ),
-        "total_tool_calls": (
-            trajectory_metrics.total_tool_calls if trajectory_metrics else None
-        ),
-        "tool_counts": trajectory_metrics.tool_counts if trajectory_metrics else None,
+        "total_tool_calls": trajectory.total_tool_calls if trajectory else None,
+        "tool_counts": trajectory.tool_counts if trajectory else None,
         "cost_usd": fields.cost_usd,
         "phase_timing": fields.phase_timing,
-        "has_trajectory": has_trajectory,
+        "has_trajectory": trajectory.has_trajectory if trajectory else False,
         "started_at": _iso(trial_result.started_at),
         "finished_at": _iso(trial_result.finished_at),
         "external_trial_id": str(trial_result.id),
@@ -1848,9 +1835,14 @@ def _tar_trial_dir(trial_dir: Path) -> Path:
     excluded on purpose -- each imported trial gets its own S3 prefix
     and shouldn't drag in its sibling trials' logs.
     """
-    tmpdir = tempfile.mkdtemp(prefix="oddish-trial-import-")
-    tarball_path = Path(tmpdir) / f"{trial_dir.name}.tar.gz"
+    tmpdir = Path(tempfile.mkdtemp(prefix="oddish-trial-import-"))
+    tarball_path = tmpdir / f"{trial_dir.name}.tar.gz"
     job_dir = trial_dir.parent
+    selected_result_path = tmpdir / "result.json"
+    root_result_path = job_dir / "result.json"
+    if root_result_path.is_file():
+        shutil.copy2(root_result_path, selected_result_path)
+        write_trial_selection_manifest(selected_result_path, [trial_dir.name])
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # 1. Add the job dir's top-level FILES only (config, logs,
         #    job-level result.json). Skipping subdirectories here
@@ -1858,7 +1850,10 @@ def _tar_trial_dir(trial_dir: Path) -> Path:
         if job_dir.exists():
             for item in job_dir.iterdir():
                 if item.is_file():
-                    tar.add(item, arcname=item.name)
+                    tar.add(
+                        selected_result_path if item == root_result_path else item,
+                        arcname=item.name,
+                    )
         # 2. Add the trial's own subdir nested under its trial_name so
         #    ``<prefix>/<trial_name>/agent/trajectory.json`` etc. line
         #    up with the live path's ``_trajectory_candidate_keys``.
@@ -1922,7 +1917,6 @@ def import_trial(
 
     spec_payload = trial_result_to_import_spec(
         trial_result,
-        has_trajectory=detect_trajectory(trial_dir),
         artifact_dir=trial_dir,
     )
 
@@ -2106,6 +2100,8 @@ def load_sweep_config(config_path: Path) -> dict:
         }
 
         agent_config_overrides: dict = {}
+        if agent_entry.get("import_path"):
+            agent_config_overrides["import_path"] = agent_entry["import_path"]
         if agent_entry.get("env"):
             agent_config_overrides["env"] = agent_entry["env"]
         if agent_entry.get("kwargs"):

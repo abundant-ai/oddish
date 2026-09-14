@@ -102,7 +102,7 @@ def test_run_dispatch_cycle_still_computes_reasons_via_helper() -> None:
             _discover=lambda: _aval((("busy", "default", "default"),)),
             _counts=lambda keys: _aval(
                 (
-                    {(None, "busy", "default", "default"): 4},
+                    {(None, "busy", "default", "default", False): 4},
                     {("busy", "default", "default"): 2},
                 )
             ),
@@ -131,7 +131,7 @@ def test_on_stage_failure_never_breaks_dispatch() -> None:
             _discover=lambda: _aval((("q", "default", "default"),)),
             _counts=lambda keys: _aval(
                 (
-                    {(None, "q", "default", "default"): 1},
+                    {(None, "q", "default", "default", False): 1},
                     {("q", "default", "default"): 0},
                 )
             ),

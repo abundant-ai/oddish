@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 import typer
@@ -65,6 +65,30 @@ max_trial_attempts: 3
     assert config["max_trial_attempts"] == 3
 
 
+def test_load_sweep_config_forwards_import_path(tmp_path):
+    config_path = tmp_path / "sweep.yaml"
+    config_path.write_text(
+        """
+agents:
+  - name: grok-build
+    model_name: xai/v9m-rl-learnability-tp8
+    n_trials: 1
+    import_path: harbor.agents.installed.grok_build:GrokBuild
+    kwargs:
+      version: "1.0.0"
+""".strip()
+    )
+
+    config = load_sweep_config(config_path)
+
+    agent = config["agents"][0]
+    assert agent["agent"] == "grok-build"
+    assert agent["agent_config"]["import_path"] == (
+        "harbor.agents.installed.grok_build:GrokBuild"
+    )
+    assert agent["agent_config"]["kwargs"]["version"] == "1.0.0"
+
+
 def test_load_sweep_config_rejects_invalid_max_trial_attempts(tmp_path):
     config_path = tmp_path / "sweep.yaml"
     config_path.write_text(
@@ -119,7 +143,7 @@ def test_submit_sweep_includes_max_trial_attempts_only_when_overridden(monkeypat
             captured.append(json)
             return _Response()
 
-    monkeypatch.setattr(cli_api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(cli_api, "get_auth_headers", dict)
     monkeypatch.setattr(cli_api.httpx, "Client", _Client)
 
     base_kwargs = {

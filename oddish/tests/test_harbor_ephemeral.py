@@ -43,6 +43,40 @@ _EPHEMERAL_HC = {
 }
 
 
+@pytest.mark.asyncio
+async def test_ephemeral_uses_runner_derived_analysis_capabilities(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "analysis-task"
+    task_path.mkdir()
+
+    def unexpected_validation(_path):
+        raise AssertionError("analysis trials must skip ordinary task validation")
+
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "validate_task_timeout_config",
+        unexpected_validation,
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_check_local_storage_preflight",
+        lambda *_args, **_kwargs: "stop after validation boundary",
+    )
+
+    outcome = await run_ephemeral_harbor_trial(
+        task_path=task_path,
+        agent="claude-code",
+        jobs_dir=tmp_path / "jobs",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
+        harbor_config=_EPHEMERAL_HC,
+        is_probe=True,
+        skip_task_validation=True,
+    )
+
+    assert outcome.exception_type == "LocalStoragePreflightError"
+
+
 def test_bridge_event_end_with_reward_and_exception():
     ev = _bridge_event(
         {
@@ -623,7 +657,9 @@ _FAKE_CHILD = textwrap.dedent(
     sentinel = "_oddish_harbor_event"
     for ev in ("start", "agent-start"):
         print(json.dumps({sentinel: True, "event": ev, "trial_id": payload.get("trial_id")}), flush=True)
-    print("harbor: some noisy log line that is not an event", flush=True)
+    # Helm setup can emit one JSON/log line larger than asyncio's 64 KiB
+    # default StreamReader limit. The parent must preserve the event stream.
+    print("harbor: " + "x" * (128 * 1024), flush=True)
     print(json.dumps({sentinel: True, "event": "end", "trial_id": payload.get("trial_id"),
                       "result": {"verifier_result": {"rewards": {"reward": 1.0}}}}), flush=True)
     open(payload["outcome_path"], "w").write(json.dumps(
@@ -918,3 +954,22 @@ async def test_upload_probe_assets_splits_targets(tmp_path):
     # CLI mount carries ONLY the CLI.
     harness = next(names for t, names in uploads if t == PROBE_HARNESS_DIR)
     assert harness == ["oddish-query"]
+
+
+@pytest.mark.asyncio
+async def test_upload_probe_assets_fails_when_qa_submission_contract_is_missing(
+    tmp_path,
+):
+    from oddish.workers.queue.trial_handler import _upload_probe_assets
+
+    assets = tmp_path / "analysis-task"
+    assets.mkdir()
+    (assets / "submit-analysis-result").write_text("#!/bin/sh\n")
+    (assets / ".analysis-contract").mkdir()
+
+    class FailingEnv:
+        async def upload_dir(self, *, source_dir, target_dir):
+            raise OSError("sandbox upload unavailable")
+
+    with pytest.raises(RuntimeError, match="required QA submission contract"):
+        await _upload_probe_assets(FailingEnv(), assets, "qa-1")

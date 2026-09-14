@@ -407,7 +407,7 @@ async def test_retry_clears_an_inflight_verdict_whose_job_it_cancels(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_retry_restores_published_verdict_from_cancelled_replacement(
+async def test_retry_discards_published_verdict_from_cancelled_replacement(
     monkeypatch,
 ):
     from oddish.db import VerdictStatus
@@ -445,10 +445,10 @@ async def test_retry_restores_published_verdict_from_cancelled_replacement(
     await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
 
     assert task.status == TaskStatus.RUNNING
-    assert task.verdict is payload
-    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict is None
+    assert task.verdict_status is None
     assert task.verdict_started_at is None
-    assert task.verdict_finished_at is published_at
+    assert task.verdict_finished_at is None
 
 
 @pytest.mark.asyncio

@@ -281,3 +281,14 @@ def test_hosted_deploys_enable_ec2_without_embedding_secret_values(
         "ODDISH_EC2_SSH_PRIVATE_KEY:",
     ):
         assert forbidden not in workflow
+
+
+def test_production_ec2_capacity_is_explicit() -> None:
+    workflow = (
+        Path(modal_app.__file__).resolve().parent.parent
+        / ".github"
+        / "workflows"
+        / "modal-deploy.yml"
+    ).read_text()
+
+    assert 'ODDISH_EC2_MAX_CONCURRENT_INSTANCES: "100"' in workflow

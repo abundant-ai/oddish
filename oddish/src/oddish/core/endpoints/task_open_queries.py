@@ -2,8 +2,20 @@
 
 from sqlalchemy import text
 
+# Shared by bounded task reads. A stored verdict is task-scoped, so source
+# provenance must be checked before presenting it on a selected version.
+VERDICT_VERSION_SQL = """(
+    SELECT q.task_version_id FROM trials q
+    WHERE q.task_id = {task_id} AND q.kind = 'qa' AND q.status = 'SUCCESS'
+      AND q.deleted_at IS NULL
+      AND (CASE WHEN {verdict}->>'_graded_by' IS NOT NULL
+        THEN q.id = {verdict}->>'_graded_by'
+        ELSE COALESCE(q.harbor_config->'analysis_payload'->>'with_verdict', 'true') <> 'false' END)
+    ORDER BY COALESCE(q.finished_at, q.created_at) DESC, q.id DESC LIMIT 1
+)"""
+
 IDENTITY_SQL = text(
-    """
+    f"""
     WITH identity AS (
       SELECT t.id AS task_id, t.name, lower(t.status::text) AS status,
              lower(t.priority::text) AS priority, t."user", t.task_path, t.link,
@@ -28,7 +40,8 @@ IDENTITY_SQL = text(
         AND (CAST(:org_id AS text) IS NULL OR t.org_id = :org_id)
       LIMIT 1
     )
-    SELECT i.*,
+    SELECT i.*, findings.must_fix_count, findings.pre_trial_must_fix_count,
+      COALESCE({VERDICT_VERSION_SQL.format(task_id="i.task_id", verdict="i.verdict")} = i.selected_version_id, false) AS review_version_matches,
       COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
         SELECT e.id, e.name FROM task_experiments te
         JOIN experiments e ON e.id = te.experiment_id
@@ -70,6 +83,47 @@ IDENTITY_SQL = text(
         ORDER BY canonical.key, canonical.id LIMIT 50
       ) x), '[]'::jsonb) AS selected_version_tags
     FROM identity i
+    CROSS JOIN LATERAL (
+      WITH stored_raw AS (
+        SELECT report->'finding' AS item, 0 AS priority, ord, report->>'source' = 'pre_trial' AS from_audit
+        FROM task_versions v,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.reported_findings) = 'array' THEN v.reported_findings ELSE '[]'::jsonb END) WITH ORDINALITY AS reports(report, ord)
+        WHERE v.id = i.selected_version_id
+        UNION ALL
+        SELECT item, 1 AS priority, ord, true AS from_audit
+        FROM task_versions v,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.pre_trial->'items') = 'array' THEN v.pre_trial->'items' ELSE '[]'::jsonb END) WITH ORDINALITY AS audit(item, ord)
+        WHERE v.id = i.selected_version_id
+      ), stored AS (
+        SELECT DISTINCT ON (finding_key) finding_key, item, priority, from_audit
+        FROM (
+          SELECT *, COALESCE(item->>'id', COALESCE(item->>'tier', '') || '|' || COALESCE(item->>'title', '') || '|' || COALESCE(item->>'file', '')) AS finding_key
+          FROM stored_raw
+        ) keyed
+        ORDER BY finding_key, priority DESC, ord DESC
+      ), live AS (
+        SELECT item, COALESCE(item->>'id', COALESCE(item->>'tier', '') || '|' || COALESCE(item->>'title', '') || '|' || COALESCE(item->>'file', '')) AS finding_key,
+          tr.created_at, tr.id, ord
+        FROM trials tr,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(tr.analysis->'action_items') = 'array' THEN tr.analysis->'action_items' ELSE '[]'::jsonb END) WITH ORDINALITY AS actions(item, ord)
+        WHERE tr.task_id = i.task_id AND tr.task_version_id = i.selected_version_id
+          AND (i.org_id IS NULL OR tr.org_id = i.org_id)
+          AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
+          AND tr.kind = 'agent' AND NOT tr.is_probe
+          AND lower(tr.agent) !~ '^(nop$|nop-|agent-nop|oracle$|oracle-|agent-oracle)'
+          AND tr.analysis_status = 'SUCCESS'
+      ), merged AS (
+        SELECT finding_key, item, from_audit FROM stored
+        UNION ALL
+        SELECT DISTINCT ON (live.finding_key) live.finding_key, live.item, false AS from_audit
+        FROM live
+        WHERE NOT EXISTS (SELECT 1 FROM stored WHERE stored.finding_key = live.finding_key OR stored.finding_key = live.item->>'links_to')
+        ORDER BY finding_key
+      )
+      SELECT count(*) FILTER (WHERE item->>'tier' = 'must_fix') AS must_fix_count,
+        count(*) FILTER (WHERE item->>'tier' = 'must_fix' AND from_audit) AS pre_trial_must_fix_count
+      FROM merged
+    ) findings
     """
 )
 
@@ -80,7 +134,7 @@ AGGREGATE_SQL = text(
         tr.provider, tr.model, tr.kind, lower(tr.status::text) AS status,
         tr.reward, NULL::text AS error_kind, tr.is_probe, tr.cost_usd,
         tr.input_tokens, tr.output_tokens, tr.cache_tokens,
-        tr.cache_write_tokens, tr.billed_user_id, tr.created_at,
+        tr.cache_write_tokens, tr.billed_user_id, tr.has_trajectory, tr.created_at,
         tr.started_at, tr.finished_at
       FROM trials tr
       WHERE tr.task_id = :task_id AND tr.kind = 'qa'
@@ -90,14 +144,17 @@ AGGREGATE_SQL = text(
       ORDER BY tr.created_at DESC, tr.id DESC
       LIMIT 1
     ), qa_rows AS (
-      -- The analysis_spend view: frozen analysis_costs ledger UNION ALL
-      -- QA/audit trial spend. The trial join recovers ledger rows the old
-      -- per-trial classifier stamped with trial_id but no task_id; OR is
-      -- row-level, so a row carrying both never counts twice.
       SELECT COALESCE(a.cost_usd, 0.0) AS cost
       FROM analysis_spend a
-      LEFT JOIN trials qat ON qat.id = a.trial_id
-      WHERE (a.task_id = :task_id OR qat.task_id = :task_id)
+      WHERE a.task_id = :task_id
+        AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
+      UNION ALL
+      -- Only the historical ledger can attribute spend through another trial.
+      -- Exclude direct matches, including NULL-safe overlap, to count each once.
+      SELECT COALESCE(a.cost_usd, 0.0) AS cost
+      FROM trials qat JOIN analysis_costs a ON a.trial_id = qat.id
+      WHERE qat.task_id = :task_id AND a.deleted_at IS NULL
+        AND a.task_id IS DISTINCT FROM CAST(:task_id AS text)
         AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
     ), eligible AS (
       SELECT tr.task_version_id, tr.billed_user_id, tr.is_probe,
@@ -186,7 +243,7 @@ PREVIEW_SQL = text(
            ELSE 'error' END AS error_kind,
       tr.is_probe, tr.cost_usd, tr.input_tokens, tr.output_tokens,
       tr.cache_tokens, tr.cache_write_tokens, tr.billed_user_id,
-      tr.created_at, tr.started_at, tr.finished_at
+      tr.has_trajectory, tr.created_at, tr.started_at, tr.finished_at
     FROM trials tr
     WHERE tr.task_id = :task_id AND tr.task_version_id = :version_id
       AND tr.kind != 'qa_eval'

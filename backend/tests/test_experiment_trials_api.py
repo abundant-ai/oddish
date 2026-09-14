@@ -113,6 +113,7 @@ async def seed_experiment_with_trials():
     async with get_session() as session:
         session.add(
             OrganizationModel(
+                execution_enabled=True,
                 id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
             )
         )
@@ -224,6 +225,7 @@ async def test_experiment_trials_does_not_leak_across_orgs(
     async with get_session() as session:
         session.add(
             OrganizationModel(
+                execution_enabled=True,
                 id=org_b_id, name=f"Other Org {suffix}", slug=f"other-org-{suffix}"
             )
         )

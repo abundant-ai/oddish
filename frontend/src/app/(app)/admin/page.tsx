@@ -24,6 +24,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import type {
+  QueueHealthResponse,
   QueueSlotsResponse,
   QueueStatusResponse,
   OrphanedStateResponse,
@@ -33,9 +34,14 @@ import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
+import { EndpointHealthCard } from "@/components/endpoint-health-card";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { UsagePanel } from "@/components/usage-panel";
-import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
+import {
+  DispatcherTile,
+  QueueHealthOverviewCard,
+  ReconcilerTile,
+} from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExclusionsCard } from "@/components/cost-exclusions-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
@@ -249,6 +255,45 @@ function QueueSlotsCard() {
             )}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiagnosticsPanel() {
+  const { data, error } = useSWR<QueueHealthResponse>(
+    "/api/admin/queue-health",
+    fetcher,
+    { refreshInterval: 10000 }
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Platform signals</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg border p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Server className="h-4 w-4" />
+              API + database
+            </div>
+            <Badge
+              variant={error ? "destructive" : "outline"}
+              className={!error && data ? "text-green-400" : undefined}
+            >
+              {error ? "Unavailable" : data ? "Connected" : "Checking..."}
+            </Badge>
+          </div>
+          <p className="text-muted-foreground mt-1 text-[11px]">
+            {data
+              ? `Queue health read ${new Date(data.timestamp).toLocaleTimeString()}`
+              : "Waiting for a queue-health database read."}
+          </p>
+        </div>
+        <DispatcherTile status={data?.dispatcher ?? null} />
+        <ReconcilerTile status={data?.reconciler ?? null} />
       </CardContent>
     </Card>
   );
@@ -661,11 +706,13 @@ const ADMIN_TABS = [
   "concurrency",
   "tags",
   "quotas",
+  "diagnostics",
 ] as const;
 
 // Platform-wide config: hidden unless the caller is in the operator org.
 const OPERATOR_ONLY_TABS: ReadonlySet<(typeof ADMIN_TABS)[number]> = new Set([
   "concurrency",
+  "diagnostics",
 ]);
 
 function AdminPageContent() {
@@ -744,9 +791,13 @@ function AdminPageContent() {
           )}
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
           <TabsTrigger value="quotas">Quotas</TabsTrigger>
+          {canManagePlatform && (
+            <TabsTrigger value="diagnostics">Diagnostics</TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
+          {canManagePlatform && <EndpointHealthCard />}
           <QueueHealthOverviewCard canManageConcurrency={canManagePlatform} />
         </TabsContent>
 
@@ -806,6 +857,12 @@ function AdminPageContent() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {canManagePlatform && (
+          <TabsContent value="diagnostics" className="space-y-4">
+            <DiagnosticsPanel />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

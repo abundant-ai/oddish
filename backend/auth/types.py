@@ -22,6 +22,7 @@ class AuthContext:
 
     method: AuthMethod
     org_id: str | None = None
+    # Filled from the database by require_auth after checking approval.
     org: OrganizationModel | None = None
     org_slug: str | None = None
     user_id: str | None = None
@@ -31,6 +32,7 @@ class AuthContext:
     api_key_id: str | None = None
     api_key: APIKeyModel | None = None
     api_key_created_by_role: str | None = None
+    bound_analysis_trial_id: str | None = None
     scope: APIKeyScope = APIKeyScope.FULL
 
     @property

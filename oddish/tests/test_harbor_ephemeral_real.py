@@ -52,6 +52,8 @@ async def test_real_older_harbor_child_runs_and_bridges_outcome(tmp_path):
         model=None,
         trial_id="t-real-eph",
         harbor_config=harbor_config,
+        is_probe=True,
+        skip_task_validation=True,
     )
 
     # The child started (uv resolved the older Harbor and imported it) and the

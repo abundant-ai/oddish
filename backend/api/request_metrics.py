@@ -58,6 +58,21 @@ class BackendPhaseMetricsMiddleware:
                     "http.response.status_code": timing.status_code or 500,
                 }
             )
+            attributes.update(
+                {
+                    "storage.request_count": timing.storage_request_count,
+                    "storage.download_bytes": timing.storage_bytes,
+                    "storage.archive_bytes": timing.archive_bytes,
+                }
+            )
+            if timing.archive_cache_hit is not None:
+                attributes["storage.archive_cache.hit"] = timing.archive_cache_hit
+            if timing.trajectory_cache_hit is not None:
+                attributes["storage.trajectory_cache.hit"] = timing.trajectory_cache_hit
+            if timing.file_source is not None:
+                attributes["storage.file.source"] = timing.file_source
+            if timing.file_bytes is not None:
+                attributes["storage.file.bytes"] = timing.file_bytes
             if timing.cache_hit is not None:
                 attributes["auth.cache.hit"] = timing.cache_hit
             with span("backend.request.phases", **attributes):

@@ -23,7 +23,7 @@ from auth import (
     require_auth,
 )
 from models import APIKeyModel, create_api_key
-from oddish.db import get_session, utcnow
+from oddish.db import get_read_session, get_session, utcnow
 
 
 router = APIRouter(prefix="/api-keys", tags=["API Keys"])
@@ -35,7 +35,7 @@ async def list_api_keys(
 ) -> list[APIKeyResponse]:
     """List visible API keys for the organization."""
 
-    async with get_session() as session:
+    async with get_read_session() as session:
         stmt = (
             select(APIKeyModel)
             .where(APIKeyModel.org_id == auth.org_id)

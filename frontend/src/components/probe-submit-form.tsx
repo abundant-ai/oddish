@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { extractSkillMdBody } from "@/lib/skill-md";
+import { apiFetch } from "@/lib/api";
 
 const AGENTS = [
   { value: "claude-code", label: "claude-code" },
@@ -115,7 +116,7 @@ export function ProbeSubmitForm({
 
   const reloadSkills = useCallback(async () => {
     try {
-      const res = await fetch(`/api/skills`, { cache: "no-store" });
+      const res = await apiFetch(`/api/skills`, { cache: "no-store" });
       if (!res.ok) {
         console.warn("skills fetch failed:", res.status);
         return;
@@ -155,7 +156,7 @@ export function ProbeSubmitForm({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tasks/sweep`, {
+      const res = await apiFetch(`/api/tasks/sweep`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

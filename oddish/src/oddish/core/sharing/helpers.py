@@ -23,6 +23,11 @@ from oddish.core.model_display_names import (
     apply_model_display_names,
     experiment_display_names,
 )
+from oddish.core.trial_artifacts import (
+    TrialArtifactMode,
+    normalize_trial_relative_path,
+    resolve_trial_artifact_layout,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -244,8 +249,14 @@ async def list_task_trials_for_task(
     *,
     probe: bool | None = None,
     version: int | None = None,
+    org_id: str | None = None,
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
+
+    ``org_id`` scopes the listing to one organization's task inside the
+    query itself (the join on ``tasks`` is already there), so an
+    org-scoped caller needs no separate task lookup on the common path.
+
 
     Superseded trials (rows replaced by a user-driven retry) are
     hidden by default so the public trial list collapses the rerun
@@ -269,9 +280,12 @@ async def list_task_trials_for_task(
     ]
     if probe is not None:
         conditions.append(TrialModel.is_probe == probe)
+    if org_id is not None:
+        conditions.append(TaskModel.org_id == org_id)
     query = select(TrialModel, TaskModel.task_path).join(
         TaskModel, TaskModel.id == TrialModel.task_id
     )
+
     if version is not None:
         query = query.join(
             TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id
@@ -345,22 +359,51 @@ async def list_task_files_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     inline: bool = True,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
+    directories: list[str] | None = None,
+    previews: bool = False,
 ) -> dict:
     """List files in a task's S3 directory."""
-    storage = get_storage_client()
-
-    try:
-        return await storage.list_task_files(
-            task_id=task_id,
-            prefix=prefix,
-            recursive=recursive,
-            limit=limit,
-            cursor=cursor,
-            presign=presign,
-            version=version,
-            task_s3_prefix=task_s3_prefix,
-            inline=inline,
+    if directories is not None and (
+        recursive or inline or presign or prefix is not None or cursor is not None
+    ):
+        raise HTTPException(
+            400,
+            "Batched directories require recursive=false, inline=false, "
+            "presign=false, and no prefix or cursor",
         )
+    if previews and directories is None:
+        raise HTTPException(400, "Previews require a bounded directory batch")
+    storage = get_storage_client()
+    try:
+        if directories is not None:
+            result = await storage.list_task_directories(
+                task_id=task_id,
+                directories=directories,
+                **({"previews": True} if previews else {}),
+                limit=limit,
+                version=version,
+                task_s3_prefix=task_s3_prefix,
+                expanded=expanded,
+                expanded_manifest_key=expanded_manifest_key,
+            )
+        else:
+            result = await storage.list_task_files(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+                task_s3_prefix=task_s3_prefix,
+                inline=inline,
+                expanded=expanded,
+                expanded_manifest_key=expanded_manifest_key,
+            )
+        return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
     except Exception:
@@ -376,6 +419,9 @@ async def stream_task_files_s3(
     presign: bool,
     task_s3_prefix: str | None,
     version: int | None = None,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
 ):
     """Stream a task file listing chunk-by-chunk (tree first, then contents).
 
@@ -394,12 +440,18 @@ async def stream_task_files_s3(
         presign=presign,
         version=version,
         task_s3_prefix=task_s3_prefix,
+        expanded=expanded,
+        expanded_manifest_key=expanded_manifest_key,
     )
     started = False
     try:
         async for chunk in stream:
             started = True
-            yield chunk
+            yield (
+                {**chunk, "source_hash": source_hash}
+                if chunk["type"] == "listing"
+                else chunk
+            )
     except HTTPException:
         if not started:
             raise
@@ -446,29 +498,29 @@ async def get_task_file_content_s3(
     task_s3_prefix: str | None,
     version: int | None = None,
     max_bytes: int | None = None,
+    expanded: bool | None = None,
+    expanded_manifest_key: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     storage = get_storage_client()
 
     try:
-        return await storage.get_task_file_content(
+        result = await storage.get_task_file_content(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
             version=version,
             task_s3_prefix=task_s3_prefix,
             max_bytes=max_bytes,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
         )
+        return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
-
-
-def _get_trial_s3_prefix(trial: TrialModel) -> str:
-    from oddish.db.storage import StorageClient
-
-    return trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
 
 
 async def list_trial_files_s3(
@@ -484,6 +536,10 @@ async def list_trial_files_s3(
     storage = get_storage_client()
 
     try:
+        layout = await resolve_trial_artifact_layout(trial, storage)
+        if layout.mode is TrialArtifactMode.UNAVAILABLE:
+            raise HTTPException(status_code=404, detail="No authoritative trial files")
+        assert layout.artifact_prefix is not None
         return await storage.list_trial_files(
             trial_id=trial.id,
             prefix=prefix,
@@ -492,9 +548,7 @@ async def list_trial_files_s3(
             cursor=cursor,
             presign=presign,
             presign_expiration=presign_expiration,
-            # The same root the content endpoint resolves against, so listed
-            # relative paths round-trip without doubling the analysis segment.
-            root_prefix=_get_trial_s3_prefix(trial),
+            root_prefix=layout.artifact_prefix,
         )
     except HTTPException:
         raise
@@ -508,26 +562,20 @@ async def get_trial_file_content_s3(
 ) -> tuple[bytes, str]:
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
-    from pathlib import PurePosixPath
 
-    raw = file_path.replace("\\", "/").strip()
-    if not raw or raw.startswith("/"):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    parts = PurePosixPath(raw).parts
-    if ".." in parts:
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    normalized = str(PurePosixPath(*parts))
+    normalized = normalize_trial_relative_path(file_path)
 
     media_type, _ = mimetypes.guess_type(normalized)
     if media_type is None:
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    s3_prefix = _get_trial_s3_prefix(trial)
-    s3_key = f"{s3_prefix}{normalized}"
+    layout = await resolve_trial_artifact_layout(trial, storage)
+    if layout.mode is TrialArtifactMode.UNAVAILABLE:
+        raise HTTPException(status_code=404, detail="No authoritative trial files")
+    assert layout.artifact_prefix is not None
+    s3_key = f"{layout.artifact_prefix}{normalized}"
 
-    try:
-        content = await storage.download_bytes(s3_key)
-        return content, media_type
-    except Exception:
+    if not await storage.object_exists(s3_key):
         raise HTTPException(status_code=404, detail="File not found")
+    return await storage.download_bytes(s3_key), media_type

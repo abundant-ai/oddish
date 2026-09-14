@@ -4,7 +4,10 @@ import { useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import useSWR, { useSWRConfig, type SWRResponse } from "swr";
 import { BROWSE_FORWARD_KEYS } from "@/lib/tasks-filters";
-import type { TaskBrowseResponse } from "@/lib/types";
+import type {
+  TaskBrowseCountResponse,
+  TaskBrowseResponse,
+} from "@/lib/types";
 
 // The SWR key is also the URL that gets fetched, in display form: the page
 // URL's filter params with rolling presets still as tokens (e.g.
@@ -14,6 +17,10 @@ import type { TaskBrowseResponse } from "@/lib/types";
 // re-resolves rolling windows against the current time — the same semantics
 // the grid had while it was server-rendered.
 const BROWSE_KEY_PREFIX = "/api/tasks/browse?";
+// A sibling path, not a flag on the grid URL: it keeps the two fetches
+// distinguishable in the network shape (see e2e/tasks-network-shape.spec.ts,
+// which asserts one grid fetch per filter state).
+const BROWSE_COUNT_KEY_PREFIX = "/api/tasks/browse/count?";
 
 /**
  * Builds the SWR cache key — and fetch URL — for one browse state from the
@@ -37,6 +44,30 @@ export function browseKey(searchParams: URLSearchParams): string {
   return `${BROWSE_KEY_PREFIX}${params.toString()}`;
 }
 
+/**
+ * The SWR key for the matching-task count of one filter state.
+ *
+ * Deliberately the same params as ``browseKey`` MINUS ``offset``: the count
+ * describes the whole filter set, so every page of one set resolves to a
+ * single cache entry and paging re-uses it instead of re-running the count.
+ */
+export function browseCountKey(searchParams: URLSearchParams): string {
+  const params = new URLSearchParams();
+  const q = searchParams.get("q") ?? searchParams.get("query");
+  if (q) params.set("q", q);
+  for (const key of BROWSE_FORWARD_KEYS) {
+    // `sort` reorders the page; it cannot change how many tasks match. An
+    // aggregate sort does add its metric join, but as a LEFT JOIN whose
+    // range predicates come from the aggregate FILTERS -- which are keyed
+    // above -- so the matching set is identical. Keying on it would miss the
+    // cached total and re-run the count for a pure reordering.
+    if (key === "sort") continue;
+    const value = searchParams.get(key);
+    if (value) params.set(key, value);
+  }
+  return `${BROWSE_COUNT_KEY_PREFIX}${params.toString()}`;
+}
+
 // Staging has shown multi-second browse responses; a hung fetch should fail
 // like a normal error (alert + Retry) instead of leaving the skeleton up
 // forever. Generous because this is the page's one data-bearing request.
@@ -48,6 +79,30 @@ const BROWSE_FETCH_TIMEOUT_MS = 30_000;
 // superseded filter state stops consuming a proxy slot and a backend query
 // instead of running to completion for a result nobody will render.
 let inflight: AbortController | null = null;
+
+let countInflight: AbortController | null = null;
+
+async function countFetcher(key: string): Promise<TaskBrowseCountResponse> {
+  countInflight?.abort();
+  const controller = new AbortController();
+  countInflight = controller;
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    BROWSE_FETCH_TIMEOUT_MS
+  );
+  try {
+    const res = await fetch(key, {
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(res.statusText || "Request failed");
+    return (await res.json()) as TaskBrowseCountResponse;
+  } finally {
+    window.clearTimeout(timeout);
+    if (countInflight === controller) countInflight = null;
+  }
+}
 
 async function browseFetcher(key: string): Promise<TaskBrowseResponse> {
   inflight?.abort();
@@ -119,11 +174,46 @@ export function useTaskBrowse(
 export function useTaskBrowseRevalidate(): () => Promise<unknown> {
   const searchParams = useSearchParams();
   const { mutate } = useSWRConfig();
-  return useCallback(
-    () =>
-      mutate(browseKey(new URLSearchParams(searchParams.toString()))).catch(
-        () => undefined
-      ),
-    [mutate, searchParams]
+  return useCallback(() => {
+    const sp = new URLSearchParams(searchParams.toString());
+    // Refresh the count alongside the grid: an import or a finished run
+    // changes how many tasks match, and a stale total beside fresh cards is
+    // worse than no total at all.
+    return Promise.all([
+      mutate(browseKey(sp)),
+      mutate(browseCountKey(sp)),
+    ]).catch(() => undefined);
+  }, [mutate, searchParams]);
+}
+
+/**
+ * Fetches the matching-task count for the filter state in ``searchParams``.
+ *
+ * A request of its own, in parallel with the grid's: the count is the more
+ * expensive half (it scans the whole filtered set, where the page stops at 24
+ * rows), so pairing them would hold every page of cards behind it.
+ *
+ * ``keepPreviousData`` keeps the last count on screen across a filter change
+ * rather than collapsing the header — but a number for the PREVIOUS filters
+ * must never read as the current answer, so callers get ``isStale`` and are
+ * expected to mark or hide it. A failed fetch is stale for the same reason:
+ * the last good count may describe filters the user has already left.
+ */
+export function useTaskBrowseCount(searchParams: URLSearchParams): {
+  total: number | null;
+  isStale: boolean;
+} {
+  const { data, error, isLoading } = useSWR<TaskBrowseCountResponse, Error>(
+    browseCountKey(searchParams),
+    countFetcher,
+    {
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      shouldRetryOnError: (err) => err.name !== "AbortError",
+    }
   );
+  return {
+    total: typeof data?.total === "number" ? data.total : null,
+    isStale: isLoading || Boolean(error),
+  };
 }

@@ -10,7 +10,7 @@ import {
 // the audit. Does not classify trials and does not synthesize the
 // verdict.
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
@@ -32,7 +32,8 @@ export async function POST(
     const res = await fetch(url, {
       method: "POST",
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: { ...getAuthHeaders(token), "Content-Type": "application/json" },
+      body: (await request.text()) || undefined,
     });
 
     const body = await res.json().catch(() => ({}));

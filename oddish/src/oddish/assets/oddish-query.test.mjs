@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -104,6 +105,36 @@ test('task fetch downloads the complete source tree into --into', () => {
   assert.equal(fs.readFileSync(path.join(dest, 'tests/test.sh'), 'utf8'), 'VERIFIER');
 });
 
+test('task fetch preserves presigned binary bytes and their sha256', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-binary-dest-'));
+  const original = Buffer.from([0x00, 0x7f, 0x80, 0xff, 0x41, 0xc3, 0x28]);
+  const url = `data:application/octet-stream;base64,${original.toString('base64')}`;
+  const out = runApi(['task', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'solution/engine_core.bin', size: original.length, url } ] } });
+
+  const downloaded = fs.readFileSync(path.join(dest, 'solution/engine_core.bin'));
+  const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+  assert.match(out, /PROBE-ONLY/);
+  assert.deepEqual(downloaded, original);
+  assert.equal(sha256(downloaded), sha256(original));
+});
+
+test('task fetch rejects a downloaded file whose size changed in transit', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'task-corrupt-dest-'));
+  const original = Buffer.from([0x80, 0xff]);
+  const url = `data:application/octet-stream;base64,${original.toString('base64')}`;
+  const out = runApi(['task', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'solution/engine_core.bin', size: original.length + 1, url } ] } });
+
+  assert.deepEqual(JSON.parse(out), {
+    error: 'task file size mismatch: solution/engine_core.bin (expected 3, got 2)',
+    status: 5,
+  });
+  assert.ok(!fs.existsSync(path.join(dest, 'solution/engine_core.bin')));
+});
+
 test('verifier source resolves tests/test.sh from the task listing', () => {
   const out = runApi(['verifier', 'source'],
     { '/tasks/task-123/files': { files: [{ path: 'tests/test.sh' }] },
@@ -158,7 +189,56 @@ test('--help lists the command groups', () => {
   assert.match(out, /verifier/);
   assert.match(out, /verify run/);
   assert.match(out, /harbor src/);
+  assert.match(out, /trials result/);
+  assert.match(out, /trials trajectory/);
+  assert.match(out, /trials verifier/);
   assert.match(out, /trials logs/);
+});
+
+test('trial result prints the complete endpoint JSON without MAX_BYTES slicing', () => {
+  const payload = { trial_results: [{ trial_name: 't-1', output: 'r'.repeat(24000) }] };
+  const out = runApi(['trials', 'result', 't-1'], { '/trials/t-1/result': payload });
+  assert.deepEqual(JSON.parse(out), { trial_id: 't-1', result: payload });
+  assert.ok(out.length > 16000);
+});
+
+test('trial trajectory prints the complete endpoint JSON without tail slicing', () => {
+  const payload = { trial_name: 't-1', steps: [{ message: 's'.repeat(24000) }] };
+  const out = runApi(
+    ['trials', 'trajectory', 't-1'],
+    { '/trials/t-1/trajectory': payload },
+  );
+  assert.deepEqual(JSON.parse(out), { trial_id: 't-1', trajectory: payload });
+  assert.ok(out.length > 16000);
+});
+
+test('trial verifier returns complete verifier streams with trial identity', () => {
+  const payload = {
+    verifier: { stdout: 'PASS\n', stderr: 'warning\n' },
+    exception: null,
+    agent: { setup: 'ignored by this bounded view' },
+  };
+  const out = runApi(
+    ['trials', 'verifier', 't-1'],
+    { '/trials/t-1/logs/structured?verifier_only=true': payload },
+  );
+  assert.deepEqual(JSON.parse(out), {
+    trial_id: 't-1',
+    verifier: payload.verifier,
+    exception: null,
+  });
+});
+
+test('trial logs retain log-specific truncation', () => {
+  const payload = { logs: 'l'.repeat(24000) };
+  const out = runApi(['trials', 'logs', 't-1'], { '/trials/t-1/logs': payload });
+  assert.match(out, /truncated/);
+  assert.ok(out.length < 16000);
+});
+
+test('the removed logs --trajectory option fails instead of changing resource meaning', () => {
+  const out = runApi(['trials', 'logs', 't-1', '--trajectory'], {});
+  assert.deepEqual(JSON.parse(out), { error: 'unknown option: --trajectory', status: 2 });
 });
 
 test('per-command help explains usage', () => {

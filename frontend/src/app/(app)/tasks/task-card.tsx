@@ -25,12 +25,7 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import type { TaskBrowseItem } from "@/lib/types";
-import {
-  isBrowseTaskDetail,
-  taskDetailFromBrowse,
-  taskDetailKey,
-  type TaskDetailResource,
-} from "@/lib/task-detail-resource";
+
 import {
   isBrowseTaskOpen,
   taskOpenFromBrowse,
@@ -324,14 +319,6 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
       taskOpenKey(task.id),
       (current: TaskOpenResource | undefined) =>
         current && !isBrowseTaskOpen(current) ? current : openSnapshot,
-      { revalidate: false }
-    );
-
-    const detailSnapshot = taskDetailFromBrowse(task);
-    void mutate(
-      taskDetailKey(task.id),
-      (current: TaskDetailResource | undefined) =>
-        current && !isBrowseTaskDetail(current) ? current : detailSnapshot,
       { revalidate: false }
     );
   }

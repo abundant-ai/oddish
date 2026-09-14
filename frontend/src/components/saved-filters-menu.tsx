@@ -12,7 +12,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 import { BROWSE_FORWARD_KEYS } from "@/lib/tasks-filters";
 import type { TagListResponse, TagSummary } from "@/lib/types";
@@ -156,7 +156,7 @@ export function SavedFiltersMenu() {
         none: toIds(currentTags.none),
       },
     };
-    const res = await fetch("/api/tag-filters", {
+    const res = await apiFetch("/api/tag-filters", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

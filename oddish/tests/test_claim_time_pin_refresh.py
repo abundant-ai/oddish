@@ -108,7 +108,7 @@ def test_an_ephemeral_exact_pin_keeps_its_sha_and_syncs_the_projection():
 def test_a_config_with_no_harbor_identity_is_left_alone():
     """Audit/analysis payloads execute no pin; stamping one would invent
     identity for a row that never ran harbor."""
-    config = {"mode": "audit", "analysis_payload": {"k": 1}}
+    config = {"analysis_payload": {"k": 1}}
     trial = _trial(config)
     assert _refresh_stable_variant_pin(trial) is config
     assert "resolved_sha" not in trial.harbor_config

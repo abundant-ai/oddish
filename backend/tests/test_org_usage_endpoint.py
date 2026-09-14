@@ -151,7 +151,7 @@ async def org_with_member():
         is_active=True,
     )
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(OrganizationModel(execution_enabled=True, id=org_id, name=org_id, slug=org_id))
         await session.flush()
         session.add(member)
     try:
@@ -382,7 +382,7 @@ async def org_with_full_key():
         org_id=org_id, name="ouk", scope=APIKeyScope.FULL
     )
     async with get_session() as session:
-        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(OrganizationModel(execution_enabled=True, id=org_id, name=org_id, slug=org_id))
         await session.flush()
         session.add(key_model)
     try:

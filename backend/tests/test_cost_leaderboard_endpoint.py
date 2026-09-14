@@ -50,7 +50,7 @@ def _client_app(monkeypatch, users, ranked) -> tuple[FastAPI, _Session]:
     async def fake_leaderboard(_session, *, org_id, window_days, resolve_github_users):
         return ranked
 
-    monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
+    monkeypatch.setattr(dashboard_router, "get_read_session", fake_get_session)
     monkeypatch.setattr(dashboard_router, "get_cost_leaderboard_core", fake_leaderboard)
     app = _app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(
@@ -105,7 +105,7 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
             CostLeaderboardUser(user_id="user-2", cost_usd=8.5),
         ]
 
-    monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
+    monkeypatch.setattr(dashboard_router, "get_read_session", fake_get_session)
     monkeypatch.setattr(dashboard_router, "get_cost_leaderboard_core", fake_leaderboard)
     app = _app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(

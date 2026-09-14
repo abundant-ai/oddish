@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
@@ -35,9 +35,17 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
 from oddish.db import (
     TrialModel,
+    get_read_session,
     get_session,
 )
 from oddish.schemas import TrialRetryRequest
@@ -56,9 +64,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Trials"])
 
 
-async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
+async def _get_authorized_trial(
+    trial_id: str, auth: AuthContext, request: Request
+) -> TrialModel:
     """Load a trial, then release the DB session before artifact I/O."""
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
         trial = await get_trial_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
@@ -68,14 +78,14 @@ async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
 
 @router.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)
 async def get_trial(
+    request: Request,
     task_id: str,
     index: int,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TrialResponse:
     """Get a specific trial by its 0-based index within the task."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_trial_by_index_core(
             session, task_id=task_id, index=index, org_id=auth.org_id
         )
@@ -83,17 +93,17 @@ async def get_trial(
 
 @router.get("/trials/{trial_id}", response_model=TrialResponse)
 async def get_trial_full(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TrialResponse:
     """Full detail for a single trial by id.
 
     The experiment grid loads only slim trials; clicking a cell fetches the
     full trial here (timing, harbor, tokens, full analysis, etc.).
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_trial_response_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
@@ -133,12 +143,15 @@ async def list_task_trials(
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_session() as session:
-        await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-
-        return await list_task_trials_for_task(
-            session, task_id, probe=probe, version=version
+    async with get_read_session() as session:
+        trials = await list_task_trials_for_task(
+            session, task_id, probe=probe, version=version, org_id=auth.org_id
         )
+        if not trials:
+            # Only an empty result needs the existence check: it separates "no
+            # trials yet" (200 []) from "not this org's task" (404).
+            await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        return trials
 
 
 @router.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])
@@ -148,7 +161,7 @@ async def list_experiment_trials(
 ) -> list[TrialResponse]:
     """List all non-superseded trials for an experiment (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await list_experiment_trials_for_org(session, experiment_id, auth.org_id)
 
 
@@ -260,7 +273,7 @@ async def get_trial_live(
 ) -> dict:
     """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         return await read_trial_live_for_id(
             session,
             trial_id=trial_id,
@@ -272,30 +285,34 @@ async def get_trial_live(
 
 @router.get("/trials/{trial_id}/logs")
 async def get_trial_logs(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get logs for a specific trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_logs(trial)
 
 
 @router.get("/trials/{trial_id}/logs/structured")
 async def get_trial_logs_structured(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    verifier_only: bool = Query(False),
 ) -> dict:
-    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+    """Get structured logs, optionally limited to verifier evidence."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
-    return await read_trial_logs_structured(trial)
+    trial = await _get_authorized_trial(trial_id, auth, request)
+    return await read_trial_logs_structured(trial, verifier_only=verifier_only)
 
 
 @router.get("/trials/{trial_id}/files")
 async def list_trial_files(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
@@ -304,7 +321,7 @@ async def list_trial_files(
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await list_trial_files_s3(
         trial,
         prefix=prefix,
@@ -317,12 +334,13 @@ async def list_trial_files(
 
 @router.get("/trials/{trial_id}/debug-files")
 async def debug_trial_files_endpoint(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Debug endpoint: list all files in S3 for a trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
 
     from oddish.core.trial_io import debug_trial_files
 
@@ -331,9 +349,10 @@ async def debug_trial_files_endpoint(
 
 @router.get("/trials/{trial_id}/files/{file_path:path}")
 async def get_trial_file(
+    request: Request,
     trial_id: str,
     file_path: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> Response:
     """Get a file from a trial's S3 directory by relative path.
 
@@ -341,7 +360,7 @@ async def get_trial_file(
     then falls back to the agent/ subdirectory for backward compatibility.
     """
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     try:
         content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
@@ -353,8 +372,9 @@ async def get_trial_file(
 
 @router.get("/trials/{trial_id}/probe-artifacts")
 async def get_trial_probe_artifacts(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get the probe `_artifacts` blob (agent transcript, verifier stdout,
     trajectory, watchdog log) for a trial.
@@ -363,18 +383,19 @@ async def get_trial_probe_artifacts(
     from object storage so the probe result page can render the agent output.
     """
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_probe_artifacts(trial)
 
 
 @router.get("/trials/{trial_id}/trajectory")
 async def get_trial_trajectory(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict | None:
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_trajectory(trial)
 
 
@@ -432,12 +453,17 @@ async def get_trial_trajectory_summary(
 ) -> dict:
     """Read the published summary or report the current refresh lifecycle."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
-    if trial.trajectory_summary_refresh_trial_id:
-        async with get_session() as session:
+    # No artifact I/O on this path, so one session serves both reads.
+    async with get_read_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+        refresh_trial = None
+        if trial.trajectory_summary_refresh_trial_id:
             refresh_trial = await session.get(
                 TrialModel, trial.trajectory_summary_refresh_trial_id
             )
+    if trial.trajectory_summary_refresh_trial_id:
         if (
             refresh_trial is None
             or refresh_trial.kind != "summarize"
@@ -461,7 +487,10 @@ async def regenerate_trial_trajectory_summary(
 ) -> dict:
     """Start or adopt the paid summarize trial for one agent trajectory."""
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
-    trial = await _get_authorized_trial(trial_id, auth)
+    async with get_read_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
     async with get_session() as session:
         refresh_trial = await get_or_create_summarize_trial(
             session, target_trial_id=trial.id
@@ -479,10 +508,11 @@ async def regenerate_trial_trajectory_summary(
 
 @router.get("/trials/{trial_id}/result")
 async def get_trial_result(
+    request: Request,
     trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> dict:
     """Get result.json for a trial."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
+    trial = await _get_authorized_trial(trial_id, auth, request)
     return await read_trial_result(trial)

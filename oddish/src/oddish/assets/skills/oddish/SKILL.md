@@ -13,12 +13,14 @@ the repository rules that are easy to misread from command output.
 
 ```bash
 oddish --help
+oddish version
 oddish status --json
 ```
 
 API-backed commands require `ODDISH_API_KEY`. Never print, log, commit, or
-return its value. The API target resolves in this order:
-`ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then hosted Oddish.
+return its value. `oddish version` and `oddish update` are local. The API
+target resolves in this order: `ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then
+hosted Oddish.
 
 Run `oddish <command> --help` before relying on an option not shown here.
 `--json` exists on many operational commands, but it is not a global option.
@@ -37,7 +39,7 @@ Treat these as separate mutations:
 - `delete` removes database visibility. Get explicit authorization for the
   exact trial, task, or experiment.
 
-Read-only inspection through `status`, `ls`, `logs`, `pull`, and `link` does
+Read-only inspection through `status`, `ls`, `logs`, `pull`, `link`, and `qa export` does
 not authorize a later mutation.
 
 ## Normal workflow
@@ -72,11 +74,16 @@ not authorize a later mutation.
    oddish status <task_id> --json
    oddish status --experiment <experiment_id> --json
    oddish status <trial_id> --json
+   oddish qa export --ids-file task-ids.txt --output qa-findings.csv
    oddish logs <trial_id> --follow
    ```
 
    Task JSON can contain platform analysis trials. Count evaluation attempts
    only where `trials[].kind == "agent"`.
+
+   `qa export` reads existing current-version findings by default and writes
+   a companion task-summary CSV. See `references/qa-contract.md` for severity,
+   historical-version, and partial-error behavior.
 
 4. Let task-level QA start automatically after current-version agent trials
    settle and the pre-trial audit finishes. Read the task verdict from task

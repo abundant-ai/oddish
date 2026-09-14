@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { markOpenIntent } from "@/lib/open-intent";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -90,7 +91,6 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { TrialNotRealSpendBadge } from "@/components/not-real-spend-badge";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
@@ -320,10 +320,8 @@ function TrialAnalysisCard({
             (now - new Date(trial.analysis_started_at).getTime()) / 1000
           )
         );
-        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+        progressLine = `${Math.floor(secs / 60)}m ${secs % 60}s`;
       }
-    } else {
-      progressLine = "Waiting for a QA worker.";
     }
   }
 
@@ -363,12 +361,7 @@ function TrialAnalysisCard({
               disabled={queuing || queueBlockedReason !== null}
               onClick={queueRun}
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                queueBlockedReason ??
-                (hasAnalysis
-                  ? "Reset this trial's analysis and re-run it with the latest prompt"
-                  : "Analyze this trial with the latest prompt")
-              }
+              title={queueBlockedReason ?? undefined}
             >
               {queuing
                 ? "Queuing…"
@@ -457,22 +450,20 @@ function TrialAnalysisCard({
                         ? "Analysis queued"
                         : "QA is running"}
                   </span>
-                  <span className="text-muted-foreground text-xs">
-                    {trial.analysis_status
-                      ? progressLine
-                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
-                  </span>
-                  {!trial.analysis_status &&
-                    activeQaTrial &&
-                    onOpenActiveQaTrial && (
-                      <button
-                        type="button"
-                        onClick={() => onOpenActiveQaTrial(activeQaTrial)}
-                        className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
-                      >
-                        view the QA run
-                      </button>
-                    )}
+                  {progressLine && (
+                    <span className="text-muted-foreground text-xs">
+                      {progressLine}
+                    </span>
+                  )}
+                  {activeQaTrial && onOpenActiveQaTrial && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenActiveQaTrial(activeQaTrial)}
+                      className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
+                    >
+                      view the QA run
+                    </button>
+                  )}
                 </div>
               ) : hasAnalysis ? (
                 // Analysis state exists but produced no report (e.g. failed
@@ -494,9 +485,6 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     No analysis yet
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    This trial has not been analyzed.
                   </span>
                 </div>
               )}
@@ -735,10 +723,14 @@ export function TrialDetailPanel({
   paneAction,
 }: TrialDetailPanelProps) {
   const taskQaInProgress = taskHasActiveVerdict(task);
-  const { data: refreshedTrial, mutate: revalidateTrial } = useTrial(
-    isOpen && requireTrialDetail ? selectedTrial?.id : null,
-    { apiBaseUrl }
-  );
+  const {
+    data: refreshedTrial,
+    error: trialDetailError,
+    isValidating: isValidatingTrialDetail,
+    mutate: revalidateTrial,
+  } = useTrial(isOpen && requireTrialDetail ? selectedTrial?.id : null, {
+    apiBaseUrl,
+  });
   const previousTaskQaRef = useRef({
     taskId: task?.id ?? null,
     inProgress: taskQaInProgress,
@@ -776,6 +768,8 @@ export function TrialDetailPanel({
   ]);
   const canonicalTrial =
     refreshedTrial?.id === selectedTrial?.id ? refreshedTrial : null;
+  const trialDetailFailed =
+    requireTrialDetail && canonicalTrial === null && trialDetailError != null;
   const actionsReady = !requireTrialDetail || canonicalTrial !== null;
   const trial = canonicalTrial ?? selectedTrial;
   const verifierSummary = embeddedCtrfSummary(trial?.result);
@@ -817,6 +811,25 @@ export function TrialDetailPanel({
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+
+  // Selecting the trial is not the moment someone asks for its trajectory:
+  // the drawer opens on Summary, and `ActiveTabContent` renders null for every
+  // other tab, so `TrajectoryViewer` -- a dynamic import -- does not mount
+  // until this tab is chosen. Stamping only the trial click would fold however
+  // long they read the summary into the trajectory's load time, or age out
+  // past MAX_INTENT_AGE_MS and lose the chunk download the stamp exists to
+  // capture. The intent map overwrites by key, so this supersedes the trial
+  // click while leaving it correct for a `?tab=trajectory` deep link, where
+  // the viewer really does mount with the drawer.
+  const handleTabChange = useCallback(
+    (next: string) => {
+      if (next === "trajectory" && trial) {
+        markOpenIntent("ui.trajectory.open", trial.id);
+      }
+      setActiveTab(next);
+    },
+    [trial]
+  );
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -932,6 +945,11 @@ export function TrialDetailPanel({
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
 
+    // This panel is mounted only for the displayed trial. Keep that resource
+    // identity alongside tab/file state so a concurrent route-state commit
+    // cannot turn a trial drawer URL back into a task-only URL.
+    if (trial?.id) next.set("trial", trial.id);
+
     if (activeTab) {
       next.set("tab", activeTab);
     } else {
@@ -978,6 +996,7 @@ export function TrialDetailPanel({
     selectedLines,
     artifactsTargetPath,
     artifactsLines,
+    trial?.id,
   ]);
 
   // Agent rows only: the generic retry endpoint refuses qa/audit kinds, so
@@ -1147,6 +1166,29 @@ export function TrialDetailPanel({
     isWorkerOwnedTrialStatus(trial.status) || trial.status === "retrying";
   const effectiveTab =
     activeTab === "live" && !showLive ? "summary" : activeTab;
+  const trialDetailErrorContent = (
+    <div className="p-4 sm:p-6">
+      <Alert variant="destructive">
+        <AlertTitle>Trial details could not be loaded</AlertTitle>
+        <AlertDescription className="flex flex-wrap items-center gap-2">
+          <span>
+            This tab needs the authoritative trial record before it can decide
+            which stored resources exist.
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-7"
+            onClick={() => void revalidateTrial()}
+            disabled={isValidatingTrialDetail}
+          >
+            {isValidatingTrialDetail ? "Retrying…" : "Retry"}
+          </Button>
+        </AlertDescription>
+      </Alert>
+    </div>
+  );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
@@ -1212,29 +1254,32 @@ export function TrialDetailPanel({
               v{trial.task_version}
             </span>
           )}
-          <span className="text-muted-foreground/50">·</span>
-          <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 leading-tight">
-            <span className="flex min-w-0 flex-col items-center text-center leading-tight">
-              <span className="truncate text-[10px] font-bold sm:text-xs">
-                {trial.agent}
-              </span>
-              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
-                <QueueKeyIcon
-                  queueKey={trial.provider}
-                  model={trial.model}
-                  agent={trial.agent}
-                  size={11}
-                  className="shrink-0"
-                />
-                {trial.model ?? "—"}
-              </span>
-            </span>
-            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
-          </span>
         </DrawerTitle>
         <DrawerDescription className="text-muted-foreground font-mono">
           <span className="truncate">{trial.id}</span>
         </DrawerDescription>
+        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pr-16 font-mono text-[10px] sm:text-xs">
+          <span className="text-foreground/80 inline-flex shrink-0 items-center gap-1 font-semibold">
+            <QueueKeyIcon
+              queueKey={trial.provider}
+              model={trial.model}
+              agent={trial.agent}
+              size={11}
+              className="shrink-0"
+            />
+            {trial.agent}
+          </span>
+          <span className="text-muted-foreground/50 shrink-0">·</span>
+          <span className="flex max-w-full min-w-0 flex-1 basis-52 items-center gap-1.5">
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={trial.model ?? undefined}
+            >
+              {trial.model ?? "—"}
+            </span>
+            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
+          </span>
+        </div>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
           <div className="flex items-center gap-1">
             {paneAction}
@@ -1328,7 +1373,7 @@ export function TrialDetailPanel({
               </>
             )}
           </div>
-          <div className="flex min-w-0 items-stretch gap-2">
+          <div className="flex min-w-0 flex-wrap items-stretch justify-end gap-2">
             <Card
               className={cn(
                 "min-w-[145px] border",
@@ -1401,9 +1446,6 @@ export function TrialDetailPanel({
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
-                            <TrialNotRealSpendBadge
-                              reason={trial.cost_exclusion_reason}
-                            />
                           </>
                         ) : (
                           "—"
@@ -1516,7 +1558,7 @@ export function TrialDetailPanel({
 
       <Tabs
         value={effectiveTab}
-        onValueChange={setActiveTab}
+        onValueChange={handleTabChange}
         className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="border-border border-b px-4 sm:px-6">
@@ -1561,7 +1603,7 @@ export function TrialDetailPanel({
           </TabsList>
         </div>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto overscroll-contain">
           <ActiveTabContent
             active={effectiveTab === "summary"}
             value="summary"
@@ -1586,10 +1628,6 @@ export function TrialDetailPanel({
                         </span>
                       ))}
                     </div>
-                    <p className="text-muted-foreground mt-2 text-xs">
-                      Live scheduler snapshot. This can move as other trials
-                      start, finish, or get retried.
-                    </p>
                   </CardContent>
                 </Card>
               )}
@@ -1730,7 +1768,7 @@ export function TrialDetailPanel({
               {/* Equivalent retry command — hidden from public viewers */}
               {showAnalysis && (
                 <div>
-                  <p className="mb-1 text-[11px] text-muted-foreground">
+                  <p className="text-muted-foreground mb-1 text-[11px]">
                     Equivalent retry command, reconstructed.
                   </p>
                   <CodeBlock
@@ -1762,18 +1800,22 @@ export function TrialDetailPanel({
             value="files"
             className="m-0 h-full p-0"
           >
-            <TaskFilesPanel
-              isOpen={isOpen}
-              onClose={() => {}}
-              activePane="file"
-              taskId={null}
-              filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
-              initialFilePath={filesTargetPath}
-              selectedLines={selectedLines}
-              onSelectLinesChange={setSelectedLines}
-              onSelectedFileChange={handleSelectedFileChange}
-              contentOnly
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <TaskFilesPanel
+                isOpen={isOpen}
+                onClose={() => {}}
+                activePane="file"
+                taskId={null}
+                filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                initialFilePath={filesTargetPath}
+                selectedLines={selectedLines}
+                onSelectLinesChange={setSelectedLines}
+                onSelectedFileChange={handleSelectedFileChange}
+                contentOnly
+              />
+            )}
           </ActiveTabContent>
 
           <ActiveTabContent
@@ -1781,13 +1823,24 @@ export function TrialDetailPanel({
             value="artifacts"
             className="m-0 h-full p-0"
           >
-            <ArtifactsViewer
-              filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
-              initialFilePath={artifactsTargetPath}
-              selectedLines={artifactsLines}
-              onSelectLinesChange={setArtifactsLines}
-              onSelectedFileChange={handleArtifactsFileChange}
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <ArtifactsViewer
+                filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                trialId={trial.id}
+                successfulAnalysisTrial={
+                  trial.status === "success" &&
+                  ["qa", "qa_eval", "audit", "summarize"].includes(
+                    trial.kind ?? "agent"
+                  )
+                }
+                initialFilePath={artifactsTargetPath}
+                selectedLines={artifactsLines}
+                onSelectLinesChange={setArtifactsLines}
+                onSelectedFileChange={handleArtifactsFileChange}
+              />
+            )}
           </ActiveTabContent>
 
           <ActiveTabContent
@@ -1795,12 +1848,16 @@ export function TrialDetailPanel({
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
-            <TrajectoryViewer
-              trialId={trial.id}
-              hasTrajectory={trial.has_trajectory}
-              apiBaseUrl={apiBaseUrl}
-              canRegenerateSummary={showAnalysis}
-            />
+            {trialDetailFailed ? (
+              trialDetailErrorContent
+            ) : (
+              <TrajectoryViewer
+                trialId={trial.id}
+                hasTrajectory={trial.has_trajectory}
+                apiBaseUrl={apiBaseUrl}
+                canRegenerateSummary={showAnalysis}
+              />
+            )}
           </ActiveTabContent>
         </div>
       </Tabs>

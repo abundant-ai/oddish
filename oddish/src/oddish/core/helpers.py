@@ -7,11 +7,14 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from oddish.config import settings
 from oddish.db import (
@@ -298,7 +301,8 @@ def _normalize_worker_job_status(status: object) -> str:
     return str(value).lower()
 
 
-def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
+def build_visible_worker_job(job: WorkerJobModel | Row) -> VisibleWorkerJob:
+    """Project a ``WorkerJobModel`` (or a row of ``_VISIBLE_WORKER_JOB_COLUMNS``)."""
     return VisibleWorkerJob(
         id=job.id,
         kind=_normalize_worker_job_kind(job.kind),
@@ -326,6 +330,31 @@ def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
 # rows that accumulate per task/trial over time.
 _RECENT_TERMINAL_WORKER_JOB_WINDOW = timedelta(hours=24)
 
+# Exactly the columns ``build_visible_worker_job`` reads. Selecting columns
+# rather than the entity is what makes the UNION ALL below safe: a compound
+# select does not reliably map rows back to ORM instances (the May 2026
+# ``select(aliased(WorkerJobModel, subq))`` attempt returned bare tuples and
+# emptied the experiment grid's trial cells), but plain rows project into the
+# ``VisibleWorkerJob`` dataclass the same way an entity does.
+_VISIBLE_WORKER_JOB_COLUMNS = (
+    WorkerJobModel.id,
+    WorkerJobModel.kind,
+    WorkerJobModel.status,
+    WorkerJobModel.queue_key,
+    WorkerJobModel.provider,
+    WorkerJobModel.external_id,
+    WorkerJobModel.subject_table,
+    WorkerJobModel.subject_id,
+    WorkerJobModel.attempts,
+    WorkerJobModel.max_attempts,
+    WorkerJobModel.created_at,
+    WorkerJobModel.started_at,
+    WorkerJobModel.claimed_at,
+    WorkerJobModel.heartbeat_at,
+    WorkerJobModel.finished_at,
+    WorkerJobModel.error_message,
+)
+
 
 async def fetch_visible_worker_jobs(
     session: AsyncSession,
@@ -337,28 +366,23 @@ async def fetch_visible_worker_jobs(
 ) -> dict[tuple[str, str], list[VisibleWorkerJob]]:
     """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``.
 
-    Splits the work into two narrowly-scoped queries instead of a single
-    ``(active OR finished)`` selection sorted then truncated:
+    One statement, two narrowly-scoped branches joined by ``UNION ALL``
+    (instead of a single ``(active OR finished)`` selection sorted then
+    truncated):
 
     1. **Active jobs** (QUEUED / RUNNING / RETRYING / BLOCKED) for the
        given subjects. The active set is bounded by the dispatcher's
        concurrency limits, so no time window or limit is needed.
     2. **Recent terminal jobs** for the given subjects, capped by
        ``finished_at >= now() - _RECENT_TERMINAL_WORKER_JOB_WINDOW`` and
-       ``LIMIT recent_limit``. The window keeps the planner off the
-       full per-subject history, which can be hundreds of rows per
-       trial after many retries.
+       ``LIMIT recent_limit`` inside the branch. The window keeps the
+       planner off the full per-subject history, which can be hundreds
+       of rows per trial after many retries.
 
     Backed by ``idx_worker_jobs_subject`` for the active branch and
     ``idx_worker_jobs_subject_finished_recent`` for the terminal branch.
-
-    A previous attempt collapsed these into a single ``UNION ALL`` to
-    save a round trip; the ``select(aliased(WorkerJobModel, subq))``
-    pattern doesn't reliably re-map back to ORM entities under
-    ``CompoundSelect``, which silently broke the trial-cell rendering
-    on the experiment page (returned rows but no entity instances).
-    The two-query shape is cheap enough on a warm pool that the safety
-    is worth more than the saved round trip.
+    Every task, trial and experiment fetch calls this, so the second
+    round trip was paid on every dashboard request.
     """
     subject_predicates = []
     if task_ids:
@@ -376,22 +400,16 @@ async def fetch_visible_worker_jobs(
 
     subject_filter = or_(*subject_predicates)
 
-    active_query = (
-        select(WorkerJobModel)
-        .where(
-            subject_filter,
-            WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
-        )
-        .order_by(WorkerJobModel.created_at.desc())
+    active_query = select(
+        literal(0).label("bucket"), *_VISIBLE_WORKER_JOB_COLUMNS
+    ).where(
+        subject_filter,
+        WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
     )
-    active_result = await session.execute(active_query)
-    active_jobs = list(active_result.scalars().all())
-
-    terminal_jobs: list[WorkerJobModel] = []
     if include_recent_terminal:
         cutoff = datetime.now(timezone.utc) - _RECENT_TERMINAL_WORKER_JOB_WINDOW
         terminal_query = (
-            select(WorkerJobModel)
+            select(literal(1).label("bucket"), *_VISIBLE_WORKER_JOB_COLUMNS)
             .where(
                 subject_filter,
                 WorkerJobModel.finished_at.is_not(None),
@@ -400,24 +418,31 @@ async def fetch_visible_worker_jobs(
             .order_by(WorkerJobModel.finished_at.desc())
             .limit(recent_limit)
         )
-        terminal_result = await session.execute(terminal_query)
-        terminal_jobs = list(terminal_result.scalars().all())
+        rows = (await session.execute(union_all(active_query, terminal_query))).all()
+    else:
+        rows = (await session.execute(active_query)).all()
 
+    # Order: active first, newest-created first (matches the previous ORDER
+    # BY case() ranking), then terminal, most-recently-finished first. Sorted
+    # here rather than in SQL so the branch LIMIT and the final ranking stay
+    # independent. ``recent_limit`` applies to terminal jobs only since active
+    # is naturally bounded by concurrency.
+    active = sorted(
+        (row for row in rows if row.bucket == 0),
+        key=lambda row: row.created_at,
+        reverse=True,
+    )
+    terminal = sorted(
+        (row for row in rows if row.bucket == 1),
+        key=lambda row: row.finished_at,
+        reverse=True,
+    )
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] = defaultdict(list)
-    # Order: active first (matches the previous ORDER BY case() ranking),
-    # then most-recent terminal. ``recent_limit`` applies to terminal
-    # jobs only since active is naturally bounded by concurrency.
-    for job in active_jobs:
-        if not job.subject_table or not job.subject_id:
+    for row in [*active, *terminal]:
+        if not row.subject_table or not row.subject_id:
             continue
-        jobs_by_subject[(job.subject_table, job.subject_id)].append(
-            build_visible_worker_job(job)
-        )
-    for job in terminal_jobs:
-        if not job.subject_table or not job.subject_id:
-            continue
-        jobs_by_subject[(job.subject_table, job.subject_id)].append(
-            build_visible_worker_job(job)
+        jobs_by_subject[(row.subject_table, row.subject_id)].append(
+            build_visible_worker_job(row)
         )
     return jobs_by_subject
 
@@ -434,7 +459,9 @@ def build_trial_response(
     exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
@@ -524,7 +551,9 @@ def build_compact_trial_response(
         resolved_analysis_summary = (
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -704,48 +733,127 @@ async def fetch_experiment_effective_version_ids(
     experiment, or the latest represented version otherwise. Tasks with no
     scoped trials are omitted.
 
-    Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
-    server returns at most one row per task -- ordered by the *integer*
-    version number, which lexicographic sorting on ``task_version_id``
-    (``"{task_id}-v9"`` vs ``"{task_id}-v10"``) gets wrong. Replaces
-    the previous "fetch every trial row, sort in Python" path that
-    transferred ``len(task_ids) * trials_per_task`` rows just to keep
-    one per task.
+    Ranks candidates beside ``task_versions.version`` so the server returns
+    one row per task using the integer version number, not lexicographic
+    ``task_version_id`` order (where v9 sorts after v10).
     """
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import trial_in_experiment
-    from oddish.db import TaskVersionModel  # local import: avoid cycle
-
-    stmt = (
-        select(TrialModel.task_id, TrialModel.task_version_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
-        .where(
-            TrialModel.task_id.in_(list(task_ids)),
-            trial_in_experiment(experiment_id),
-            TrialModel.task_version_id.is_not(None),
-            TrialModel.is_probe.is_(False),
-            TrialModel.superseded_by_trial_id.is_(None),
-        )
-        .order_by(
-            TrialModel.task_id.asc(),
-            case(
-                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
-                else_=1,
-            ).asc(),
-            TaskVersionModel.version.desc(),
-        )
-        .distinct(TrialModel.task_id)
+    effective = experiment_effective_versions_selectable(
+        experiment_id=experiment_id, task_ids=task_ids
     )
-
-    result = await session.execute(stmt)
+    result = await session.execute(
+        select(effective.c.task_id, effective.c.task_version_id)
+    )
     return {
         str(task_id): str(version_id)
         for task_id, version_id in result.all()
         if version_id is not None
     }
+
+
+EXPERIMENT_VISIBLE_TRIAL_COLUMNS = (
+    TrialModel.id,
+    TrialModel.task_id,
+    TrialModel.task_version_id,
+    TrialModel.status,
+    TrialModel.reward,
+    TrialModel.agent,
+    TrialModel.created_at,
+)
+
+
+def experiment_visible_trials_selectable(
+    scope: Any,
+    *,
+    task_ids: Sequence[str] | None = None,
+    columns: Sequence[Any] = EXPERIMENT_VISIBLE_TRIAL_COLUMNS,
+    name: str = "experiment_visible_trials",
+):
+    """Grid-visible member trials, each carrying its task's effective version.
+
+    ``effective_task_version_id`` / ``effective_task_version`` repeat, on every
+    row of a task, the version the experiment displays for that task: the
+    task's default version when a visible trial represents it, otherwise the
+    highest represented version, ordered by the integer
+    ``task_versions.version`` (v10 after v9, not before). Both are NULL when no
+    visible trial of the task has a live version row; callers then keep every
+    row of that task instead of filtering on a version.
+
+    Only ``columns`` (``TrialModel`` attributes) are carried out, so the sort
+    behind the window moves narrow rows. One window over the member rows
+    replaces the earlier ranked subquery that was joined back to the trials:
+    Postgres estimated that subquery two orders of magnitude too small and
+    nested-looped every trial against it.
+    """
+    from oddish.db import TaskVersionModel  # local import: avoid cycle
+
+    trials = scope.trials
+    # A trial is a version candidate only when its version row is live; the
+    # left join keeps versionless and deleted-version trials in the window so
+    # they still count for a task that has no candidate at all.
+    candidate: Any = case((TaskVersionModel.id.is_not(None), trials.task_version_id))
+    ordering: tuple[Any, ...] = (
+        candidate.is_(None),
+        case((trials.task_version_id == TaskModel.current_version_id, 0), else_=1),
+        TaskVersionModel.version.desc().nulls_last(),
+    )
+    query = (
+        select(
+            *(getattr(trials, column.key).label(column.key) for column in columns),
+            func.first_value(candidate)
+            .over(partition_by=trials.task_id, order_by=ordering)
+            .label("effective_task_version_id"),
+            func.first_value(TaskVersionModel.version)
+            .over(partition_by=trials.task_id, order_by=ordering)
+            .label("effective_task_version"),
+        )
+        .select_from(trials)
+        .join(TaskModel, TaskModel.id == trials.task_id)
+        .outerjoin(
+            TaskVersionModel,
+            and_(
+                TaskVersionModel.id == trials.task_version_id,
+                TaskVersionModel.deleted_at.is_(None),
+            ),
+        )
+        .where(*scope.visible_predicates(), TaskModel.deleted_at.is_(None))
+    )
+    if task_ids is not None:
+        query = query.where(trials.task_id.in_(list(task_ids)))
+    return query.subquery(name)
+
+
+def experiment_effective_versions_selectable(
+    *,
+    experiment_id: str,
+    task_ids: Sequence[str] | None = None,
+    scope: Any | None = None,
+    org_id: str | None = None,
+):
+    """One experiment-relevant version per task, as a reusable SQL subquery.
+
+    Tasks with no version candidate are omitted. Reads from
+    :func:`experiment_trial_scope`, so only the experiment's own rows are
+    ranked; pass ``scope`` to share one membership subquery across the
+    subqueries of a single statement.
+    """
+    from oddish.core.experiment_membership import experiment_trial_scope
+
+    if scope is None:
+        scope = experiment_trial_scope(experiment_id, org_id=org_id)
+    visible = experiment_visible_trials_selectable(scope, task_ids=task_ids)
+    return (
+        select(
+            visible.c.task_id,
+            visible.c.effective_task_version_id.label("task_version_id"),
+            visible.c.effective_task_version.label("task_version"),
+        )
+        .where(visible.c.effective_task_version_id.is_not(None))
+        .distinct()
+        .subquery("experiment_effective_versions")
+    )
 
 
 def filter_probe_trials_for_effective_versions(
@@ -1143,6 +1251,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.status,
     TrialModel.attempts,
     TrialModel.max_attempts,
+    TrialModel.harbor_stage,
     TrialModel.reward,
     TrialModel.error_message,
     TrialModel.is_probe,
@@ -1156,6 +1265,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.cache_write_tokens,
     TrialModel.output_tokens,
     TrialModel.cost_usd,
+    TrialModel.has_trajectory,
     TrialModel.billed_user_id,
     TrialModel.llm_key_hash,
     TrialModel.superseded_by_trial_id,
@@ -1169,6 +1279,8 @@ def build_slim_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
+    analysis: Mapping[str, object] | None,
+    error_message: str | None,
     exclusions: CostExclusions | None = None,
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
@@ -1176,13 +1288,15 @@ def build_slim_trial_response(
 ) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
-    if isinstance(trial.analysis, dict):
+    if isinstance(analysis, Mapping):
         resolved_analysis_summary = {
-            "classification": trial.analysis.get("classification"),
-            "subtype": trial.analysis.get("subtype"),
-            "evidence": trial.analysis.get("evidence"),
+            "classification": analysis.get("classification"),
+            "subtype": analysis.get("subtype"),
+            "evidence": analysis.get("evidence"),
         }
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
+    normalized_model = settings.normalize_trial_model(
+        trial.agent, trial.model, strict=False
+    )
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -1201,9 +1315,9 @@ def build_slim_trial_response(
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,
-        harbor_stage=None,
+        harbor_stage=trial.harbor_stage,
         reward=trial.reward,
-        error_message=trial.error_message,
+        error_message=error_message,
         result=None,
         is_probe=trial.is_probe,
         kind=trial.kind or "agent",
@@ -1230,6 +1344,7 @@ def build_slim_trial_response(
             if exclusions
             else None
         ),
+        has_trajectory=trial.has_trajectory,
     )
 
 
@@ -1267,6 +1382,8 @@ def build_slim_task_status_response(
         build_slim_trial_response(
             t,
             task.task_path,
+            analysis=t.analysis,
+            error_message=t.error_message,
             qa_cost_usd=(
                 qa_costs_by_trial_id.get(t.id)
                 if qa_costs_by_trial_id is not None

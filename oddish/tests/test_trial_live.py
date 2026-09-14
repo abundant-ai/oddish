@@ -132,7 +132,7 @@ async def test_public_live_reads_only_token_scoped_trial(monkeypatch):
         assert resolved_session is session
         return trial if (public_token, trial_id) == ("share-token", trial.id) else None
 
-    monkeypatch.setattr(public_sharing, "get_session", lambda: session)
+    monkeypatch.setattr(public_sharing, "get_read_session", lambda: session)
     monkeypatch.setattr(
         public_sharing, "get_public_trial_for_experiment", get_public_trial
     )

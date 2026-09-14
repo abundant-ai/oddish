@@ -18,6 +18,7 @@ on:
     paths:
       - "backend/**"
       - "oddish/src/**"
+      - "oddish/tests/test_deliver*"
       - "oddish/pyproject.toml"
       - "oddish/uv.lock"
       - ".github/workflows/e2e-cli.yml"
@@ -28,6 +29,7 @@ on:
     paths:
       - "backend/**"
       - "oddish/src/**"
+      - "oddish/tests/test_deliver*"
       - "oddish/pyproject.toml"
       - "oddish/uv.lock"
       - ".github/workflows/e2e-cli.yml"
@@ -78,3 +80,15 @@ jobs:
           ODDISH_E2E: "1"
           ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
         run: uv run pytest tests/e2e -v
+
+      - name: Check delivery pages and approval rules
+        env:
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+        run: >-
+          uv run pytest
+          ../oddish/tests/test_deliveries.py
+          ../oddish/tests/test_delivery_view.py
+          ../oddish/tests/test_delivery_qa.py
+          ../oddish/tests/test_delivery_progress.py
+          tests/test_deliveries_routes.py
+          tests/test_delivery_page_routes.py -q

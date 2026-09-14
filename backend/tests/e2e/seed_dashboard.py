@@ -104,6 +104,8 @@ async def _seed(org_id: str) -> str:
             # A stale row (seeded before clerk_org_id mattered, or by an older
             # script version) would break JWT org resolution — repair it.
             org.clerk_org_id = org_id
+        # This localhost-only seed represents an Abundant-approved test org.
+        org.execution_enabled = True
         await session.flush()
         owner_org_id = org.id
 

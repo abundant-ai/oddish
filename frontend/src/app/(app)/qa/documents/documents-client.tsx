@@ -16,6 +16,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { apiFetch } from "@/lib/api";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,7 +94,7 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
         if (sourceType === "link") payload.source_url = sourceUrl.trim();
       }
 
-      const res = await fetch("/api/documents", {
+      const res = await apiFetch("/api/documents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -277,7 +278,7 @@ function DocumentEditForm({ doc, onSaved, onCancel }: EditFormProps) {
           .map((t) => t.trim())
           .filter((t) => t !== ""),
       };
-      const res = await fetch(`/api/documents/${doc.id}`, {
+      const res = await apiFetch(`/api/documents/${doc.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -392,7 +393,7 @@ export function DocumentsClient() {
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/documents");
+      const res = await apiFetch("/api/documents");
       if (!res.ok) {
         setFetchError(`Failed to load documents (HTTP ${res.status})`);
         return;
@@ -415,7 +416,7 @@ export function DocumentsClient() {
       return;
     }
     try {
-      const res = await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/documents/${doc.id}`, { method: "DELETE" });
       if (!res.ok) {
         alert(`Failed to delete document (HTTP ${res.status})`);
         return;

@@ -19,7 +19,7 @@ from oddish.core.sharing.documents import (
     list_documents_core,
     update_document_core,
 )
-from oddish.db import get_session
+from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     DocumentCard,
     DocumentCreate,
@@ -37,7 +37,7 @@ async def list_documents(
     offset: int = Query(0, ge=0),
 ) -> list[DocumentCard]:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         rows = await list_documents_core(
             session, org_id=auth.org_id, limit=limit, offset=offset
         )
@@ -50,7 +50,7 @@ async def get_document(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> DocumentResponse:
     auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
+    async with get_read_session() as session:
         doc = await get_document_core(session, document_id, org_id=auth.org_id)
         return DocumentResponse.model_validate(doc)
 

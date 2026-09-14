@@ -99,6 +99,7 @@ def trial_ref(row: Mapping[str, Any]) -> TaskOpenTrialRef:
         cost_usd=float(cost) if cost is not None else None,
         cost_is_estimated=estimated,
         is_billed=row["billed_user_id"] is not None,
+        has_trajectory=bool(row["has_trajectory"]),
         created_at=row["created_at"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],

@@ -16,7 +16,7 @@ So ``WHERE task_id = :id`` would report ~$0 for a task whose QA is all
 per-trial classification, and ``WHERE experiment_id = :id`` would miss a
 collection's *gathered* trials, whose rows point at their home experiment.
 Membership is not a storable column: the agent-cost tile resolves it with
-``trial_in_experiment``, and this must use the same predicate or the two
+``experiment_trial_scope``, and this must use the same membership or the two
 figures on one tile describe different populations.
 
 Directly-attributed rows are UNIONed in, so a row carrying both ``trial_id``
@@ -39,7 +39,7 @@ from sqlalchemy import case, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.cost_basis import not_combine_copy_filter
-from oddish.core.experiment_membership import trial_in_experiment
+from oddish.core.experiment_membership import experiment_trial_scope
 from oddish.db.models import (
     AnalysisCostModel,
     ExperimentModel,
@@ -276,7 +276,13 @@ async def get_experiment_qa_cost_totals(
         .where(
             _LIVE,
             or_(
-                trial_in_experiment(experiment_id),
+                # Member trial ids come from the experiment's own rows (an
+                # indexed UNION), not from filtering every trial.
+                AnalysisCostModel.trial_id.in_(
+                    experiment_trial_scope(
+                        experiment_id, org_id=org_id
+                    ).member_trial_ids_select()
+                ),
                 AnalysisCostModel.experiment_id == experiment_id,
             ),
         )

@@ -7,7 +7,6 @@ from typing import Any
 from harbor.models.job.result import JobResult
 
 from oddish.core.harbor_artifacts import (
-    detect_trajectory,
     extract_ctrf_summary,
     extract_trajectory_metrics,
     extract_trial_result_fields,
@@ -47,7 +46,7 @@ class HarborOutcome:
     # Per-phase timing breakdown (seconds)
     phase_timing: dict[str, Any] | None = None
 
-    # Whether an ATIF trajectory file exists
+    # Whether a readable ATIF trajectory JSON object exists
     has_trajectory: bool = False
 
     # Structured benchmark metrics the task's verifier reported via
@@ -70,11 +69,6 @@ class HarborOutcome:
     request_id: str | None = None
     session_id: str | None = None
     retry_after_seconds: float | None = None
-
-
-def _detect_trajectory(job_dir: Path) -> bool:
-    """Backward-compatible wrapper for tests/imports."""
-    return detect_trajectory(job_dir)
 
 
 def _extract_outcome_from_job_result(
@@ -135,7 +129,6 @@ def _extract_outcome_from_job_result(
     if cost_usd is None:
         cost_usd = trajectory.cost_usd
 
-    has_trajectory = detect_trajectory(job_dir)
     metrics = extract_verifier_metrics(job_dir)
     verifier_summary = extract_ctrf_summary(job_dir)
 
@@ -157,7 +150,7 @@ def _extract_outcome_from_job_result(
             tool_counts=trajectory.tool_counts,
             cost_usd=cost_usd,
             phase_timing=phase_timing,
-            has_trajectory=has_trajectory,
+            has_trajectory=trajectory.has_trajectory,
             metrics=metrics,
             verifier_summary=verifier_summary,
             exception_type=exception_type,

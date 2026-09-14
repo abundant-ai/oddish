@@ -29,6 +29,7 @@ node_modules/
 *.tsbuildinfo
 frontend/.npm-cache
 frontend/.certs/
+frontend/.clerk/
 backend/jobs/
 
 # OS / editor
@@ -47,6 +48,7 @@ oddish-pulls/
 
 # Playwright e2e artifacts
 frontend/test-results/
+frontend/fixture-test-results/
 frontend/playwright-report/
 frontend/blob-report/
 frontend/playwright/.cache/

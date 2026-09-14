@@ -44,6 +44,7 @@ from .runner import (
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
+_CHILD_STREAM_LIMIT = 8 * 1024 * 1024
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
@@ -277,6 +278,8 @@ async def run_ephemeral_harbor_trial(
     harbor_config: dict[str, Any] | None = None,
     extra_agent_env: dict[str, str] | None = None,
     environment_build_timeout_multiplier: float | None = None,
+    is_probe: bool = False,
+    skip_task_validation: bool = False,
 ) -> HarborOutcome:
     """Run one trial in an override Harbor child process.
 
@@ -302,8 +305,7 @@ async def run_ephemeral_harbor_trial(
             exception_type="HarborOverrideImportError",
         )
 
-    is_probe = raw.get("mode") == "probe"
-    if not is_probe:
+    if not skip_task_validation:
         validate_task_timeout_config(task_path)
 
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -370,6 +372,7 @@ async def run_ephemeral_harbor_trial(
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_CHILD_STREAM_LIMIT,
             start_new_session=True,
             env=child_env,
         )

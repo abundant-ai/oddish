@@ -78,6 +78,7 @@ def _identity(
         "link": "https://github.com/acme/repo/pull/1",
         "tags": {"github_username": "octocat"},
         "run_analysis": True,
+        "review_version_matches": True,
         "verdict_status": "failed",
         "verdict": verdict,
         "verdict_error": "judge timed out",
@@ -88,6 +89,8 @@ def _identity(
         "default_version": 2,
         "default_version_message": "current",
         "default_version_created_at": NOW,
+        "must_fix_count": 0,
+        "pre_trial_must_fix_count": 0,
         "selected_version_id": selected_version_id if selected else None,
         "selected_version": selected_version if selected else None,
         "selected_version_message": "selected" if selected else None,
@@ -178,6 +181,7 @@ def _preview(index):
         "cache_tokens": 0,
         "cache_write_tokens": 0,
         "billed_user_id": "user-1",
+        "has_trajectory": True,
         "created_at": NOW,
         "started_at": NOW,
         "finished_at": NOW,
@@ -279,6 +283,7 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert response.task.verdict_error == "judge timed out"
     assert response.active_qa_trial is not None
     assert response.active_qa_trial.kind == "qa"
+    assert response.active_qa_trial.has_trajectory is True
 
     selected = response.selected_version
     assert selected is not None
@@ -301,6 +306,7 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert legacy.cost_usd == pytest.approx(0.2)
     assert all(trial.agent == "codex" for trial in response.trials)
     assert all(trial.kind == "agent" for trial in response.trials)
+    assert all(trial.has_trajectory for trial in response.trials)
 
     assert response.totals.total_trials == 1201
     assert response.totals.cost_usd == pytest.approx(120.2)

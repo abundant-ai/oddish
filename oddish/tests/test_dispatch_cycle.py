@@ -97,7 +97,9 @@ def _fake_discover(keys):
 
 def _fake_counts(queued_by_org_queue, running_by_queue):
     async def _counts(queue_keys):
-        return queued_by_org_queue, running_by_queue
+        return {
+            (*key, False): count for key, count in queued_by_org_queue.items()
+        }, running_by_queue
 
     return _counts
 
@@ -383,7 +385,7 @@ def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> 
     assert plan.running_by_queue_key == {"gpt-4o": 0}
     assert plan.held_by_queue_key == {"gpt-4o": 2}
     assert len(plan.unit_plan) == 2
-    assert set(plan.unit_plan).issubset(
+    assert {unit[:3] for unit in plan.unit_plan}.issubset(
         {("gpt-4o", "default", "default"), ("gpt-4o", "blessed", "default")}
     )
 
@@ -412,7 +414,9 @@ def test_build_dispatch_plan_applies_lane_capacity() -> None:
         )
 
     plan = asyncio.run(_go())
-    assert plan.unit_plan == [("cpu-model", "default", "default")] * 4
+    assert [unit[:3] for unit in plan.unit_plan] == [
+        ("cpu-model", "default", "default")
+    ] * 4
 
 
 def test_run_dispatch_cycle_applies_lane_capacity_before_spawning() -> None:

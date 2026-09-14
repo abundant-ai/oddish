@@ -173,7 +173,10 @@ class ActionItem(BaseModel):
     title: str = Field(description="Short one-line summary")
     detail: str = Field(description="What is wrong")
     recommendation: str = Field(description="Concrete fix")
-    tier: ActionTier = Field(description="must_fix, should_fix, or optional")
+    tier: ActionTier = Field(
+        description="New task defects must be must_fix. Historical tiers remain readable.",
+        json_schema_extra={"enum": ["must_fix"]},
+    )
 
     # post_trial-only linkage fields (defaults keep pre_trial items clean)
     links_to: str | None = Field(

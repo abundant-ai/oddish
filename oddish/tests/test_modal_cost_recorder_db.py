@@ -300,3 +300,86 @@ async def test_reconcile_does_not_bill_stale_attempt_through_later_finished_at()
         assert row.basis == "reconciled"
     finally:
         await _remove(ids)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_spans_keep_full_uuid_when_prefixes_collide(monkeypatch):
+    from oddish.db import init_db
+    from oddish.db import models
+    from oddish.costs.modal_cost import build_span_row
+
+    await init_db()
+    ids = [
+        uuid.UUID("4806cb75-1111-4111-8111-111111111111"),
+        uuid.UUID("4806cb75-2222-4222-8222-222222222222"),
+    ]
+    generated = iter(ids)
+    monkeypatch.setattr(models, "uuid4", lambda: next(generated))
+    # Roll back so deterministic IDs do not persist across repeated runs.
+    async with get_session() as session:
+        rows = [
+            build_span_row(
+                component_role="worker_function",
+                provider="modal",
+                started_at=datetime.now(timezone.utc),
+                basis="hooks",
+                resources=_sandbox_resources(),
+            )
+            for _ in ids
+        ]
+        session.add_all(rows)
+        await session.flush()
+        assert [row.id for row in rows] == [value.hex for value in ids]
+        await session.rollback()
+
+
+@requires_db
+@pytest.mark.asyncio
+@pytest.mark.parametrize("memory_mb", [3072, 1536])
+async def test_candidate_attempt_cost_uses_its_cpu_and_scalar_memory(memory_mb):
+    ids = await _seed()
+    _, _, trial_id, worker_job_id = ids
+    start = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    job = SimpleNamespace(
+        id=worker_job_id, attempts=3, subject_table="trials", subject_id=trial_id
+    )
+    try:
+        candidate = WorkerBillingSpec(
+            0.6,
+            memory_mb,
+            True,
+            cpu_limit=17,
+            configuration=f"candidate-cpu0.6-mem{memory_mb}",
+        )
+        await open_worker_span(job, candidate, started_at=start)
+        await close_worker_span(
+            worker_job_id, 3, finished_at=start + timedelta(seconds=60)
+        )
+        job.attempts = 4
+        await open_worker_span(job, WorkerBillingSpec(1, 3072, True), started_at=start)
+        await close_worker_span(
+            worker_job_id, 4, finished_at=start + timedelta(seconds=60)
+        )
+        async with get_session() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(ModalCostSpanModel)
+                        .where(ModalCostSpanModel.worker_job_id == worker_job_id)
+                        .order_by(ModalCostSpanModel.worker_job_attempt)
+                    )
+                ).all()
+            )
+        test, base = rows
+        assert (
+            test.cpu_request,
+            test.cpu_limit,
+            test.mem_request_mb,
+            test.mem_limit_mb,
+        ) == (0.6, 17, memory_mb, None)
+        assert test.price_multiplier == 3
+        assert test.cost_usd > 0 and test.cost_usd < base.cost_usd
+        assert base.cpu_request == 1 and base.mem_request_mb == 3072
+    finally:
+        await _remove(ids)

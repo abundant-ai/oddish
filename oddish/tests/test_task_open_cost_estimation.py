@@ -154,9 +154,7 @@ async def test_selected_version_returns_only_its_direct_tags(session) -> None:
     )
     await session.flush()
 
-    current_response = await get_task_open_core(
-        session, task_id=task.id, org_id=org_id
-    )
+    current_response = await get_task_open_core(session, task_id=task.id, org_id=org_id)
     historical_response = await get_task_open_core(
         session,
         task_id=task.id,
@@ -172,3 +170,89 @@ async def test_selected_version_returns_only_its_direct_tags(session) -> None:
     assert [tag.key for tag in historical_response.selected_version.user_tags] == [
         "historical"
     ]
+
+
+@pytest.mark.asyncio
+async def test_qa_spend_direct_and_historical_attribution(session) -> None:
+    """The indexed branches preserve the old row-level OR, including old ledgers."""
+    from sqlalchemy import text
+    from oddish.core.endpoints.task_open_queries import AGGREGATE_SQL
+    from oddish.db.models import AnalysisCostModel
+
+    task_id = f"spend-{uuid.uuid4().hex}"
+    task = TaskModel(
+        id=task_id,
+        name=task_id,
+        org_id="spend-org",
+        user="tester",
+        task_path="s3://task",
+    )
+    session.add(task)
+    await session.flush()
+    experiment = ExperimentModel(name=task_id, org_id=task.org_id)
+    session.add(experiment)
+    await session.flush()
+    trial_id = f"{task_id}-trial"
+    session.add(
+        TrialModel(
+            id=trial_id,
+            name=trial_id,
+            task_id=task_id,
+            experiment_id=experiment.id,
+            org_id="spend-org",
+            agent="codex",
+            provider="openai",
+            queue_key="test",
+            kind="audit",
+            status=TrialStatus.SUCCESS,
+            cost_usd=2,
+        )
+    )
+    await session.flush()
+    # Direct-only, indirect-only, both, mismatched direct task, orphan,
+    # foreign-org, voided, null cost, and a ledger referencing a deleted trial.
+    for direct, linked, org, cost, deleted in [
+        (task_id, None, "spend-org", 3, False),
+        (None, trial_id, "spend-org", 5, False),
+        (task_id, trial_id, "spend-org", 7, False),
+        ("other", trial_id, "spend-org", 11, False),
+        (task_id, "orphan", "spend-org", 13, False),
+        (task_id, trial_id, "foreign", 17, False),
+        (task_id, trial_id, "spend-org", 19, True),
+        (None, trial_id, "spend-org", None, False),
+    ]:
+        session.add(
+            AnalysisCostModel(
+                job_kind="analysis",
+                cost_source="native",
+                task_id=direct,
+                trial_id=linked,
+                org_id=org,
+                cost_usd=cost,
+                deleted_at=utcnow() if deleted else None,
+            )
+        )
+    await session.flush()
+    old = text("""SELECT COALESCE(sum(a.cost_usd), 0) FROM analysis_spend a
+        LEFT JOIN trials qat ON qat.id = a.trial_id
+        WHERE (a.task_id = :task_id OR qat.task_id = :task_id)
+        AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)""")
+    for deleted in (False, True):
+        if deleted:
+            await session.execute(
+                text("UPDATE trials SET deleted_at = now() WHERE id = :id"),
+                {"id": trial_id},
+            )
+        for org in ("spend-org", "foreign", None):
+            params = dict(
+                task_id=task_id, org_id=org, version_id=None, current_version_id=None
+            )
+            expected = (await session.execute(old, params)).scalar_one()
+            actual = (
+                (await session.execute(AGGREGATE_SQL, params))
+                .mappings()
+                .one()["qa_cost_usd"]
+            )
+            assert actual == pytest.approx(expected)
+            if org == "spend-org":
+                assert actual == pytest.approx(39 if deleted else 41)

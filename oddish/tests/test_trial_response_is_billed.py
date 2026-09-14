@@ -36,14 +36,24 @@ def test_mappers_mark_billed_trials():
     billed = _trial(billed_user_id="user-1")
     assert build_trial_response(billed, task_path="p").is_billed is True
     assert build_compact_trial_response(billed, task_path="p").is_billed is True
-    assert build_slim_trial_response(billed, task_path="p").is_billed is True
+    assert (
+        build_slim_trial_response(
+            billed, task_path="p", analysis=None, error_message=None
+        ).is_billed
+        is True
+    )
 
 
 def test_mappers_mark_unbilled_trials():
     unbilled = _trial(billed_user_id=None)
     assert build_trial_response(unbilled, task_path="p").is_billed is False
     assert build_compact_trial_response(unbilled, task_path="p").is_billed is False
-    assert build_slim_trial_response(unbilled, task_path="p").is_billed is False
+    assert (
+        build_slim_trial_response(
+            unbilled, task_path="p", analysis=None, error_message=None
+        ).is_billed
+        is False
+    )
 
 
 def test_slim_mapper_includes_input_and_output_tokens():
@@ -51,7 +61,9 @@ def test_slim_mapper_includes_input_and_output_tokens():
     trial.input_tokens = 123
     trial.output_tokens = 45
 
-    response = build_slim_trial_response(trial, task_path="p")
+    response = build_slim_trial_response(
+        trial, task_path="p", analysis=None, error_message=None
+    )
 
     assert response.input_tokens == 123
     assert response.output_tokens == 45
@@ -62,7 +74,12 @@ def test_qa_cost_usd_defaults_to_none_when_the_caller_does_not_resolve_it():
     trial = _trial(billed_user_id=None)
 
     assert build_trial_response(trial, task_path="p").qa_cost_usd is None
-    assert build_slim_trial_response(trial, task_path="p").qa_cost_usd is None
+    assert (
+        build_slim_trial_response(
+            trial, task_path="p", analysis=None, error_message=None
+        ).qa_cost_usd
+        is None
+    )
 
 
 def test_qa_cost_usd_passes_through_when_the_caller_resolves_it():
@@ -72,6 +89,12 @@ def test_qa_cost_usd_passes_through_when_the_caller_resolves_it():
         build_trial_response(trial, task_path="p", qa_cost_usd=0.5).qa_cost_usd == 0.5
     )
     assert (
-        build_slim_trial_response(trial, task_path="p", qa_cost_usd=0.5).qa_cost_usd
+        build_slim_trial_response(
+            trial,
+            task_path="p",
+            analysis=None,
+            error_message=None,
+            qa_cost_usd=0.5,
+        ).qa_cost_usd
         == 0.5
     )
