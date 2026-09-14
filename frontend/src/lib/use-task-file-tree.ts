@@ -8,10 +8,8 @@ import { fetcher } from "@/lib/api";
 export interface TaskFile {
   path: string;
   key: string;
-  content?: string;
   size?: number;
   last_modified?: string;
-  url?: string;
 }
 
 export interface FilesListingResponse {
@@ -27,7 +25,7 @@ interface TaskFileTree {
   fetchedAt: number;
 }
 
-// Bounded directory pages and small previews; never a recursive walk.
+// Bounded directory pages; never a recursive walk.
 const INITIAL_DIRECTORIES = ["", "solution", "tests", "environment"];
 const FRESH_MS = 30_000;
 type TreeKey = readonly [

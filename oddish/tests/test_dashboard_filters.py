@@ -216,20 +216,7 @@ def test_author_filter_supports_multiple_legacy_emails() -> None:
     assert "ps4534@nyu.edu" in sql
 
 
-def test_author_filter_owner_only_when_legacy_fallback_disabled() -> None:
-    clause = _build_experiments_author_filter(
-        "user_1",
-        ["praxs"],
-        org_id="org_1",
-        experiments_author_emails=("pratty@abundant.ai",),
-        include_legacy_fallback=False,
-    )
-    sql = _compile_sql(clause)
-    assert "owner_user_id = 'user_1'" in sql
-    assert "EXISTS" not in sql
-
-
-def test_author_filter_keeps_legacy_fallback_by_default() -> None:
+def test_author_filter_keeps_legacy_fallback() -> None:
     clause = _build_experiments_author_filter(
         "user_1",
         ["praxs"],

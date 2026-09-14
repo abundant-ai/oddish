@@ -73,8 +73,6 @@ from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
-    make_task_files_ndjson_response,
-    stream_task_files_s3,
 )
 from api.services.task_file_source import resolve_authorized_task_file_source
 from oddish.core.idempotency import (
@@ -1817,49 +1815,19 @@ async def list_task_files(
     indexed: bool = Query(
         False, description="Read prepared metadata without file-body downloads"
     ),
-    previews: bool = Query(
-        False, description="Include bounded small text previews in directory batches"
-    ),
-    stream: bool = Query(
-        False,
-        description="Stream NDJSON: the file tree first, then file contents",
-    ),
 ):
     """List all files in a task's S3 directory.
 
     When presign=True (default), includes presigned URLs for each file,
     allowing clients to fetch content directly from S3 without additional API calls.
-    With stream=True the response is NDJSON: a listing chunk as soon as the
-    tree is known, then per-file content chunks as they load.
     """
     source = await resolve_authorized_task_file_source(
         request, auth, task_id=task_id, version=version
     )
 
-    if (directories is not None or previews) and stream:
-        raise HTTPException(400, "Batched directory listings do not stream file bodies")
-
-    if stream:
-        return await make_task_files_ndjson_response(
-            stream_task_files_s3(
-                task_id=task_id,
-                prefix=prefix,
-                recursive=recursive,
-                limit=limit,
-                cursor=cursor,
-                presign=presign,
-                version=source.version,
-                task_s3_prefix=source.task_s3_prefix,
-                expanded=source.expanded,
-                expanded_manifest_key=source.expanded_manifest_key,
-                source_hash=source.content_hash,
-            )
-        )
-
     return await list_task_files_s3(
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
-        **({"previews": True} if previews else {}),
         **({"indexed": True} if indexed else {}),
         prefix=prefix,
         recursive=recursive,

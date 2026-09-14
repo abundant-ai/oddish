@@ -764,7 +764,6 @@ def _build_experiments_author_filter(
     *,
     org_id: str | None,
     experiments_author_emails: Sequence[str] | None = None,
-    include_legacy_fallback: bool = True,
 ):
     """EXISTS clause restricting experiments to a single owner, or ``None``.
 
@@ -773,9 +772,6 @@ def _build_experiments_author_filter(
     same attribution precedence as the dashboard Author column:
     ``github_username`` tag first, then legacy ``tasks.user`` values (emails
     and handles), then ``created_by_user_id`` only when neither is present.
-
-    When ``include_legacy_fallback`` is False (the org has zero NULL-owner
-    live experiments) only the indexed ``owner_user_id`` seek is emitted.
     """
     if experiments_author_user_id is None:
         return None
@@ -787,8 +783,6 @@ def _build_experiments_author_filter(
 
     # Fast path: indexed owner column when stamped at submit time.
     owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
-    if not include_legacy_fallback:
-        return owner_match
 
     github_handles = [
         handle
@@ -1159,23 +1153,17 @@ async def load_dashboard_experiments(
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
     # The ``github:`` search qualifier ANDs an additional author predicate on
-    # top; both share the one unowned-experiments probe below.
-    # The owner control (Mine / member picker) can drop its primary-task EXISTS
-    # fallback once the org has zero NULL owners (pure indexed seek). The github:
-    # search filter does NOT share this optimization -- it always needs the
-    # primary-task match -- so the probe gates only the owner filter.
+    # top.
     has_search_author = bool(
         (experiments_search_author_user_ids or ())
         or (experiments_search_author_github_usernames or ())
         or (experiments_search_author_emails or ())
     )
-    include_legacy_fallback = True
     author_filter = _build_experiments_author_filter(
         experiments_author_user_id,
         experiments_author_github_usernames,
         org_id=org_id,
         experiments_author_emails=experiments_author_emails,
-        include_legacy_fallback=include_legacy_fallback,
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
@@ -2123,7 +2111,6 @@ async def get_dashboard_core(
         _dashboard_primary_cache, primary_cache_key, _PRIMARY_CACHE_TTL_SECONDS
     )
     primary_recomputed = primary_cached is None
-    experiments_recomputed = include_experiments
 
     if primary_recomputed:
         primary_payload = await _fetch_primary()
@@ -2144,7 +2131,7 @@ async def get_dashboard_core(
     response = {
         **primary_payload,
         **experiments_payload,
-        "cached": not primary_recomputed and not experiments_recomputed,
+        "cached": not primary_recomputed and not include_experiments,
     }
 
     if record_timing is not None:
@@ -2158,7 +2145,7 @@ async def get_dashboard_core(
         f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
         f"cached={response['cached']} "
         f"primary={'recomputed' if primary_recomputed else 'cached'} "
-        f"experiments={('recomputed' if experiments_recomputed else 'cached') if include_experiments else 'skipped'} "
+        f"experiments={'recomputed' if include_experiments else 'skipped'} "
         f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
     )
     return response

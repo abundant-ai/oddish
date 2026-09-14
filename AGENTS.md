@@ -854,12 +854,8 @@ then refreshes; panel hash changes invalidate the revision. An older server's
 root-only response remains usable. File/line selection stays in the existing URL
 owners, and an addressed file reads directly before its directory tree finishes.
 Directory completion must not emit file-selection callbacks or clear line anchors.
-The browser uses `indexed=true` metadata-only listings. Legacy API callers may
-opt into `previews=true`: at most 16 files, 32 KiB each and 256 KiB combined,
-selected only from the requested pages with `instruction.md` first.
-Storage reads previews concurrently and gives each read one second; failed, binary,
-large, and omitted members retain on-demand reads. Cached archive text needs no
-additional storage request. Hosted definition routes combine current organization
+The browser uses `indexed=true` metadata-only listings, and `directories=`
+batches always read the prepared index. Hosted definition routes combine current organization
 approval with exact task/version source selection in one SQL statement for ordinary
 credentials; bound analysis credentials retain additional resource checks. Cached
 publisher-owned `vN-revisions/<32-hex-token>/` archives skip HEAD only while their

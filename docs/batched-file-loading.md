@@ -1,8 +1,7 @@
 # Batched task file loading
 
 Task and experiment drawers request the first page of root, solution, tests,
-and environment in one request with bounded small-file previews. Other file bodies
-load when selected. Task links retain `version`, `drawer`, `finding`, `taskPane`,
+and environment in one request. File bodies load when selected. Task links retain `version`, `drawer`, `finding`, `taskPane`,
 `taskFile`, and `taskLines`; trial tab/file/line addresses remain independent.
 
 For the conventional task-page tree, four directory requests become one. Private
@@ -13,12 +12,12 @@ database session, then release the connection before reading storage.
 
 ## API contract
 
-`GET /tasks/{id}/files?version=7&directories=&directories=solution&directories=tests&directories=environment&recursive=0&inline=0&presign=0&limit=100&previews=true`
+`GET /tasks/{id}/files?version=7&directories=&directories=solution&directories=tests&directories=environment&recursive=0&inline=0&presign=0&limit=100&indexed=true`
 
 The hosted, standalone, and `/public/experiments/{token}/tasks/{id}/files`
 routes accept the same opt-in parameters. The public route still verifies token
 membership before resolving the requested version. Ordinary calls retain their
-existing JSON/NDJSON responses and recursive CLI download behavior.
+existing JSON responses and recursive CLI download behavior.
 
 The batch response contains `task_id`, resolved `version`, `source_hash`, and
 `directories`, a mapping from normalized relative directory paths to the existing
@@ -29,20 +28,12 @@ non-recursive listing shape. Each page retains `files`, `dirs`, `cursor`, and
 There are at most eight requested directories and at most 1,000 entries per
 page (the browser requests 100). Duplicate normalized paths are listed once.
 Absolute/traversal paths are rejected before storage I/O. Batch requests must set
-`recursive`, `inline`, and `presign` false and cannot specify `prefix`, `cursor`,
-or `stream=true`.
+`recursive`, `inline`, and `presign` false and cannot specify `prefix` or `cursor`.
 
-Storage resolves the selected archive or expansion once per request. Published
-immutable expansions skip legacy validation as before; mutable legacy layouts
-retain their archive/manifest checks. Archive-only batches load/parse the archive
-once. Directory LIST operations run concurrently against that selected source.
-
-With `previews=true`, directory batches add `content` to at most 16 small files
-from those pages, prioritizing `instruction.md`, then sorting by path. Each preview
-is at most 32 KiB and all previews together at most 256 KiB. Archive text is reused;
-expanded members are read concurrently with a one-second deadline per member.
-Failed, binary, oversized, and unselected members retain on-demand reads.
-`previews=true` without `directories` is rejected.
+Directory batches always read the prepared file index for the selected version's
+published source (see `docs/prepared-webapp-reads.md`); no storage LIST or body
+read happens during the request. An index that is not yet prepared answers 503
+with `Retry-After`, and the browser retries.
 
 Hosted definition listings and body reads combine organization approval and exact
 task/version selection in one SQL statement for ordinary credentials. Bound

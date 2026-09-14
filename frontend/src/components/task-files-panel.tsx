@@ -17,7 +17,6 @@ import {
 import useSWR, { unstable_serialize, useSWRConfig } from "swr";
 import {
   useTaskFileTree,
-  type TaskFile,
   type FilesListingResponse,
 } from "@/lib/use-task-file-tree";
 import {
@@ -82,47 +81,10 @@ import {
   taskHasCancellableWork,
 } from "@/lib/job-status";
 
-/**
- * Chunks of the NDJSON listing stream: the bare tree first, then file
- * bodies as the backend loads them (shallowest files first).
- */
-type FilesStreamChunk =
-  | ({ type: "listing" } & FilesListingResponse)
-  | { type: "content"; path: string; content: string };
-
-async function* iterateNdjsonLines(
-  body: ReadableStream<Uint8Array>
-): AsyncGenerator<unknown> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf("\n");
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (line) yield JSON.parse(line);
-        newline = buffer.indexOf("\n");
-      }
-    }
-    const rest = (buffer + decoder.decode()).trim();
-    if (rest) yield JSON.parse(rest);
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 interface TreeNode {
   name: string;
   path: string;
   type: "file" | "dir";
-  children?: TreeNode[];
-  content?: string;
-  url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
 }
 
@@ -185,8 +147,6 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
-  /** Load only file metadata up front, then fetch bodies or URLs on selection. */
-  loadFilesLazily?: boolean;
   /** Explicit task version for file URLs; null deliberately means unversioned. */
   taskVersion?: number | null;
   /**
@@ -236,61 +196,6 @@ function getNodeName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-// Truncate files larger than 100KB initially
-
-/**
- * Build the full nested tree from a recursive listing in one pass.
- * Directories are implied by nested file paths, so expanding them is
- * pure UI state — no per-directory round trips.
- */
-function buildTreeFromListing(files: TaskFile[] = []): TreeNode[] {
-  const root: TreeNode[] = [];
-  const dirNodes = new Map<string, TreeNode>();
-
-  const ensureDir = (path: string): TreeNode => {
-    const existing = dirNodes.get(path);
-    if (existing) return existing;
-    const node: TreeNode = {
-      name: getNodeName(path),
-      path,
-      type: "dir",
-      children: [],
-    };
-    dirNodes.set(path, node);
-    const parentPath = path.split("/").slice(0, -1).join("/");
-    (parentPath ? ensureDir(parentPath).children! : root).push(node);
-    return node;
-  };
-
-  for (const file of files) {
-    const node: TreeNode = {
-      name: getNodeName(file.path),
-      path: file.path,
-      type: "file",
-      content: file.content,
-      url: file.url,
-      size: file.size,
-    };
-    const parentPath = file.path.split("/").slice(0, -1).join("/");
-    (parentPath ? ensureDir(parentPath).children! : root).push(node);
-  }
-
-  const sortLevel = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) =>
-      a.type === b.type
-        ? a.name.localeCompare(b.name)
-        : a.type === "dir"
-          ? -1
-          : 1
-    );
-    for (const node of nodes) {
-      if (node.children && node.children.length > 0) sortLevel(node.children);
-    }
-  };
-  sortLevel(root);
-  return root;
-}
-
 function sortTreeLevel(nodes: TreeNode[]): TreeNode[] {
   return [...nodes].sort((a, b) =>
     a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1
@@ -307,8 +212,6 @@ function buildDirectoryPage(listing: FilesListingResponse): TreeNode[] {
     name: getNodeName(file.path),
     path: file.path,
     type: "file" as const,
-    content: file.content,
-    url: file.url,
     size: file.size,
   }));
   return sortTreeLevel([...dirs, ...files]);
@@ -340,85 +243,19 @@ function includeSelectedPathChild(
   ]);
 }
 
-function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
-  for (const node of nodes) {
-    if (node.path === path) {
-      return node;
-    }
-    if (node.type === "dir" && node.children) {
-      const found = findNodeByPath(node.children, path);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function updateFileContent(
-  nodes: TreeNode[],
-  path: string,
-  content: string
-): TreeNode[] {
-  let changed = false;
-  const updated = nodes.map((node) => {
-    if (node.type === "file" && node.path === path) {
-      changed = true;
-      return { ...node, content };
-    }
-    if (node.children) {
-      const children = updateFileContent(node.children, path, content);
-      if (children !== node.children) {
-        changed = true;
-        return { ...node, children };
-      }
-    }
-    return node;
-  });
-  return changed ? updated : nodes;
-}
-
-function listedFilePreview(file: TreeNode): FilePreview | null {
-  const size = file.size ?? null;
-  if (isBinaryRendererFile(file.name)) {
-    return file.url ? { kind: "binary", url: file.url, size } : null;
-  }
-  return file.content === undefined
-    ? null
-    : { kind: "text", content: file.content, isTruncated: false, size };
-}
-
 /**
  * Find a file node whose path ends with the given suffix.
  * If the suffix matches a directory instead, returns the first file inside it.
  * Useful when S3 paths are prefixed with a trial-name directory.
  */
 function findNodeBySuffix(nodes: TreeNode[], suffix: string): TreeNode | null {
-  for (const node of nodes) {
-    if (node.path === suffix || node.path.endsWith(`/${suffix}`)) {
-      if (node.type === "file") return node;
-      if (node.type === "dir" && node.children) {
-        return findFirstFile(node.children);
-      }
-    }
-    if (node.type === "dir" && node.children) {
-      const found = findNodeBySuffix(node.children, suffix);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-/**
- * Find the first file in the tree.
- */
-function findFirstFile(nodes: TreeNode[]): TreeNode | null {
-  for (const node of nodes) {
-    if (node.type === "file") return node;
-    if (node.type === "dir" && node.children) {
-      const found = findFirstFile(node.children);
-      if (found) return found;
-    }
-  }
-  return null;
+  return (
+    nodes.find(
+      (node) =>
+        node.type === "file" &&
+        (node.path === suffix || node.path.endsWith(`/${suffix}`))
+    ) ?? null
+  );
 }
 
 function getAncestorPaths(path: string): string[] {
@@ -480,7 +317,6 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
-  loadFilesLazily = false,
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
@@ -545,13 +381,7 @@ export function TaskFilesPanel({
   // side-by-side task pane passes a TASK filesUrl, and treating its envelope
   // as the file body rendered every task file blank.
   const fileRouteServesBytes = !/\/tasks\/[^/]+\/files$/.test(resolvedFilesUrl);
-  // Task drawers that already defer file bodies also page the tree by
-  // directory. Trial files and eager file-only panes keep their existing
-  // recursive contract until their callers opt in.
-  const loadsTaskTreeByDirectory = loadFilesLazily || fileRouteServesBytes;
   const fileCacheScope = useFileCacheScope(resolvedFilesUrl);
-  const [streamLoading, setLoading] = useState(false);
-  const [streamError, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -560,7 +390,6 @@ export function TaskFilesPanel({
   // then synthesize the verdict), surfaced as one Run QA action.
   const [isRunningQA, setIsRunningQA] = useState(false);
   const [qaActionError, setQAActionError] = useState<string | null>(null);
-  const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const selectFilePath = useCallback(
@@ -615,7 +444,7 @@ export function TaskFilesPanel({
     }
   );
   const treeResource = useTaskFileTree({
-    enabled: isOpen && loadsTaskTreeByDirectory,
+    enabled: isOpen,
     url: resolvedFilesUrl,
     version: shouldScopeFilesToVersion ? currentVersion : null,
     hash: listingContentHash,
@@ -644,12 +473,8 @@ export function TaskFilesPanel({
     }
     return listings;
   }, [treeResource.data, treeResource.statusByDirectory]);
-  const loading = loadsTaskTreeByDirectory
-    ? treeResource.isLoading
-    : streamLoading;
-  const error = loadsTaskTreeByDirectory
-    ? (treeResource.error?.message ?? null)
-    : streamError;
+  const loading = treeResource.isLoading;
+  const error = treeResource.error?.message ?? null;
   const treeSourceHash = treeResource.data?.source_hash;
   useEffect(() => {
     if (treeSourceHash !== undefined)
@@ -658,18 +483,11 @@ export function TaskFilesPanel({
   const rootListing = directoryListings[""];
   const visibleTree = useMemo(
     () =>
-      loadsTaskTreeByDirectory
-        ? includeSelectedPathChild(
-            rootListing?.nodes ?? [],
-            "",
-            selectedFilePath
-          )
-        : fileTree,
-    [fileTree, loadsTaskTreeByDirectory, rootListing?.nodes, selectedFilePath]
+      includeSelectedPathChild(rootListing?.nodes ?? [], "", selectedFilePath),
+    [rootListing?.nodes, selectedFilePath]
   );
   const pagedTaskWrapperCandidate =
     !fileRouteServesBytes &&
-    loadsTaskTreeByDirectory &&
     rootListing?.status === "ready" &&
     rootListing.cursor === null &&
     rootListing.nodes.length === 1 &&
@@ -719,11 +537,9 @@ export function TaskFilesPanel({
     [taskFileSections]
   );
   const listedSelectedFile = selectedFilePath
-    ? loadsTaskTreeByDirectory
-      ? Object.values(directoryListings)
-          .flatMap((listing) => listing.nodes)
-          .find((node) => node.path === selectedFilePath)
-      : findNodeByPath(fileTree, selectedFilePath)
+    ? Object.values(directoryListings)
+        .flatMap((listing) => listing.nodes)
+        .find((node) => node.path === selectedFilePath)
     : null;
   const selectedFile = selectedFilePath
     ? (listedSelectedFile ?? {
@@ -773,21 +589,18 @@ export function TaskFilesPanel({
     }`;
   };
 
-  const listedPreview = selectedFile ? listedFilePreview(selectedFile) : null;
-  const directBinaryPreview =
+  // Only a byte-serving route can back an <img>/<embed> src directly; a task
+  // route would hand it JSON, so task binaries go through the presign request.
+  const immediatePreview =
     selectedFile &&
     isBinaryRendererFile(selectedFile.name) &&
-    !loadFilesLazily &&
-    // Without a presigned URL from the listing, only a byte-serving route can
-    // back an <img>/<embed> src directly; a task route would hand it JSON.
-    (selectedFile.url || fileRouteServesBytes)
+    fileRouteServesBytes
       ? {
           kind: "binary" as const,
-          url: selectedFile.url ?? buildSelectedFileUrl()!,
+          url: buildSelectedFileUrl()!,
           size: selectedFile.size ?? null,
         }
       : null;
-  const immediatePreview = listedPreview ?? directBinaryPreview;
   // Directory metadata arriving later must not restart an existing file read;
   // the version and content hash identify the contents, not the listed size.
   const previewRequestKey =
@@ -807,8 +620,6 @@ export function TaskFilesPanel({
             selectedFile.path,
             shouldScopeFilesToVersion ? currentVersion : null,
             previewContentHash,
-            loadFilesLazily,
-            fileRouteServesBytes ? "raw" : "json",
           ]
       : null;
   const { data: fetchedPreview, error: previewError } = useSWR<FilePreview>(
@@ -825,7 +636,7 @@ export function TaskFilesPanel({
             treeResource.data?.source_hash ?? null
           )!
         );
-      let size = selectedFile.size ?? null;
+      const size = selectedFile.size ?? null;
 
       if (isBinaryRendererFile(selectedFile.name)) {
         const url = buildSelectedFileUrl(true);
@@ -845,60 +656,28 @@ export function TaskFilesPanel({
         };
       }
 
-      const shouldTruncate =
-        selectedFile.size !== undefined &&
-        selectedFile.size > TRUNCATE_THRESHOLD;
-      let content: string | null = null;
-      let isTruncated = false;
-      let sourceHash: string | null = null;
-
-      if (selectedFile.url) {
-        try {
-          const headers: HeadersInit = shouldTruncate
-            ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
-            : {};
-          const s3Res = await fetch(selectedFile.url, { headers });
-          if (s3Res.ok || s3Res.status === 206) {
-            content = await s3Res.text();
-            isTruncated =
-              s3Res.status === 206 ||
-              (shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
-          }
-        } catch {
-          content = null;
-        }
-      }
-
-      if (content === null) {
-        const url = buildSelectedFileUrl(
-          false,
-          loadFilesLazily ? TRUNCATE_THRESHOLD : undefined
+      const url = buildSelectedFileUrl(false, TRUNCATE_THRESHOLD);
+      if (!url) throw new Error("File content unavailable");
+      const res = await fetch(url);
+      if (!res.ok)
+        throw new Error(
+          res.status === 404
+            ? `${selectedFile.path}${currentVersion != null ? ` on v${currentVersion}` : ""} is unavailable. Historical evidence may have been removed; current content has not been substituted.`
+            : `Could not read ${selectedFile.path} (HTTP ${res.status}). Retry loading the evidence.`
         );
-        if (!url) throw new Error("File content unavailable");
-        const res = await fetch(url);
-        if (!res.ok)
-          throw new Error(
-            res.status === 404
-              ? `${selectedFile.path}${currentVersion != null ? ` on v${currentVersion}` : ""} is unavailable. Historical evidence may have been removed; current content has not been substituted.`
-              : `Could not read ${selectedFile.path} (HTTP ${res.status}). Retry loading the evidence.`
-          );
-        if (fileRouteServesBytes) {
-          content = await res.text();
-        } else {
-          const data = (await res.json()) as {
-            content?: string;
-            is_truncated?: boolean;
-            size?: number;
-            source_hash?: string | null;
-          };
-          content = data.content ?? "";
-          isTruncated = data.is_truncated ?? isTruncated;
-          size = data.size ?? size;
-          sourceHash = data.source_hash ?? null;
-        }
-      }
-
-      return { kind: "text", content, isTruncated, size, sourceHash };
+      const data = (await res.json()) as {
+        content?: string;
+        is_truncated?: boolean;
+        size?: number;
+        source_hash?: string | null;
+      };
+      return {
+        kind: "text",
+        content: data.content ?? "",
+        isTruncated: data.is_truncated ?? false,
+        size: data.size ?? size,
+        sourceHash: data.source_hash ?? null,
+      };
     },
     {
       revalidateOnFocus: false,
@@ -923,32 +702,6 @@ export function TaskFilesPanel({
   const loadingFullFile = loadingFullFiles.has(previewIdentity);
 
   const verdictSource = panel?.task ?? task;
-  // Trial files and eager file-only callers retain their recursive/streaming
-  // contract. Task directory batches are owned by useTaskFileTree.
-  const buildRecursiveListingUrl = useCallback(() => {
-    const params = new URLSearchParams();
-    params.set("recursive", "1");
-    if (loadFilesLazily) {
-      params.set("inline", "0");
-      params.set("presign", "0");
-    }
-    if (!taskPaneExists && !loadFilesLazily) {
-      params.set("stream", "1");
-    }
-    if (shouldScopeFilesToVersion && currentVersion != null) {
-      params.set("version", String(currentVersion));
-    }
-    if (listingContentHash) params.set("source_hash", listingContentHash);
-    return `${resolvedFilesUrl}?${params.toString()}`;
-  }, [
-    resolvedFilesUrl,
-    shouldScopeFilesToVersion,
-    currentVersion,
-    listingContentHash,
-    taskPaneExists,
-    loadFilesLazily,
-  ]);
-
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
     typeof taskIndex === "number" && taskIndex >= 0
@@ -1188,7 +941,7 @@ export function TaskFilesPanel({
   // one-directory archive wrapper is resolved first, then its task-root
   // children determine which semantic directories need pages.
   useEffect(() => {
-    if (!isOpen || !loadsTaskTreeByDirectory || fileRouteServesBytes) {
+    if (!isOpen || fileRouteServesBytes) {
       return;
     }
 
@@ -1206,7 +959,6 @@ export function TaskFilesPanel({
     fileRouteServesBytes,
     isOpen,
     loadDirectoryPage,
-    loadsTaskTreeByDirectory,
     pagedTaskWrapperCandidate,
     pagedTaskWrapperListing,
     taskSectionDirectoryPaths,
@@ -1221,107 +973,14 @@ export function TaskFilesPanel({
 
     setSelectedFilePath(null);
     setExpandedDirs(new Set());
-    if (loadsTaskTreeByDirectory) return;
-
-    let cancelled = false;
-    const controller = new AbortController();
-
-    async function fetchFiles() {
-      setLoading(true);
-      setError(null);
-      setFileTree([]);
-
-      // Once the tree is painted, later stream failures must not replace
-      // a usable tree with an error state — missing bodies just fall back
-      // to per-file fetches on click.
-      let paintedTree = false;
-
-      // The overview pane is the default view, so nothing pre-selects
-      // behind it: a hidden auto-selected file prefetches content that
-      // later flashes under whichever file the user actually picks. Only
-      // the file-only view (public share) paints a file immediately.
-      // Prefer instruction.md — the tree is fully nested, so a plain
-      // first-file walk would land inside environment/ instead.
-      const applyListing = (tree: TreeNode[]) => {
-        paintedTree = true;
-        setFileTree(tree);
-      };
-
-      try {
-        const res = await fetch(buildRecursiveListingUrl(), {
-          signal: controller.signal,
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`
-          );
-        }
-
-        const contentType = res.headers.get("content-type") ?? "";
-        if (contentType.includes("application/x-ndjson") && res.body) {
-          // Streamed listing: the tree paints as soon as the first chunk
-          // lands; file bodies keep trickling in behind it.
-          let receivedListing = false;
-          for await (const raw of iterateNdjsonLines(res.body)) {
-            if (cancelled) return;
-            const chunk = raw as FilesStreamChunk;
-            if (chunk.type === "listing" && !receivedListing) {
-              if (
-                !acceptFileListing(chunk.source_hash ?? null, fileListIdentity)
-              )
-                return;
-              const tree = buildTreeFromListing(chunk.files || []);
-              receivedListing = true;
-              applyListing(tree);
-              setLoading(false);
-            } else if (chunk.type === "content" && receivedListing) {
-              setFileTree((tree) =>
-                updateFileContent(tree, chunk.path, chunk.content)
-              );
-            }
-          }
-          if (!receivedListing) {
-            throw new Error("Failed to fetch files");
-          }
-        } else {
-          // Plain JSON listing (trial files, and any non-streaming source).
-          const data: FilesListingResponse = await res.json();
-          if (
-            cancelled ||
-            !acceptFileListing(data.source_hash ?? null, fileListIdentity)
-          )
-            return;
-          applyListing(buildTreeFromListing(data.files || []));
-        }
-      } catch (err) {
-        if (!cancelled && !paintedTree) {
-          setError(
-            err instanceof Error ? err.message : "Failed to fetch files"
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    fetchFiles();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
   }, [
     isOpen,
     taskId,
     filesUrl,
     resolvedFilesUrl,
     fileListIdentity,
-    buildRecursiveListingUrl,
+    listingContentHash,
     taskPaneExists,
-    loadsTaskTreeByDirectory,
   ]);
 
   // Paint a default file in file-only panes such as public task shares and
@@ -1335,38 +994,29 @@ export function TaskFilesPanel({
     if (initialFilePath || selectedFilePath) return;
     if (!visibleTree.length) return;
 
-    if (loadsTaskTreeByDirectory) {
-      const directoryPath = [...expandedDirs].sort(
-        (left, right) => right.split("/").length - left.split("/").length
-      )[0];
-      const listing = directoryListings[directoryPath ?? ""];
-      if (!listing || listing.status === "loading") return;
+    const directoryPath = [...expandedDirs].sort(
+      (left, right) => right.split("/").length - left.split("/").length
+    )[0];
+    const listing = directoryListings[directoryPath ?? ""];
+    if (!listing || listing.status === "loading") return;
 
-      const defaultFile =
-        findNodeBySuffix(listing.nodes, "instruction.md") ??
-        listing.nodes.find((node) => node.type === "file");
-      if (defaultFile) {
-        selectFilePath(defaultFile.path);
-        return;
-      }
-
-      const firstDirectory = listing.nodes.find((node) => node.type === "dir");
-      if (!firstDirectory) return;
-      setExpandedDirs((current) => {
-        if (current.has(firstDirectory.path)) return current;
-        return new Set(current).add(firstDirectory.path);
-      });
-      if (!directoryListings[firstDirectory.path]) {
-        void loadDirectoryPage(firstDirectory.path);
-      }
+    const defaultFile =
+      findNodeBySuffix(listing.nodes, "instruction.md") ??
+      listing.nodes.find((node) => node.type === "file");
+    if (defaultFile) {
+      selectFilePath(defaultFile.path);
       return;
     }
 
-    const defaultFile =
-      findNodeBySuffix(visibleTree, "instruction.md") ??
-      visibleTree.find((node) => node.type === "file") ??
-      findFirstFile(visibleTree);
-    if (defaultFile) selectFilePath(defaultFile.path);
+    const firstDirectory = listing.nodes.find((node) => node.type === "dir");
+    if (!firstDirectory) return;
+    setExpandedDirs((current) => {
+      if (current.has(firstDirectory.path)) return current;
+      return new Set(current).add(firstDirectory.path);
+    });
+    if (!directoryListings[firstDirectory.path]) {
+      void loadDirectoryPage(firstDirectory.path);
+    }
   }, [
     activePane,
     directoryListings,
@@ -1374,7 +1024,6 @@ export function TaskFilesPanel({
     initialFilePath,
     isOpen,
     loadDirectoryPage,
-    loadsTaskTreeByDirectory,
     selectFilePath,
     selectedFilePath,
     taskPaneExists,
@@ -1396,25 +1045,6 @@ export function TaskFilesPanel({
     fullFileRequests.current.add(requestIdentity);
     setLoadingFullFiles((previous) => new Set(previous).add(requestIdentity));
     try {
-      if (selectedFile.url) {
-        const s3Res = await fetch(selectedFile.url);
-        if (s3Res.ok) {
-          const content = await s3Res.text();
-          await mutateResource<FilePreview>(
-            requestKey,
-            {
-              kind: "text",
-              content,
-              isTruncated: false,
-              size: selectedFile.size ?? null,
-              sourceHash: fetchedPreview?.sourceHash ?? null,
-            },
-            { revalidate: false }
-          );
-        }
-        return;
-      }
-
       const url = buildSelectedFileUrl();
       if (!url) return;
       const res = await fetch(url);
@@ -1480,26 +1110,14 @@ export function TaskFilesPanel({
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
-      setFileTree([]);
       setSelectedFilePath(null);
-      setError(null);
       setExpandedDirs(new Set());
       setQAActionError(null);
       setIsRunningQA(false);
     }
   }, [isOpen, taskId]);
 
-  const initialFileNode =
-    initialFilePath && !loadsTaskTreeByDirectory
-      ? (findNodeByPath(fileTree, initialFilePath) ??
-        findNodeBySuffix(fileTree, initialFilePath))
-      : null;
-  const initialSelectionPath =
-    initialFilePath &&
-    (loadsTaskTreeByDirectory || fileTree.length > 0) &&
-    initialFileNode?.type !== "dir"
-      ? (initialFileNode?.path ?? initialFilePath)
-      : null;
+  const initialSelectionPath = initialFilePath || null;
   // Apply an incoming file address, not every local selection change. Next's
   // search params can still contain the previous file just after a click.
   useEffect(() => {
@@ -1519,14 +1137,8 @@ export function TaskFilesPanel({
   // Directory responses can expand the deep link without reselecting it.
   useEffect(() => {
     if (!isOpen || activePane !== "file" || !initialFilePath) return;
-    if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
 
-    const node = loadsTaskTreeByDirectory
-      ? null
-      : (findNodeByPath(fileTree, initialFilePath) ??
-        findNodeBySuffix(fileTree, initialFilePath));
-    const targetPath = node?.path ?? initialFilePath;
-    const ancestorPaths = getAncestorPaths(targetPath);
+    const ancestorPaths = getAncestorPaths(initialFilePath);
     if (ancestorPaths.length > 0) {
       setExpandedDirs((prev) => {
         if (ancestorPaths.every((path) => prev.has(path))) return prev;
@@ -1538,21 +1150,17 @@ export function TaskFilesPanel({
       });
     }
 
-    if (loadsTaskTreeByDirectory) {
-      for (const ancestorPath of ancestorPaths) {
-        if (!directoryListings[ancestorPath]) {
-          void loadDirectoryPage(ancestorPath);
-        }
+    for (const ancestorPath of ancestorPaths) {
+      if (!directoryListings[ancestorPath]) {
+        void loadDirectoryPage(ancestorPath);
       }
     }
   }, [
     activePane,
     directoryListings,
-    fileTree,
     initialFilePath,
     isOpen,
     loadDirectoryPage,
-    loadsTaskTreeByDirectory,
   ]);
 
   useEffect(() => {
@@ -1603,32 +1211,23 @@ export function TaskFilesPanel({
       }
       return next;
     });
-    if (
-      !isExpanded &&
-      loadsTaskTreeByDirectory &&
-      !directoryListings[node.path]
-    ) {
+    if (!isExpanded && !directoryListings[node.path]) {
       void loadDirectoryPage(node.path);
     }
   }
 
   function renderDirectoryContents(node: TreeNode, depth: number) {
-    const directory = loadsTaskTreeByDirectory
-      ? directoryListings[node.path]
-      : undefined;
-    const children = loadsTaskTreeByDirectory
-      ? includeSelectedPathChild(
-          directory?.nodes ?? [],
-          node.path,
-          selectedFilePath
-        )
-      : node.children;
+    const directory = directoryListings[node.path];
+    const children = includeSelectedPathChild(
+      directory?.nodes ?? [],
+      node.path,
+      selectedFilePath
+    );
 
     return (
       <div>
-        {children ? renderFileTree(children, depth) : null}
-        {loadsTaskTreeByDirectory &&
-        (!directory || directory.status === "loading") ? (
+        {renderFileTree(children, depth)}
+        {!directory || directory.status === "loading" ? (
           <div
             role="status"
             aria-label="Loading task directory"

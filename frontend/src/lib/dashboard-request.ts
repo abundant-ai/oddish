@@ -151,12 +151,11 @@ export function dashboardExperimentsRequest(
   searchParams: URLSearchParams
 ): DashboardRequestParams {
   const params = Object.fromEntries(searchParams.entries());
-  const firstParam = (value: string | undefined) => value ?? "";
   const initialAuthor = params.author || DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
   const initialStatus = params.status || "all";
   const initialQuery = params.q || "";
   const metricNumber = (key: string) => {
-    const raw = firstParam(params[key]);
+    const raw = params[key] ?? "";
     const value = Number(raw);
     return raw && Number.isFinite(value) && value >= 0 ? value : undefined;
   };
@@ -175,10 +174,7 @@ export function dashboardExperimentsRequest(
     "max_duration_seconds"
   );
   const [minTools, maxTools] = metricRange("min_tool_calls", "max_tool_calls");
-  const pageNumber = Math.max(
-    1,
-    Number.parseInt(firstParam(params.page), 10) || 1
-  );
+  const pageNumber = Math.max(1, Number.parseInt(params.page ?? "", 10) || 1);
   const initialOffset = (pageNumber - 1) * DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 
   const parsedQuery = parseTaskSearch(initialQuery);
@@ -196,15 +192,15 @@ export function dashboardExperimentsRequest(
     experiments_tags_any: parsedQuery.any.join(","),
     experiments_tags_none: parsedQuery.none.join(","),
     experiments_author_query: parsedQuery.authors.join(","),
-    experiments_models: firstParam(params.models) || undefined,
+    experiments_models: params.models || undefined,
     experiments_min_steps: minSteps,
     experiments_max_steps: maxSteps,
     experiments_min_duration_seconds: minTime,
     experiments_max_duration_seconds: maxTime,
     experiments_min_tool_calls: minTools,
     experiments_max_tool_calls: maxTools,
-    experiments_tool_names: firstParam(params.tool_names) || undefined,
+    experiments_tool_names: params.tool_names || undefined,
     experiments_trial_metric_match:
-      firstParam(params.trial_metric_match) === "all" ? "all" : "any",
+      params.trial_metric_match === "all" ? "all" : "any",
   };
 }

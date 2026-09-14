@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import json
 import secrets
-from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -324,7 +320,6 @@ async def list_task_files_s3(
     expanded_manifest_key: str | None = None,
     source_hash: str | None = None,
     directories: list[str] | None = None,
-    previews: bool = False,
     indexed: bool = False,
 ) -> dict:
     """List files in a task's S3 directory."""
@@ -336,10 +331,8 @@ async def list_task_files_s3(
             "Batched directories require recursive=false, inline=false, "
             "presign=false, and no prefix or cursor",
         )
-    if previews and directories is None:
-        raise HTTPException(400, "Previews require a bounded directory batch")
-    if indexed:
-        if recursive or inline or presign or previews:
+    if indexed or directories is not None:
+        if recursive or inline or presign:
             raise HTTPException(
                 400, "Prepared directories require metadata-only options"
             )
@@ -355,117 +348,24 @@ async def list_task_files_s3(
         return {**result, "task_id": task_id, "source_hash": source_hash}
     storage = get_storage_client()
     try:
-        if directories is not None:
-            result = await storage.list_task_directories(
-                task_id=task_id,
-                directories=directories,
-                **({"previews": True} if previews else {}),
-                limit=limit,
-                version=version,
-                task_s3_prefix=task_s3_prefix,
-                expanded=expanded,
-                expanded_manifest_key=expanded_manifest_key,
-            )
-        else:
-            result = await storage.list_task_files(
-                task_id=task_id,
-                prefix=prefix,
-                recursive=recursive,
-                limit=limit,
-                cursor=cursor,
-                presign=presign,
-                version=version,
-                task_s3_prefix=task_s3_prefix,
-                inline=inline,
-                expanded=expanded,
-                expanded_manifest_key=expanded_manifest_key,
-            )
+        result = await storage.list_task_files(
+            task_id=task_id,
+            prefix=prefix,
+            recursive=recursive,
+            limit=limit,
+            cursor=cursor,
+            presign=presign,
+            version=version,
+            task_s3_prefix=task_s3_prefix,
+            inline=inline,
+            expanded=expanded,
+            expanded_manifest_key=expanded_manifest_key,
+        )
         return {**result, "source_hash": source_hash}
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to list files")
-
-
-async def stream_task_files_s3(
-    task_id: str,
-    prefix: str | None,
-    recursive: bool,
-    limit: int,
-    cursor: str | None,
-    presign: bool,
-    task_s3_prefix: str | None,
-    version: int | None = None,
-    expanded: bool | None = None,
-    expanded_manifest_key: str | None = None,
-    source_hash: str | None = None,
-):
-    """Stream a task file listing chunk-by-chunk (tree first, then contents).
-
-    Errors before the first chunk surface as HTTP errors; a failure
-    mid-stream just ends the stream — the client already has the tree and
-    falls back to per-file fetches for missing bodies.
-    """
-    storage = get_storage_client()
-
-    stream = storage.stream_task_files(
-        task_id=task_id,
-        prefix=prefix,
-        recursive=recursive,
-        limit=limit,
-        cursor=cursor,
-        presign=presign,
-        version=version,
-        task_s3_prefix=task_s3_prefix,
-        expanded=expanded,
-        expanded_manifest_key=expanded_manifest_key,
-    )
-    started = False
-    try:
-        async for chunk in stream:
-            started = True
-            yield (
-                {**chunk, "source_hash": source_hash}
-                if chunk["type"] == "listing"
-                else chunk
-            )
-    except HTTPException:
-        if not started:
-            raise
-    except Exception:
-        if not started:
-            raise HTTPException(status_code=500, detail="Failed to list files")
-
-
-def _ndjson_line(chunk: dict) -> str:
-    return json.dumps(jsonable_encoder(chunk), separators=(",", ":")) + "\n"
-
-
-async def make_task_files_ndjson_response(
-    stream: AsyncIterator[dict],
-) -> StreamingResponse:
-    """Wrap a task-files chunk stream as an NDJSON streaming response.
-
-    The first chunk (the listing) is awaited eagerly, before the response
-    starts, so failures during listing — task not found, storage errors —
-    propagate as real HTTP error responses. Once the body iterator is
-    running Starlette has already sent a 200, so only mid-stream failures
-    end up truncating the stream (the client keeps the tree and falls back
-    to per-file fetches for missing bodies).
-    """
-    try:
-        first = await anext(stream)
-    except StopAsyncIteration:
-        first = None
-
-    async def ndjson() -> AsyncIterator[str]:
-        if first is None:
-            return
-        yield _ndjson_line(first)
-        async for chunk in stream:
-            yield _ndjson_line(chunk)
-
-    return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
 
 async def get_task_file_content_s3(

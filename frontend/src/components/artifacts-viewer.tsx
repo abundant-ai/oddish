@@ -25,13 +25,10 @@ import { sameFilePath } from "@/lib/file-path";
 import { recordClientError } from "@/lib/observability";
 import type { LineRange } from "@/lib/line-range";
 
-// Preview truncation threshold; matches TaskFilesPanel.
-
 interface ArtifactFile {
   path: string;
   key?: string;
   size?: number;
-  url?: string;
 }
 
 interface ArtifactsListing {
@@ -49,7 +46,6 @@ interface ArtifactEntry {
   // the backend proxy URL for content fetches.
   fullPath: string;
   size?: number;
-  url?: string;
 }
 
 // Strip the Harbor wrapper dirs before `artifacts/` so the tree shows clean
@@ -87,7 +83,6 @@ function buildArtifactEntries(
       path,
       fullPath: file.path,
       size: file.size,
-      url: file.url,
     });
   }
   return entries;
@@ -398,7 +393,6 @@ function ArtifactContentPane({
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const scope = useFileCacheScope(filesUrl);
   const fullPath = selectedFile?.fullPath ?? null;
-  const presignedUrl = selectedFile?.url;
   const fileSize = selectedFile?.size;
   const fileName = selectedFile?.path.split("/").pop() ?? "";
   const isBinary = fileName ? isBinaryRendererFile(fileName) : false;
@@ -435,18 +429,6 @@ function ArtifactContentPane({
     if (!selectedFile || !proxyUrl) return;
     setLoadingFullFile(true);
     try {
-      if (presignedUrl) {
-        try {
-          const res = await fetch(presignedUrl);
-          if (res.ok) {
-            const text = await res.text();
-            setFullContent(text);
-            return;
-          }
-        } catch {
-          // fall through to proxy
-        }
-      }
       const res = await apiFetch(
         `${proxyUrl}?indexed=true&attempt=${trialAttempt}`
       );
@@ -460,15 +442,15 @@ function ArtifactContentPane({
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile, proxyUrl, presignedUrl, trialAttempt]);
+  }, [selectedFile, proxyUrl, trialAttempt]);
 
   if (!selectedFile) {
     return null;
   }
 
-  const renderUrl =
-    presignedUrl ||
-    (proxyUrl ? `${proxyUrl}?indexed=true&attempt=${trialAttempt}` : null);
+  const renderUrl = proxyUrl
+    ? `${proxyUrl}?indexed=true&attempt=${trialAttempt}`
+    : null;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">

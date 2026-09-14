@@ -39,8 +39,6 @@ from .helpers import (
     list_task_trials_for_public_experiment,
     list_task_files_s3,
     list_trial_files_s3,
-    make_task_files_ndjson_response,
-    stream_task_files_s3,
 )
 from oddish.db import (
     ExperimentModel,
@@ -511,13 +509,6 @@ async def list_public_task_files(
     indexed: bool = Query(
         False, description="Read prepared metadata without file-body downloads"
     ),
-    previews: bool = Query(
-        False, description="Include bounded small text previews in directory batches"
-    ),
-    stream: bool = Query(
-        False,
-        description="Stream NDJSON: the file tree first, then file contents",
-    ),
 ):
     """List all files in a public task's S3 directory."""
     async with get_read_session() as session:
@@ -528,30 +519,9 @@ async def list_public_task_files(
             session, task_id=task_id, version=version
         )
 
-    if (directories is not None or previews) and stream:
-        raise HTTPException(400, "Batched directory listings do not stream file bodies")
-
-    if stream:
-        return await make_task_files_ndjson_response(
-            stream_task_files_s3(
-                task_id=task_id,
-                prefix=prefix,
-                recursive=recursive,
-                limit=limit,
-                cursor=cursor,
-                presign=presign,
-                task_s3_prefix=source.task_s3_prefix,
-                expanded=source.expanded,
-                expanded_manifest_key=source.expanded_manifest_key,
-                source_hash=source.content_hash,
-                version=source.version,
-            )
-        )
-
     return await list_task_files_s3(
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
-        **({"previews": True} if previews else {}),
         **({"indexed": True} if indexed else {}),
         prefix=prefix,
         recursive=recursive,

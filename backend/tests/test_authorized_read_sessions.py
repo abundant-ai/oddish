@@ -477,12 +477,11 @@ async def test_task_definition_uses_one_query_and_checks_revocation_and_version(
     monkeypatch.setattr(tasks, "list_task_files_s3", storage)
     event.listen(engine.sync_engine, "before_cursor_execute", query)
     try:
-        base = f"/tasks/{task_id}/files?directories=&recursive=0&inline=0&presign=0&previews=true"
+        base = f"/tasks/{task_id}/files?directories=&recursive=0&inline=0&presign=0"
         response = await api.client.get(base + "&version=7")
         assert response.status_code == 200, response.text
         assert len(statements) == 1, statements
         assert calls[-1]["source_hash"] == "historical"
-        assert calls[-1]["previews"] is True
         assert calls[-1]["task_s3_prefix"].endswith("a" * 32 + "/")
         assert (await api.client.get(base + "&version=8")).status_code == 404
         assert len(calls) == 1
