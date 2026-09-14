@@ -971,3 +971,86 @@ test("task-page findings are counted and open independently", async ({
   await expect(one.getByText(first.detail, { exact: true })).not.toBeVisible();
   await expect(two.getByText(second.detail, { exact: true })).toBeVisible();
 });
+
+test("linked retained must-fix survives a historical optional audit finding", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const retained = {
+    id: "retained-fix",
+    links_to: "audit-finding",
+    source: "post_trial",
+    tier: "must_fix",
+    title: "Required verifier fix",
+  };
+  const audit = {
+    id: "audit-finding",
+    source: "pre_trial",
+    tier: "optional",
+    title: "Historical suggestion",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const version = data.selected_version ?? data.version;
+      version.pre_trial_findings = [audit];
+      version.retained_findings = [retained];
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const findings = page
+    .getByRole("heading", { name: "Findings", exact: true })
+    .locator("..");
+  await expect(findings.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await expect(
+    page.locator('details[data-finding="retained-fix"]')
+  ).toBeVisible();
+  await expect(
+    page.locator('details[data-finding="audit-finding"]')
+  ).toBeVisible();
+});
+
+test("rejection without structured findings keeps its reason behind a disclosure", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const reason = "The verifier cannot execute the required checks.";
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const version = data.selected_version ?? data.version;
+      version.pre_trial_findings = [];
+      version.retained_findings = [];
+      data.task.verdict = {
+        is_good: false,
+        verdict: "reject",
+        primary_issue: reason,
+        confidence: null,
+        recommendations: [],
+      };
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(page.getByText("Rejected", { exact: true })).toBeVisible();
+  await expect(page.getByText(reason, { exact: true })).not.toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const disclosure = page
+    .locator("details")
+    .filter({ has: page.getByText("Rejection reason", { exact: true }) });
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await expect(disclosure.getByText(reason, { exact: true })).not.toBeVisible();
+  await disclosure.locator("summary").click();
+  await expect(disclosure.getByText(reason, { exact: true })).toBeVisible();
+});

@@ -64,9 +64,7 @@ function taskFromOpen(open: TaskOpenResponse): Task {
       ...(selected?.retained_findings ?? []),
       ...(selected?.pre_trial_findings ?? []),
     ].map((item) => [
-      item.links_to ??
-        item.id ??
-        `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`,
+      item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`,
       item,
     ])
   );

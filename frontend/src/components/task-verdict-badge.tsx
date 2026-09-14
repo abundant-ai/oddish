@@ -146,7 +146,17 @@ export function TaskVerdictBadge({
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
-  const shownDetail = mustFixCount > 0 || p.isGood === false ? null : p.detail;
+  const shownDetail = mustFixCount > 0 ? null : p.detail;
+  const rejectionDetail =
+    shownDetail && p.isGood === false && variant !== "summary" ? (
+      <details className="mt-2 text-sm">
+        <summary className="cursor-pointer">Rejection reason</summary>
+        <AnalysisProse
+          text={shownDetail}
+          className="text-muted-foreground mt-2"
+        />
+      </details>
+    ) : null;
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
@@ -186,7 +196,8 @@ export function TaskVerdictBadge({
           {variant === "summary" && mustFixCount > 0 && rejectionSource ? (
             <p className="mt-1 text-sm">{mustFixCount} Must fix</p>
           ) : null}
-          {shownDetail ? (
+          {rejectionDetail}
+          {shownDetail && p.isGood !== false ? (
             <p
               className={
                 variant === "summary"
@@ -289,7 +300,8 @@ export function TaskVerdictBadge({
                 </span>
               ) : null}
             </div>
-            {shownDetail ? (
+            {rejectionDetail}
+            {shownDetail && p.isGood !== false ? (
               <AnalysisProse
                 text={shownDetail}
                 className="text-muted-foreground mt-1"
