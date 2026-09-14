@@ -134,14 +134,14 @@ export function FindingList({
     matches[0]?.scrollIntoView({ block: "center" });
   }, [selectedFinding, items]);
   const ordered = TIER_ORDER.flatMap((tier) =>
-    items.filter((item) => (item.tier ?? "optional") === tier)
+    items.filter((item) => (item.tier ?? item.severity ?? "optional") === tier)
   );
   if (!ordered.length) return null;
 
   return (
     <div ref={root} className={cn("flex flex-col gap-2", className)}>
       {ordered.map((item, index) => {
-        const tier = item.tier ?? "optional";
+        const tier = item.tier ?? item.severity ?? "optional";
         const key = item.id ?? `${tier}-${item.title ?? index}`;
         return (
           <details

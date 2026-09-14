@@ -11,3 +11,11 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     method: "DELETE",
   });
 }
+
+export async function GET(request: NextRequest, { params }: Params) {
+  const { id, task_id } = await params;
+  return proxyBackendJson({
+    request,
+    path: `deliveries/${encodeURIComponent(id)}/tasks/${encodeURIComponent(task_id)}`,
+  });
+}

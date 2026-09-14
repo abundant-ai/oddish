@@ -7,6 +7,7 @@ from oddish.core.deliveries import (
     create_delivery_core,
     finalize_delivery_core,
     get_delivery_board_core,
+    get_delivery_task_core,
     set_manual_check_core,
 )
 from oddish.core.delivery_view import (
@@ -359,3 +360,103 @@ async def test_page_handles_no_live_highest_version(session):
         page = await delivery_page(reader, board, DeliveryViewQuery())
     assert len(page.tasks) == 1 and not page.ready
     assert page.tasks[0].task_id == task.id
+
+
+@pytest.mark.asyncio
+async def test_task_read_matches_full_board_without_sibling_evidence(
+    session, inventory, monkeypatch
+):
+    import oddish.core.deliveries as core
+
+    delivery, tasks = inventory
+    full = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    expected = next(row for row in full.tasks if row.task_id == tasks[0].id)
+    captured = []
+    original = core.task_defect_items
+
+    async def track(reader, versions, **kwargs):
+        captured.append(set(versions))
+        return await original(reader, versions, **kwargs)
+
+    monkeypatch.setattr(core, "task_defect_items", track)
+    with count_statements() as statements:
+        row = await get_delivery_task_core(
+            session, delivery_id=delivery.id, org_id=ORG, task_id=tasks[0].id
+        )
+    assert row == expected
+    assert row.defects[0].finding["description"] == "evidence " * 15000
+    assert captured == [{row.version_id}]
+    assert len(statements) <= 6
+    assert all(sql.lstrip().upper().startswith("SELECT") for sql in statements)
+    assert not any("delivery_progress" in sql for sql in statements)
+
+
+@pytest.mark.asyncio
+async def test_task_read_rejects_nonmembers_and_other_organizations(session, inventory):
+    from fastapi import HTTPException
+
+    delivery, tasks = inventory
+    for org_id, task_id in [(ORG, "not-a-member"), ("another-org", tasks[0].id)]:
+        with pytest.raises(HTTPException) as exc:
+            await get_delivery_task_core(
+                session, delivery_id=delivery.id, org_id=org_id, task_id=task_id
+            )
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_task_read_keeps_finalized_snapshot_after_live_evidence_changes(
+    session, monkeypatch
+):
+    import oddish.core.deliveries as core
+
+    task, version, _ = await _green_task(session, "frozen-task-detail")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="Acme", name="Frozen task", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="owner-a",
+    )
+    await _sign_off(session, delivery.id, task.id)
+    frozen = await finalize_delivery_core(
+        session, delivery_id=delivery.id, org_id=ORG, user_id="owner-a"
+    )
+    version.reported_findings = [
+        {
+            "finding": {"id": "new", "title": "New defect", "tier": "must_fix"},
+            "source": "analysis",
+        }
+    ]
+    await session.flush()
+
+    async def reject_live_read(*args, **kwargs):
+        raise AssertionError("A finalized task must not recalculate live evidence")
+
+    monkeypatch.setattr(core, "_compute_board", reject_live_read)
+    row = await get_delivery_task_core(
+        session, delivery_id=delivery.id, org_id=ORG, task_id=task.id
+    )
+    assert row == frozen.tasks[0]
+
+
+@pytest.mark.asyncio
+async def test_task_read_does_not_substitute_live_data_for_missing_snapshot(session):
+    from fastapi import HTTPException
+
+    task, _, _ = await _green_task(session, "missing-task-snapshot")
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="Acme", name="Missing snapshot", task_ids=[task.id]
+        ),
+        org_id=ORG,
+        user_id="owner-a",
+    )
+    delivery.status = "finalized"
+    delivery.finalized_at = utcnow()
+    await session.flush()
+    with pytest.raises(HTTPException) as exc:
+        await get_delivery_task_core(
+            session, delivery_id=delivery.id, org_id=ORG, task_id=task.id
+        )
+    assert exc.value.status_code == 409

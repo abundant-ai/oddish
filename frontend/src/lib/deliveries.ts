@@ -1,6 +1,7 @@
 import type {
   DeliveryBoardResponse,
   DeliveryPageRow,
+  DeliveryPageResponse,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -237,4 +238,48 @@ export function deliveryPageQuery(params: Pick<URLSearchParams, "get">) {
     group: view.groupBy,
     task: view.focusTask,
   });
+}
+
+/** IDs across the full delivery take precedence over legacy task names,
+ * including when the matching member is not on the loaded page. */
+export function focusedDeliveryTask(
+  page: DeliveryPageResponse,
+  focusTask: string | null
+) {
+  return (
+    page.tasks.find((row) => row.task_id === focusTask) ??
+    (!page.member_task_ids.includes(focusTask ?? "")
+      ? page.tasks.find((row) => row.task_name === focusTask)
+      : undefined)
+  );
+}
+
+/** Reuse a loaded table when only its expanded row changes. Off-page links and
+ * filter exceptions still use the server to locate the correct page. */
+export function deliveryPageContainsView(
+  page: DeliveryPageResponse,
+  loadedQuery: string,
+  requestedQuery: string
+): boolean {
+  const loaded = parseDeliveryView(new URLSearchParams(loadedQuery));
+  const requested = parseDeliveryView(new URLSearchParams(requestedQuery));
+  if (
+    loaded.pageSize !== requested.pageSize ||
+    loaded.filter !== requested.filter ||
+    loaded.issueFilter !== requested.issueFilter ||
+    loaded.ownerFilter !== requested.ownerFilter ||
+    loaded.groupBy !== requested.groupBy
+  )
+    return false;
+  const focus = focusedDeliveryTask(page, requested.focusTask);
+  if (page.focus_outside_filters && focus?.task_id !== page.focus_task_id)
+    return false;
+  if (requested.focusTask) return Boolean(focus);
+  return (
+    page.page ===
+    Math.min(
+      requested.page + 1,
+      Math.max(1, Math.ceil(page.total / requested.pageSize))
+    )
+  );
 }

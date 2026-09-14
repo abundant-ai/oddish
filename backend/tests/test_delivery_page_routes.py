@@ -77,7 +77,7 @@ async def test_page_and_selection_check_approval_on_every_request(monkeypatch):
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://test"
                 ) as client:
-                    for endpoint in ("view", "selection"):
+                    for endpoint in ("view", "selection", f"tasks/{task.id}"):
                         response = await client.get(
                             f"/deliveries/{delivery.id}/{endpoint}"
                         )
@@ -107,10 +107,20 @@ async def test_page_and_selection_check_approval_on_every_request(monkeypatch):
                             f"/deliveries/{delivery.id}/view?per_page=1000"
                         )
                     ).status_code == 422
+                    detail = await client.get(
+                        f"/deliveries/{delivery.id}/tasks/{task.id}"
+                    )
+                    assert detail.status_code == 200, detail.text
+                    assert detail.json()["version_id"] == version.id
+                    assert (
+                        await client.get(
+                            f"/deliveries/{delivery.id}/tasks/not-a-member"
+                        )
+                    ).status_code == 404
                     # Reuse the exact same cached identity after revocation.
                     organization.execution_enabled = False
                     await session.commit()
-                    for endpoint in ("view", "selection"):
+                    for endpoint in ("view", "selection", f"tasks/{task.id}"):
                         assert (
                             await client.get(f"/deliveries/{delivery.id}/{endpoint}")
                         ).status_code == 403

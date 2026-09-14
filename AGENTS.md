@@ -2203,7 +2203,7 @@ on activation. The board and expanded history share this cache and its mutate
 functions. Experiment metadata uses the route ID without a backend request;
 the active browser page updates its tab title from the already-loaded experiment
 name. The board owns the existing 15-second SWR refresh: each
-successful read also revalidates the expanded task's QA history, including
+successful read also revalidates the expanded task's details and QA history, including
 reads after page mutations. History has no separate timer. Refresh errors
 retain loaded data with a stale warning and adjacent retry; revalidation never
 clears cached data or starts analysis. Frozen delivery boards disable periodic
@@ -2227,6 +2227,16 @@ loads only that task's evidence; finalization and progress recording continue
 calculating the entire delivery. The original complete-board endpoint remains
 available to CLI and standalone callers. Hosted reads share approval and data
 access in one read session, checking approval on every request.
+
+Visible-row expansion reuses an equivalent loaded page cache entry and derives
+focus immediately from the URL. `GET /deliveries/{id}/tasks/{task_id}` supplies
+only that member's full evidence; it preserves hosted approval and frozen
+snapshot semantics. Detail and history requests start independently. The table
+owns checks and acknowledgments; details hydrate only matching finding identities
+on the same task/member/version. Missing or changed details disable mutations
+and expose retry or refresh. Off-page links and out-of-filter exceptions still
+resolve through the page endpoint. The whole-delivery calculation on page reads
+and the 15-second poll remain until the separate persisted-summary change.
 
 Writes invalidate cached pages and refresh the mounted view; late responses
 cannot restore pre-write data. Cached navigation keeps the previous page visible

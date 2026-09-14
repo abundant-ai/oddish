@@ -395,7 +395,7 @@ export function TaskOverviewPanel({
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
   const mustFixCount = findingItems.filter(
-    (item) => item.tier === "must_fix"
+    (item) => (item.tier ?? item.severity) === "must_fix"
   ).length;
   const findingsSummary =
     mustFixCount > 0
