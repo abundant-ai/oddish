@@ -1212,7 +1212,7 @@ test("a first run-review finding is counted without detailed findings in open", 
 });
 
 for (const address of ["retained-fix", "historical-audit"]) {
-  test(`finding link ${address} opens the retained required fix`, async ({
+  test(`finding link ${address} opens and highlights the retained required fix`, async ({
     page,
   }) => {
     test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
@@ -1244,6 +1244,9 @@ for (const address of ["retained-fix", "historical-audit"]) {
     await expect(
       page.locator('details[data-finding="retained-fix"]')
     ).toHaveAttribute("open", "");
+    await expect(
+      page.locator('details[data-finding="retained-fix"]')
+    ).toHaveClass(/ring-amber-500\/40/);
     await expect(
       page.getByText("Required fix evidence", { exact: true })
     ).toBeVisible();

@@ -150,7 +150,10 @@ export function FindingList({
             data-finding-link={item.links_to}
             className={cn(
               "group border-border bg-background/40 rounded-lg border",
-              item.id === selectedFinding && "ring-1 ring-amber-500/40"
+              selectedFinding &&
+                (item.id === selectedFinding ||
+                  item.links_to === selectedFinding) &&
+                "ring-1 ring-amber-500/40"
             )}
           >
             <summary className="hover:bg-foreground/5 flex cursor-pointer list-none items-start gap-3 px-4 py-3 select-none">
