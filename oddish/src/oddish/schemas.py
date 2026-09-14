@@ -35,7 +35,6 @@ from oddish.db import (
 from oddish.registry_auth import normalize_registry_host
 from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
-
 # =============================================================================
 # Harbor Execution Config (wraps Harbor's native types)
 # =============================================================================
@@ -2761,7 +2760,7 @@ class DeliveryQAStatus(BaseModel):
     ] = "never"
     trial_id: str | None = None
     finished_at: datetime | None = None
-    detail: str = "No QA result recorded"
+    detail: str = "Delivery checks not run"
 
 
 class DeliveryTaskBoardRow(BaseModel):

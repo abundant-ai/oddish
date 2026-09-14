@@ -36,7 +36,7 @@ def backfill_analysis(
         Optional[str],
         typer.Option(
             "--trial",
-            help="Select one trial's parent task for a task-wide QA replacement",
+            help="Select one trial's parent task for a verdict regeneration",
         ),
     ] = None,
     force: Annotated[
@@ -44,7 +44,7 @@ def backfill_analysis(
         typer.Option(
             "--force",
             help=(
-                "Clear stored analysis before replacement QA starts; the full "
+                "Clear stored analysis before verdict regeneration starts; the full "
                 "eligible set is reclassified either way"
             ),
         ),
@@ -54,7 +54,7 @@ def backfill_analysis(
         bool, typer.Option("--json", help="Output JSON (for CI/scripts)")
     ] = False,
 ):
-    """Queue replacement task-wide QA for an experiment, task, or trial selector.
+    """Regenerate verdicts for an experiment, task, or trial selector.
 
     Examples:
         oddish backfill-analysis --task <task_id>

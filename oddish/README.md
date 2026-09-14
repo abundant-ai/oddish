@@ -67,7 +67,7 @@ Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and
-  task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
+  verdict regeneration. Hosted environments are `modal`, `daytona`, `ec2`,
   `gke`, `archil`, and `numinous`; Archil, EC2, and Numinous are controlled by
   deployment settings. When Numinous is enabled it is the first CPU candidate;
   otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
@@ -79,15 +79,15 @@ reference. The main commands are:
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
 - `oddish admin concurrency` — inspect, set, or clear operator queue-key concurrency overrides with verified readback.
 - `oddish cost-exclusions` — hide spend for models and experiments that were never really paid for.
-- `oddish cancel` — cancel active runs or task-level QA.
+- `oddish cancel` — cancel active runs or verdict generation.
 - `oddish pull` — download logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
 - `oddish combine` — merge finished trials from multiple experiments.
 - `oddish collect` / `oddish experiment create` — build read-only trial collections; `collect` can auto-publish a share link.
 - `oddish link` — print the dashboard URL for a task or trial (built locally; needs no API key).
 - `oddish delete` — delete trials against hosted Oddish (admin key); whole-task/experiment deletes are refused for Modal-hosted APIs, and a standalone core server has no delete endpoints at all.
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
-- `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
-- `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
+- `oddish backfill-analysis` and `oddish probe` — verdict generation and probe tools.
+- `oddish assign` — assign task work ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
 - `oddish version` — print the installed CLI version (`--check` compares with the latest PyPI release). No API key.
 - `oddish update` — upgrade a `uv pip install oddish` install from PyPI. No API key.

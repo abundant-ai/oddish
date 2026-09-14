@@ -8,11 +8,11 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { QA_STATUS_LABELS } from "@/lib/deliveries";
+import { DELIVERY_CHECK_STATUS_LABELS } from "@/lib/deliveries";
 import type { DeliveryQAStatus } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 
-const QA_PRESENTATION = {
+const DELIVERY_CHECK_PRESENTATION = {
   accepted: {
     Icon: CheckCircle2,
     tone: "text-emerald-700 dark:text-emerald-400",
@@ -25,15 +25,15 @@ const QA_PRESENTATION = {
   never: { Icon: CircleDashed, tone: "text-muted-foreground" },
 };
 
-export function DeliveryQAStatusBadge({ qa }: { qa: DeliveryQAStatus }) {
-  const { Icon, tone } = QA_PRESENTATION[qa.status];
+export function DeliveryCheckStatusBadge({ qa }: { qa: DeliveryQAStatus }) {
+  const { Icon, tone } = DELIVERY_CHECK_PRESENTATION[qa.status];
   return (
     <span
       title={qa.detail}
       className={cn("inline-flex items-center gap-1 text-sm", tone)}
     >
       <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-      {QA_STATUS_LABELS[qa.status]}
+      {DELIVERY_CHECK_STATUS_LABELS[qa.status]}
     </span>
   );
 }

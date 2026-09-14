@@ -105,7 +105,7 @@ const TrialDetailPanel = dynamic(
 // "audit") read as jargon next to a section header; unknown kinds fall
 // back to the raw string so new kinds are never hidden.
 const QA_TRIAL_KIND_LABELS: Record<string, string> = {
-  qa: "QA run",
+  qa: "Verdict generation run",
   audit: "Pre-trial audit",
   analyzer_map: "Analyzer (map)",
   analyzer_reduce: "Analyzer (reduce)",
@@ -1143,7 +1143,7 @@ export function TaskDetailClient({
               (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
                 ? "Pre-trial audit"
                 : (task.must_fix_count ?? 0) > 0
-                  ? "Run review"
+                  ? "Run analysis"
                   : undefined
             }
             onViewFindings={() => {
@@ -1182,7 +1182,7 @@ export function TaskDetailClient({
               <QaCostSuffix
                 costUsd={totals?.qa_cost_usd}
                 size="tile"
-                title="QA/analysis spend for this task's trials. Not included in the cost figure."
+                title="Audit and verdict generation spend for this task's trials. Not included in the cost figure."
               />
             </span>
             {(totals?.token_trial_count ?? 0) > 0 ? (
@@ -1377,7 +1377,7 @@ export function TaskDetailClient({
           {analysisTrialsForVersion.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <span className="text-[11px] tracking-wide text-[color:var(--paper-ink-3)] uppercase">
-                QA
+                Audit and verdict generation runs
               </span>
               {analysisTrialsForVersion.map((t) => (
                 <div key={t.id} className="flex items-center gap-1">

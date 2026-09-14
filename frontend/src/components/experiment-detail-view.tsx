@@ -772,7 +772,7 @@ function ExperimentSummaryBar({
       )}
       <KpiTile
         label="Run cost (all versions)"
-        labelInfo="Run cost across all versions, including runs added from other experiments. Review costs are listed separately."
+        labelInfo="Run cost across all versions, including runs added from other experiments. Audit and verdict generation costs are listed separately."
       >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -839,8 +839,8 @@ function ExperimentSummaryBar({
               size="tile"
               title={
                 summary.qaHasEstimated
-                  ? "Review cost across this experiment's trials. Includes estimated review costs. Not included in the cost figure."
-                  : "Review cost across this experiment's trials. Not included in the cost figure."
+                  ? "Audit and verdict generation cost across this experiment's trials. Includes estimated audit and verdict generation costs. Not included in the cost figure."
+                  : "Audit and verdict generation cost across this experiment's trials. Not included in the cost figure."
               }
             />
           )}
@@ -854,7 +854,7 @@ function ExperimentSummaryBar({
       {showNewSpend && (
         <KpiTile
           label="Launched here"
-          labelInfo="Cost of runs launched in this experiment, across all versions. Review costs are listed separately."
+          labelInfo="Cost of runs launched in this experiment, across all versions. Audit and verdict generation costs are listed separately."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -928,7 +928,7 @@ function ExperimentSummaryBar({
               <QaCostSuffix
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
-                title="Review cost on this experiment's own trials. Not included in the run cost."
+                title="Audit and verdict generation cost on this experiment's own trials. Not included in the run cost."
               />
             )}
           </span>

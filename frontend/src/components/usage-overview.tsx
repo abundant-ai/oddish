@@ -62,7 +62,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 
 export function useDashboardUsage(
   usageMinutes: number | null,
-  fallbackData?: DashboardResponse | null,
+  fallbackData?: DashboardResponse | null
 ) {
   const swrKey = buildDashboardApiPath({
     include_tasks: false,
@@ -81,7 +81,7 @@ export function useDashboardUsage(
           (stats) =>
             (Number(stats.running) || 0) > 0 ||
             (Number(stats.queued) || 0) > 0 ||
-            (Number(stats.retrying) || 0) > 0,
+            (Number(stats.retrying) || 0) > 0
         );
         return hasActiveQueue ? 30000 : 90000;
       },
@@ -90,7 +90,7 @@ export function useDashboardUsage(
       revalidateIfStale: !hasFallbackData,
       keepPreviousData: true,
       fallbackData: fallbackData ?? undefined,
-    },
+    }
   );
 
   return {
@@ -164,11 +164,11 @@ function formatCost(usd: number): string {
 // costUsd, so costUsd - estimatedUsd is the native portion.
 function formatCostWithEstimateMarks(
   costUsd: number,
-  estimatedUsd: number,
+  estimatedUsd: number
 ): string {
   const marks = costEstimateMarks(
     estimatedUsd > 0,
-    costUsd - estimatedUsd > 1e-9,
+    costUsd - estimatedUsd > 1e-9
   );
   return `${marks.prefix}${formatCost(costUsd)}${marks.suffix}`;
 }
@@ -239,7 +239,7 @@ type UsageRow = {
 function buildUsageRows(
   jobUsage: JobUsage[],
   modelUsage: ModelUsage[],
-  queues: QueueStats | null,
+  queues: QueueStats | null
 ): UsageRow[] {
   const mergedRows = new Map<string, UsageRow>();
   const jobUsageByQueue = new Map<
@@ -363,7 +363,7 @@ function buildUsageRows(
 
 // Group active counts by actual worker_jobs kind for the badge hover tooltip.
 function buildPipelineByKind(
-  jobUsage: JobUsage[],
+  jobUsage: JobUsage[]
 ): Record<string, { running: number; queued: number; retrying: number }> {
   const kinds: Record<
     string,
@@ -397,22 +397,22 @@ const PIPELINE_KIND_DISPLAY: Record<
     accentBorder: "border-blue-500/30",
   },
   QA: {
-    label: "Task QA",
+    label: "Verdict generation",
     description: "Classify trials + synthesize verdict",
     Icon: Gavel,
     accentText: "text-amber-500 dark:text-amber-300",
     accentBorder: "border-amber-500/30",
   },
   VERDICT: {
-    label: "Task Verdict (legacy)",
-    description: "Folded into Task QA",
+    label: "Verdict generation (legacy)",
+    description: "Folded into Verdict generation",
     Icon: Gavel,
     accentText: "text-amber-500/70 dark:text-amber-300/70",
     accentBorder: "border-amber-500/30",
   },
   ANALYSIS: {
     label: "Trial Analysis (legacy)",
-    description: "Folded into Task QA",
+    description: "Folded into Verdict generation",
     Icon: Microscope,
     accentText: "text-purple-500 dark:text-purple-300",
     accentBorder: "border-purple-500/30",
@@ -568,7 +568,7 @@ export function UsageSummaryCard({
 
   const usageRows = useMemo(
     () => buildUsageRows(jobUsage, modelUsage, queues),
-    [jobUsage, modelUsage, queues],
+    [jobUsage, modelUsage, queues]
   );
   const totals = useMemo(
     () =>
@@ -578,13 +578,13 @@ export function UsageSummaryCard({
           queued: acc.queued + row.queued,
           retrying: acc.retrying + row.retrying,
         }),
-        { running: 0, queued: 0, retrying: 0 },
+        { running: 0, queued: 0, retrying: 0 }
       ),
-    [usageRows],
+    [usageRows]
   );
   const pipelineByKind = useMemo(
     () => buildPipelineByKind(jobUsage),
-    [jobUsage],
+    [jobUsage]
   );
 
   return (
@@ -648,7 +648,7 @@ export function UsageOverviewCard({
   onTimeRangeChange: (key: TimeRangeKey) => void;
 }) {
   const [isCustomPickerOpen, setIsCustomPickerOpen] = useState(
-    timeRange.startsWith("custom:"),
+    timeRange.startsWith("custom:")
   );
   const [customMagnitude, setCustomMagnitude] = useState("2");
   const [customUnit, setCustomUnit] = useState<"m" | "h" | "d">("h");
@@ -673,7 +673,7 @@ export function UsageOverviewCard({
 
   const usageRows = useMemo(
     () => buildUsageRows(jobUsage, modelUsage, queues),
-    [jobUsage, modelUsage, queues],
+    [jobUsage, modelUsage, queues]
   );
 
   const sortedUsageRows = useMemo(
@@ -689,7 +689,7 @@ export function UsageOverviewCard({
         if (a.jobCount !== b.jobCount) return b.jobCount - a.jobCount;
         return a.model.localeCompare(b.model);
       }),
-    [usageRows],
+    [usageRows]
   );
 
   const totals = useMemo(
@@ -716,15 +716,15 @@ export function UsageOverviewCard({
           running: 0,
           queued: 0,
           retrying: 0,
-        },
+        }
       ),
-    [usageRows],
+    [usageRows]
   );
 
   // Pipeline aggregation: group active counts by actual worker_jobs kind.
   const pipelineByKind = useMemo(
     () => buildPipelineByKind(jobUsage),
-    [jobUsage],
+    [jobUsage]
   );
 
   const selectedWindowValue = timeRange.startsWith("custom:")
@@ -742,7 +742,7 @@ export function UsageOverviewCard({
       customUnit === "d" ? 1440 : customUnit === "h" ? 60 : 1;
     const minutes = Math.min(
       86400,
-      Math.max(1, roundedMagnitude * minutesPerUnit),
+      Math.max(1, roundedMagnitude * minutesPerUnit)
     );
     onTimeRangeChange(`custom:${minutes}`);
     setIsCustomPickerOpen(false);
@@ -880,14 +880,17 @@ export function UsageOverviewCard({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
-                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
+                  {formatCostWithEstimateMarks(
+                    totals.cost,
+                    totals.costEstimated
+                  )}
                 </div>
                 <div className="text-muted-foreground text-[10px]">Cost</div>
               </div>
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
                   {formatCompactNumber(
-                    totals.inputTokens + totals.outputTokens,
+                    totals.inputTokens + totals.outputTokens
                   )}
                 </div>
                 <div className="text-muted-foreground text-[10px]">Tokens</div>
@@ -1009,7 +1012,7 @@ export function UsageOverviewCard({
                             {row.hasUsageMetrics && row.costUsd > 0
                               ? formatCostWithEstimateMarks(
                                   row.costUsd,
-                                  row.costEstimatedUsd,
+                                  row.costEstimatedUsd
                                 )
                               : "—"}
                           </TableCell>
@@ -1043,11 +1046,14 @@ export function UsageOverviewCard({
                   <span>Cached: {formatCompactNumber(totals.cacheTokens)}</span>
                 )}
                 <span className="text-foreground font-medium">
-                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
+                  {formatCostWithEstimateMarks(
+                    totals.cost,
+                    totals.costEstimated
+                  )}
                 </span>
                 <span>
-                  Statuses include trial and task-QA jobs; token and cost
-                  metrics come from trial runs.
+                  Statuses include trial and verdict generation jobs; token and
+                  cost metrics come from trial runs.
                 </span>
               </div>
             )}

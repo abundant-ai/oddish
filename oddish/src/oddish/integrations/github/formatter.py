@@ -7,6 +7,8 @@ with real-time trial/analysis/verdict progress (sauron-style).
 
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -164,21 +166,21 @@ def format_task_comment(
         1 for t in task.trials if t.analysis_status == "success" and t.classification
     )
 
-    if task.verdict_status == "success" and task.verdict:
-        verdict_emoji = "\u2705" if task.verdict.get("is_good") else "\u26a0\ufe0f"
-        verdict_text = "ACCEPTED" if task.verdict.get("is_good") else "REJECTED"
-        lines.append(f"### {verdict_emoji} Verdict: **{verdict_text}**")
-        if task.verdict.get("primary_issue"):
-            lines.append(f"> {task.verdict['primary_issue']}")
-    elif task.verdict_status == "running":
-        lines.append("### \U0001f504 Computing Verdict...")
-    elif analyzable == 0 and completed == total and total > 0:
+    label = verdict_label(task.verdict_status, task.verdict)
+    lines.append(f"### Verdict: **{label}**")
+    if (
+        label in {"Accepted", "Rejected"}
+        and task.verdict
+        and task.verdict.get("primary_issue")
+    ):
+        lines.append(f"> {task.verdict['primary_issue']}")
+    if analyzable == 0 and completed == total and total > 0:
         # Every trial terminal but nothing analyzable (all gate-skipped) \u2014 show
         # a terminal state, not a stuck "Analyzing Results... (0/0 classified)".
         lines.append(f"### \u2298 All {total} trials skipped (baseline gate)")
     elif analyzable > 0 and analyzed == analyzable:
         lines.append(
-            f"### \u23f3 Computing Verdict... ({analyzed}/{analyzable} analyses done)"
+            f"### \u23f3 Run analysis complete ({analyzed}/{analyzable} analyses done)"
         )
     elif completed == total and total > 0:
         lines.append(
@@ -298,17 +300,18 @@ def format_experiment_comment(
     )
     total_tasks = len(tasks)
 
+    labels = [verdict_label(t.verdict_status, t.verdict) for t in tasks]
     tasks_with_verdict = [
-        t for t in tasks if t.verdict_status == "success" and t.verdict
+        t for t, label in zip(tasks, labels) if label in {"Accepted", "Rejected"}
     ]
-    good_tasks = sum(1 for t in tasks_with_verdict if t.verdict.get("is_good"))
+    good_tasks = labels.count("Accepted")
 
     if len(tasks_with_verdict) == total_tasks and total_tasks > 0:
         if good_tasks == total_tasks:
-            lines.append(f"### \u2705 All {total_tasks} tasks passed validation")
+            lines.append(f"### \u2705 {total_tasks} Accepted")
         else:
             lines.append(
-                f"### \u26a0\ufe0f {good_tasks}/{total_tasks} tasks passed validation"
+                f"### \u26a0\ufe0f {good_tasks} Accepted · {total_tasks - good_tasks} Rejected"
             )
     elif (
         analyzable_trials == 0 and completed_trials == total_trials and total_trials > 0
@@ -319,7 +322,7 @@ def format_experiment_comment(
         lines.append(f"### \u2298 All {total_trials} trials skipped (baseline gate)")
     elif analyzable_trials > 0 and analyzed_trials == analyzable_trials:
         lines.append(
-            f"### \u23f3 Computing verdicts... ({analyzed_trials}/{analyzable_trials} analyses done)"
+            f"### \u23f3 Run analysis complete ({analyzed_trials}/{analyzable_trials} analyses done)"
         )
     elif completed_trials == total_trials and total_trials > 0:
         lines.append(
@@ -337,8 +340,8 @@ def format_experiment_comment(
 
     lines.append("")
 
-    if any(t.verdict_status for t in tasks):
-        lines.append("#### QA Verdicts")
+    if tasks:
+        lines.append("#### Verdict")
         lines.append("")
         lines.append("| Task | Trials | Verdict |")
         lines.append("|------|--------|---------|")
@@ -352,19 +355,13 @@ def format_experiment_comment(
                 1 for t in task.trials if t.status in ("success", "failed", "skipped")
             )
 
-            if task.verdict_status == "success" and task.verdict:
-                verdict_emoji = (
-                    "\u2705" if task.verdict.get("is_good") else "\u26a0\ufe0f"
-                )
-                verdict_str = f"{verdict_emoji} {'Accept' if task.verdict.get('is_good') else 'Reject'}"
-                if task.verdict.get("primary_issue"):
-                    verdict_str += f" \u2014 {task.verdict['primary_issue']}"
-            elif task.verdict_status == "running":
-                verdict_str = "\U0001f504 Computing..."
-            elif task_done == task_total and task_total > 0:
-                verdict_str = "\u23f3 Pending"
-            else:
-                verdict_str = f"\U0001f504 {task_done}/{task_total} trials done"
+            verdict_str = verdict_label(task.verdict_status, task.verdict)
+            if (
+                verdict_str == "Rejected"
+                and task.verdict
+                and task.verdict.get("primary_issue")
+            ):
+                verdict_str += f" — {task.verdict['primary_issue']}"
 
             lines.append(
                 f"| [{task.task_name}]({task.task_url}) | {task_done}/{task_total} | {verdict_str} |"

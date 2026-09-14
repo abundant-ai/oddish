@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 from typing import Annotated, Optional
 
 import httpx
@@ -262,14 +264,10 @@ def status(
             )
             raise typer.Exit(1)
         if not task_id:
-            console.print(
-                "[red]--detail/--versions require a task_id.[/red]"
-            )
+            console.print("[red]--detail/--versions require a task_id.[/red]")
             raise typer.Exit(1)
         if detail and versions:
-            console.print(
-                "[red]Provide either --detail or --versions, not both.[/red]"
-            )
+            console.print("[red]Provide either --detail or --versions, not both.[/red]")
             raise typer.Exit(1)
         if detail:
             print_task_detail(api_url, task_id, json_output=json_output)
@@ -479,28 +477,17 @@ def status(
                     summary.append(f"[red]{reward_fail} zero[/red]")
                 console.print("[bold]Rewards:[/bold] " + ", ".join(summary))
 
-        # Show verdict if available
-        verdict_status = result.get("verdict_status")
-        if verdict_status:
-            verdict_display = {
-                "pending": "[dim]pending[/dim]",
-                "queued": "[yellow]queued[/yellow]",
-                "running": "[blue]running[/blue]",
-                "success": "[green]done[/green]",
-                "failed": "[red]failed[/red]",
-            }.get(verdict_status.lower(), verdict_status)
-            console.print(f"[bold]Verdict:[/bold] {verdict_display}")
-
-            # Show verdict summary if completed
-            verdict = result.get("verdict")
-            if verdict and isinstance(verdict, dict):
-                summary = verdict.get("summary") or verdict.get("recommendation")
-                if summary:
-                    console.print(
-                        f"  [dim]{summary[:100]}...[/dim]"
-                        if len(str(summary)) > 100
-                        else f"  [dim]{summary}[/dim]"
-                    )
+        verdict = result.get("verdict")
+        label = verdict_label(
+            result.get("verdict_status"),
+            verdict,
+            version_matches=result.get("review_version_matches"),
+        )
+        console.print(f"[bold]Verdict:[/bold] {label}")
+        if label in {"Accepted", "Rejected"} and verdict:
+            summary = verdict.get("summary") or verdict.get("recommendation")
+            if summary:
+                console.print(f"  [dim]{str(summary)[:100]}[/dim]")
 
         console.print()
 

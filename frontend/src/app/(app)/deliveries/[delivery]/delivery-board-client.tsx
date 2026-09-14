@@ -14,7 +14,7 @@ import {
   Plus,
 } from "lucide-react";
 
-import { findingHref } from "@/lib/review";
+import { findingHref, verdictOutcome, VERDICT_LABELS } from "@/lib/review";
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -45,7 +45,7 @@ import type {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DeliveryStatusBadge,
-  DeliveryQAStatusBadge,
+  DeliveryCheckStatusBadge,
 } from "@/components/delivery-status";
 import {
   AlertDialog,
@@ -366,7 +366,7 @@ function QAHistoryPanel({
     .includes("all-versions");
   const refreshError = error && (
     <div role="alert" className="text-destructive text-xs">
-      Failed to refresh QA history: {error.message}. Previously loaded history
+      Failed to refresh Task history: {error.message}. Previously loaded history
       may be out of date.
       <Button
         variant="outline"
@@ -409,6 +409,12 @@ function QAHistoryPanel({
           isCurrent={
             frozen ? version.is_current : version.version_id === versionId
           }
+          verdictStatus={
+            version.version_id === data.current_version_id ||
+            version.version_id === data.verdict_version_id
+              ? data.verdict_status
+              : undefined
+          }
           verdict={
             version.version_id === data.verdict_version_id
               ? (data.verdict ?? null)
@@ -435,7 +441,10 @@ function QAHistoryPanel({
         <p className="text-muted-foreground text-xs">
           Runs not tied to a version:{" "}
           {unversioned
-            .map((run) => `${run.kind} (${run.status ?? "pending"})`)
+            .map(
+              (run) =>
+                `${run.kind === "qa" ? "Verdict generation" : "Pre-trial audit"} (${run.status ?? "pending"})`
+            )
             .join(", ")}
         </p>
       )}
@@ -447,11 +456,24 @@ function QAHistoryVersionRow({
   version,
   isCurrent,
   verdict,
+  verdictStatus,
 }: {
   isCurrent: boolean;
   version: TaskQAHistoryResponse["versions"][number];
   verdict: TaskQAHistoryResponse["verdict"];
+  verdictStatus?: string | null;
 }) {
+  const queued = verdictStatus === "pending" || verdictStatus === "queued";
+  const running = verdictStatus === "running";
+  const outcome =
+    queued || running || verdictStatus === "failed"
+      ? null
+      : verdictOutcome(verdict);
+  const verdictText = queued
+    ? VERDICT_LABELS.queued
+    : running
+      ? VERDICT_LABELS.running
+      : VERDICT_LABELS[outcome ?? "never"];
   return (
     <DeliveryDisclosure
       panel={`version-${version.version_id}`}
@@ -471,7 +493,7 @@ function QAHistoryVersionRow({
         </span>
         <span className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
           <span>
-            source review:{" "}
+            Pre-trial audit:{" "}
             {version.pre_trial_status
               ? version.pre_trial_status.toLowerCase()
               : "not run"}
@@ -485,10 +507,13 @@ function QAHistoryVersionRow({
               ` (${version.pre_trial_should_fix} recorded should_fix in source audit)`}
           </span>
           <span>
-            QA runs:{" "}
+            Verdict generation runs:{" "}
             {version.qa_runs.length > 0
               ? version.qa_runs
-                  .map((run) => `${run.kind} (${run.status ?? "pending"})`)
+                  .map(
+                    (run) =>
+                      `${run.kind === "qa" ? "Verdict generation" : "Pre-trial audit"} (${run.status ?? "pending"})`
+                  )
                   .join(", ")
               : "none"}
           </span>
@@ -498,7 +523,7 @@ function QAHistoryVersionRow({
         {version.pre_trial_error && (
           <p>
             <span className="font-medium text-red-600 dark:text-red-400">
-              source review could not complete:
+              Pre-trial audit failed:
             </span>{" "}
             <span className="text-muted-foreground break-words">
               {version.pre_trial_error}
@@ -512,7 +537,10 @@ function QAHistoryVersionRow({
               .map((run) => (
                 <li key={run.trial_id}>
                   <span className="font-medium text-red-600 dark:text-red-400">
-                    {run.kind} {run.status?.toLowerCase() ?? ""}:
+                    {run.kind === "qa"
+                      ? "Verdict generation"
+                      : "Pre-trial audit"}{" "}
+                    {run.status?.toLowerCase() ?? ""}:
                   </span>{" "}
                   <span className="text-muted-foreground break-words">
                     {run.error}
@@ -521,30 +549,27 @@ function QAHistoryVersionRow({
               ))}
           </ul>
         )}
-        {verdict != null && (
-          <div>
-            <span
-              className={
-                verdict.is_good
-                  ? "font-medium text-emerald-600 dark:text-emerald-400"
-                  : "font-medium text-red-600 dark:text-red-400"
-              }
-            >
-              verdict:{" "}
-              {verdict.verdict ?? (verdict.is_good ? "accept" : "reject")}
-            </span>
-            {verdict.primary_issue && (
-              <p className="text-muted-foreground mt-0.5">
-                {verdict.primary_issue}
-              </p>
-            )}
-            {verdict.reasoning && (
-              <p className="text-muted-foreground mt-0.5">
-                {verdict.reasoning}
-              </p>
-            )}
-          </div>
-        )}
+        <div>
+          <span
+            className={
+              outcome === "accepted"
+                ? "font-medium text-emerald-600 dark:text-emerald-400"
+                : outcome === "needs_fixes"
+                  ? "font-medium text-red-600 dark:text-red-400"
+                  : "text-muted-foreground font-medium"
+            }
+          >
+            Verdict: {verdictText}
+          </span>
+          {outcome && verdict?.primary_issue && (
+            <p className="text-muted-foreground mt-0.5">
+              {verdict.primary_issue}
+            </p>
+          )}
+          {outcome && verdict?.reasoning && (
+            <p className="text-muted-foreground mt-0.5">{verdict.reasoning}</p>
+          )}
+        </div>
         {version.findings.length > 0 && (
           <ul className="space-y-1">
             {version.findings.map((finding, index) => (
@@ -592,7 +617,7 @@ function QAHistoryVersionRow({
           version.findings.length === 0 &&
           !version.decisions?.length && (
             <p className="text-muted-foreground">
-              No QA details recorded for this version yet.
+              No Task evidence recorded for this version yet.
             </p>
           )}
       </div>
@@ -882,7 +907,7 @@ function TaskRow({
                 )
               ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <DeliveryQAStatusBadge qa={row.qa} />
+                <DeliveryCheckStatusBadge qa={row.qa} />
                 {groupBy === "owner" &&
                   !row.qa_work.owner_user_id &&
                   !frozen &&
@@ -952,7 +977,7 @@ function TaskRow({
                           className="grid gap-x-6 gap-y-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"
                         >
                           <a
-                            className="block min-w-0 max-w-prose text-base leading-relaxed font-medium break-words hover:underline sm:col-start-1"
+                            className="block max-w-prose min-w-0 text-base leading-relaxed font-medium break-words hover:underline sm:col-start-1"
                             href={
                               row.version != null
                                 ? findingHref(row.task_id, row.version, {
@@ -969,7 +994,7 @@ function TaskRow({
                           <p className="text-muted-foreground text-sm sm:col-start-1">
                             {defect.source === "pre_trial"
                               ? "Pre-trial audit"
-                              : "Execution review"}
+                              : "Run analysis"}
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>
@@ -1066,7 +1091,7 @@ function TaskRow({
                                 } · ${acknowledged ? "Exception acknowledged" : "Requirement unmet"}`}
                           </p>
                           {(acknowledged || !check.failure_labels?.length) && (
-                            <p className="min-w-0 max-w-prose text-base leading-relaxed break-words sm:col-start-1">
+                            <p className="max-w-prose min-w-0 text-base leading-relaxed break-words sm:col-start-1">
                               {check.detail}
                             </p>
                           )}
@@ -1089,7 +1114,7 @@ function TaskRow({
                                   ? "View runs"
                                   : check.key === "pre_trial_passed"
                                     ? "Open pre-trial audit"
-                                    : "Open run review"}
+                                    : "Open run analysis"}
                               </Link>
                             )}
                           {acknowledged ? (
@@ -1170,7 +1195,7 @@ function TaskRow({
                   disabled={busy}
                   onClick={() => setEditingWork(row)}
                 >
-                  Edit QA work
+                  Edit task work
                 </Button>
               )}
               {editingWork && (
@@ -1184,13 +1209,13 @@ function TaskRow({
               )}
               <DeliveryDisclosure panel="checks">
                 <summary className="cursor-pointer py-2 text-sm">
-                  Review status and checks
+                  Delivery checks
                 </summary>
                 <div className="mt-2 max-w-prose space-y-3 text-sm leading-relaxed">
                   <p>{row.qa.detail}</p>
                   {row.qa.finished_at && (
                     <p className="text-muted-foreground">
-                      Review finished{" "}
+                      Delivery checks finished{" "}
                       {frozen
                         ? new Date(row.qa.finished_at).toLocaleString()
                         : formatRelativeTime(row.qa.finished_at)}
@@ -1201,7 +1226,7 @@ function TaskRow({
                       className="underline"
                       href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(row.qa.trial_id)}`}
                     >
-                      Open execution-review run
+                      Open verdict generation run
                     </Link>
                   )}
                   {row.checks
@@ -1232,7 +1257,7 @@ function TaskRow({
                 <summary className="cursor-pointer py-2 text-sm">
                   {frozen
                     ? `Live task history · delivery shipped v${row.version}`
-                    : "QA history"}
+                    : "Task history"}
                 </summary>
                 <QAHistoryPanel
                   loadHistory={loadHistory}
@@ -1828,12 +1853,12 @@ function DeliveryBoardContent({
           queued += 1;
         } catch (error) {
           failures.push(
-            `${row.task_name}: ${error instanceof Error ? error.message : "QA request failed"}`
+            `${row.task_name}: ${error instanceof Error ? error.message : "Verdict generation request failed"}`
           );
         }
       }
       setNotice(
-        `Requested QA for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
+        `Requested verdict generation for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
       );
       if (failures.length) throw new Error(failures.join("\n"));
     });
@@ -2136,7 +2161,7 @@ function DeliveryBoardContent({
                       }
                       onClick={rerunSelected}
                     >
-                      Rerun QA ({runnableRows.length})
+                      Regenerate verdicts ({runnableRows.length})
                     </Button>
                     <AlertDialog
                       onOpenChange={(open) => {
@@ -2266,7 +2291,7 @@ function DeliveryBoardContent({
                           Open findings
                         </TableHead>
                         <TableHead className="w-24 text-right">
-                          Last QA
+                          Last verdict generation
                         </TableHead>
                       </TableRow>
                     </TableHeader>

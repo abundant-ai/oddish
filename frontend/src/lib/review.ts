@@ -79,15 +79,21 @@ export function runReviewSummary(trials: Trial[]): string {
     .join(" · ");
 }
 
+/** Published labels take precedence over legacy booleans; unknown is not rejection. */
+export function verdictOutcome(
+  verdict: { verdict?: string; is_good?: boolean | null } | null | undefined
+): "accepted" | "needs_fixes" | null {
+  const label = verdict?.verdict;
+  if (label === "accept") return "accepted";
+  if (label === "reject") return "needs_fixes";
+  if (verdict?.is_good === true) return "accepted";
+  if (verdict?.is_good === false) return "needs_fixes";
+  return null;
+}
+
 /** Review progress and task quality; solver failure never determines this. */
 export function taskReviewStatus(task: Task): keyof typeof VERDICT_LABELS {
-  const verdict =
-    task.verdict?.verdict ??
-    (task.verdict?.is_good === true
-      ? "accept"
-      : task.verdict?.is_good === false
-        ? "reject"
-        : null);
+  const verdict = verdictOutcome(task.verdict);
   if (
     taskHasActiveVerdict(task) ||
     (task.verdict_status !== "failed" &&
@@ -100,8 +106,7 @@ export function taskReviewStatus(task: Task): keyof typeof VERDICT_LABELS {
   }
   if (task.verdict_status === "failed") return "error";
   if (task.verdict && task.review_version_matches === false) return "outdated";
-  if (verdict === "reject") return "needs_fixes";
-  if (verdict === "accept") return "accepted";
+  if (verdict) return verdict;
   return "never";
 }
 

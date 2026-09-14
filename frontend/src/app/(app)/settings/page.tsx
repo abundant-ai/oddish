@@ -967,7 +967,8 @@ const ALERT_TOGGLES: {
   {
     key: "expensive_trial_enabled",
     label: "Expensive trial",
-    description: "A trial finished within 24 hours costs more than your cutoff.",
+    description:
+      "A trial finished within 24 hours costs more than your cutoff.",
   },
   {
     key: "experiment_failed_enabled",
@@ -981,8 +982,9 @@ const ALERT_TOGGLES: {
   },
   {
     key: "qa_failed_enabled",
-    label: "QA failed",
-    description: "A task's QA verdict came back bad.",
+    label: "Rejected / No verdict",
+    description:
+      "A task was rejected or verdict generation ended with no verdict.",
   },
   {
     key: "experiment_finished_enabled",
@@ -996,15 +998,15 @@ const ALERT_TOGGLES: {
   },
   {
     key: "task_finished_enabled",
-    label: "Task finished",
-    description: "A task's QA verdict came back good.",
+    label: "Accepted",
+    description: "A task was accepted.",
   },
 ];
 
 function NotificationsPanel() {
   const { data, mutate: mutatePrefs } = useSWR<AlertPrefs>(
     "/api/settings/notifications",
-    fetcher,
+    fetcher
   );
   const [draft, setDraft] = useState<Partial<AlertPrefs> | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1029,7 +1031,7 @@ function NotificationsPanel() {
   const cutoffField = (
     key: "experiment_milestone_usd" | "trial_ping_usd",
     inherited: number,
-    label: string,
+    label: string
   ) => (
     <div className="space-y-1">
       <Label htmlFor={key} className="text-sm">
@@ -1117,12 +1119,12 @@ function NotificationsPanel() {
             {cutoffField(
               "experiment_milestone_usd",
               value.inherited_experiment_milestone_usd,
-              "Experiment milestone ($)",
+              "Experiment milestone ($)"
             )}
             {cutoffField(
               "trial_ping_usd",
               value.inherited_trial_ping_usd,
-              "Expensive-trial cutoff ($)",
+              "Expensive-trial cutoff ($)"
             )}
           </div>
         </div>
@@ -1198,9 +1200,7 @@ function DeleteAccountPanel() {
         window.location.assign("/");
       }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to delete account"
-      );
+      setError(err instanceof Error ? err.message : "Failed to delete account");
       setIsDeleting(false);
     }
   };

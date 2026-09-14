@@ -135,7 +135,7 @@ def _retry_trial_ids(
 
 
 def _task_action(api_url: str, task_id: str, kind: str) -> dict:
-    """Run a task-level QA retry (classify every trial + synthesize verdict)."""
+    """Regenerate a task verdict using run analysis."""
     path = f"/tasks/{task_id}/qa/retry"
     response = _post(api_url, path)
     ok = response.status_code == 200
@@ -162,7 +162,7 @@ def run_retry(
     registry_auth: list[dict] | None = None,
     gate_baselines: bool = True,
 ) -> None:
-    """Re-run trials, or create replacement task-level QA, for an existing target.
+    """Re-run trials, or regenerate task verdicts, for an existing target.
 
     Backs ``oddish run <id> --retry`` (and ``--qa``).
     """

@@ -753,7 +753,7 @@ async def patch_delivery_qa_work_core(
     work = QAWorkMetadata.model_validate(version.qa_work or {})
     if work.owner_user_id != user_id and not is_admin:
         raise HTTPException(
-            status_code=403, detail="Claim this task before editing its QA work"
+            status_code=403, detail="Claim this task before editing its task work"
         )
     if data.release:
         work.owner_user_id, work.claimed_at = None, None
@@ -1075,17 +1075,21 @@ async def _compute_board(
                 "running": "Pre-trial audit running",
                 "failed": "Pre-trial audit failed",
             }.get(
-                version.pre_trial_status.value.lower()
-                if version.pre_trial_status
-                else "",
+                (
+                    version.pre_trial_status.value.lower()
+                    if version.pre_trial_status
+                    else ""
+                ),
                 "Pre-trial audit needed",
             )
             automated(
                 "pre_trial_passed",
                 audited,
-                f"pre-trial audit completed on {vlabel}; defect checks are separate"
-                if audited
-                else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                (
+                    f"pre-trial audit completed on {vlabel}; defect checks are separate"
+                    if audited
+                    else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this audit"
+                ),
                 [audit_label],
             )
 
@@ -1104,21 +1108,21 @@ async def _compute_board(
             verdict_label = {
                 "queued": "Verdict queued",
                 "running": "Verdict running",
-                "error": "Verdict failed",
-            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "Verdict needed")
+                "error": "No verdict",
+            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "No verdict")
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
                 automated(
                     "verdict_ok",
                     False,
-                    f"no completed execution-review verdict on {vlabel}",
+                    f"No verdict on {vlabel}",
                     [verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
-                    f"verdict does not cover {vlabel}; re-run QA on it",
+                    f"verdict does not cover {vlabel}; regenerate the verdict",
                     [verdict_label],
                 )
             else:
@@ -1126,15 +1130,17 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     accepted,
-                    "review found no blocking defects; human sign-off is separate"
-                    if accepted
-                    else f"blocking defect: {verdict.get('primary_issue') or ''}",
+                    (
+                        "Verdict: Accepted; human sign-off is separate"
+                        if accepted
+                        else f"blocking defect: {verdict.get('primary_issue') or ''}"
+                    ),
                     ["Rejected"],
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
             if not defects:
-                must_fix_detail = f"no reported task defects on {vlabel}; review completion checked separately"
+                must_fix_detail = f"no reported task defects on {vlabel}; run analysis checked separately"
             elif unacknowledged:
                 must_fix_detail = (
                     f"{unacknowledged} of {len(defects)} task defects "
@@ -1207,9 +1213,11 @@ async def _compute_board(
                         passed=False,
                         kind="manual",
                         label=definition.label,
-                        detail="checked on an older version; re-attest"
-                        if (member.id, definition.key) in previous_ticks
-                        else "",
+                        detail=(
+                            "checked on an older version; re-attest"
+                            if (member.id, definition.key) in previous_ticks
+                            else ""
+                        ),
                     )
                 )
             elif version is not None and tick.task_version_id == version.id:
@@ -1254,9 +1262,11 @@ async def _compute_board(
                 checks=checks,
                 defects=defects,
                 qa=qa_statuses.get(task.id, DeliveryQAStatus()),
-                qa_work=QAWorkMetadata.model_validate(version.qa_work or {})
-                if version
-                else QAWorkMetadata(),
+                qa_work=(
+                    QAWorkMetadata.model_validate(version.qa_work or {})
+                    if version
+                    else QAWorkMetadata()
+                ),
                 ready=all(c.status in ("pass", "off", "waived") for c in checks),
             )
         )

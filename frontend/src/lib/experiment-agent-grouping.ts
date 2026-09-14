@@ -144,7 +144,8 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
       if (!isAgentTrial(trial)) {
         summaries.set(key, {
           key,
-          label: trial.kind === "qa" ? "QA run" : "Pre-trial audit",
+          label:
+            trial.kind === "qa" ? "Verdict generation run" : "Pre-trial audit",
           agent: trial.agent,
           model: trial.model ?? null,
           queueKey: trial.provider ?? null,

@@ -240,7 +240,7 @@ async function openAgentDrawer(page: Page, expectActiveQaButton = true) {
   await page.goto(`/tasks/${TASK_ID}?trial=${AGENT_TRIAL_ID}`);
   if (expectActiveQaButton) {
     await expect(
-      page.getByRole("button", { name: "view the QA run" })
+      page.getByRole("button", { name: "view the Verdict generation run" })
     ).toBeVisible();
   }
 }
@@ -268,7 +268,9 @@ test.describe("task QA live observability", () => {
     });
     await openAgentDrawer(page);
 
-    await page.getByRole("button", { name: "view the QA run" }).click();
+    await page
+      .getByRole("button", { name: "view the Verdict generation run" })
+      .click();
     await expect
       .poll(() => new URL(page.url()).searchParams.get("trial"))
       .toBe(QA_TRIAL_ID);
@@ -299,7 +301,9 @@ test.describe("task QA live observability", () => {
     });
     await openAgentDrawer(page);
 
-    await page.getByRole("button", { name: "view the QA run" }).click();
+    await page
+      .getByRole("button", { name: "view the Verdict generation run" })
+      .click();
     await expect
       .poll(() => new URL(page.url()).searchParams.get("trial"))
       .toBe(QA_TRIAL_ID);

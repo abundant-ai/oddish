@@ -108,7 +108,7 @@ const badge: {
     task: Task;
     variant: "card" | "inline" | "summary";
     mustFixCount?: number;
-    rejectionSource?: "Pre-trial audit" | "Run review";
+    rejectionSource?: "Pre-trial audit" | "Run analysis";
   }>;
   present?: (
     task: Task,
@@ -672,4 +672,28 @@ test("an active panel preserves the queued verdict state", () => {
   const presented = badge.present!(queued, "", true);
   assert.equal(presented.title, "Verdict queued");
   assert.equal(presented.detail, null);
+});
+
+test("history verdicts distinguish explicit labels, legacy booleans, and missing judgments", () => {
+  for (const [verdict, expected] of [
+    [null, null],
+    [{ is_good: null }, null],
+    [{ is_good: true }, "accepted"],
+    [{ is_good: false }, "needs_fixes"],
+    [{ verdict: "accept", is_good: false }, "accepted"],
+    [{ verdict: "reject", is_good: true }, "needs_fixes"],
+  ] as const)
+    assert.equal(review.verdictOutcome(verdict), expected);
+});
+
+test("delivery evidence coverage is labeled as delivery checks", () => {
+  const deliveries = load(
+    "@/lib/deliveries"
+  ) as typeof import("../src/lib/deliveries.ts");
+  assert.equal(
+    deliveries.DELIVERY_CHECK_STATUS_LABELS.outdated,
+    "Delivery checks need refresh"
+  );
+  for (const label of Object.values(deliveries.DELIVERY_CHECK_STATUS_LABELS))
+    assert.ok(label.startsWith("Delivery checks"));
 });

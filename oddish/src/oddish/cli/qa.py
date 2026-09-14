@@ -16,7 +16,9 @@ import typer
 from oddish.analyze.models import ActionTier
 from oddish.cli.config import get_api_url, get_auth_headers
 
-qa_app = typer.Typer(help="Export existing QA feedback.", no_args_is_help=True)
+qa_app = typer.Typer(
+    help="Export existing audit and run-analysis findings.", no_args_is_help=True
+)
 
 _TASK_COLUMNS = [
     "task_id",
@@ -282,7 +284,7 @@ def export_qa(
                     err=True,
                 )
     except OSError as exc:
-        typer.echo(f"Could not write QA export: {exc}", err=True)
+        typer.echo(f"Could not write findings export: {exc}", err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"Findings: {output}\nTask summary: {summary_path}")
     if failures:

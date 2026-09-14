@@ -383,7 +383,7 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
               <Link
                 href={`/experiments/${encodeExperimentRouteParam(experimentShare.shadow_of)}`}
                 className="text-muted-foreground text-[10px] hover:underline"
-                title="This page is the QA machinery for the graded experiment"
+                title="Audit and verdict generation runs for this experiment"
               >
                 ⇄ graded experiment
               </Link>
@@ -391,9 +391,9 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
               <Link
                 href={`/experiments/${encodeExperimentRouteParam(experimentShare.qa_report_experiment_id)}`}
                 className="text-muted-foreground text-[10px] hover:underline"
-                title="Debug view: the QA/audit runs behind this experiment's verdicts"
+                title="Debug view: audit and verdict generation runs for this experiment"
               >
-                ⇄ QA report
+                ⇄ Verdict report
               </Link>
             ) : null
           }

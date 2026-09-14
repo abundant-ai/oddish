@@ -9,7 +9,7 @@ import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ task_id: string }> },
+  { params }: { params: Promise<{ task_id: string }> }
 ) {
   try {
     const { getToken } = await auth();
@@ -27,7 +27,10 @@ export async function POST(
       headers: getAuthHeaders(token),
     });
 
-    const parsed = await readBackendJson(res, "Failed to cancel task QA");
+    const parsed = await readBackendJson(
+      res,
+      "Failed to cancel verdict generation and pre-trial audits"
+    );
 
     if (parsed.parseError) {
       return NextResponse.json(parsed.parseError, { status: parsed.status });
@@ -35,10 +38,13 @@ export async function POST(
 
     if (!res.ok) {
       return NextResponse.json(
-        backendErrorPayload(parsed.data, "Failed to cancel task QA"),
+        backendErrorPayload(
+          parsed.data,
+          "Failed to cancel verdict generation and pre-trial audits"
+        ),
         {
           status: res.status,
-        },
+        }
       );
     }
 
@@ -46,7 +52,7 @@ export async function POST(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

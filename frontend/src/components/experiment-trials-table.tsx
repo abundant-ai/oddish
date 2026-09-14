@@ -2164,7 +2164,7 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleCancelQAForSelectedTasks}
-                        title="Cancel task checks and run reviews for selected tasks."
+                        title="Cancel pre-trial audits and verdict generation for selected tasks."
                         disabled={
                           isCancellingQA ||
                           selectedQACancellableTasks.length === 0

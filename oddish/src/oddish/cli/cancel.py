@@ -43,7 +43,7 @@ def cancel(
         typer.Option(
             "--qa",
             help=(
-                "Cancel the task's live QA and pre-trial audit analysis trials. "
+                "Cancel the task's verdict generation and pre-trial audit runs. "
                 "A trial-shaped ID resolves to its parent task."
             ),
         ),
@@ -92,7 +92,7 @@ def cancel(
         path = f"/tasks/{target_id}/qa/cancel"
         request_task_id = None
         target_label = f"task {target_id}"
-        action_label = "QA"
+        action_label = "verdict generation and pre-trial audits"
 
     if not force and not json_output:
         confirm = typer.confirm(f"Cancel {action_label} for {target_label}?")
@@ -126,12 +126,18 @@ def cancel(
         print_json({"task_id": task_id, **result})
         return
     if qa:
-        console.print(f"[green]Cancelled QA for {target_label}[/green]")
+        console.print(
+            f"[green]Cancelled verdict generation and pre-trial audits for {target_label}[/green]"
+        )
         jobs = result.get("qa_jobs_cancelled", 0)
         if jobs:
-            console.print(f"  QA jobs cancelled: {jobs}")
+            console.print(
+                f"  Verdict generation / pre-trial audit jobs cancelled: {jobs}"
+            )
         if not jobs:
-            console.print("  [dim]No active QA found[/dim]")
+            console.print(
+                "  [dim]No active verdict generation or pre-trial audits[/dim]"
+            )
         return
     trials = result.get("trials_cancelled", 0)
     pgq = 0  # Legacy field, no longer tracked

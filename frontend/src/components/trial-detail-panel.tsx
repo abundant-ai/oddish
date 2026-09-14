@@ -270,7 +270,7 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "Task-level QA is already running";
+    queueBlockedReason = "Verdict generation is already running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
@@ -422,7 +422,7 @@ function TrialAnalysisCard({
                   // guarantees and in-place drawer switching does not.
                   <a
                     href={`/tasks/${encodeURIComponent(trial.task_id)}?trial=${encodeURIComponent(trial.analysis._graded_by)}&tab=trajectory#step-${trial.analysis._graded_at_steps![0]}`}
-                    title="Open the QA run's trajectory at the steps that judged this trial"
+                    title="Open the Verdict generation run's trajectory at the steps that judged this trial"
                     className="text-muted-foreground hover:text-foreground underline decoration-dotted underline-offset-2"
                   >
                     at {stepIdsLabel(trial.analysis._graded_at_steps!)}
@@ -448,7 +448,7 @@ function TrialAnalysisCard({
                       ? "Analyzing"
                       : trial.analysis_status
                         ? "Analysis queued"
-                        : "QA is running"}
+                        : "Verdict running"}
                   </span>
                   {progressLine && (
                     <span className="text-muted-foreground text-xs">
@@ -461,7 +461,7 @@ function TrialAnalysisCard({
                       onClick={() => onOpenActiveQaTrial(activeQaTrial)}
                       className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
                     >
-                      view the QA run
+                      view the Verdict generation run
                     </button>
                   )}
                 </div>
@@ -780,7 +780,7 @@ export function TrialDetailPanel({
     apiBaseUrl === "/api" ? (trial?.experiment_id ?? null) : null;
   async function handleQaFeedback(record: FeedbackRecord): Promise<void> {
     if (!feedbackExperimentId || !trial) {
-      throw new Error("QA feedback is unavailable for this trial");
+      throw new Error("Run analysis is unavailable for this trial");
     }
     await fetcher(
       `/api/experiments/${encodeExperimentRouteParam(feedbackExperimentId)}/feedback`,
@@ -1469,7 +1469,7 @@ export function TrialDetailPanel({
                         })()}
                       <QaCostSuffix
                         costUsd={trial.qa_cost_usd}
-                        title="QA/analysis spend for this trial. Not included in the cost figure."
+                        title="Audit and verdict generation spend for this trial. Not included in the cost figure."
                       />
                     </div>
                     {(trial.input_tokens != null ||

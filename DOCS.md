@@ -2,6 +2,26 @@
 
 > Harbor-compatible CLI for submitting evals, tracking progress, pulling artifacts, and cleaning up runs.
 
+## Verdict vocabulary
+
+A **verdict** is the overall judgment of task quality: **Accepted**, **Rejected**,
+or **No verdict**. While generation is active, show **Verdict queued** or
+**Verdict running**. Missing, failed, inconclusive, and older-version judgments
+all display the neutral **No verdict** label. Finishing generation does not by
+itself mean the task was accepted.
+
+**Verdict generation** analyzes recorded runs and produces that judgment.
+**Run analysis** evaluates an individual agent run. A **pre-trial audit** checks
+the task files. **Delivery checks** determine whether the current evidence and
+other delivery requirements are satisfied; these can need refreshing even when
+a task verdict exists. **Task work** means assigning and tracking required fixes.
+
+The existing `--qa` flag, `oddish qa export`, `/qa/` API routes, and stored field
+names remain compatible. Their help and human-readable output use the terms
+above; JSON exports retain their diagnostic status fields. Advanced filters
+explicitly labeled **Verdict generation** describe the job's completion, not
+acceptance or rejection of the task.
+
 ## Installation
 
 ```bash
@@ -26,16 +46,16 @@ export ODDISH_API_KEY="ok_..."
 
 **Commands:**
 
-- `oddish run` - submit work, retry failed trials, or re-run task-level QA
+- `oddish run` - submit work, retry failed trials, or regenerate task verdicts
 - `oddish upload` - register a task or upload existing trials
 - `oddish preflight` - run the local task checks that also gate `run` and `upload`
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
-- `oddish qa export` - export existing QA findings and task statuses to CSV
+- `oddish qa export` - export existing audit and run-analysis findings and task statuses to CSV
 - `oddish logs` - stream a running trial's live transcript and cost estimate
-- `oddish cancel` - stop in-flight task runs, or just the QA/audit runs with `--qa`
+- `oddish cancel` - stop in-flight task runs, or just the verdict generation and pre-trial audit runs with `--qa`
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
-- `oddish assign` - assign QA review ownership for a batch of task IDs
+- `oddish assign` - assign task work ownership for a batch of task IDs
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish cost-exclusions` - hide spend for models and experiments that were never really paid for
@@ -62,10 +82,10 @@ the `oddish probe` helpers, which print human-readable output only.
 
 A typical run flows through these commands:
 
-1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Task-level QA runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict using all eligible current-version trials once at least one exists, regardless of agent diversity. With zero eligible trials, validated audit findings or failed baseline checks can still reject the task; otherwise it records insufficient evidence without accepting. Delivery requirements are configured separately; a verdict alone does not qualify a task for delivery. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
+1. `oddish run` — submit a task, dataset, or sweep. The output (including `--json`) carries the task IDs plus the experiment's name and dashboard URL. Verdict generation runs automatically once every trial settles: it classifies each trial's trajectory, and adds a task verdict using all eligible current-version trials once at least one exists, regardless of agent diversity. With zero eligible trials, validated audit findings or failed baseline checks can still reject the task; otherwise it records insufficient evidence without accepting. Delivery requirements are configured separately; a verdict alone does not qualify a task for delivery. (`oddish upload` without `--task` only registers task files — no trials and no experiment are created; importing trials with `--task` does attach them to an experiment.)
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
-4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
+4. `oddish run --retry` — re-queue failed trials or re-run verdict generation.
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
@@ -74,7 +94,7 @@ A typical run flows through these commands:
 ## Agent Skill
 
 The package ships an agent skill: a short `SKILL.md` entrypoint plus focused
-references for task/trial state, QA, CLI output/auth, and known contract traps.
+references for task/trial state, verdict generation, CLI output/auth, and known contract traps.
 
 ```bash
 # Print the SKILL.md entrypoint to stdout
@@ -170,7 +190,7 @@ Options
   Prefer a Docker Hub access token over an account password.
 - `--force` - Submit even if the preflight checks fail; findings are still printed. (Unrelated to `--force-new-version`.)
 - `--retry` - Re-run an existing target instead of submitting new work (see below)
-- `--qa` - With `--retry`: re-run the task-level QA pass (classify every trial + synthesize the verdict) instead of retrying trials
+- `--qa` - With `--retry`: re-run the verdict generation (classify every trial + synthesize the verdict) instead of retrying trials
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
@@ -207,7 +227,7 @@ oddish run <task_id> --retry -y
 # Retry all failed trials across an experiment
 oddish run <experiment_id> --retry -y
 
-# Re-run the task-level QA pass (classify every trial + synthesize the verdict)
+# Regenerate the verdict using recorded runs
 oddish run <task_id> --retry --qa
 
 # Machine-readable summary of what was queued
@@ -218,10 +238,10 @@ oddish run <experiment_id> --retry -y --json
   targets, only trials currently in a `failed` state are retried — unless you
   pass `--no-baseline-gate`, which also sweeps up trials the baseline gate
   left in `skipped`.
-- `--qa` re-runs the single task-level QA pass: it re-classifies every live
-  trial and synthesizes a fresh task verdict, while the previously published
-  verdict stays visible until the replacement lands. A trial-shaped id resolves
-  to its parent task; experiment targets run QA for each task.
+- `--qa` re-runs the single verdict generation: it re-classifies every live
+  trial and synthesizes a fresh task verdict, and withdraws the previously published
+  verdict once the replacement passes its evidence preflight and is queued. A trial-shaped id resolves
+  to its parent task; experiment targets regenerate each task's verdict.
 - `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
@@ -353,9 +373,9 @@ full task-browser filter set (status, date, model, trial-metric, tool-usage,
 and more, some 70 options in all). Run `oddish ls --help` for the complete
 list rather than relying on this page.
 
-## Export QA Feedback
+## Export findings
 
-Export existing audit and run-review findings for a batch of exact task IDs:
+Export existing audit and run-analysis findings for a batch of exact task IDs:
 
 ```bash
 oddish qa export <task_id> <another_task_id> --output qa-findings.csv
@@ -370,14 +390,14 @@ Use `oddish ls --query <name> --json` to find an ID first.
 The command writes two UTF-8 CSV files (existing files are overwritten):
 
 - `qa-findings.csv`: one row per finding occurrence, combining version audits
-  and individual agent-run reviews. Columns include the task ID/name/version,
+  and individual run analyses. Columns include the task ID/name/version,
   current task verdict, audit status, source trial ID (an individual run),
   trial classification, finding ID, `tier`, `problem_type`, `dimension`, full
   title/explanation/recommendation, file and line range, and exploitation
   linkage. `group`, `assignee`, and `resolution` start blank for manual triage.
 - `qa-findings-tasks.csv`: one row per unique requested ID, including tasks
   with no matching findings and failed fetches. It contains the full current
-  verdict, version audit statuses/errors, QA run statuses/errors, counts of
+  verdict, version audit statuses/errors, verdict generation statuses/errors, counts of
   agent-run analysis statuses, counts of exported findings by tier, and
   `fetch_error`. Structured detail is stored as JSON inside CSV cells.
 
@@ -392,13 +412,13 @@ older versions returned by the detail API. The `current_verdict*` columns always
 describe the current task verdict, including on older-version finding rows;
 they are not historical verdicts. Replaced runs and combined copies are already
 excluded by the existing task-detail endpoint. This is an export of currently
-stored findings, not a complete history of overwritten QA assessments.
+stored findings, not a complete history of overwritten run analyses and verdicts.
 
-This command only reads results; it never queues or reruns QA. Zero findings
-does not mean QA passed: inspect audit, analysis, and verdict status in the
+This command only reads results; it never generates verdicts. Zero findings
+does not mean the task was accepted: inspect audit, analysis, and verdict status in the
 task summary. Failed fetches leave counts blank, preserve successful tasks,
 and cause exit code 1 after the batch finishes. Successful fetches exit 0 even
-when QA reports defects or is unfinished.
+when a task is rejected or has no verdict.
 
 `--concurrency` controls simultaneous requests (default 4, range 1–16).
 `--api` overrides the API URL; the usual `ODDISH_API_KEY`, `ODDISH_API_URL`,
@@ -443,7 +463,7 @@ If a positional ID isn't found as a task, `status` automatically retries it as a
 
 One thing to know when scripting against `status <task_id> --json`: the
 response's `trials` list is every current-version trial, including the
-platform's own QA and audit runs (rows whose `kind` is `"qa"` or `"audit"`),
+platform's own verdict generation and pre-trial audit runs (rows whose `kind` is `"qa"` or `"audit"`),
 but the top-level `total`, `completed`, `failed`, and `running` counters count
 only evaluation attempts (`kind == "agent"`). Filter the `trials` list on
 `trials[].kind == "agent"` when reproducing those counters yourself.
@@ -548,14 +568,14 @@ Options
 Use `oddish cancel` to stop queued or running work without deleting the task
 itself. Completed trials are preserved. By default it cancels all active task
 runs. With `--qa` it leaves the agent trials alone and instead cancels the
-task's in-flight analysis work: the QA pass (classification + verdict) and any
+task's in-flight analysis work: the verdict generation and any
 live pre-trial audit, marking half-finished per-trial classifications failed.
 
 ```bash
 # Cancel all active runs for a task
 oddish cancel <task_id>
 
-# Cancel only the in-flight QA/audit runs (classification + verdict)
+# Cancel only the in-flight verdict generation and pre-trial audit runs (classification + verdict)
 oddish cancel <task_id> --qa
 oddish cancel <trial_id> --qa   # a trial id resolves to its parent task
 ```
@@ -563,7 +583,7 @@ oddish cancel <trial_id> --qa   # a trial id resolves to its parent task
 Options
 
 - `TASK_ID` - Task ID to cancel. A trial ID is only useful with `--qa`, where it resolves to its parent task; without `--qa` a trial ID matches nothing
-- `--qa` - Cancel only the task's in-flight QA and pre-trial audit runs, not its agent trials
+- `--qa` - Cancel only the task's in-flight verdict generation and pre-trial audit runs, not its agent trials
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)

@@ -150,7 +150,7 @@ test("delivery rows expose only unsatisfied checks with configured counts", () =
       status: "waived",
       label: "Verdict",
       detail: "",
-      failure_labels: ["Verdict needed"],
+      failure_labels: ["No verdict"],
     },
     {
       key: "signoff",
@@ -186,7 +186,7 @@ test("missing-version checks share one label and old snapshots do not invent cou
   assert.deepEqual(deliveryTaskLabels(row), [
     "Pre-trial audit needed",
     "Run requirements unmet",
-    "Verdict needed",
+    "No verdict",
   ]);
 });
 

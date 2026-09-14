@@ -366,7 +366,7 @@ test.describe("real components with local fixture API", () => {
     await expect(row).not.toContainText(
       "The verifier accepts an empty answer."
     );
-    await expect(row.getByText(/Task checks:|Run reviews:/)).toHaveCount(0);
+    await expect(row.getByText(/Task checks:|Run analysiss:/)).toHaveCount(0);
     await badge.click();
     await expect(
       page.getByRole("heading", {
@@ -732,7 +732,7 @@ test.describe("real components with local fixture API", () => {
       .getByRole("row")
       .filter({ has: page.getByText("Task A", { exact: true }) });
     await expect(
-      rejectedRow.getByText(/Task checks:|Run reviews:/)
+      rejectedRow.getByText(/Task checks:|Run analysiss:/)
     ).toHaveCount(0);
 
     await expect(
@@ -1291,7 +1291,7 @@ test("a first run-review finding is counted without detailed findings in open", 
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Run review", { exact: true })
+    page.getByText("Rejected · Run analysis", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page

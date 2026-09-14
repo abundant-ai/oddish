@@ -1,6 +1,6 @@
 ---
 name: oddish
-description: Run, inspect, compare, retry, and diagnose Harbor evaluation tasks through the Oddish CLI. Use for Oddish task versions, experiments, agent trials, nop/oracle baseline gates, task-level QA verdicts, trajectory summaries, logs, artifacts, and preflight checks. Do not use for a plain local Harbor run that will not be submitted to Oddish.
+description: Run, inspect, compare, retry, and diagnose Harbor evaluation tasks through the Oddish CLI. Use for Oddish task versions, experiments, agent trials, nop/oracle baseline gates, task verdicts, trajectory summaries, logs, artifacts, and preflight checks. Do not use for a plain local Harbor run that will not be submitted to Oddish.
 ---
 
 # Oddish evaluations
@@ -132,3 +132,5 @@ predicate, response schema, endpoint, or Typer command definition over prose
 documentation. `AGENTS.md` is the architecture guide; `DOCS.md` is the end-user
 CLI guide. Plans and handoff notes describe proposed or historical work, not
 the running contract.
+
+Use “Accepted,” “Rejected,” and “No verdict” for task judgments; use “Verdict queued” and “Verdict running” for active generation. Source checks are “Pre-trial audits,” individual run checks are “Run analysis,” and delivery readiness is determined by “Delivery checks.” Keep the documented CLI commands and flags unchanged.

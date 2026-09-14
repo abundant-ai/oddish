@@ -1,4 +1,4 @@
-"""Assign a batch of task versions to a person for QA review."""
+"""Assign a batch of task versions to a person for task work."""
 
 from pathlib import Path
 from typing import Annotated
@@ -18,7 +18,7 @@ def assign(
         str, typer.Option("--to", help="Org member's email, user ID, or GitHub handle.")
     ],
     task_ids: Annotated[
-        list[str] | None, typer.Argument(help="Task IDs to assign for QA review.")
+        list[str] | None, typer.Argument(help="Task IDs to assign for task work.")
     ] = None,
     tasks_file: Annotated[
         Path | None,
@@ -40,7 +40,7 @@ def assign(
         bool, typer.Option("--json", help="Output JSON for scripts.")
     ] = False,
 ) -> None:
-    """Assign QA review ownership by task ID, without a delivery ID.
+    """Assign task work ownership by task ID, without a delivery ID.
 
     Writes the owner shown on active delivery boards. Existing owners are
     skipped unless --replace is set. Accepts up to 1,000 unique task IDs.

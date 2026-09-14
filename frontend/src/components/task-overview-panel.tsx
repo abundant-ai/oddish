@@ -555,7 +555,7 @@ export function TaskOverviewPanel({
           })}
           {unanalyzedCount > 0 ? (
             <span className="text-muted-foreground font-mono text-[10px]">
-              {unanalyzedCount} awaiting review
+              {unanalyzedCount} awaiting run analysis
             </span>
           ) : null}
         </div>
@@ -580,7 +580,7 @@ export function TaskOverviewPanel({
       {verdictTask && mustFixCount === 0 ? (
         <div className="border-border border-b p-4">
           <div className="text-muted-foreground mb-2 text-xs">
-            QA result ·{" "}
+            Verdict ·{" "}
             {scopeTrials != null
               ? "All runs for this task version"
               : `v${version ?? "—"}`}

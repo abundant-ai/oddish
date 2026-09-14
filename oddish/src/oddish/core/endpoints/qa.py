@@ -53,8 +53,7 @@ async def _cancel_worker_jobs_for_kind(
     rows = (
         (
             await session.execute(
-                text(
-                    f"""
+                text(f"""
                 WITH to_cancel AS (
                     SELECT id,
                            modal_function_call_id
@@ -77,8 +76,7 @@ async def _cancel_worker_jobs_for_kind(
                 RETURNING w.id,
                           w.subject_id,
                           to_cancel.modal_function_call_id
-                """
-                ),
+                """),
                 {
                     "kind": kind,
                     "subject_table": subject_table,
@@ -309,7 +307,9 @@ async def backfill_task_analysis_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if not task.trials:
-        raise HTTPException(status_code=400, detail="Task has no trials to QA")
+        raise HTTPException(
+            status_code=400, detail="Task has no runs for verdict generation"
+        )
 
     live_trials = [
         trial
@@ -323,7 +323,9 @@ async def backfill_task_analysis_core(
             if trial.task_version_id == task.current_version_id
         ]
     if not live_trials:
-        raise HTTPException(status_code=400, detail="Task has no live trials to QA")
+        raise HTTPException(
+            status_code=400, detail="Task has no current runs for verdict generation"
+        )
 
     active_trials = await _count_active_trials(
         session,
@@ -377,7 +379,7 @@ async def backfill_task_analysis_core(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot queue QA because source evidence is unavailable:\n"
+                "Cannot generate a verdict because source evidence is unavailable:\n"
                 + "\n".join(blocked)
             ),
         )

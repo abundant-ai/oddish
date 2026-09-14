@@ -444,7 +444,8 @@ export default function AdminUserCostPage({
                 estimated {formatCostUsd(data.totals.cost_estimated_usd)}
               </Badge>
               <Badge variant="outline">
-                QA {formatCostUsd(seriesTotal(data.series_qa_by_model))}
+                Audit and verdict generation{" "}
+                {formatCostUsd(seriesTotal(data.series_qa_by_model))}
               </Badge>
               <Badge variant="outline">
                 compute{" "}

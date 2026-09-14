@@ -43,7 +43,7 @@ export function DeliveryQAWorkEditor({
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>QA work · {taskName}</DialogTitle>
+          <DialogTitle>Task work · {taskName}</DialogTitle>
         </DialogHeader>
         <p className="text-muted-foreground text-sm">
           Choose issue categories. The first selected category is used for
@@ -101,7 +101,9 @@ export function DeliveryQAWorkEditor({
                 onClose();
               } catch (err) {
                 setError(
-                  err instanceof Error ? err.message : "Failed to save QA work"
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to save task work"
                 );
               } finally {
                 setSaving(false);

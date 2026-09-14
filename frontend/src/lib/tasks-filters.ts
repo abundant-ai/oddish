@@ -119,7 +119,7 @@ const STATUS_OPTIONS: Option[] = [
   { value: "RUNNING", label: "Running" },
   { value: "PENDING", label: "Pending" },
   { value: "ANALYZING", label: "Analyzing" },
-  { value: "VERDICT_PENDING", label: "Verdict pending" },
+  { value: "VERDICT_PENDING", label: "Verdict running" },
   { value: "FAILED", label: "Failed" },
 ];
 
@@ -129,9 +129,11 @@ const PRIORITY_OPTIONS: Option[] = [
 ];
 
 const VERDICT_OPTIONS: Option[] = [
-  { value: "SUCCESS", label: "Pass" },
-  { value: "FAILED", label: "Fail" },
-  { value: "PENDING", label: "Pending" },
+  { value: "SUCCESS", label: "Completed" },
+  { value: "FAILED", label: "Failed" },
+  { value: "PENDING", label: "Queued (legacy)" },
+  { value: "QUEUED", label: "Queued" },
+  { value: "RUNNING", label: "Running" },
 ];
 
 // TrialStatus = JobStatus, stored as lowercase values via values_callable.
@@ -339,7 +341,7 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "verdictStatuses",
-    label: "Verdict",
+    label: "Verdict generation",
     group: "Task",
     control: "select",
     options: VERDICT_OPTIONS,

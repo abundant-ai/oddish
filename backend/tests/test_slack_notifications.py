@@ -166,30 +166,6 @@ def test_experiment_milestones(
     )
 
 
-@pytest.mark.parametrize(
-    ("verdict_status", "error", "expected"),
-    [
-        (VerdictStatus.SUCCESS, None, "verdict judged this task not good"),
-        (VerdictStatus.SUCCESS, "ignored", "verdict judged this task not good"),
-        (None, None, "verdict judged this task not good"),
-        (
-            VerdictStatus.FAILED,
-            "grader exploded",
-            "verdict job failed — grader exploded",
-        ),
-        # A missing error must not render as "verdict job failed — None".
-        (VerdictStatus.FAILED, None, "verdict job failed"),
-        (VerdictStatus.FAILED, "", "verdict job failed"),
-    ],
-)
-def test_verdict_reason(
-    verdict_status: VerdictStatus | None,
-    error: str | None,
-    expected: str,
-) -> None:
-    assert notifications._verdict_reason(verdict_status, error) == expected
-
-
 def test_build_alerts_reports_each_expense_milestone() -> None:
     now = datetime.now(timezone.utc)
     # Every trial sits under the $200 trial floor, so the only alerts are the
@@ -945,14 +921,14 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
                     task_id="task/1",
                     task_name="Task <One>",
                     task_version_id="task/1@v2",
-                    reason="verdict judged this task not good",
+                    verdict_status=VerdictStatus.SUCCESS,
                     owner_email="author@example.com",
                 ),
                 QaFailure(
                     task_id="task/1",
                     task_name="Task <One>",
                     task_version_id="task/1@v2",
-                    reason="verdict job failed — boom",
+                    verdict_status=VerdictStatus.FAILED,
                     owner_email="author@example.com",
                 ),
             ],
@@ -967,9 +943,8 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
     assert alert.dm_only
     assert alert.recipient_email == "author@example.com"
     assert alert.text.splitlines() == [
-        ":mag: *QA failed*",
+        ":mag: *Verdict: Rejected*",
         "Task: *Task &lt;One&gt;*",
-        "Reason: verdict judged this task not good",
         "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
     ]
 
@@ -997,7 +972,7 @@ def test_build_alerts_reports_finished_tasks_as_dm_only() -> None:
     assert alert.dm_only
     assert alert.recipient_email == "author@example.com"
     assert alert.text.splitlines() == [
-        ":tada: *Task finished*",
+        ":tada: *Verdict: Accepted*",
         "Task: *Task &lt;One&gt;*",
         "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
     ]
@@ -2032,9 +2007,7 @@ async def test_load_alerts_user_daily_overage_includes_live_running_trials(
         # finished trials settled two days ago), and her seven-day daily average
         # is $12,000 / 7 = $1,714.29.
         assert "Spend in past 24 hours: *$11,000.00*" in alert_by_key[user_key].text
-        assert (
-            "Seven-day daily average: *$1,714.29*" in alert_by_key[user_key].text
-        )
+        assert "Seven-day daily average: *$1,714.29*" in alert_by_key[user_key].text
         assert "Running or retrying trials included: 1" in alert_by_key[user_key].text
         # Bob spent nothing in the last 24h, so he never clears his own average.
         assert not any(
@@ -2556,7 +2529,7 @@ async def test_load_alerts_reports_crashed_trials_and_qa_failures() -> None:
         qa_failed = by_key[f"qa-failed:{qa_task_id}"]
         assert qa_failed.dm_only
         assert qa_failed.recipient_email == "qa-author@example.com"
-        assert "Reason: verdict judged this task not good" in qa_failed.text
+        assert "Verdict: Rejected" in qa_failed.text
     finally:
         async with get_session() as session:
             await session.execute(
@@ -2742,7 +2715,7 @@ async def test_load_alerts_qa_cutoff_and_null_matrix() -> None:
         alert = by_key[f"qa-failed:{clean_failure_id}"]
         assert alert.dm_only
         assert alert.recipient_email == "qa-matrix@example.com"
-        assert "Reason: verdict job failed" in alert.text
+        assert "Verdict: No verdict" in alert.text
         assert "verdict job failed —" not in alert.text
     finally:
         async with get_session() as session:
@@ -2796,7 +2769,7 @@ async def test_load_alerts_reports_failed_verdict_jobs() -> None:
         alert = by_key[f"qa-failed:{task_id}"]
         assert alert.dm_only
         assert alert.recipient_email == "verdict-author@example.com"
-        assert "Reason: verdict job failed — grader exploded" in alert.text
+        assert "Verdict: No verdict" in alert.text
     finally:
         async with get_session() as session:
             await session.execute(
@@ -3022,3 +2995,27 @@ async def test_deliver_uses_clerk_slack_id_over_email(
         "dm:experiment-failed:1:owner@example.com",
         "dm:experiment-failed:2:other@example.com",
     }
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [(VerdictStatus.SUCCESS, "Rejected"), (VerdictStatus.FAILED, "No verdict")],
+)
+def test_verdict_notifications_distinguish_rejection_from_absence(status, expected):
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            qa_failures=[
+                QaFailure(
+                    "task/1", "Task", None, status, owner_email="author@example.com"
+                )
+            ]
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+    assert len(alerts) == 1
+    assert f"*Verdict: {expected}*" in alerts[0].text
+    assert "QA failed" not in alerts[0].text
+    assert "Reason:" not in alerts[0].text

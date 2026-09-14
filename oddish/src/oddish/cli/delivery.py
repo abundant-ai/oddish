@@ -8,6 +8,8 @@ it into their loops. See docs/delivery-design.md.
 
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 from typing import Annotated, Any, Optional
 
 import httpx
@@ -34,9 +36,7 @@ def _fail(message: str) -> None:
     raise typer.Exit(1)
 
 
-def _request(
-    client: httpx.Client, method: str, url: str, **kwargs: Any
-) -> Any:
+def _request(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
     response = client.request(method, url, **kwargs)
     if response.status_code >= 400:
         try:
@@ -60,6 +60,7 @@ def _resolve_delivery_id(client: httpx.Client, api_url: str, ref: str) -> str:
         _fail(f"delivery name {ref!r} is ambiguous; use the id")
     _fail(f"no delivery with id or name {ref!r}")
     raise AssertionError  # unreachable
+
 
 def _fetch_board(client: httpx.Client, api_url: str, ref: str) -> dict:
     delivery_id = _resolve_delivery_id(client, api_url, ref)
@@ -110,9 +111,7 @@ def _print_board(board: dict) -> None:
         else ""
     )
     console.print(f"[bold]{delivery['name']}[/bold]{customer} — {status}")
-    ready = (
-        "[green]READY[/green]" if board["ready"] else "[yellow]NOT READY[/yellow]"
-    )
+    ready = "[green]READY[/green]" if board["ready"] else "[yellow]NOT READY[/yellow]"
     frozen = " (frozen snapshot)" if board.get("frozen") else ""
     console.print(
         f"{ready} — {board['ready_task_count']}/{board['task_count']} "
@@ -302,9 +301,7 @@ def remove_task(
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         delivery_id = _resolve_delivery_id(client, api_url, delivery)
-        _request(
-            client, "DELETE", f"{api_url}/deliveries/{delivery_id}/tasks/{task}"
-        )
+        _request(client, "DELETE", f"{api_url}/deliveries/{delivery_id}/tasks/{task}")
     console.print(f"[green]Removed {task}[/green]")
 
 
@@ -330,11 +327,7 @@ def set_check(
         row = None
         if task is not None:
             row = next(
-                (
-                    r
-                    for r in board["tasks"]
-                    if task in (r["task_id"], r["task_name"])
-                ),
+                (r for r in board["tasks"] if task in (r["task_id"], r["task_name"])),
                 None,
             )
             if row is None:
@@ -384,24 +377,16 @@ def _open_blockers(row: dict) -> tuple[list[dict], list[dict]]:
 @delivery_app.command("signoff")
 def signoff(
     delivery: Annotated[str, typer.Argument(help="Delivery id or name.")],
-    task: Annotated[
-        str, typer.Argument(help="Task id or name. Omit with --all.")
-    ] = "",
+    task: Annotated[str, typer.Argument(help="Task id or name. Omit with --all.")] = "",
     all_clean: Annotated[
         bool,
-        typer.Option(
-            "--all", help="Sign off every task with no open blockers."
-        ),
+        typer.Option("--all", help="Sign off every task with no open blockers."),
     ] = False,
-    off: Annotated[
-        bool, typer.Option("--off", help="Remove the sign-off.")
-    ] = False,
+    off: Annotated[bool, typer.Option("--off", help="Remove the sign-off.")] = False,
     note: Annotated[str, typer.Option("--note", help="Note to attach.")] = "",
     yes: Annotated[
         bool,
-        typer.Option(
-            "--yes", "-y", help="Acknowledge open blockers without a prompt."
-        ),
+        typer.Option("--yes", "-y", help="Acknowledge open blockers without a prompt."),
     ] = False,
     api_url: Annotated[str, _API_OPTION] = "",
 ) -> None:
@@ -466,14 +451,11 @@ def signoff(
                     "requirements:[/yellow]"
                 )
                 for check in failing:
-                    detail = (
-                        f" — {check['detail']}" if check.get("detail") else ""
-                    )
+                    detail = f" — {check['detail']}" if check.get("detail") else ""
                     console.print(f"  [red]-[/red] {check['label']}{detail}")
                 for defect in open_defects:
                     console.print(
-                        f"  [red]-[/red] defect {defect['id']} — "
-                        f"{defect['title']}"
+                        f"  [red]-[/red] defect {defect['id']} — {defect['title']}"
                     )
                 if not yes and not typer.confirm(
                     "Acknowledge these in your name and sign off anyway?"
@@ -545,8 +527,7 @@ def ack(
         board = _fetch_board(client, api_url, delivery)
         row = _member_row(board, task)
         is_check = any(
-            c["key"] == defect and c["kind"] == "automated"
-            for c in row["checks"]
+            c["key"] == defect and c["kind"] == "automated" for c in row["checks"]
         )
         prefix = "waive" if is_check else "ack"
         _request(
@@ -584,9 +565,7 @@ def finalize(
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         delivery_id = _resolve_delivery_id(client, api_url, delivery)
-        board = _request(
-            client, "POST", f"{api_url}/deliveries/{delivery_id}/finalize"
-        )
+        board = _request(client, "POST", f"{api_url}/deliveries/{delivery_id}/finalize")
     console.print(
         f"[green]Finalized[/green] — {board['task_count']} tasks pinned at "
         f"{board['finalized_at']}"
@@ -599,7 +578,7 @@ def history(
     api_url: Annotated[str, _API_OPTION] = "",
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
-    """Show a task's QA trail: versions, audits, rollouts, defects, QA runs."""
+    """Show task history: versions, pre-trial audits, agent runs, findings, and verdict generation."""
     api_url = api_url or get_api_url()
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         data = _request(client, "GET", f"{api_url}/tasks/{task}/qa-history")
@@ -607,11 +586,16 @@ def history(
         print_json(data)
         return
     console.print(f"[bold]{data['task_name']}[/bold] ({data['task_id']})")
-    verdict = data.get("verdict") or {}
-    if verdict:
-        label = "accept" if verdict.get("is_good") else "reject"
-        color = "green" if verdict.get("is_good") else "red"
-        console.print(f"Current verdict: [{color}]{label}[/{color}]")
+    label = verdict_label(
+        data.get("verdict_status"),
+        data.get("verdict"),
+        version_matches=(
+            data.get("verdict_version_id") == data.get("current_version_id")
+            if data.get("verdict_version_id")
+            else None
+        ),
+    )
+    console.print(f"Verdict: {label}")
     for version in data["versions"]:
         marker = " [cyan](current)[/cyan]" if version["is_current"] else ""
         message = f" — {version['message']}" if version.get("message") else ""
@@ -625,12 +609,12 @@ def history(
         )
         for run in version["qa_runs"]:
             console.print(
-                f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
+                f"  {'Verdict generation' if run['kind'] == 'qa' else 'Pre-trial audit'}: {run.get('status') or 'pending'}"
             )
     unversioned = data.get("unversioned_runs") or []
     if unversioned:
         console.print("\n[bold]Runs not tied to a version[/bold]")
         for run in unversioned:
             console.print(
-                f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
+                f"  {'Verdict generation' if run['kind'] == 'qa' else 'Pre-trial audit'}: {run.get('status') or 'pending'}"
             )

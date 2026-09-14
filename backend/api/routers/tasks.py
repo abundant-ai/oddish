@@ -725,7 +725,9 @@ async def browse_tasks(
     ),
     statuses: str | None = Query(None, description="Task status CSV"),
     priorities: str | None = Query(None, description="Task priority CSV"),
-    verdict_statuses: str | None = Query(None, description="Task verdict status CSV"),
+    verdict_statuses: str | None = Query(
+        None, description="Verdict generation status CSV"
+    ),
     has_link: bool | None = Query(None),
     run_analysis: bool | None = Query(None),
     run_probe: bool | None = Query(None),

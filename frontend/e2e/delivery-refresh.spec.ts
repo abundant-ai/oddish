@@ -100,7 +100,7 @@ const current = (page: Page, version = 7) =>
   page.locator("summary").filter({ hasText: new RegExp(`v${version}current`) });
 async function openBoard(page: Page) {
   await page.goto("/?task=task-a");
-  await page.getByText("QA history", { exact: true }).click();
+  await page.getByText("Task history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
 }
 async function tick(page: Page) {
@@ -127,10 +127,10 @@ test("expanded history sees completed review on the board refresh", async ({
 }) => {
   const state = await controlledAPI(page);
   await openBoard(page);
-  await expect(current(page)).toContainText("qa (running)");
+  await expect(current(page)).toContainText("Verdict generation (running)");
   state.history = history(7, 7, "success");
   await tick(page);
-  await expect(current(page)).toContainText("qa (success)");
+  await expect(current(page)).toContainText("Verdict generation (success)");
   expect(state.writes).toEqual([]);
 });
 
@@ -169,7 +169,7 @@ test("non-default creation keeps v7; default switch shows v8 with v7 history sti
   await page
     .getByRole("checkbox", { name: "Select Task A", exact: true })
     .click();
-  await page.getByRole("button", { name: /Rerun QA/ }).click();
+  await page.getByRole("button", { name: /Regenerate verdicts/ }).click();
   await expect
     .poll(() => state.writes.filter((w) => w.path.endsWith("/qa/retry")).length)
     .toBe(1);
@@ -254,7 +254,7 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   await page.goto(
     "/?page=2&per_page=25&filter=qa_incomplete&task=task-a&source=agent"
   );
-  await page.getByText("QA history", { exact: true }).click();
+  await page.getByText("Task history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await page.getByRole("button", { name: "Show all 7 versions" }).click();
   await current(page).click();
@@ -286,7 +286,7 @@ test("refresh failures keep history, filters, pagination, scroll, expansion and 
   state.history = history(7, 7, "success");
   await page.getByRole("button", { name: "Retry history" }).click();
   await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
-  await expect(current(page)).toContainText("qa (success)");
+  await expect(current(page)).toContainText("Verdict generation (success)");
   await expect(
     page.locator("summary").filter({ hasText: /v1Version 1/ })
   ).toBeVisible();
@@ -428,7 +428,7 @@ test("an old version draft stays copyable and cannot save against the replacemen
 }) => {
   const state = await controlledAPI(page);
   await openBoard(page);
-  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page.getByRole("button", { name: "Edit task work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Notes about v7");
@@ -453,7 +453,7 @@ test("an old version draft stays copyable and cannot save against the replacemen
   expect(state.writes).toEqual([]);
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(current(page, 8)).toBeVisible();
-  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page.getByRole("button", { name: "Edit task work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Notes about v8");
@@ -566,7 +566,7 @@ test("a delayed pre-mutation board response cannot overwrite a saved note", asyn
   });
   await tick(page);
   await expect.poll(() => delayed).toBe(true);
-  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page.getByRole("button", { name: "Edit task work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved during a slow refresh");
@@ -593,7 +593,7 @@ test("a failed first board load can recover without navigating away", async ({
   );
   state.failBoard = false;
   await page.getByRole("button", { name: "Retry delivery" }).click();
-  await page.getByText("QA history", { exact: true }).click();
+  await page.getByText("Task history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   await expect(page).toHaveURL(/filter=qa_incomplete&task=task-a/);
   expect(state.writes).toEqual([]);
@@ -724,7 +724,7 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
 }) => {
   const state = await controlledAPI(page);
   await page.goto("/?seed=fresh&filter=all&task=task-a&source=agent");
-  await page.getByText("QA history", { exact: true }).click();
+  await page.getByText("Task history", { exact: true }).click();
   await expect(current(page)).toBeVisible();
   expect(state.reads).toEqual({ board: 0, history: 1 });
   await page.evaluate(() =>
@@ -746,9 +746,9 @@ test("a fresh server board avoids the initial read and keeps history, URL naviga
   // The shared URL restores the open history panel.
   state.history = history(7, 7, "success");
   await tick(page);
-  await expect(current(page)).toContainText("qa (success)");
+  await expect(current(page)).toContainText("Verdict generation (success)");
   expect(state.reads.board).toBe(2);
-  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page.getByRole("button", { name: "Edit task work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Saved after server load");
@@ -783,7 +783,7 @@ test("a write invalidates inactive pages before browser Forward restores them", 
   const state = await controlledAPI(page);
   await page.goto("/?task=task-a&source=agent");
   await expect(
-    page.getByRole("button", { name: "Edit QA work" })
+    page.getByRole("button", { name: "Edit task work" })
   ).toBeVisible();
   await page.evaluate(() => {
     const url = new URL(window.location.href);
@@ -793,7 +793,7 @@ test("a write invalidates inactive pages before browser Forward restores them", 
   await expect.poll(() => state.reads.board).toBe(2);
   await expect(page.getByRole("status")).toHaveCount(0);
   await page.goBack();
-  await page.getByRole("button", { name: "Edit QA work" }).click();
+  await page.getByRole("button", { name: "Edit task work" }).click();
   await page
     .getByRole("textbox", { name: "Handoff note" })
     .fill("Fresh across pages");
@@ -963,7 +963,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     page.getByRole("table").getByText("Ready", { exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText("Review could not complete", { exact: true })
+    page.getByText("Delivery checks incomplete", { exact: true })
   ).toBeVisible();
   expect(state.writes.map(({ body }) => body.check_key)).toEqual([
     "ack:verifier",
@@ -1492,7 +1492,7 @@ for (const action of ["release", "note", "acknowledgment"] as const) {
     state.board.tasks = [reviewTaskRow()];
     await page.goto("/?task=task-a&source=agent");
     await expect(
-      page.getByRole("button", { name: "Edit QA work" })
+      page.getByRole("button", { name: "Edit task work" })
     ).toBeVisible();
     const url = page.url();
     let release!: () => void;
@@ -1512,7 +1512,7 @@ for (const action of ["release", "note", "acknowledgment"] as const) {
         .getByRole("button", { name: "Release task", exact: true })
         .click();
     } else if (action === "note") {
-      await page.getByRole("button", { name: "Edit QA work" }).click();
+      await page.getByRole("button", { name: "Edit task work" }).click();
       await page
         .getByRole("textbox", { name: "Handoff note" })
         .fill("Saved once");
@@ -1690,7 +1690,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count - 1})` })
+      page.getByRole("button", { name: `Regenerate verdicts (${count - 1})` })
     ).toBeVisible();
     last.checks[0].status = "pass";
     last.qa.status = "never";
@@ -1699,7 +1699,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count})` })
+      page.getByRole("button", { name: `Regenerate verdicts (${count})` })
     ).toBeEnabled();
     expect(state.writes).toEqual([]);
   });
@@ -1733,7 +1733,7 @@ for (const group of ["none", "state"]) {
         status: "fail",
         label: "Verdict",
         detail: "Old verbose verdict explanation",
-        failure_labels: ["Verdict needed"],
+        failure_labels: ["No verdict"],
       },
     ];
     await page.goto(`/?group=${group}`);
@@ -1744,7 +1744,7 @@ for (const group of ["none", "state"]) {
       "Pre-trial audit running",
       "Runs: 2/8",
       "Agents: 1/4",
-      "Verdict needed",
+      "No verdict",
     ])
       await expect(row.getByText(label, { exact: true })).toBeVisible();
     await expect(page.getByText("QA incomplete", { exact: true })).toHaveCount(
@@ -1758,7 +1758,7 @@ for (const group of ["none", "state"]) {
       page.getByRole("link", { name: "View runs", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Open run review", exact: true })
+      page.getByRole("link", { name: "Open run analysis", exact: true })
     ).toBeVisible();
     await expect(page.getByText(/Old verbose/)).toHaveCount(0);
     expect(state.writes).toEqual([]);
@@ -1929,3 +1929,31 @@ test("switching visible tasks never waits for the previous task response", async
   ).toBeVisible();
   expect(state.reads.board).toBe(reads);
 });
+
+for (const [status, verdict, expected] of [
+  ["success", { verdict: "accept", is_good: false }, "Accepted"],
+  ["success", { verdict: "reject", is_good: true }, "Rejected"],
+  ["failed", { is_good: true, reasoning: "Cached acceptance" }, "No verdict"],
+  ["success", { is_good: null }, "No verdict"],
+  ["queued", { is_good: true }, "Verdict queued"],
+  ["running", null, "Verdict running"],
+] as const) {
+  test(`task history displays ${expected} for ${status} generation`, async ({
+    page,
+  }) => {
+    const state = await controlledAPI(page);
+    state.history.verdict_status = status;
+    state.history.verdict_version_id = state.history.current_version_id;
+    state.history.verdict = verdict;
+    await openBoard(page);
+    await current(page).click();
+    const details = current(page).locator("..");
+    await expect(
+      details.getByText(`Verdict: ${expected}`, { exact: true })
+    ).toBeVisible();
+    if (expected === "No verdict")
+      await expect(
+        details.getByText("Cached acceptance", { exact: true })
+      ).toHaveCount(0);
+  });
+}

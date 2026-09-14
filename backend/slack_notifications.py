@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 import html
 import logging
 import os
@@ -159,7 +161,7 @@ class QaFailure:
     task_id: str
     task_name: str
     task_version_id: str | None
-    reason: str
+    verdict_status: VerdictStatus | None
     owner_email: str | None = None
     owner_clerk_user_id: str | None = None
 
@@ -224,12 +226,6 @@ def _mention_targets(*emails: str | None) -> tuple[str, ...]:
         if normalized:
             targets.setdefault(normalized, None)
     return tuple(targets)
-
-
-def _verdict_reason(verdict_status: VerdictStatus | None, error: str | None) -> str:
-    if verdict_status != VerdictStatus.FAILED:
-        return "verdict judged this task not good"
-    return f"verdict job failed — {error}" if error else "verdict job failed"
 
 
 def _experiment_milestones(
@@ -516,9 +512,8 @@ def build_alerts(
         add_failure_dm(
             f"qa-failed:{bucket}",
             qa_failure.owner_email,
-            ":mag: *QA failed*\n"
+            f":mag: *Verdict: {verdict_label(qa_failure.verdict_status, {'is_good': False})}*\n"
             f"Task: *{_escape(qa_failure.task_name)}*\n"
-            f"Reason: {_escape(qa_failure.reason)}\n"
             f"<{task_url}|open task>",
             qa_failure.owner_clerk_user_id,
         )
@@ -533,7 +528,7 @@ def build_alerts(
         add_failure_dm(
             f"task-finished:{bucket}",
             task_finished.owner_email,
-            ":tada: *Task finished*\n"
+            ":tada: *Verdict: Accepted*\n"
             f"Task: *{_escape(task_finished.task_name)}*\n"
             f"<{task_url}|open task>",
             task_finished.owner_clerk_user_id,
@@ -1136,7 +1131,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             task_id=str(row.id),
             task_name=str(row.name),
             task_version_id=row.current_version_id,
-            reason=_verdict_reason(row.verdict_status, row.verdict_error),
+            verdict_status=row.verdict_status,
             owner_email=row.owner_email,
             owner_clerk_user_id=row.owner_clerk_user_id,
         )

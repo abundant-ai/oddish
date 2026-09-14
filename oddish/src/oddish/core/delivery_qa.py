@@ -112,7 +112,10 @@ def evaluate_delivery_qa(
 ) -> DeliveryQAStatus:
     result = DeliveryQAStatus(trial_id=qa.id, finished_at=qa.finished_at)
     if version is None or qa.task_version_id != version.id:
-        result.status, result.detail = "outdated", "QA covers a different task version"
+        result.status, result.detail = (
+            "outdated",
+            "Delivery checks cover another task version",
+        )
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
             "running"
@@ -120,22 +123,29 @@ def evaluate_delivery_qa(
             else "queued"
         )
         result.detail = (
-            "QA is running" if result.status == "running" else "QA is queued"
+            "Delivery checks running"
+            if result.status == "running"
+            else "Delivery checks queued"
         )
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",
-            qa.error_message or qa.analysis_error or "QA did not complete",
+            qa.error_message or qa.analysis_error or "Delivery checks incomplete",
         )
     elif qa.finished_at is None:
-        result.status, result.detail = "outdated", "QA completion time was not recorded"
+        result.status, result.detail = (
+            "outdated",
+            "Delivery check completion time was not recorded",
+        )
     else:
         try:
-            payload = parse_analysis_payload("qa", {"analysis_payload": analysis_payload})
+            payload = parse_analysis_payload(
+                "qa", {"analysis_payload": analysis_payload}
+            )
         except AnalysisPayloadError:
             result.status, result.detail = (
                 "outdated",
-                "QA evidence coverage was not recorded; rerun QA",
+                "Delivery evidence coverage was not recorded; regenerate the verdict",
             )
             return result
         pinned = list(payload.trial_evidence + payload.baseline_evidence)
@@ -151,12 +161,12 @@ def evaluate_delivery_qa(
         ):
             result.status, result.detail = (
                 "outdated",
-                "Trials changed since QA; rerun QA",
+                "Trials changed since verdict generation; regenerate the verdict",
             )
         elif not audit_snapshot_matches(version, analysis_payload):
             result.status, result.detail = (
                 "outdated",
-                "Source audit changed since QA; rerun QA",
+                "Pre-trial audit changed since verdict generation; regenerate the verdict",
             )
         elif (
             task.verdict_status != VerdictStatus.SUCCESS
@@ -166,15 +176,15 @@ def evaluate_delivery_qa(
             or task.verdict.get("_graded_by", qa.id if payload.with_verdict else None)
             != qa.id
         ):
-            result.status, result.detail = "error", "QA produced no current verdict"
+            result.status, result.detail = "error", "No verdict"
         elif task.verdict.get("is_good") is True:
             result.status, result.detail = (
                 "accepted",
-                "QA accepts the current version and trials",
+                "Delivery checks passed",
             )
         else:
             result.status, result.detail = (
                 "needs_fixes",
-                task.verdict.get("primary_issue") or "QA rejects the current version",
+                task.verdict.get("primary_issue") or "Rejected",
             )
     return result

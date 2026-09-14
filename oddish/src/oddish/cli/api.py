@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 import asyncio
 import copy
 import hashlib
@@ -2209,18 +2211,6 @@ def format_trial_status_detail(trial: dict[str, Any]) -> str:
     return "-"
 
 
-def format_verdict_status(verdict_status: str) -> str:
-    """Format verdict status with color coding."""
-    style_map = {
-        "pending": "[dim]pending[/dim]",
-        "queued": "[yellow]queued[/yellow]",
-        "running": "[blue]running[/blue]",
-        "success": "[green]done[/green]",
-        "failed": "[red]failed[/red]",
-    }
-    return style_map.get(verdict_status.lower(), verdict_status)
-
-
 def _summarize_experiment_tasks(tasks: list[dict]) -> dict:
     total_tasks = len(tasks)
     task_completed = sum(1 for t in tasks if t.get("status") in ("completed", "failed"))
@@ -2400,9 +2390,10 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
         else:
             reward_display = "-"
 
-        verdict_status = task.get("verdict_status")
-        verdict_display = (
-            format_verdict_status(verdict_status) if verdict_status else "-"
+        verdict_display = verdict_label(
+            task.get("verdict_status"),
+            task.get("verdict"),
+            version_matches=task.get("review_version_matches"),
         )
 
         table.add_row(
@@ -2761,16 +2752,12 @@ def watch_task(
 
                 # Show verdict status if in later pipeline stages
                 if task_status in ("analyzing", "verdict_pending", "completed"):
-                    verdict_status = result.get("verdict_status")
-                    if verdict_status:
-                        verdict_display = {
-                            "pending": "[dim]pending[/dim]",
-                            "queued": "[yellow]queued[/yellow]",
-                            "running": "[blue]running[/blue]",
-                            "success": "[green]done[/green]",
-                            "failed": "[red]failed[/red]",
-                        }.get(verdict_status.lower(), verdict_status)
-                        table.add_row("", f"Verdict: {verdict_display}", "", "", "", "")
+                    verdict_display = verdict_label(
+                        result.get("verdict_status"),
+                        result.get("verdict"),
+                        version_matches=result.get("review_version_matches"),
+                    )
+                    table.add_row("", f"Verdict: {verdict_display}", "", "", "", "")
 
                 live.update(table)
 

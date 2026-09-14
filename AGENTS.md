@@ -2443,3 +2443,20 @@ creation time and trial ID descending to resolve ties consistently.
 Delivery check responses include `failure_labels`, a list of concise unmet requirements derived from the configured check thresholds and the reviewed version. Passing, waived, and disabled checks contribute no row badges. The frontend uses these labels without parsing `detail`; older snapshots without the field use check-specific labels without invented counts. Delivery state keys and readiness rules are unchanged; the `qa_incomplete` grouping is displayed as "Checks needed", while task rows show the individual requirements even when grouped by state.
 
 The task `/open` selected-version rollup includes `must_fix_count` and `pre_trial_must_fix_count`, computed in its identity query from retained, pre-trial, and eligible completed run-review findings. It does not include finding arrays or evidence bodies. Counts use each stored finding's own ID; live findings linked to an existing stored finding do not add another count. The frontend must read these scalar fields rather than assume `/panel` fields exist on `/open`.
+
+### Public verdict vocabulary
+
+Task judgments use Accepted, Rejected, No verdict, Verdict queued, and Verdict
+running in the dashboard, CLI, GitHub output, and notifications. TypeScript
+presentation is owned by `frontend/src/lib/review.ts`; Python output shares
+`oddish/src/oddish/verdict.py`. Prefer explicit accept/reject labels over legacy
+`is_good` booleans, and never interpret a missing boolean as rejection. Failed
+generation and older-version judgments must not expose cached acceptance.
+
+Name the process Verdict generation, individual run checks Run analysis, source
+checks Pre-trial audit, delivery eligibility Delivery checks, and human ownership
+Task work. Delivery checks can require refreshed evidence despite an existing
+verdict. Generation completion is not acceptance. Keep existing --qa flags, /qa/
+routes, JSON fields, preference keys, and notification deduplication keys stable.
+Notification text distinguishes Rejected from No verdict without displaying
+generation errors as task defects. The accepted-task notification says Accepted.
