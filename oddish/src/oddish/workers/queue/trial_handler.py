@@ -301,18 +301,16 @@ class PreparedTrialRun:
 
 
 def _prepared_trial_is_probe(prepared_trial: PreparedTrialRun) -> bool:
-    """The runner's probe test, in one place.
+    """The runner's probe test, sourced from the runner itself.
 
-    A probe carries extra instructions and is not a summarize run. This drives
-    both the agent's transport (probes are forced to the direct Anthropic API by
-    ``_claude_code_forces_direct_api``) and the scoped credential bundle, so the
-    two must read the same definition. The ``trials.is_probe`` column is a
-    narrower, operator-facing flag and is deliberately not used here.
+    Credential scoping must agree with the transport the agent is routed to, so
+    this defers to ``harbor.runner.trial_is_probe`` rather than restating it.
     """
-    harbor_config = prepared_trial.trial_harbor_config or {}
-    return (
-        bool(harbor_config.get("extra_instructions"))
-        and prepared_trial.trial_kind != "summarize"
+    from oddish.workers.harbor.runner import trial_is_probe
+
+    return trial_is_probe(
+        harbor_config=prepared_trial.trial_harbor_config,
+        trial_kind=prepared_trial.trial_kind,
     )
 
 

@@ -1706,6 +1706,26 @@ async def run_harbor_trial_async(
         )
 
 
+def trial_is_probe(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
+    """Whether a trial runs on the probe transport.
+
+    An operator probe (``harbor_config.mode == "probe"``) or a non-summarize
+    analysis trial. This decides the agent's route -- probes are forced to the
+    direct Anthropic API by ``_claude_code_forces_direct_api`` -- so anything
+    that has to agree with that route must call this rather than restate it.
+    Callers outside this module: job-scoped credential scoping in the trial
+    handler, which would otherwise scope a credential for the wrong transport.
+    """
+    # Imported here for the same reason the caller below does: the analysis
+    # module imports back into the worker package.
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    raw = harbor_config or {}
+    if raw.get("mode") == "probe":
+        return True
+    return is_analysis_kind(trial_kind) and trial_kind != "summarize"
+
+
 async def _run_harbor_trial_async_impl(
     task_path: Path,
     agent: str,
@@ -1755,7 +1775,7 @@ async def _run_harbor_trial_async_impl(
 
     is_operator_probe = raw.get("mode") == "probe"
     is_analysis_trial = is_analysis_kind(trial_kind)
-    is_probe = is_operator_probe or (is_analysis_trial and trial_kind != "summarize")
+    is_probe = trial_is_probe(harbor_config=raw, trial_kind=trial_kind)
     skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment

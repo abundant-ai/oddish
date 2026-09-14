@@ -336,14 +336,15 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert not hasattr(bundle, "metadata")
 
 
-def test_prepared_trial_probe_matches_the_runner_definition() -> None:
-    """Credential scoping and agent routing must read one probe definition.
+def test_prepared_trial_probe_defers_to_the_runner_predicate() -> None:
+    """Credential scoping must ask the runner's question, not a copy of it.
 
-    The runner treats any trial carrying extra instructions (bar a summarize
-    run) as a probe and forces it onto the direct Anthropic API. That includes
-    QA and audit analysis trials, whose ``trials.is_probe`` column is False, so
-    the column is the wrong input for credential scoping.
+    The transport predicate is an operator probe (``harbor_config.mode ==
+    "probe"``) or a non-summarize analysis kind. An earlier version of this
+    helper keyed on ``extra_instructions`` instead, which disagreed with the
+    runner in both directions.
     """
+    from oddish.workers.harbor.runner import trial_is_probe
     from oddish.workers.queue.trial_handler import (
         PreparedTrialRun,
         _prepared_trial_is_probe,
@@ -362,30 +363,19 @@ def test_prepared_trial_probe_matches_the_runner_definition() -> None:
         base.update(kw)
         return PreparedTrialRun(**base)
 
-    assert _prepared_trial_is_probe(_run()) is False
-    assert (
-        _prepared_trial_is_probe(
-            _run(trial_harbor_config={"extra_instructions": ["check x"]})
-        )
-        is True
-    )
-    # An analysis trial keeps the probe transport even though is_probe is unset.
-    assert (
-        _prepared_trial_is_probe(
-            _run(
-                trial_harbor_config={"extra_instructions": ["grade"]},
-                trial_kind="audit",
-            )
-        )
-        is True
-    )
-    # Summarize runs are explicitly excluded.
-    assert (
-        _prepared_trial_is_probe(
-            _run(
-                trial_harbor_config={"extra_instructions": ["sum"]},
-                trial_kind="summarize",
-            )
-        )
-        is False
-    )
+    cases = [
+        # (harbor_config, trial_kind, expected)
+        ({}, "agent", False),
+        ({"mode": "probe"}, "agent", True),
+        # Operator probe with no extra_instructions: the old helper said False.
+        ({"mode": "probe"}, "agent", True),
+        ({}, "audit", True),
+        ({}, "qa", True),
+        ({}, "summarize", False),
+        # Extra instructions alone are not the marker: the old helper said True.
+        ({"extra_instructions": ["x"]}, "agent", False),
+    ]
+    for hc, kind, expected in cases:
+        run = _run(trial_harbor_config=hc, trial_kind=kind)
+        assert _prepared_trial_is_probe(run) is expected, (hc, kind)
+        assert trial_is_probe(harbor_config=hc, trial_kind=kind) is expected
