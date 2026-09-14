@@ -9,13 +9,24 @@ from oddish.schemas import DeliveryCreate
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tier_fields, is_must_fix",
+    [
+        ({"tier": "must_fix"}, True),
+        ({"severity": "must_fix"}, True),
+        ({"tier": None, "severity": "must_fix"}, True),
+        ({"tier": "must_fix", "severity": "optional"}, True),
+        ({"tier": "optional", "severity": "must_fix"}, False),
+    ],
+    ids=["tier", "severity", "null-tier", "required-tier", "optional-tier"],
+)
 async def test_open_counts_audit_retained_and_live_findings_without_returning_bodies(
-    session,
+    session, tier_fields, is_must_fix
 ):
     task, version, experiment = await _green_task(session, "open-findings")
     audit = {
         "id": "audit-fix",
-        "tier": "must_fix",
+        **tier_fields,
         "title": "Audit defect",
         "detail": "PRIVATE FINDING BODY",
     }
@@ -27,7 +38,7 @@ async def test_open_counts_audit_retained_and_live_findings_without_returning_bo
     retained = {
         "id": "retained-fix",
         "links_to": "historical",
-        "tier": "must_fix",
+        **tier_fields,
         "title": "Required retained fix",
     }
     version.pre_trial = {"items": [audit, optional]}
@@ -35,7 +46,7 @@ async def test_open_counts_audit_retained_and_live_findings_without_returning_bo
         {"source": "pre_trial", "finding": audit},
         {"source": "trial", "finding": retained},
     ]
-    live = {"id": "live-fix", "tier": "must_fix", "title": "Run-review defect"}
+    live = {"id": "live-fix", **tier_fields, "title": "Run-review defect"}
     run = _trial(
         task,
         experiment,
@@ -84,8 +95,10 @@ async def test_open_counts_audit_retained_and_live_findings_without_returning_bo
         session.add(trial)
     await session.flush()
     response = await get_task_open_core(session, task_id=task.id, org_id=ORG)
-    assert response.selected_version.must_fix_count == 3
-    assert response.selected_version.pre_trial_must_fix_count == 1
+    assert response.selected_version.must_fix_count == (3 if is_must_fix else 0)
+    assert response.selected_version.pre_trial_must_fix_count == (
+        1 if is_must_fix else 0
+    )
     payload = response.selected_version.model_dump()
     assert "pre_trial_findings" not in payload
     assert "retained_findings" not in payload
@@ -93,7 +106,7 @@ async def test_open_counts_audit_retained_and_live_findings_without_returning_bo
     historical = await get_task_open_core(
         session, task_id=task.id, version_id=other_version.id, org_id=ORG
     )
-    assert historical.selected_version.must_fix_count == 1
+    assert historical.selected_version.must_fix_count == (1 if is_must_fix else 0)
     assert historical.selected_version.pre_trial_must_fix_count == 0
     delivery = await create_delivery_core(
         session,
