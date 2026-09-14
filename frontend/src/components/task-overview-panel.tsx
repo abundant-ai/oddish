@@ -249,10 +249,12 @@ export function TaskOverviewPanel({
         withQa.push(trial);
         const analysis = trial.analysis;
         if (!analysis || trial.analysis_status !== "success") continue;
-        counts.set(
-          analysis.classification,
-          (counts.get(analysis.classification) ?? 0) + 1
-        );
+        if (!foreignIds?.has(trial.id)) {
+          counts.set(
+            analysis.classification,
+            (counts.get(analysis.classification) ?? 0) + 1
+          );
+        }
         // Exploitation assessments are the trial→audit-finding join: an
         // exploiting trial belongs on the audit row's "seen in" list. A
         // not-exploited assessment only says the classifier looked — skip it.
@@ -406,8 +408,8 @@ export function TaskOverviewPanel({
             ? "Couldn’t finish"
             : checkState === "unaudited"
               ? "Not checked"
-              : checksFindings?.length
-                ? `${checksFindings.length} ${checksFindings.length === 1 ? "fix" : "fixes"} needed`
+              : mustFixCount > 0
+                ? `${mustFixCount} Must fix`
                 : "No required fixes";
 
   const findingsBody = () => {

@@ -345,10 +345,12 @@ test.describe("critical task and trial subtree", () => {
     const requests: string[] = [];
     // This test exercises lazy loading while the account keeps task content
     // hidden. Explicitly supply that preference instead of relying on defaults.
-    await page.route("**/api/users/me/ui-layouts/experiment.trial-drawer", (route) =>
-      route.fulfill({
-        json: { ...DEFAULT_TRIAL_DRAWER_LAYOUT, showTask: false },
-      })
+    await page.route(
+      "**/api/users/me/ui-layouts/experiment.trial-drawer",
+      (route) =>
+        route.fulfill({
+          json: { ...DEFAULT_TRIAL_DRAWER_LAYOUT, showTask: false },
+        })
     );
     let summaryGetCount = 0;
     let summaryPostCount = 0;
@@ -674,7 +676,7 @@ test.describe("critical task and trial subtree", () => {
 
     trialDetailGate.release();
     await expect(
-      page.getByRole("heading", { name: "Fair agent failure", exact: true })
+      page.getByRole("heading", { name: "Good failure", exact: true })
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Re-run analysis" })

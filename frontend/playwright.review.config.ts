@@ -3,6 +3,7 @@ export default defineConfig({
   testDir: "e2e",
   testMatch: [
     "review-meaning.spec.ts",
+    "qa-rejection-state.spec.ts",
     "user-ui-layout.spec.ts",
     "public-experiment-tasks.spec.ts",
   ],
