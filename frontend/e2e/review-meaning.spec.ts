@@ -12,7 +12,7 @@ for (const record of records) {
     expect(taskReviewStatus(task)).toBe(record.qa_status);
     if (record.id === "task-a") {
       expect(EXECUTION_LABELS[task.trials![0].analysis!.classification]).toBe(
-        "Fair agent failure"
+        "Good failure"
       );
       expect(task.verdict?.is_good).toBe(false);
     }
@@ -35,6 +35,148 @@ test.describe("real components with local fixture API", () => {
     "Run with playwright.review.config.ts and the isolated fixture app"
   );
 
+  for (const count of [25, 250]) {
+    test(`${count} tasks use page scrolling without reloading results`, async ({
+      page,
+    }) => {
+      await page.goto(`/experiments/review-demo?scenario=scroll-${count}`);
+      const first = page.getByRole("button", {
+        name: "kafka-consumer-offset-recovery-after-broker-restart-001",
+        exact: true,
+      });
+      await expect(first).toBeVisible();
+      const requests: string[] = [];
+      page.on("request", (request) => {
+        if (/\/(results|tasks)(?:[/?]|$)/.test(request.url()))
+          requests.push(request.url());
+      });
+      expect(
+        await page.evaluate(
+          () =>
+            Array.from(document.querySelectorAll("main div")).filter(
+              (element) =>
+                element.scrollHeight > element.clientHeight + 2 &&
+                ["auto", "scroll"].includes(getComputedStyle(element).overflowY)
+            ).length
+        )
+      ).toBe(0);
+      if (count === 25)
+        await expect(page.locator("tbody tr[data-index]")).toHaveCount(25);
+      await page.evaluate(() =>
+        window.scrollTo(0, document.documentElement.scrollHeight)
+      );
+      const last = page.getByRole("button", {
+        name: `kafka-consumer-offset-recovery-after-broker-restart-${String(count).padStart(3, "0")}`,
+        exact: true,
+      });
+      await expect(last).toBeVisible();
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await expect(first).toBeVisible();
+      expect(requests).toEqual([]);
+    });
+  }
+
+  test("task names and result badges do not repeat themselves on hover", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo");
+    const name = page.getByRole("button", { name: "Task A", exact: true });
+    await name.hover();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "Open findings for Task A", exact: true })
+      .hover();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await page.getByRole("button", { name: "Pass", exact: true }).hover();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+  });
+
+  test("rejected rows show only the must-fix count, with the issue in details", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?verdict=rejected");
+    const row = page
+      .getByRole("row")
+      .filter({
+        has: page.getByRole("button", { name: "Task A", exact: true }),
+      });
+    const badge = row.getByRole("button", {
+      name: "Open findings for Task A",
+      exact: true,
+    });
+    await expect(badge).toHaveText("1 Must fix");
+    await expect(row).not.toContainText(
+      "The verifier accepts an empty answer."
+    );
+    await expect(row.getByText(/Task checks:|Run reviews:/)).toHaveCount(0);
+    await badge.click();
+    await expect(
+      page.getByRole("heading", {
+        name: "The verifier accepts an empty answer.",
+        exact: true,
+      })
+    ).toBeVisible();
+  });
+
+  test("background updates retain scores, selection, and scroll position", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?scenario=refresh");
+    await expect(page.getByText("40.0%", { exact: true })).toBeVisible();
+    const row = page.getByRole("row").filter({
+      has: page.getByRole("button", { name: "Task A", exact: true }),
+    });
+    await row.getByRole("checkbox").check();
+    await page
+      .getByRole("button", { name: "Toggle background refresh" })
+      .click();
+    await expect(page.getByText("40.0%", { exact: true })).toBeVisible();
+    await expect(row.getByRole("checkbox")).toBeChecked();
+    await expect(
+      page.getByText(
+        /All results loaded|Downloading results|Refreshing results|Post-trial/
+      )
+    ).toHaveCount(0);
+  });
+
+  test("review coverage separates unusable evaluations and runs from other experiments", async ({
+    page,
+  }) => {
+    const original = tasks[0].trials![0];
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({
+        json: [
+          original,
+          {
+            ...original,
+            id: "foreign",
+            experiment_id: "other-experiment",
+            analysis: { classification: "HARNESS_ERROR" },
+          },
+        ],
+      })
+    );
+    await page.goto("/experiments/review-demo?task=task-a");
+    await expect(
+      page.getByText("This experiment: 1/1 evaluated · v7", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("0/1 evaluated · 1 couldn’t be evaluated", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Experiment other-ex" })
+    ).toHaveAttribute("href", "/experiments/other-experiment");
+    await expect(
+      page.getByText("1 good failure", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /Missing access:|Inspects task instructions|fair agent failure does not/
+      )
+    ).toHaveCount(0);
+  });
+
   test("blocker opens exact finding, file, line and preserves browser history", async ({
     page,
     context,
@@ -55,9 +197,7 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
     await blocker.click();
     await expect(page.locator('[data-finding="empty-answer"]')).toBeVisible();
-    await expect(
-      page.getByText("FAIR AGENT FAILURE", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("GOOD FAILURE", { exact: true })).toBeVisible();
     await expect(page).toHaveURL(/version=7/);
     await expect(page).toHaveURL(/taskFile=tests%2Ftest.sh/);
     const evidenceLink = page.getByRole("link", {
@@ -95,21 +235,21 @@ test.describe("real components with local fixture API", () => {
       .getByRole("row")
       .filter({ has: page.getByText("Task A", { exact: true }) });
     await expect(
-      rejectedRow.getByText("Pre-trial: Findings", { exact: true })
-    ).toBeVisible();
-    await expect(
-      rejectedRow.getByText("Post-trial: 1 passed", { exact: true })
-    ).toBeVisible();
+      rejectedRow.getByText(/Task checks:|Run reviews:/)
+    ).toHaveCount(0);
+
     await expect(
       rejectedRow.getByRole("button", {
         name: "Open findings for Task A",
         exact: true,
       })
-    ).toHaveText("1 Must Fix");
+    ).toHaveText("1 Must fix");
     await expect(
-      rejectedRow.getByText("1 Must Fix", { exact: true })
+      rejectedRow.getByText("1 Must fix", { exact: true })
     ).toHaveCount(1);
-    await page.getByRole("button", { name: "2 Failed", exact: true }).click();
+    await page
+      .getByRole("button", { name: "2 Review error", exact: true })
+      .click();
     await expect(page).toHaveURL(/verdict=failed/);
     await expect(
       page.getByRole("button", { name: "Task A", exact: true })
@@ -173,7 +313,7 @@ test.describe("real components with local fixture API", () => {
     });
     await page.goto(findingHref("task-a", 7, records[0].finding!));
     const source = page.getByRole("button", {
-      name: "Rerun source review",
+      name: "Check task v7",
       exact: true,
     });
     await expect(source).toBeVisible();
@@ -181,7 +321,7 @@ test.describe("real components with local fixture API", () => {
     await source.click();
     await expect.poll(() => writes).toEqual(["/api/tasks/task-a/qa/pre-trial"]);
     await page
-      .getByRole("button", { name: "Rerun execution review", exact: true })
+      .getByRole("button", { name: "Review runs for v7", exact: true })
       .last()
       .click();
     await expect
@@ -249,7 +389,9 @@ test.describe("real components with local fixture API", () => {
     page,
   }) => {
     await page.goto("/experiments/review-demo?scenario=live-review");
-    await page.getByRole("button", { name: "4 Pending", exact: true }).click();
+    await page
+      .getByRole("button", { name: "4 In progress", exact: true })
+      .click();
     for (const name of [
       "Unreviewed version",
       "New version with older review",
@@ -263,7 +405,7 @@ test.describe("real components with local fixture API", () => {
       page.getByRole("button", { name: "Task A", exact: true })
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "0 No verdict", exact: true })
+      page.getByRole("button", { name: "0 No current result", exact: true })
     ).toHaveCount(0);
     await page.getByRole("button", { name: "3 Accepted", exact: true }).click();
     await expect(
@@ -276,7 +418,7 @@ test.describe("real components with local fixture API", () => {
     await page.reload();
     await expect(
       page.getByRole("button", {
-        name: "4 Pending",
+        name: "4 In progress",
         exact: true,
       })
     ).toHaveAttribute("aria-pressed", "true");
@@ -287,7 +429,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=unreviewed-only");
     await page
-      .getByRole("button", { name: "2 No verdict", exact: true })
+      .getByRole("button", { name: "2 No current result", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Unreviewed version", exact: true })
@@ -300,7 +442,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "0 Pending",
+        name: "0 In progress",
         exact: true,
       })
     ).toHaveCount(0);
@@ -371,7 +513,7 @@ test.describe("real components with local fixture API", () => {
       "/tasks/stale-review?version=8&drawer=task&taskPane=overview"
     );
     await expect(
-      page.getByText("Verdict outdated", { exact: true }).first()
+      page.getByText("No result for this version", { exact: true }).first()
     ).toBeVisible();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page
@@ -385,7 +527,7 @@ test.describe("real components with local fixture API", () => {
     await page.goBack();
     await expect(page).toHaveURL(/version=8/);
     await expect(
-      page.getByText("Verdict outdated", { exact: true }).first()
+      page.getByText("No result for this version", { exact: true }).first()
     ).toBeVisible();
     await page.goForward();
     await expect(

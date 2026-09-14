@@ -62,19 +62,5 @@ export function ExperimentResultsStatus({
     );
   }
 
-  return (
-    <div
-      role="status"
-      className="text-muted-foreground flex flex-wrap gap-x-2 gap-y-1 text-xs"
-    >
-      <span>
-        {complete
-          ? isLoading
-            ? "Refreshing results…"
-            : "All results loaded."
-          : "Downloading results…"}
-      </span>
-      {counts}
-    </div>
-  );
+  return null;
 }

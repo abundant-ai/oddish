@@ -1,5 +1,5 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { useSearchParams } from "next/navigation";
 import type { ExperimentPageSummary, Task } from "@/lib/types";
@@ -43,9 +43,20 @@ export function FixtureExperiment() {
       ];
     return [task];
   });
+  const scrollCount =
+    scenario === "scroll-25" ? 25 : scenario === "scroll-250" ? 250 : 0;
+  const displayedTasks = scrollCount
+    ? Array.from({ length: scrollCount }, (_, index) => ({
+        ...tasks[0],
+        id: `scroll-${index}`,
+        name: `kafka-consumer-offset-recovery-after-broker-restart-${String(index + 1).padStart(3, "0")}`,
+      }))
+    : visibleTasks;
+  const [refreshing, setRefreshing] = useState(false);
+
   // Stored verdict counters omit live trial analysis and replacement QA.
   const summary: ExperimentPageSummary = {
-    task_count: tasks.length,
+    task_count: displayedTasks.length,
     trial_count: 5,
     completed: 5,
     failed: 0,
@@ -66,13 +77,23 @@ export function FixtureExperiment() {
   return (
     <ExperimentDetailView
       experimentId="review-demo"
-      tasksForExperiment={visibleTasks}
+      tasksForExperiment={displayedTasks}
       pageSummary={summary}
       costTotals={{ status: "idle" }}
       onRetryCostTotals={() => {}}
       isLoading={false}
+      isLoadingTrials={refreshing}
       pagesComplete
-      headerLeft={<h1>Review meaning fixtures</h1>}
+      headerLeft={
+        <>
+          <h1>Review meaning fixtures</h1>
+          {scenario === "refresh" && (
+            <button onClick={() => setRefreshing((value) => !value)}>
+              Toggle background refresh
+            </button>
+          )}
+        </>
+      }
     />
   );
 }

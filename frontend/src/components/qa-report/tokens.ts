@@ -51,26 +51,13 @@ export const FALLBACK_TOKEN: VerdictToken = {
 
 export const TIER_ORDER = ["must_fix", "should_fix", "optional"] as const;
 
-export const TIER_META: Record<string, { label: string; labelEffect: string }> =
-  {
-    must_fix: {
-      label: "MUST FIX",
-      labelEffect:
-        "Requires a fix or an explicit delivery acknowledgment. Changes the execution label only if it affected that execution’s outcome.",
-    },
-    should_fix: {
-      label: "RECORDED SHOULD FIX",
-      labelEffect:
-        "Historical severity retained. Requires a fix or individual acknowledgment in active deliveries.",
-    },
-    optional: {
-      label: "RECORDED OPTIONAL",
-      labelEffect:
-        "Historical severity retained. Requires a fix or individual acknowledgment in active deliveries.",
-    },
-  };
+export const TIER_LABELS: Record<string, string> = {
+  must_fix: "Must fix",
+  should_fix: "RECORDED SHOULD FIX",
+  optional: "RECORDED OPTIONAL",
+};
 
-// Preserve the recorded severity; the explanatory text states shipment policy.
+// Preserve the recorded severity for historical findings.
 export const TIER_BADGE: Record<string, string> = {
   must_fix: "bg-destructive text-destructive-foreground",
   should_fix: "border-foreground/25 bg-foreground/10 text-foreground border",

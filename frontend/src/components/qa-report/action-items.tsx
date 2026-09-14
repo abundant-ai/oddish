@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
-import { TIER_BADGE, TIER_META, TIER_ORDER } from "./tokens";
+import { TIER_BADGE, TIER_LABELS, TIER_ORDER } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
 import type { FeedbackRecord } from "./types";
@@ -130,7 +130,6 @@ export function SeverityGroups({
   items,
   onFeedback,
   className,
-  tierEffects,
   renderItemFooter,
   selectedFinding,
   findingLink,
@@ -140,8 +139,6 @@ export function SeverityGroups({
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
-  /** Per-tier effect line; the default narrates trial classification. */
-  tierEffects?: Partial<Record<string, string>>;
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
@@ -162,7 +159,7 @@ export function SeverityGroups({
       .filter((p): p is string => Boolean(p));
     return {
       tier,
-      meta: TIER_META[tier],
+      label: TIER_LABELS[tier],
       items: tierItems,
       previews,
     };
@@ -191,11 +188,8 @@ export function SeverityGroups({
                 TIER_BADGE[group.tier]
               )}
             >
-              {group.items.length} {group.meta.label}
+              {group.items.length} {group.label}
             </span>
-            {/* Collapsed, the line is worth more as the items themselves than
-                as the tier's effect, which the badge already implies. Open,
-                the items are right there, so the effect takes the line back. */}
             {group.previews.length > 0 ? (
               <span
                 className="text-muted-foreground min-w-0 flex-1 truncate text-[11px] leading-relaxed group-open:hidden"
@@ -204,14 +198,6 @@ export function SeverityGroups({
                 {group.previews.join(" · ")}
               </span>
             ) : null}
-            <span
-              className={cn(
-                "text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty",
-                group.previews.length > 0 && "hidden group-open:block"
-              )}
-            >
-              {tierEffects?.[group.tier] ?? group.meta.labelEffect}
-            </span>
           </summary>
 
           <ul className="divide-border border-border flex flex-col divide-y border-t">

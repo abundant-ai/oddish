@@ -485,11 +485,7 @@ function ArtifactContentPane({
   }, [selectedFile, proxyUrl, presignedUrl]);
 
   if (!selectedFile) {
-    return (
-      <div className="text-muted-foreground flex h-full flex-1 items-center justify-center text-sm">
-        Select a file to view its contents
-      </div>
-    );
+    return null;
   }
 
   const renderUrl = presignedUrl || proxyUrl || null;

@@ -320,10 +320,8 @@ function TrialAnalysisCard({
             (now - new Date(trial.analysis_started_at).getTime()) / 1000
           )
         );
-        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+        progressLine = `${Math.floor(secs / 60)}m ${secs % 60}s`;
       }
-    } else {
-      progressLine = "Waiting for a QA worker.";
     }
   }
 
@@ -363,12 +361,7 @@ function TrialAnalysisCard({
               disabled={queuing || queueBlockedReason !== null}
               onClick={queueRun}
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              title={
-                queueBlockedReason ??
-                (hasAnalysis
-                  ? "Reset this trial's analysis and re-run it with the latest prompt"
-                  : "Analyze this trial with the latest prompt")
-              }
+              title={queueBlockedReason ?? undefined}
             >
               {queuing
                 ? "Queuing…"
@@ -457,11 +450,11 @@ function TrialAnalysisCard({
                         ? "Analysis queued"
                         : "QA is running"}
                   </span>
-                  <span className="text-muted-foreground text-xs">
-                    {trial.analysis_status
-                      ? progressLine
-                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
-                  </span>
+                  {progressLine && (
+                    <span className="text-muted-foreground text-xs">
+                      {progressLine}
+                    </span>
+                  )}
                   {activeQaTrial && onOpenActiveQaTrial && (
                     <button
                       type="button"
@@ -492,9 +485,6 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     No analysis yet
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    This trial has not been analyzed.
                   </span>
                 </div>
               )}
@@ -1638,10 +1628,6 @@ export function TrialDetailPanel({
                         </span>
                       ))}
                     </div>
-                    <p className="text-muted-foreground mt-2 text-xs">
-                      Live scheduler snapshot. This can move as other trials
-                      start, finish, or get retried.
-                    </p>
                   </CardContent>
                 </Card>
               )}

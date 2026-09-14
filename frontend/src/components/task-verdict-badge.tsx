@@ -59,11 +59,13 @@ function presentVerdict(
     toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
   } else if (review === "outdated") {
     icon = (
-      <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-600`} />
+      <Microscope
+        className={`${iconSizeClass} text-muted-foreground shrink-0`}
+      />
     );
     title = VERDICT_LABELS.outdated;
-    toneCard = "border-amber-500/30 bg-amber-500/5";
-    toneInline = "border-amber-500/40 bg-amber-500/5";
+    toneCard = "border-border";
+    toneInline = "border-border";
   } else if (isGood === true) {
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
@@ -82,24 +84,15 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title =
-      status === "success"
-        ? "Review completed without a verdict"
-        : VERDICT_LABELS.never;
+    title = status === "success" ? "No overall result" : VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
 
   // An in-flight review must never display a previous verdict from cached data.
   let detail: string | null = null;
-  if (review === "outdated") {
-    detail =
-      "The stored verdict does not cover the selected version. Inspect its findings and review history before rerunning the default version.";
-  } else if (failed) {
-    detail = `Task quality is undetermined by this review. ${task.verdict_error ?? "Inspect review evidence before retrying."}`;
-  } else if (!pending && status === "success" && isGood == null) {
-    detail =
-      "QA finished without an overall verdict. Review the trial findings below.";
+  if (failed) {
+    detail = task.verdict_error ?? null;
   } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {
@@ -144,13 +137,9 @@ export function TaskVerdictBadge({
   const p = presentVerdict(task, iconSize, qaActive);
   const shownDetail = detail !== undefined ? detail : p.detail;
   const verdict = task.verdict ?? null;
-  const runScope = `Reviews recorded runs and synthesizes the verdict for default v${task.current_version ?? "?"}. Does not rerun solver trials.`;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    task.verdict_status || task.verdict
-      ? "Rerun execution review"
-      : "Run execution review";
+  const runLabel = `Review runs${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -172,7 +161,7 @@ export function TaskVerdictBadge({
               }
             >
               {isRunning
-                ? "Queuing execution review..."
+                ? "Queuing review…"
                 : variant === "summary" &&
                     !p.pending &&
                     !p.failed &&
@@ -256,7 +245,6 @@ export function TaskVerdictBadge({
             type="button"
             variant="outline"
             onClick={onRunJudge}
-            title={runScope}
             disabled={isRunning}
             className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
           >
@@ -272,7 +260,7 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          Execution review
+          Run reviews
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">
