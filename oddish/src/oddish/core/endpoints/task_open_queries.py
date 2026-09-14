@@ -120,8 +120,8 @@ IDENTITY_SQL = text(
         WHERE NOT EXISTS (SELECT 1 FROM stored WHERE stored.finding_key = live.finding_key OR stored.finding_key = live.item->>'links_to')
         ORDER BY finding_key
       )
-      SELECT count(*) FILTER (WHERE item->>'tier' = 'must_fix') AS must_fix_count,
-        count(*) FILTER (WHERE item->>'tier' = 'must_fix' AND from_audit) AS pre_trial_must_fix_count
+      SELECT count(*) FILTER (WHERE COALESCE(item->>'tier', item->>'severity') = 'must_fix') AS must_fix_count,
+        count(*) FILTER (WHERE COALESCE(item->>'tier', item->>'severity') = 'must_fix' AND from_audit) AS pre_trial_must_fix_count
       FROM merged
     ) findings
     """
