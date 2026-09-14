@@ -298,9 +298,22 @@ class PreparedTrialRun:
     created_by_user_id: str | None = None
     billed_user_id: str | None = None
     trial_attempt: int = 1
-    # Probe trials are forced to the direct Anthropic API regardless of
-    # claude_code_force_direct_api, so the scoped bundle has to know.
-    is_probe: bool = False
+
+
+def _prepared_trial_is_probe(prepared_trial: PreparedTrialRun) -> bool:
+    """The runner's probe test, in one place.
+
+    A probe carries extra instructions and is not a summarize run. This drives
+    both the agent's transport (probes are forced to the direct Anthropic API by
+    ``_claude_code_forces_direct_api``) and the scoped credential bundle, so the
+    two must read the same definition. The ``trials.is_probe`` column is a
+    narrower, operator-facing flag and is deliberately not used here.
+    """
+    harbor_config = prepared_trial.trial_harbor_config or {}
+    return (
+        bool(harbor_config.get("extra_instructions"))
+        and prepared_trial.trial_kind != "summarize"
+    )
 
 
 @dataclass(slots=True)
@@ -751,7 +764,6 @@ async def _prepare_trial_run(
             org_id=trial.org_id,
             billed_user_id=trial.billed_user_id,
             trial_attempt=trial.attempts,
-            is_probe=bool(trial.is_probe),
             created_by_user_id=(
                 (task.created_by_user_id if task else None) or experiment_owner_user_id
             ),
@@ -1641,10 +1653,7 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        harbor_config = prepared_trial.trial_harbor_config or {}
-        is_probe = bool(harbor_config.get("extra_instructions")) and (
-            prepared_trial.trial_kind != "summarize"
-        )
+        is_probe = _prepared_trial_is_probe(prepared_trial)
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
@@ -2138,7 +2147,7 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
-                is_probe=prepared_trial.is_probe,
+                is_probe=_prepared_trial_is_probe(prepared_trial),
             )
 
         from oddish.workers.queue.model_gateway import (

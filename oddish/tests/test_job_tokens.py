@@ -334,3 +334,58 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert isinstance(token_hash, str) and len(token_hash) == 64
     assert not hasattr(bundle, "token")
     assert not hasattr(bundle, "metadata")
+
+
+def test_prepared_trial_probe_matches_the_runner_definition() -> None:
+    """Credential scoping and agent routing must read one probe definition.
+
+    The runner treats any trial carrying extra instructions (bar a summarize
+    run) as a probe and forces it onto the direct Anthropic API. That includes
+    QA and audit analysis trials, whose ``trials.is_probe`` column is False, so
+    the column is the wrong input for credential scoping.
+    """
+    from oddish.workers.queue.trial_handler import (
+        PreparedTrialRun,
+        _prepared_trial_is_probe,
+    )
+
+    def _run(**kw) -> PreparedTrialRun:
+        base = dict(
+            task_path=None,
+            task_s3_key=None,
+            task_id="t",
+            trial_agent="claude-code",
+            trial_model="global.anthropic.claude-opus-5",
+            trial_environment="docker",
+            trial_harbor_config={},
+        )
+        base.update(kw)
+        return PreparedTrialRun(**base)
+
+    assert _prepared_trial_is_probe(_run()) is False
+    assert (
+        _prepared_trial_is_probe(
+            _run(trial_harbor_config={"extra_instructions": ["check x"]})
+        )
+        is True
+    )
+    # An analysis trial keeps the probe transport even though is_probe is unset.
+    assert (
+        _prepared_trial_is_probe(
+            _run(
+                trial_harbor_config={"extra_instructions": ["grade"]},
+                trial_kind="audit",
+            )
+        )
+        is True
+    )
+    # Summarize runs are explicitly excluded.
+    assert (
+        _prepared_trial_is_probe(
+            _run(
+                trial_harbor_config={"extra_instructions": ["sum"]},
+                trial_kind="summarize",
+            )
+        )
+        is False
+    )
