@@ -1,3 +1,4 @@
+import { encodeFilePath } from "@/lib/file-path";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import {
@@ -19,7 +20,7 @@ export async function GET(
     const token = await getClerkToken(getToken);
 
     const { task_id, path } = await params;
-    const filePath = path.join("/");
+    const filePath = encodeFilePath(path.join("/"));
     const search = request.nextUrl.search;
 
     const url = getBackendUrl(

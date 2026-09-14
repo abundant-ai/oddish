@@ -27,7 +27,7 @@ for (const order of ["body-first", "metadata-first"] as const) {
         await route.fulfill({ json: data });
       });
       await page.route(
-        "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+        "**/api/tasks/task-a/files/tests/test.sh?**",
         async (route) => {
           reads.push(new URL(route.request().url()));
           const first = reads.length === 1;
@@ -329,7 +329,7 @@ for (const partialContent of [
   }) => {
     const reads: string[] = [];
     await page.route(
-      "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+      "**/api/tasks/task-a/files/tests/test.sh?**",
       async (route) => {
         const params = new URL(route.request().url()).searchParams;
         reads.push(params.get("max_bytes") ?? "full");
@@ -364,7 +364,7 @@ test("a delayed full file stays attached to its original version", async ({
   });
   let fullReadStarted = false;
   await page.route(
-    "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+    "**/api/tasks/task-a/files/tests/test.sh?**",
     async (route) => {
       const params = new URL(route.request().url()).searchParams;
       const version = params.get("version");
@@ -398,7 +398,7 @@ test("a delayed full file stays attached to its original version", async ({
     const finished = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
-        url.pathname.endsWith("files/tests%2Ftest.sh") &&
+        url.pathname.endsWith("files/tests/test.sh") &&
         url.searchParams.get("version") === "7" &&
         !url.searchParams.has("max_bytes")
       );
@@ -436,7 +436,7 @@ test("prepared directories read selected previews once and reuse them", async ({
     ];
     await route.fulfill({ json: data });
   });
-  await page.route("**/api/tasks/task-a/files/*?**", async (route) => {
+  await page.route("**/api/tasks/task-a/files/**?**", async (route) => {
     reads.push(route.request().url());
     const first = route.request().url().includes("first.sh");
     await route.fulfill({

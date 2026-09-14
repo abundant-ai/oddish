@@ -1,8 +1,19 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { ArtifactsViewer } from "@/components/artifacts-viewer";
-export default function PreparedFileFixture() {
+export default function PreparedFilePage() {
+  return (
+    <Suspense>
+      <PreparedFileFixture />
+    </Suspense>
+  );
+}
+
+function PreparedFileFixture() {
+  const search = useSearchParams();
+  const filePath = search.get("file") ?? "artifacts/readme.txt";
   const [tab, setTab] = useState("files");
   return (
     <>
@@ -16,7 +27,7 @@ export default function PreparedFileFixture() {
             taskId={null}
             filesUrl="/api/trials/prepared-1/files"
             trialAttempt={1}
-            initialFilePath="artifacts/readme.txt"
+            initialFilePath={filePath}
             contentOnly
             activePane="file"
           />
@@ -24,7 +35,7 @@ export default function PreparedFileFixture() {
           <ArtifactsViewer
             filesUrl="/api/trials/prepared-1/files"
             trialAttempt={1}
-            initialFilePath="artifacts/readme.txt"
+            initialFilePath={filePath}
           />
         )}
       </div>

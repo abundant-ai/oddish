@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
+import { encodeFilePath } from "@/lib/file-path";
 import { apiFetch } from "@/lib/api";
 
 export const FILE_PREVIEW_BYTES = 100 * 1024;
@@ -29,7 +30,7 @@ export function trialFilePreviewKey(
 export async function fetchTrialFilePreview(
   key: NonNullable<ReturnType<typeof trialFilePreviewKey>>
 ) {
-  const url = `${key[2]}/${key[3].split("/").map(encodeURIComponent).join("/")}?indexed=true&attempt=${key[4]}&revision=${encodeURIComponent(key[5] ?? "")}&max_bytes=${FILE_PREVIEW_BYTES}`;
+  const url = `${key[2]}/${encodeFilePath(key[3])}?indexed=true&attempt=${key[4]}&revision=${encodeURIComponent(key[5] ?? "")}&max_bytes=${FILE_PREVIEW_BYTES}`;
   const response = await apiFetch(url, { signal: AbortSignal.timeout(15_000) });
   if (!response.ok)
     throw new Error(`Could not read file (HTTP ${response.status})`);

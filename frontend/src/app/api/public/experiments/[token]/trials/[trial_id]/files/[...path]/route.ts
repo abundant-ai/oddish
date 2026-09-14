@@ -1,3 +1,4 @@
+import { encodeFilePath } from "@/lib/file-path";
 import { NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/backend-config";
 
@@ -9,7 +10,7 @@ export async function GET(
 ) {
   try {
     const { token, trial_id, path } = await params;
-    const filePath = path.join("/");
+    const filePath = encodeFilePath(path.join("/"));
     const url = getBackendUrl(
       "public/experiments",
       `/${token}/trials/${trial_id}/files/${filePath}`

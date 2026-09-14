@@ -14,6 +14,7 @@ import {
   trialFilePreviewKey,
   useFileCacheScope,
 } from "@/lib/file-resources";
+import { encodeFilePath } from "@/lib/file-path";
 import useSWR, { unstable_serialize, useSWRConfig } from "swr";
 import {
   useTaskFileTree,
@@ -584,7 +585,7 @@ export function TaskFilesPanel({
     }
     if (previewContentHash) params.set("source_hash", previewContentHash);
     const query = params.toString();
-    return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
+    return `${resolvedFilesUrl}/${encodeFilePath(selectedFile.path)}${
       query ? `?${query}` : ""
     }`;
   };

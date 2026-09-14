@@ -21,7 +21,7 @@ import {
 import { apiFetch, fetcher } from "@/lib/api";
 import { firstFilePath } from "@/lib/file-tree-order";
 import { formatFileSize } from "@/lib/format";
-import { sameFilePath } from "@/lib/file-path";
+import { encodeFilePath, sameFilePath } from "@/lib/file-path";
 import { recordClientError } from "@/lib/observability";
 import type { LineRange } from "@/lib/line-range";
 
@@ -397,14 +397,7 @@ function ArtifactContentPane({
   const fileName = selectedFile?.path.split("/").pop() ?? "";
   const isBinary = fileName ? isBinaryRendererFile(fileName) : false;
 
-  // Each path segment is URL-encoded individually so `/` separators in the
-  // path stay intact for the backend file route (encodeURIComponent would
-  // turn them into %2F and miss the route).
-  const proxyUrl = useMemo(() => {
-    if (!fullPath) return null;
-    const encoded = fullPath.split("/").map(encodeURIComponent).join("/");
-    return `${filesUrl}/${encoded}`;
-  }, [filesUrl, fullPath]);
+  const proxyUrl = fullPath ? `${filesUrl}/${encodeFilePath(fullPath)}` : null;
 
   useEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;

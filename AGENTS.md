@@ -2115,6 +2115,12 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 
 ## `frontend/` — Next.js Dashboard
 
+`frontend/src/lib/file-path.ts` owns `encodeFilePath` for relative file paths in
+catch-all request URLs. Encode each filename segment, preserving `/` separators.
+Use the same function when file proxies forward Next.js's decoded path parameters;
+literal `%`, `?`, and `#` belong to the filename, not the URL query or fragment.
+File selections and cache keys retain the decoded path.
+
 Task and experiment drawers share the `experiment.trial-drawer` layout saved
 through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).
 The hosted `user_ui_layouts` table keys versioned JSON by authenticated

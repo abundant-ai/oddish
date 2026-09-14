@@ -124,3 +124,82 @@ test("Files and Artifacts share one bounded preview across unmounts", async ({
   expect(bodies.length).toBe(initialBodies);
   expect(listings).toHaveLength(2);
 });
+
+test("nested trial binary URLs preserve separators and escape filename characters", async ({
+  page,
+}) => {
+  const path = "artifacts/charts/chart #1.png";
+  const expectedPath =
+    "/api/trials/prepared-1/files/artifacts/charts/chart%20%231.png";
+  await page.route("**/api/trials/prepared-1/files?**", (route) =>
+    route.fulfill({
+      json: {
+        source_hash: "fixture-revision",
+        directories: { "": { files: [{ path, size: 68 }], dirs: [] } },
+      },
+    })
+  );
+  const requests: URL[] = [];
+  await page.route("**/api/trials/prepared-1/files/**", async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    expect(url.pathname).toBe(expectedPath);
+    expect(url.searchParams.get("indexed")).toBe("true");
+    expect(url.searchParams.get("attempt")).toBe("1");
+    await route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7XcAAAAASUVORK5CYII=",
+        "base64"
+      ),
+    });
+  });
+  await page.goto(`/prepared-files?file=${encodeURIComponent(path)}`);
+  const image = page.getByRole("img", { name: "chart #1.png", exact: true });
+  await expect(image).toBeVisible();
+  await expect
+    .poll(() =>
+      image.evaluate((element: HTMLImageElement) => element.naturalWidth)
+    )
+    .toBe(1);
+  expect(requests.length).toBeGreaterThan(0);
+});
+
+test("nested trial full-file loads use the same encoded path as previews", async ({
+  page,
+}) => {
+  const path = "artifacts/nested/run notes.txt";
+  const requests: URL[] = [];
+  await page.route("**/api/trials/prepared-1/files?**", (route) =>
+    route.fulfill({
+      json: {
+        source_hash: "fixture-revision",
+        directories: { "": { files: [{ path, size: 200000 }], dirs: [] } },
+      },
+    })
+  );
+  await page.route("**/api/trials/prepared-1/files/**", async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(url);
+    expect(url.pathname).toBe(
+      "/api/trials/prepared-1/files/artifacts/nested/run%20notes.txt"
+    );
+    expect(url.searchParams.get("attempt")).toBe("1");
+    await route.fulfill({
+      contentType: "text/plain",
+      body: url.searchParams.has("max_bytes")
+        ? "preview\n".repeat(12800)
+        : "Complete nested trial file",
+    });
+  });
+  await page.goto(`/prepared-files?file=${encodeURIComponent(path)}`);
+  await page
+    .getByRole("button", { name: "Load full file", exact: true })
+    .click();
+  await expect(
+    page.getByText("Complete nested trial file", { exact: true })
+  ).toBeVisible();
+  expect(
+    requests.filter((url) => !url.searchParams.has("max_bytes"))
+  ).toHaveLength(1);
+});
