@@ -2266,8 +2266,9 @@ must remain distinguishable from a review of the selected version. The shared
 bounded provenance query does not fetch trial artifacts or enqueue work.
 Task verdict labels and actions live in `frontend/src/lib/review.ts`. Queued and
 running verdicts have separate states; accepted and rejected remain judgments.
-Failed generation, missing verdicts, and version mismatches all display "No verdict"
-with a specific reason. A failed generation never establishes rejection.
+Failed generation, missing verdicts, and version mismatches all display the same
+neutral "No verdict" badge, without cause-specific copy, warning colors, or tooltips.
+Generation diagnostics remain in run evidence. An absent verdict does not establish rejection.
 Experiment summary selections use `verdict=accepted|rejected|queued|running|no_verdict`;
 counts and filters both classify loaded task rows with `taskReviewFilter`, including
 live analysis and QA trials. Drawer navigation retains the selected verdict group.

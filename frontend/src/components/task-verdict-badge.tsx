@@ -13,14 +13,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   VERDICT_LABELS,
   taskReviewStatus,
-  taskVerdictAbsenceReason,
   taskVerdictActionLabel,
 } from "@/lib/review";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
   pending: boolean;
-  failed: boolean;
   isGood: boolean | null;
   icon: ReactNode;
   title: string;
@@ -39,7 +37,6 @@ function presentVerdict(
   const taskStatus = taskReviewStatus(task);
   const review = qaActive && taskStatus !== "queued" ? "running" : taskStatus;
   const pending = review === "queued" || review === "running";
-  const failed = review === "error";
   const isGood =
     review === "accepted" ? true : review === "needs_fixes" ? false : null;
 
@@ -63,22 +60,6 @@ function presentVerdict(
     title = VERDICT_LABELS[review];
     toneCard = "border-blue-500/30 bg-blue-500/5";
     toneInline = "border-[color:var(--paper-line)]";
-  } else if (failed) {
-    icon = (
-      <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-600`} />
-    );
-    title = VERDICT_LABELS.error;
-    toneCard = "border-amber-500/30 bg-amber-500/5";
-    toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
-  } else if (review === "outdated") {
-    icon = (
-      <Microscope
-        className={`${iconSizeClass} text-muted-foreground shrink-0`}
-      />
-    );
-    title = VERDICT_LABELS.outdated;
-    toneCard = "border-border";
-    toneInline = "border-border";
   } else if (isGood === true) {
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
@@ -103,14 +84,14 @@ function presentVerdict(
   }
 
   // An in-flight review must never display a previous verdict from cached data.
-  let detail = taskVerdictAbsenceReason(task, review);
+  let detail: string | null = null;
   if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {
     detail = verdict?.primary_issue ?? verdict?.reasoning ?? null;
   }
 
-  return { pending, failed, isGood, icon, title, detail, toneCard, toneInline };
+  return { pending, isGood, icon, title, detail, toneCard, toneInline };
 }
 
 export function TaskVerdictBadge({

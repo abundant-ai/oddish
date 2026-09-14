@@ -35,7 +35,7 @@ test.describe("real components with local fixture API", () => {
     "Run with playwright.review.config.ts and the isolated fixture app"
   );
 
-  test("No verdict groups missing, failed, and older-version results with visible reasons", async ({
+  test("No verdict presents missing, failed, and older-version results identically", async ({
     page,
   }) => {
     await page.goto("/experiments/review-demo");
@@ -62,7 +62,10 @@ test.describe("real components with local fixture API", () => {
         .getByRole("row")
         .filter({ has: page.getByRole("button", { name, exact: true }) });
       await expect(row.getByText("No verdict", { exact: true })).toBeVisible();
-      await expect(row.getByText(reason, { exact: true })).toBeVisible();
+      await expect(row.getByText(reason, { exact: true })).toHaveCount(0);
+      await expect(row.getByText("No verdict", { exact: true })).toHaveClass(
+        /bg-muted/
+      );
     }
     await page
       .getByRole("button", {
@@ -72,7 +75,8 @@ test.describe("real components with local fixture API", () => {
       .click();
     await expect(
       page.getByText("Not generated yet.", { exact: true })
-    ).toHaveCount(2);
+    ).toHaveCount(0);
+    await expect(page.getByText("No verdict", { exact: true })).toHaveCount(5);
   });
 
   for (const oldFilter of ["failed", "unreviewed"]) {

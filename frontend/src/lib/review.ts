@@ -105,26 +105,6 @@ export function taskReviewStatus(task: Task): keyof typeof VERDICT_LABELS {
   return "never";
 }
 
-/** Reasons accompany the shared absence label; failed generation is not rejection. */
-export function taskVerdictAbsenceReason(
-  task: Task,
-  status = taskReviewStatus(task)
-): string | null {
-  if (status === "error")
-    return (
-      task.verdict_error?.trim() ||
-      "Verdict generation failed. No error was recorded."
-    );
-  if (status === "outdated")
-    return "The existing verdict applies to another version.";
-  if (status === "never") {
-    if (task.verdict_status === "success")
-      return "The completed run did not produce a verdict.";
-    return "Not generated yet.";
-  }
-  return null;
-}
-
 /** Both task actions target the default version, even while viewing an older one. */
 export function taskVerdictActionLabel(task: Task | null | undefined): string {
   const action =

@@ -601,12 +601,12 @@ for (const [name, override, reason] of [
     "The existing verdict applies to another version.",
   ],
 ] as const) {
-  test(`${name} uses No verdict with a visible reason in rows and details`, () => {
+  test(`${name} uses only the neutral No verdict label in rows and details`, () => {
     const absent = { ...task, ...override };
     assert.equal(review.taskReviewFilter(absent), "no_verdict");
     const presentation = badge.present!(absent, "", false);
     assert.equal(presentation.title, "No verdict");
-    assert.equal(presentation.detail, reason);
+    assert.equal(presentation.detail, null);
     for (const html of [
       renderToStaticMarkup(
         React.createElement(exports.Chip, { task: absent, ungradedSettled: 0 })
@@ -618,7 +618,8 @@ for (const [name, override, reason] of [
       ),
     ]) {
       assert.match(html, /No verdict/);
-      assert.ok(html.includes(reason), html);
+      assert.ok(!html.includes(reason), html);
+      assert.doesNotMatch(html, /amber/);
       assert.doesNotMatch(
         html,
         /Not reviewed|Review couldn|No overall result|Accepted/

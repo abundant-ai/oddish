@@ -58,7 +58,6 @@ import Link from "next/link";
 import {
   EXECUTION_LABELS,
   VERDICT_LABELS,
-  taskVerdictAbsenceReason,
   taskReviewStatus,
 } from "@/lib/review";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -420,22 +419,17 @@ function TaskVerdictChip({
   const running = status === "queued" || status === "running";
   const chipClass = hasRequiredFixes
     ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
-    : status === "error"
-      ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-      : status === "accepted"
-        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
-        : status === "needs_fixes"
-          ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
-          : running
-            ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
-            : "bg-muted text-muted-foreground";
+    : status === "accepted"
+      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
+      : status === "needs_fixes"
+        ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+        : running
+          ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+          : "bg-muted text-muted-foreground";
   const label =
     hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
       : VERDICT_LABELS[status];
-  const absenceReason = hasRequiredFixes
-    ? null
-    : taskVerdictAbsenceReason(task, status);
   let tip: string | null = null;
   if (
     (status === "accepted" || status === "needs_fixes") &&
@@ -446,17 +440,10 @@ function TaskVerdictChip({
   }
 
   const chip = (
-    <span className="flex min-w-0 flex-col items-start gap-1 text-left">
-      <span
-        className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
-      >
-        {label}
-      </span>
-      {absenceReason && (
-        <span className="text-muted-foreground max-w-sm text-xs font-normal break-words whitespace-normal">
-          {absenceReason}
-        </span>
-      )}
+    <span
+      className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
+    >
+      {label}
     </span>
   );
   const control = onOpen ? (
