@@ -84,15 +84,17 @@ def _agent_invokes_bedrock(agent: str | None) -> bool:
     return _agent_is_claude_code(agent) or (agent or "").strip().lower() == "single-llm"
 
 
-def _forced_to_direct_api(settings: Any, is_probe: bool) -> bool:
-    """Mirror ``agent_config._claude_code_forces_direct_api`` for claude-code.
+def _forced_to_direct_api(is_probe: bool) -> bool:
+    """Defer to the predicate that actually selects the transport.
 
-    A probe is routed to the direct Anthropic API whatever
-    ``claude_code_force_direct_api`` says, so the bundle has to ask the same
-    question the runner asks or it will scope a credential for the wrong
-    transport. Kept as its own helper so the two predicates stay comparable.
+    ``agent_config._claude_code_forces_direct_api`` gates on an ambient
+    ``ANTHROPIC_API_KEY`` as well as the probe flag and the force-direct
+    setting: with no key there is nothing to route to, so the trial stays on
+    Bedrock. Restating any part of that here has drifted before, so call it.
     """
-    return is_probe or bool(getattr(settings, "claude_code_force_direct_api", False))
+    from oddish.workers.harbor.agent_config import _claude_code_forces_direct_api
+
+    return _claude_code_forces_direct_api(is_probe)
 
 
 def scoped_model_env(
@@ -133,7 +135,7 @@ def scoped_model_env(
         # Bedrock for an id only api.anthropic.com knows. Scope the key the
         # trial will actually authenticate with instead.
         if not _agent_invokes_bedrock(agent) or (
-            _agent_is_claude_code(agent) and _forced_to_direct_api(settings, is_probe)
+            _agent_is_claude_code(agent) and _forced_to_direct_api(is_probe)
         ):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}

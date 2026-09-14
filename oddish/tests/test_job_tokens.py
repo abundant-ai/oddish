@@ -35,13 +35,33 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
         gemini_api_key=None,
         meta_api_key=None,
         geometric_api_key=None,
-        claude_code_force_direct_api=False,
     )
     base.update(keys)
     ns = types.SimpleNamespace(**base)
     ns.get_provider_for_trial = lambda agent, model: _provider_of(model)
     ns.get_openai_agent_env = lambda model: {"OPENAI_API_KEY": base["openai_api_key"]}
     return ns
+
+
+def _force_direct(
+    monkeypatch, settings, *, enabled: bool, ambient_key: str | None
+) -> None:
+    """Drive the real direct-API predicate the bundle now defers to.
+
+    ``agent_config._claude_code_forces_direct_api`` reads the settings singleton
+    and an ambient ANTHROPIC_API_KEY. The flag is set on the injected fake too,
+    because in production ``_issue_job_credentials`` passes that same singleton
+    -- and because a fake without the attribute would let a predicate that
+    ignores the ambient-key guard pass these tests for the wrong reason.
+    """
+    from oddish.config import settings as real_settings
+
+    monkeypatch.setattr(real_settings, "claude_code_force_direct_api", enabled)
+    settings.claude_code_force_direct_api = enabled
+    if ambient_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ambient_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def _provider_of(model: str) -> str:
@@ -185,12 +205,11 @@ def test_scoped_model_env_geometric_only_carries_geometric_key() -> None:
     }
 
 
-def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
+def test_scoped_model_env_claude_code_bedrock_uses_routing_flag(monkeypatch) -> None:
     # With Bedrock routing left in place, claude-code invokes Bedrock directly
     # and keeps the routing-flag behavior.
-    settings = _fake_settings(
-        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
-    )
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="claude-code",
@@ -200,15 +219,16 @@ def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
     assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
 
 
-def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key() -> None:
+def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key(
+    monkeypatch,
+) -> None:
     # Under the force-direct mitigation the runner blanks the Bedrock env and
     # rewrites the model to the direct Anthropic id. A bundle carrying the
     # routing flag would be merged into the agent env after that blanking and
     # send the CLI to Bedrock with an id only api.anthropic.com resolves, so
     # scope the key the trial actually authenticates with.
-    settings = _fake_settings(
-        anthropic_api_key="sk-ant", claude_code_force_direct_api=True
-    )
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="claude-code",
@@ -218,13 +238,12 @@ def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key() -> Non
     assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
 
 
-def test_scoped_model_env_probe_scopes_anthropic_key_with_flag_off() -> None:
+def test_scoped_model_env_probe_scopes_anthropic_key_with_flag_off(monkeypatch) -> None:
     # A probe is routed to the direct Anthropic API even when
     # claude_code_force_direct_api is off, so the bundle must follow it there
     # rather than shipping the Bedrock routing flag the runner just blanked.
-    settings = _fake_settings(
-        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
-    )
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="claude-code",
@@ -235,10 +254,9 @@ def test_scoped_model_env_probe_scopes_anthropic_key_with_flag_off() -> None:
     assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
 
 
-def test_build_bundle_forwards_is_probe_to_the_scoped_env() -> None:
-    settings = _fake_settings(
-        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
-    )
+def test_build_bundle_forwards_is_probe_to_the_scoped_env(monkeypatch) -> None:
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     bundle, _ = job_tokens.build_bundle(
         agent="claude-code",
@@ -251,11 +269,33 @@ def test_build_bundle_forwards_is_probe_to_the_scoped_env() -> None:
     assert bundle.model_env == {"ANTHROPIC_API_KEY": "sk-ant"}
 
 
-def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct() -> None:
-    # The mitigation is claude-code only; SingleLLMAgent still invokes Bedrock.
-    settings = _fake_settings(
-        anthropic_api_key="sk-ant", claude_code_force_direct_api=True
+def test_scoped_model_env_keeps_bedrock_when_no_ambient_anthropic_key(
+    monkeypatch,
+) -> None:
+    """No ambient key means the runner never leaves Bedrock, so nor does the bundle.
+
+    ``_claude_code_forces_direct_api`` returns False when ANTHROPIC_API_KEY is
+    absent from the process environment, whatever the force-direct setting says.
+    Scoping the Anthropic key here would drop CLAUDE_CODE_USE_BEDROCK while the
+    agent stayed on Bedrock.
+    """
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key=None)
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
     )
+    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+
+
+def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct(
+    monkeypatch,
+) -> None:
+    # The mitigation is claude-code only; SingleLLMAgent still invokes Bedrock.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="single-llm",
