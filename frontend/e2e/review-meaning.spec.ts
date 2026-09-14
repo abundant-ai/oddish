@@ -241,65 +241,70 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
   });
 
-  for (const origin of ["this experiment", "another experiment"]) {
-    test(`clean source checks retain fixes from ${origin}`, async ({
-      page,
-    }) => {
-      const original = tasks[0].trials![0];
-      const finding = {
-        ...records[0].finding!,
-        id: "run-finding",
-        source: "post_trial",
-        title: "A failed verifier process still awards credit.",
-      };
-      const reviewed = {
-        ...original,
-        analysis: { ...original.analysis!, action_items: [finding] },
-      };
-      await page.route(/\/api\/tasks\/task-a\/panel(?:\?|$)/, async (route) => {
-        const response = await route.fetch();
-        const panel = await response.json();
-        panel.version.pre_trial_status = "success";
-        panel.version.pre_trial_findings = [];
-        panel.version.retained_findings = [];
-        await route.fulfill({ json: panel });
-      });
-      await page.route("**/api/tasks/task-a/trials?**", (route) =>
-        route.fulfill({
-          json:
-            origin === "this experiment"
-              ? [reviewed]
-              : [
-                  original,
-                  {
-                    ...reviewed,
-                    id: "foreign-finding",
-                    experiment_id: "another-experiment",
-                  },
-                ],
-        })
-      );
-      await page.goto("/experiments/review-demo?task=task-a");
-      await expect(
-        page.getByRole("heading", { name: finding.title, exact: true })
-      ).toBeVisible();
-      const checks = page
-        .getByRole("heading", { name: "Task checks", exact: true })
-        .locator("..");
-      await expect(
-        checks.getByText("1 Must fix", { exact: true })
-      ).toBeVisible();
-      await expect(
-        checks.getByText("No required fixes", { exact: true })
-      ).toHaveCount(0);
-      await expect(
-        page.getByText("1 good failure", { exact: true })
-      ).toBeVisible();
-      if (origin === "another experiment")
+  for (const sourceStatus of [null, "queued", "running", "failed", "success"]) {
+    for (const origin of ["this experiment", "another experiment"]) {
+      test(`source checks ${sourceStatus ?? "unchecked"} retain fixes from ${origin}`, async ({
+        page,
+      }) => {
+        const original = tasks[0].trials![0];
+        const finding = {
+          ...records[0].finding!,
+          id: "run-finding",
+          source: "post_trial",
+          title: "A failed verifier process still awards credit.",
+        };
+        const reviewed = {
+          ...original,
+          analysis: { ...original.analysis!, action_items: [finding] },
+        };
+        await page.route(
+          /\/api\/tasks\/task-a\/panel(?:\?|$)/,
+          async (route) => {
+            const response = await route.fetch();
+            const panel = await response.json();
+            panel.version.pre_trial_status = sourceStatus;
+            panel.version.pre_trial_findings = [];
+            panel.version.retained_findings = [];
+            await route.fulfill({ json: panel });
+          }
+        );
+        await page.route("**/api/tasks/task-a/trials?**", (route) =>
+          route.fulfill({
+            json:
+              origin === "this experiment"
+                ? [reviewed]
+                : [
+                    original,
+                    {
+                      ...reviewed,
+                      id: "foreign-finding",
+                      experiment_id: "another-experiment",
+                    },
+                  ],
+          })
+        );
+        await page.goto("/experiments/review-demo?task=task-a");
         await expect(
-          page.getByRole("link", { name: "Experiment another-", exact: true })
+          page.getByRole("heading", { name: finding.title, exact: true })
         ).toBeVisible();
-    });
+        const checks = page
+          .getByRole("heading", { name: "Task checks", exact: true })
+          .locator("..");
+        await expect(
+          checks.getByText("1 Must fix", { exact: true })
+        ).toBeVisible();
+        await expect(
+          checks.getByText("No required fixes", { exact: true })
+        ).toHaveCount(0);
+        await expect(
+          page.getByText("1 good failure", { exact: true })
+        ).toBeVisible();
+        if (origin === "another experiment")
+          await expect(
+            page.getByRole("link", { name: "Experiment another-", exact: true })
+          ).toBeVisible();
+      });
+    }
   }
 
   for (const includeMustFix of [false, true]) {

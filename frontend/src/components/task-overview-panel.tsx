@@ -398,26 +398,27 @@ export function TaskOverviewPanel({
   const mustFixCount = findingItems.filter(
     (item) => item.tier === "must_fix"
   ).length;
-  const findingsSummary = checksLoading
-    ? "…"
-    : checksLoadError
-      ? "Unavailable"
-      : checkState === "queued"
-        ? "Queued"
-        : checkState === "running"
-          ? "Running"
-          : checkState === "failed"
-            ? "Couldn’t finish"
-            : checkState === "unaudited"
-              ? "Not checked"
-              : mustFixCount > 0
-                ? `${mustFixCount} Must fix`
-                : findingItems.length > 0
-                  ? `${findingItems.length} finding${findingItems.length === 1 ? "" : "s"}`
-                  : "No required fixes";
+  const findingsSummary =
+    mustFixCount > 0
+      ? `${mustFixCount} Must fix`
+      : findingItems.length > 0
+        ? `${findingItems.length} finding${findingItems.length === 1 ? "" : "s"}`
+        : checksLoading || !versionKnown || (trials == null && !trialsError)
+          ? "…"
+          : checksLoadError || trialsError
+            ? "Unavailable"
+            : checkState === "queued"
+              ? "Queued"
+              : checkState === "running"
+                ? "Running"
+                : checkState === "failed"
+                  ? "Couldn’t finish"
+                  : checkState === "unaudited"
+                    ? "Not checked"
+                    : "No required fixes";
 
   const findingsBody = () => {
-    if (checksLoading) {
+    if (checksLoading && findingItems.length === 0) {
       return (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
