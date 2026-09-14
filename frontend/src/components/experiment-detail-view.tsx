@@ -59,7 +59,11 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
-import { taskReviewFilter, type TaskReviewFilter } from "@/lib/review";
+import {
+  taskReviewFilter,
+  VERDICT_FILTER_LABELS,
+  type TaskReviewFilter,
+} from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   formatLineRange,
@@ -625,8 +629,8 @@ function ExperimentSummaryBar({
     accepted: number;
     rejected: number;
     running: number;
-    failed: number;
-    unreviewed: number;
+    queued: number;
+    no_verdict: number;
   } | null;
 }) {
   if (isInitialLoading) {
@@ -732,17 +736,15 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       {qa && (
-        <KpiTile label="QA results">
+        <KpiTile label="Verdict">
           <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-xs">
             {(
-              [
-                ["accepted", qa.accepted, "Accepted"],
-                ["rejected", qa.rejected, "Rejected"],
-                ["running", qa.running, "In progress"],
-                ["failed", qa.failed, "Review error"],
-                ["unreviewed", qa.unreviewed, "No current result"],
-              ] as const
+              Object.entries(VERDICT_FILTER_LABELS) as [
+                Exclude<TaskReviewFilter, "all">,
+                string,
+              ][]
             )
+              .map(([value, label]) => [value, qa[value], label] as const)
               .filter(([, count]) => count > 0)
               .map(([value, count, label]) => (
                 <button
@@ -1045,15 +1047,13 @@ export function ExperimentDetailView({
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const rawReviewFilter = searchParams.get("verdict");
-  const reviewFilter = [
-    "accepted",
-    "rejected",
-    "running",
-    "failed",
-    "unreviewed",
-  ].includes(rawReviewFilter ?? "")
-    ? (rawReviewFilter as TaskReviewFilter)
-    : "all";
+  // Older links used separate failed/unreviewed groups for the same absence state.
+  const reviewFilter: TaskReviewFilter =
+    rawReviewFilter === "failed" || rawReviewFilter === "unreviewed"
+      ? "no_verdict"
+      : Object.hasOwn(VERDICT_FILTER_LABELS, rawReviewFilter ?? "")
+        ? (rawReviewFilter as TaskReviewFilter)
+        : "all";
   // Let Next copy its own history state; passing __NA bypasses hook updates.
   const setReviewFilter = useCallback((value: string) => {
     const params = new URLSearchParams(window.location.search);
@@ -1734,8 +1734,8 @@ export function ExperimentDetailView({
       accepted: 0,
       rejected: 0,
       running: 0,
-      failed: 0,
-      unreviewed: 0,
+      queued: 0,
+      no_verdict: 0,
     };
     for (const task of tasksForExperiment) counts[taskReviewFilter(task)] += 1;
     return counts;

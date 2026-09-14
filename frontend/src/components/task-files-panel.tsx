@@ -1,5 +1,7 @@
 "use client";
 
+import { taskVerdictActionLabel } from "@/lib/review";
+
 import {
   useState,
   useEffect,
@@ -948,7 +950,7 @@ export function TaskFilesPanel({
     ? getCancelActionLabel(task)
     : panel?.active_trials
       ? `Cancel (${panel.active_trials})`
-      : "Cancel QA";
+      : "Cancel verdict generation";
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
@@ -971,7 +973,7 @@ export function TaskFilesPanel({
         !verdictInFlight &&
         !panel?.qa_active
       : panel?.can_run_qa);
-  const qaActionLabel = `Review runs${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
+  const qaActionLabel = taskVerdictActionLabel(verdictSource);
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1082,7 +1084,9 @@ export function TaskFilesPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue task QA");
+        throw new Error(
+          data.detail || data.error || "Failed to queue verdict generation"
+        );
       }
       onRetryComplete?.([task.id]);
       // The QA-active guard reads this cache; refresh it so the guard flips
@@ -1090,7 +1094,9 @@ export function TaskFilesPanel({
       void mutateChecks();
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue task QA"
+        err instanceof Error
+          ? err.message
+          : "Failed to queue verdict generation"
       );
     } finally {
       setIsRunningQA(false);
@@ -2138,7 +2144,7 @@ export function TaskFilesPanel({
                         ) : (
                           <Microscope className="mr-1 h-3.5 w-3.5" />
                         )}
-                        {isRunningQA ? "Queueing..." : qaActionLabel}
+                        {isRunningQA ? "Queuing verdict…" : qaActionLabel}
                       </Button>
                     )
                   }

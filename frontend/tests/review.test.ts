@@ -115,7 +115,7 @@ const badge: {
     iconSize: string,
     active: boolean,
     count?: number
-  ) => { title: string; isGood: boolean | null };
+  ) => { title: string; isGood: boolean | null; detail: string | null };
 } = {};
 runInNewContext(
   ts.transpileModule(
@@ -179,11 +179,7 @@ for (const [label, is_good, expected] of [
       assert.equal(inactive.isGood, null);
       assert.equal(
         review.taskReviewFilter({ ...reviewed, ...override }),
-        state === "outdated"
-          ? "unreviewed"
-          : state === "error"
-            ? "failed"
-            : "running"
+        state === "outdated" || state === "error" ? "no_verdict" : state
       );
     }
     assert.equal(
@@ -217,7 +213,7 @@ for (const [label, is_good, expected] of [
         ),
         html
       );
-      assert.ok(!html.includes("No result for this version"), html);
+      assert.ok(!html.includes("No verdict"), html);
       assert.equal(html.includes("2 completed runs"), ungradedSettled === 2);
     }
     const outdated = renderToStaticMarkup(
@@ -226,13 +222,13 @@ for (const [label, is_good, expected] of [
         ungradedSettled: 0,
       })
     );
-    assert.ok(outdated.includes("No result for this version"), outdated);
+    assert.ok(outdated.includes("No verdict"), outdated);
   });
 }
 
-test("missing and inconclusive verdicts remain unreviewed", () => {
+test("missing and inconclusive verdicts have no verdict", () => {
   assert.equal(review.taskReviewStatus(task), "never");
-  assert.equal(review.taskReviewFilter(task), "unreviewed");
+  assert.equal(review.taskReviewFilter(task), "no_verdict");
   assert.equal(
     review.taskReviewStatus({
       ...task,
@@ -242,13 +238,11 @@ test("missing and inconclusive verdicts remain unreviewed", () => {
   );
 });
 
-test("verdict failure copy does not rename execution-review failure", () => {
+test("failed verdict generation has no rejection label", () => {
   assert.equal(
     badge.present!({ ...task, verdict_status: "failed" }, "", false).title,
-    "Review couldn’t finish"
+    "No verdict"
   );
-  assert.equal(review.REVIEW_LABELS.error, "Review could not complete");
-  assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
 });
 
 test("analysis progress separates completed classifications from failed and pending analysis", () => {
@@ -313,7 +307,7 @@ test("analysis progress separates completed classifications from failed and pend
 test("accepted and missing verdict chips have concise exact labels", () => {
   for (const [verdict, label] of [
     [{ verdict: "accept", is_good: true, confidence: null }, "Accepted"],
-    [null, "No overall result"],
+    [null, "No verdict"],
   ] as const) {
     const html = renderToStaticMarkup(
       React.createElement(exports.Chip, {
@@ -390,6 +384,7 @@ test("verdict summary hides empty categories and keeps clearing an active filter
     ).outputText,
     {
       exports: output,
+      ...review,
       require: () => jsx,
       KpiTile: ({
         label,
@@ -410,14 +405,14 @@ test("verdict summary hides empty categories and keeps clearing an active filter
         totalTrials: 0,
       },
       costStatus: "loading",
-      qa: { accepted: 2, rejected: 0, running: 0, failed: 1, unreviewed: 0 },
+      qa: { accepted: 2, rejected: 0, running: 0, queued: 0, no_verdict: 1 },
       reviewFilter: "rejected",
       onReviewFilter: () => {},
     })
   );
-  assert.match(html, /QA results/);
+  assert.match(html, /Verdict/);
   assert.match(html, /2 Accepted/);
-  assert.match(html, /1 Review error/);
+  assert.match(html, /1 No verdict/);
   assert.doesNotMatch(html, /0 (Rejected|Pending|No verdict)/);
   assert.match(html, /Show all tasks/);
 });
@@ -574,5 +569,106 @@ test("selected version without findings does not reuse another version's count",
     false,
     0
   );
-  assert.equal(presented.title, "No result for this version");
+  assert.equal(presented.title, "No verdict");
+});
+
+for (const [name, override, reason] of [
+  ["never generated", { verdict_status: null }, "Not generated yet."],
+  [
+    "completed without verdict",
+    { verdict_status: "success" },
+    "The completed run did not produce a verdict.",
+  ],
+  [
+    "failed",
+    {
+      verdict_status: "failed",
+      verdict_error: "No eligible runs for this version.",
+    },
+    "No eligible runs for this version.",
+  ],
+  [
+    "failed without error",
+    { verdict_status: "failed" },
+    "Verdict generation failed. No error was recorded.",
+  ],
+  [
+    "older version",
+    {
+      verdict: { is_good: true, confidence: null },
+      review_version_matches: false,
+    },
+    "The existing verdict applies to another version.",
+  ],
+] as const) {
+  test(`${name} uses No verdict with a visible reason in rows and details`, () => {
+    const absent = { ...task, ...override };
+    assert.equal(review.taskReviewFilter(absent), "no_verdict");
+    const presentation = badge.present!(absent, "", false);
+    assert.equal(presentation.title, "No verdict");
+    assert.equal(presentation.detail, reason);
+    for (const html of [
+      renderToStaticMarkup(
+        React.createElement(exports.Chip, { task: absent, ungradedSettled: 0 })
+      ),
+      ...(["card", "inline", "summary"] as const).map((variant) =>
+        renderToStaticMarkup(
+          React.createElement(badge.Component!, { task: absent, variant })
+        )
+      ),
+    ]) {
+      assert.match(html, /No verdict/);
+      assert.ok(html.includes(reason), html);
+      assert.doesNotMatch(
+        html,
+        /Not reviewed|Review couldn|No overall result|Accepted/
+      );
+    }
+  });
+}
+
+test("active verdicts hide earlier errors and receive separate queued and running filters", () => {
+  for (const status of ["queued", "running"] as const) {
+    const active = {
+      ...task,
+      verdict_status: status,
+      verdict_error: "Old error",
+    };
+    assert.equal(review.taskReviewFilter(active), status);
+    assert.equal(badge.present!(active, "", false).detail, null);
+    assert.equal(
+      badge.present!(active, "", false).title,
+      status === "queued" ? "Verdict queued" : "Verdict running"
+    );
+  }
+});
+
+test("verdict actions describe generation and keep the default version explicit", () => {
+  assert.equal(
+    review.taskVerdictActionLabel({
+      ...task,
+      verdict_status: null,
+      current_version: 3,
+    }),
+    "Generate verdict for v3"
+  );
+  assert.equal(
+    review.taskVerdictActionLabel({ ...task, current_version: 3 }),
+    "Regenerate verdict for v3"
+  );
+  assert.equal(
+    review.taskVerdictActionLabel({ ...task, verdict_status: "failed" }),
+    "Regenerate verdict"
+  );
+  assert.equal(
+    jobs.getCancelActionLabel({ ...task, verdict_status: "running" }),
+    "Cancel verdict generation"
+  );
+});
+
+test("an active panel preserves the queued verdict state", () => {
+  const queued = { ...task, verdict_status: "queued" as const };
+  const presented = badge.present!(queued, "", true);
+  assert.equal(presented.title, "Verdict queued");
+  assert.equal(presented.detail, null);
 });

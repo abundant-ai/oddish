@@ -10,7 +10,12 @@ import type { ReactNode } from "react";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { VERDICT_LABELS, taskReviewStatus } from "@/lib/review";
+import {
+  VERDICT_LABELS,
+  taskReviewStatus,
+  taskVerdictAbsenceReason,
+  taskVerdictActionLabel,
+} from "@/lib/review";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
@@ -30,9 +35,9 @@ function presentVerdict(
   qaActive: boolean,
   mustFixCount = task.must_fix_count ?? 0
 ): VerdictPresentation {
-  const status = task.verdict_status;
   const verdict = task.verdict ?? null;
-  const review = qaActive ? "running" : taskReviewStatus(task);
+  const taskStatus = taskReviewStatus(task);
+  const review = qaActive && taskStatus !== "queued" ? "running" : taskStatus;
   const pending = review === "queued" || review === "running";
   const failed = review === "error";
   const isGood =
@@ -92,16 +97,14 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = status === "success" ? "No overall result" : VERDICT_LABELS.never;
+    title = VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
 
   // An in-flight review must never display a previous verdict from cached data.
-  let detail: string | null = null;
-  if (failed) {
-    detail = task.verdict_error ?? null;
-  } else if (!pending && isGood === true) {
+  let detail = taskVerdictAbsenceReason(task, review);
+  if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {
     detail = verdict?.primary_issue ?? verdict?.reasoning ?? null;
@@ -136,14 +139,6 @@ export function TaskVerdictBadge({
   /** Required findings for the selected version, including run reviews. */
   mustFixCount?: number;
 }) {
-  const hasAny =
-    mustFixCount > 0 ||
-    qaActive ||
-    Boolean(task.run_analysis) ||
-    Boolean(task.verdict_status) ||
-    Boolean(task.verdict);
-  if (!hasAny && !onRunJudge) return null;
-
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
   const shownDetail = mustFixCount > 0 ? null : p.detail;
@@ -160,7 +155,7 @@ export function TaskVerdictBadge({
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = `Review runs${task.current_version != null ? ` for v${task.current_version}` : ""}`;
+  const runLabel = taskVerdictActionLabel(task);
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -184,7 +179,7 @@ export function TaskVerdictBadge({
               {variant === "summary" && mustFixCount > 0 && rejectionSource
                 ? `Rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
-                  ? "Queuing review…"
+                  ? "Queuing verdict…"
                   : p.title}
             </span>
             {mustFixCount === 0 && p.isGood !== null && verdict?.confidence ? (
@@ -261,7 +256,7 @@ export function TaskVerdictBadge({
             ) : (
               <OctagonX className="mr-1 h-3.5 w-3.5" />
             )}
-            {isCancelling ? "Cancelling..." : "Cancel QA"}
+            {isCancelling ? "Cancelling..." : "Cancel verdict generation"}
           </Button>
         ) : showRunButton ? (
           <Button
@@ -283,7 +278,7 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          Run reviews
+          Verdict
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">

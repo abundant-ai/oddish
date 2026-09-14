@@ -2264,11 +2264,15 @@ Task open/panel and experiment task rows carry `review_version_matches`, derived
 from the saved verdict's QA trial and the displayed version. An older verdict
 must remain distinguishable from a review of the selected version. The shared
 bounded provenance query does not fetch trial artifacts or enqueue work.
-Experiment summary selections use `verdict=accepted|rejected|running|failed|unreviewed`;
-review counts and filters both classify the loaded task rows with
-`taskReviewFilter` (grouping `taskReviewStatus`), including live analysis and QA
-trials. Drawer navigation retains the selected review group. Unreviewed includes
-missing and outdated reviews, and remains visible when every task is unreviewed.
+Task verdict labels and actions live in `frontend/src/lib/review.ts`. Queued and
+running verdicts have separate states; accepted and rejected remain judgments.
+Failed generation, missing verdicts, and version mismatches all display "No verdict"
+with a specific reason. A failed generation never establishes rejection.
+Experiment summary selections use `verdict=accepted|rejected|queued|running|no_verdict`;
+counts and filters both classify loaded task rows with `taskReviewFilter`, including
+live analysis and QA trials. Drawer navigation retains the selected verdict group.
+Older `failed` and `unreviewed` links select `no_verdict`. Delivery evidence coverage
+and per-run analysis are separate checks, not alternate task verdicts.
 Delivery `filter` defaults to `all`; the State selector filters the task queue using
 `needs_work`, `qa_incomplete`, `awaiting_signoff`, and `ready`. A `task` link resolves against the inventory (ID before legacy name)
 and keeps that row visible across filters, pagination, and sign-off refreshes.

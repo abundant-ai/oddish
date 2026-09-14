@@ -1032,7 +1032,9 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA");
+        throw new Error(
+          data.detail || data.error || "Failed to queue verdict generation"
+        );
       }
       revalidateReaderResources();
     } catch (err) {
@@ -1053,11 +1055,17 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to cancel QA");
+        throw new Error(
+          data.detail || data.error || "Failed to cancel verdict generation"
+        );
       }
       revalidateReaderResources();
     } catch (err) {
-      setJudgeError(err instanceof Error ? err.message : "Failed to cancel QA");
+      setJudgeError(
+        err instanceof Error
+          ? err.message
+          : "Failed to cancel verdict generation"
+      );
     } finally {
       setIsCancellingJudge(false);
     }

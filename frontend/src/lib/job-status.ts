@@ -159,8 +159,8 @@ export function taskHasCancellableWork(task: Task | null | undefined): boolean {
 }
 
 function getActiveTrialCount(task: Task | null | undefined): number {
-  // Agent trials only: a running qa/audit trial should read as "Cancel QA",
-  // not as a mystery "Cancel (1)".
+  // Agent trials only: verdict generation and pre-trial audits have named
+  // cancellation actions rather than contributing to the agent-run count.
   return (task?.trials ?? []).filter(
     (trial) => isAgentTrial(trial) && isActiveTrialStatus(trial.status)
   ).length;
@@ -170,5 +170,7 @@ export function getCancelActionLabel(task: Task | null | undefined): string {
   const activeTrials = getActiveTrialCount(task);
   if (activeTrials > 0) return `Cancel (${activeTrials})`;
   // Trajectory analysis + verdict are one task-level QA job now.
-  return "Cancel QA";
+  return taskHasActiveVerdict(task) || taskHasActiveAnalysis(task)
+    ? "Cancel verdict generation"
+    : "Cancel pre-trial audit";
 }

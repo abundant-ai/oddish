@@ -35,6 +35,94 @@ test.describe("real components with local fixture API", () => {
     "Run with playwright.review.config.ts and the isolated fixture app"
   );
 
+  test("No verdict groups missing, failed, and older-version results with visible reasons", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo");
+    await page
+      .getByRole("button", { name: "4 No verdict", exact: true })
+      .click();
+    await expect(page).toHaveURL(/verdict=no_verdict/);
+    for (const [name, reason] of [
+      ["Unreviewed version", "Not generated yet."],
+      [
+        "Execution could not run",
+        "No valid evaluation was recorded. Inspect execution evidence.",
+      ],
+      [
+        "Review could not complete",
+        "Evidence could not be read. The stored error does not establish the cause.",
+      ],
+      [
+        "New version with older review",
+        "The existing verdict applies to another version.",
+      ],
+    ]) {
+      const row = page
+        .getByRole("row")
+        .filter({ has: page.getByRole("button", { name, exact: true }) });
+      await expect(row.getByText("No verdict", { exact: true })).toBeVisible();
+      await expect(row.getByText(reason, { exact: true })).toBeVisible();
+    }
+    await page
+      .getByRole("button", {
+        name: "Open verdict for Unreviewed version",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByText("Not generated yet.", { exact: true })
+    ).toHaveCount(2);
+  });
+
+  for (const oldFilter of ["failed", "unreviewed"]) {
+    test(`legacy ${oldFilter} links select the shared No verdict group`, async ({
+      page,
+    }) => {
+      await page.goto(`/experiments/review-demo?verdict=${oldFilter}`);
+      await expect(
+        page.getByRole("button", { name: "4 No verdict", exact: true })
+      ).toHaveAttribute("aria-pressed", "true");
+      await expect(
+        page.getByRole("button", { name: "Unreviewed version", exact: true })
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", {
+          name: "Execution could not run",
+          exact: true,
+        })
+      ).toBeVisible();
+    });
+  }
+
+  test("queued verdicts have their own matching summary and filter", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo");
+    await page
+      .getByRole("button", { name: "1 Verdict queued", exact: true })
+      .click();
+    await expect(page).toHaveURL(/verdict=queued/);
+    const row = page.getByRole("row").filter({
+      has: page.getByRole("button", { name: "Queued review", exact: true }),
+    });
+    await expect(
+      row.getByText("Verdict queued", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Running review", exact: true })
+    ).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "1 Verdict running", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Running review", exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Queued review", exact: true })
+    ).toHaveCount(0);
+  });
+
   for (const count of [25, 250]) {
     test(`${count} tasks use page scrolling without reloading results`, async ({
       page,
@@ -653,9 +741,9 @@ test.describe("real components with local fixture API", () => {
       rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
     ).toHaveCount(1);
     await page
-      .getByRole("button", { name: "2 Review error", exact: true })
+      .getByRole("button", { name: "4 No verdict", exact: true })
       .click();
-    await expect(page).toHaveURL(/verdict=failed/);
+    await expect(page).toHaveURL(/verdict=no_verdict/);
     await expect(
       page.getByRole("button", { name: "Task A", exact: true })
     ).toHaveCount(0);
@@ -666,7 +754,7 @@ test.describe("real components with local fixture API", () => {
     await expect(page).toHaveURL(/verdict=rejected/);
     await expect(page.getByText("Task A", { exact: true })).toBeVisible();
     await page.goBack();
-    await expect(page).toHaveURL(/verdict=failed/);
+    await expect(page).toHaveURL(/verdict=no_verdict/);
     await expect(
       page.getByText("Execution could not run", { exact: true })
     ).toBeVisible();
@@ -726,7 +814,7 @@ test.describe("real components with local fixture API", () => {
     await source.click();
     await expect.poll(() => writes).toEqual(["/api/tasks/task-a/qa/pre-trial"]);
     await page
-      .getByRole("button", { name: "Review runs for v7", exact: true })
+      .getByRole("button", { name: "Regenerate verdict for v7", exact: true })
       .last()
       .click();
     await expect
@@ -795,12 +883,11 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=live-review");
     await page
-      .getByRole("button", { name: "4 In progress", exact: true })
+      .getByRole("button", { name: "3 Verdict running", exact: true })
       .click();
     for (const name of [
       "Unreviewed version",
       "New version with older review",
-      "Queued review",
       "Running review",
     ])
       await expect(
@@ -810,7 +897,7 @@ test.describe("real components with local fixture API", () => {
       page.getByRole("button", { name: "Task A", exact: true })
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "0 No current result", exact: true })
+      page.getByRole("button", { name: "0 No verdict", exact: true })
     ).toHaveCount(0);
     await page.getByRole("button", { name: "3 Accepted", exact: true }).click();
     await expect(
@@ -823,7 +910,7 @@ test.describe("real components with local fixture API", () => {
     await page.reload();
     await expect(
       page.getByRole("button", {
-        name: "4 In progress",
+        name: "3 Verdict running",
         exact: true,
       })
     ).toHaveAttribute("aria-pressed", "true");
@@ -834,7 +921,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=unreviewed-only");
     await page
-      .getByRole("button", { name: "2 No current result", exact: true })
+      .getByRole("button", { name: "2 No verdict", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Unreviewed version", exact: true })
@@ -847,7 +934,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "0 In progress",
+        name: "0 Verdict running",
         exact: true,
       })
     ).toHaveCount(0);
@@ -918,7 +1005,7 @@ test.describe("real components with local fixture API", () => {
       "/tasks/stale-review?version=8&drawer=task&taskPane=overview"
     );
     await expect(
-      page.getByText("No result for this version", { exact: true }).first()
+      page.getByText("No verdict", { exact: true }).first()
     ).toBeVisible();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page
@@ -932,7 +1019,7 @@ test.describe("real components with local fixture API", () => {
     await page.goBack();
     await expect(page).toHaveURL(/version=8/);
     await expect(
-      page.getByText("No result for this version", { exact: true }).first()
+      page.getByText("No verdict", { exact: true }).first()
     ).toBeVisible();
     await page.goForward();
     await expect(

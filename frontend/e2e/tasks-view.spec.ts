@@ -720,7 +720,9 @@ test.describe("authenticated task view", () => {
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
     await page
-      .getByRole("button", { name: /^Review runs(?: for v\d+)?$/ })
+      .getByRole("button", {
+        name: /^(Generate|Regenerate) verdict(?: for v\d+)?$/,
+      })
       .click();
     await expect
       .poll(() => backfillBody)
@@ -728,8 +730,12 @@ test.describe("authenticated task view", () => {
         force: false,
         enable_analysis: true,
       });
-    await expect(page.getByRole("button", { name: "Cancel QA" })).toBeVisible();
-    await page.getByRole("button", { name: "Cancel QA" }).click();
+    await expect(
+      page.getByRole("button", { name: "Cancel verdict generation" })
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Cancel verdict generation" })
+      .click();
     await expect.poll(() => cancelCount).toBe(1);
   });
 

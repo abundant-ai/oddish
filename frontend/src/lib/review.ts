@@ -16,23 +16,14 @@ export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
   HARNESS_ERROR: "Invalid run",
 };
 
-import { QA_STATUS_LABELS } from "@/lib/deliveries";
-
-// Task reviews use outdated only for a version mismatch; deliveries also use it
-// for evidence outside the selected time window or missing required evidence.
-export const REVIEW_LABELS = {
-  ...QA_STATUS_LABELS,
-  outdated: "No result for this version",
-};
-
 export const VERDICT_LABELS = {
   accepted: "Accepted",
   needs_fixes: "Rejected",
-  outdated: "No result for this version",
-  queued: "Review queued",
-  running: "Review running",
-  error: "Review couldn’t finish",
-  never: "Not reviewed",
+  outdated: "No verdict",
+  queued: "Verdict queued",
+  running: "Verdict running",
+  error: "No verdict",
+  never: "No verdict",
 };
 
 /** Exclude internal, superseded, and baseline runs from review coverage. */
@@ -89,7 +80,7 @@ export function runReviewSummary(trials: Trial[]): string {
 }
 
 /** Review progress and task quality; solver failure never determines this. */
-export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {
+export function taskReviewStatus(task: Task): keyof typeof VERDICT_LABELS {
   const verdict =
     task.verdict?.verdict ??
     (task.verdict?.is_good === true
@@ -114,22 +105,52 @@ export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {
   return "never";
 }
 
-export type TaskReviewFilter =
-  | "all"
-  | "accepted"
-  | "rejected"
-  | "running"
-  | "failed"
-  | "unreviewed";
+/** Reasons accompany the shared absence label; failed generation is not rejection. */
+export function taskVerdictAbsenceReason(
+  task: Task,
+  status = taskReviewStatus(task)
+): string | null {
+  if (status === "error")
+    return (
+      task.verdict_error?.trim() ||
+      "Verdict generation failed. No error was recorded."
+    );
+  if (status === "outdated")
+    return "The existing verdict applies to another version.";
+  if (status === "never") {
+    if (task.verdict_status === "success")
+      return "The completed run did not produce a verdict.";
+    return "Not generated yet.";
+  }
+  return null;
+}
 
-/** The disjoint groups shared by review counts, table filters and drawer navigation. */
+/** Both task actions target the default version, even while viewing an older one. */
+export function taskVerdictActionLabel(task: Task | null | undefined): string {
+  const action =
+    task?.verdict || task?.verdict_status
+      ? "Regenerate verdict"
+      : "Generate verdict";
+  return `${action}${task?.current_version != null ? ` for v${task.current_version}` : ""}`;
+}
+
+export const VERDICT_FILTER_LABELS = {
+  accepted: VERDICT_LABELS.accepted,
+  rejected: VERDICT_LABELS.needs_fixes,
+  queued: VERDICT_LABELS.queued,
+  running: VERDICT_LABELS.running,
+  no_verdict: VERDICT_LABELS.never,
+};
+
+export type TaskReviewFilter = "all" | keyof typeof VERDICT_FILTER_LABELS;
+
+/** The disjoint groups shared by verdict counts, filters and drawer navigation. */
 export function taskReviewFilter(task: Task): Exclude<TaskReviewFilter, "all"> {
   const status = taskReviewStatus(task);
   if (status === "accepted") return "accepted";
   if (status === "needs_fixes") return "rejected";
-  if (status === "error") return "failed";
-  if (status === "queued" || status === "running") return "running";
-  return "unreviewed";
+  if (status === "queued" || status === "running") return status;
+  return "no_verdict";
 }
 
 /** A finding address pins content even when that version is today's default. */

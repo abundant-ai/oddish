@@ -57,8 +57,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   EXECUTION_LABELS,
-  REVIEW_LABELS,
   VERDICT_LABELS,
+  taskVerdictAbsenceReason,
   taskReviewStatus,
 } from "@/lib/review";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -313,7 +313,7 @@ function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
 /**
  * Reference-style inline action button: transparent by default, subtle
  * hover, disabled in ink-4. Used across the toolbar's "selected"
- * action row (Clear / Rerun / Cancel / Run QA / Cancel QA / Delete).
+ * action row (clear, rerun/cancel trials, generate/cancel verdicts, delete).
  */
 function InlineBtn({
   onClick,
@@ -380,7 +380,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "Review running",
+    label: "Analysis running",
     dotClass: "bg-blue-400",
     animate: true,
   },
@@ -396,7 +396,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: REVIEW_LABELS.error,
+    label: "Analysis failed / invalid run",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -432,24 +432,31 @@ function TaskVerdictChip({
   const label =
     hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
-      : status === "never" && task.verdict_status === "success"
-        ? "No overall result"
-        : VERDICT_LABELS[status];
-  let tip: string | null =
-    status === "error" ? (task.verdict_error ?? null) : null;
+      : VERDICT_LABELS[status];
+  const absenceReason = hasRequiredFixes
+    ? null
+    : taskVerdictAbsenceReason(task, status);
+  let tip: string | null = null;
   if (
     (status === "accepted" || status === "needs_fixes") &&
     task.verdict &&
     ungradedSettled > 0
   ) {
-    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this result`;
+    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this verdict`;
   }
 
   const chip = (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
-    >
-      {label}
+    <span className="flex min-w-0 flex-col items-start gap-1 text-left">
+      <span
+        className={`inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1 py-px font-mono text-[9.5px] leading-[14px] font-medium whitespace-nowrap ${chipClass}`}
+      >
+        {label}
+      </span>
+      {absenceReason && (
+        <span className="text-muted-foreground max-w-sm text-xs font-normal break-words whitespace-normal">
+          {absenceReason}
+        </span>
+      )}
     </span>
   );
   const control = onOpen ? (
@@ -459,7 +466,7 @@ function TaskVerdictChip({
       onFocus={onPrefetch}
       onClick={onOpen}
       className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
+      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open verdict"} for ${task.name}`}
     >
       {chip}
     </button>
@@ -521,7 +528,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-blue-400",
       animate: true,
-      title: "Review running",
+      title: "Analysis running",
     };
   }
 
@@ -540,7 +547,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-yellow-400",
       animate: false,
-      title: "Review error",
+      title: "Analysis failed",
     };
   }
 
@@ -1521,7 +1528,7 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to cancel task QA"
+              data.detail || data.error || "Failed to cancel verdict generation"
             );
           }
         })
@@ -1529,7 +1536,9 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setQAError(`Failed to cancel QA for ${failures.length} task(s).`);
+        setQAError(
+          `Failed to cancel verdict generation for ${failures.length} task(s).`
+        );
       } else {
         setQAError(null);
       }
@@ -1542,7 +1551,7 @@ export function ExperimentTrialsTable({
   const handleRunQAForSelectedTasks = async () => {
     if (!canRerun || isRunningQA) return;
     if (selectedQARunnableTasks.length === 0) {
-      setQAError("No tasks are ready for QA.");
+      setQAError("No tasks are ready for verdict generation.");
       return;
     }
 
@@ -1560,7 +1569,7 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task QA"
+              data.detail || data.error || "Failed to queue verdict generation"
             );
           }
         })
@@ -1568,7 +1577,9 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
+        setQAError(
+          `Failed to queue verdict generation for ${failures.length} task(s).`
+        );
       } else {
         setQAError(null);
       }
@@ -1989,7 +2000,7 @@ export function ExperimentTrialsTable({
       {showAnalysis && (
         <div className="ml-1 flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 border-l border-dashed border-[color:var(--paper-line)] pl-2">
           <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-            QA
+            Run analysis
           </span>
           {ANALYSIS_LEGEND_ITEMS.map((item) => renderAnalyzerChip(item))}
         </div>
@@ -2016,7 +2027,7 @@ export function ExperimentTrialsTable({
                   ? `${mustFixTotal} Must fix`
                   : `${rejectedCount} ${
                       rejectedCount === 1 ? "task" : "tasks"
-                    } rejected by QA`}
+                    } rejected`}
               </p>
             </div>
             <Button
@@ -2172,7 +2183,9 @@ export function ExperimentTrialsTable({
                           selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingQA ? "Cancelling" : "Cancel reviews"}
+                        {isCancellingQA
+                          ? "Cancelling"
+                          : "Cancel verdict generation"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>
@@ -2181,14 +2194,16 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunQAForSelectedTasks}
-                        title="Review runs for each selected task’s default version."
+                        title="Generate verdicts for each selected task’s default version, replacing any existing verdicts."
                         disabled={
                           isRunningQA ||
                           isCancellingQA ||
                           selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningQA ? "Queueing" : "Review runs"}
+                        {isRunningQA
+                          ? "Queuing verdicts…"
+                          : "Generate verdicts"}
                         <InlineCount>
                           {selectedQARunnableTasks.length}
                         </InlineCount>
