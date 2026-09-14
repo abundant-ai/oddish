@@ -16,6 +16,8 @@ function renderPanel({
   allowRetry = true,
   experiment = true,
   loading = true,
+  panelWorkKind = null as "qa" | "audit" | null,
+  activeTrialCount = 0,
 } = {}) {
   const task = {
     id: "task-1",
@@ -31,10 +33,17 @@ function renderPanel({
     ? {
         // Deliberately differs from the experiment snapshot: experiment actions
         // must not use task-wide retry/cancel availability.
-        task: { ...task, trials: [] },
+        task: {
+          ...task,
+          trials: [],
+          active_qa_trial: panelWorkKind
+            ? { id: "work-1", kind: panelWorkKind, status: "running" }
+            : null,
+        },
         version: null,
         can_retry: false,
-        cancel: null,
+        cancel: panelWorkKind ? "qa" : activeTrialCount ? "task" : null,
+        active_trials: activeTrialCount,
         can_run_qa: false,
         qa_active: qaActive,
       }
@@ -171,20 +180,20 @@ test("unknown panel metadata still disables mutations", () => {
   );
   assert.ok(
     !buttons.some((label) =>
-      /Cancel|Rerun trials|Run execution review/.test(label)
+      /Cancel|Rerun trials|(?:Generate|Regenerate) verdict/.test(label)
     )
   );
 });
 
 test("active QA and read-only panels retain their action guards", () => {
   assert.ok(
-    !enabledButtons(renderPanel({ qaActive: true })).includes(
-      "Run execution review"
+    !enabledButtons(renderPanel({ qaActive: true })).some((label) =>
+      /^(Generate|Regenerate) verdict/.test(label)
     )
   );
   assert.ok(
     !enabledButtons(renderPanel({ allowRetry: false })).some((label) =>
-      /Cancel|Rerun trials|Run execution review/.test(label)
+      /Cancel|Rerun trials|(?:Generate|Regenerate) verdict/.test(label)
     )
   );
 });
@@ -193,6 +202,32 @@ test("task-wide actions use panel availability instead of experiment rows", () =
   assert.ok(
     !enabledButtons(
       renderPanel({ experiment: false, statuses: ["running", "success"] })
-    ).some((label) => /Cancel|Rerun trials|Run execution review/.test(label))
+    ).some((label) =>
+      /Cancel|Rerun trials|(?:Generate|Regenerate) verdict/.test(label)
+    )
   );
+});
+
+for (const [panelWorkKind, label] of [
+  ["audit", "Cancel pre-trial audit"],
+  ["qa", "Cancel verdict generation"],
+] as const) {
+  test(`task-page cancellation names the active ${panelWorkKind} work`, () => {
+    const buttons = enabledButtons(
+      renderPanel({ experiment: false, panelWorkKind })
+    );
+    assert.ok(buttons.includes(label), buttons.join(", "));
+    assert.equal(buttons.filter((text) => text.startsWith("Cancel")).length, 1);
+  });
+}
+
+test("task-page cancellation retains the aggregate active-agent count", () => {
+  const buttons = enabledButtons(
+    renderPanel({
+      experiment: false,
+      panelWorkKind: "audit",
+      activeTrialCount: 2,
+    })
+  );
+  assert.ok(buttons.includes("Cancel (2)"), buttons.join(", "));
 });

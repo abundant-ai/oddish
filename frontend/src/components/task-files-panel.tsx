@@ -950,7 +950,7 @@ export function TaskFilesPanel({
     ? getCancelActionLabel(task)
     : panel?.active_trials
       ? `Cancel (${panel.active_trials})`
-      : "Cancel verdict generation";
+      : getCancelActionLabel(verdictSource);
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
