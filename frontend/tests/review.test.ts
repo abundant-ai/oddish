@@ -356,7 +356,7 @@ test("rejected verdict displays a single exact must-fix count on its findings bu
     })
   );
   assert.match(html, /<button[^>]*aria-label="Open findings for Broken task"/);
-  assert.equal((html.match(/1 Must fix/g) ?? []).length, 1);
+  assert.equal((html.match(/Rejected: 1 Must Fix/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Must fix Finding/);
 });
 
@@ -514,7 +514,7 @@ for (const verdictStatus of ["success", "running", "failed", null] as const) {
         onOpen: () => {},
       })
     );
-    assert.equal(html.replace(/<[^>]*>/g, ""), "3 Must fix");
+    assert.equal(html.replace(/<[^>]*>/g, ""), "Rejected: 3 Must Fix");
     assert.match(html, /aria-label="Open findings for Task"/);
   });
 }

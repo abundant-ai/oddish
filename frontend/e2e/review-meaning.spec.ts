@@ -270,7 +270,7 @@ test.describe("real components with local fixture API", () => {
       name: "Open findings for Task A",
       exact: true,
     });
-    await expect(badge).toHaveText("1 Must fix");
+    await expect(badge).toHaveText("Rejected: 1 Must Fix");
     await expect(row).not.toContainText(
       "The verifier accepts an empty answer."
     );
@@ -564,9 +564,9 @@ test.describe("real components with local fixture API", () => {
         name: "Open findings for Task A",
         exact: true,
       })
-    ).toHaveText("1 Must fix");
+    ).toHaveText("Rejected: 1 Must Fix");
     await expect(
-      rejectedRow.getByText("1 Must fix", { exact: true })
+      rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
     ).toHaveCount(1);
     await page
       .getByRole("button", { name: "2 Review error", exact: true })
