@@ -67,19 +67,6 @@ class ModalDictSharedCache(DashboardSharedCacheBackend):
         except Exception:
             logger.warning("dashboard shared cache set failed", exc_info=True)
 
-    def invalidate_org(self, org_id: str | None) -> None:
-        try:
-            if org_id is None:
-                # Global flush (admin / tests): drop every queue/pipeline entry.
-                for key in list(self._dict.keys()):
-                    if key.startswith(_QUEUE_PIPELINE_PREFIX):
-                        self._dict.pop(key, None)
-                return
-            # One entry per org -- an exact-key pop, no scan.
-            self._dict.pop(f"{_QUEUE_PIPELINE_PREFIX}{org_id}:", None)
-        except Exception:
-            logger.warning("dashboard shared cache invalidate failed", exc_info=True)
-
 
 async def precompute_dashboard_queue_pipeline() -> int:
     """Refresh every org's cached queue/pipeline slice in one grouped scan.
