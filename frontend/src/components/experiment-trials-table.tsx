@@ -47,6 +47,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -701,6 +702,7 @@ export function ExperimentTrialsTable({
     Record<string, number>
   >({});
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
+  const tableBodyRef = useRef<HTMLTableSectionElement | null>(null);
   const resizeRef = useRef<{
     columnKey: "task" | string;
     neighborKey: "task" | string;
@@ -1153,28 +1155,47 @@ export function ExperimentTrialsTable({
     [selectedTaskList]
   );
 
-  const shouldVirtualize = filteredTasks.length >= VIRTUALIZATION_THRESHOLD;
-  const [tableOffset, setTableOffset] = useState(0);
-  useEffect(() => {
-    if (!shouldVirtualize || !tableContainerRef.current) return;
-    const container = tableContainerRef.current;
-    const measureOffset = () => {
-      const body = container.querySelector("tbody");
-      if (body)
-        setTableOffset(body.getBoundingClientRect().top + window.scrollY);
-    };
-    measureOffset();
-    const observer = new ResizeObserver(measureOffset);
+  const [tableOffset, setTableOffset] = useState<number | null>(null);
+  // Measure before paint when table content or layout changes, including
+  // while rendering fewer than the virtualization threshold.
+  useLayoutEffect(() => {
+    const body = tableBodyRef.current;
+    if (body) {
+      const offset = body.getBoundingClientRect().top + window.scrollY;
+      if (offset !== tableOffset) setTableOffset(offset);
+    }
+  }, [
+    tableOffset,
+    filteredTasks,
+    renderedAgents,
+    isLoading,
+    showPassAtK,
+    pagesComplete,
+    taskColumnWidth,
+    agentColumnWidths,
+    selectedTasks,
+  ]);
+  useLayoutEffect(() => {
+    const body = tableBodyRef.current;
+    if (!body) return;
+    const observer = new ResizeObserver(() => {
+      setTableOffset(body.getBoundingClientRect().top + window.scrollY);
+    });
     observer.observe(document.body);
+    if (body.previousElementSibling)
+      observer.observe(body.previousElementSibling);
     return () => observer.disconnect();
-  }, [shouldVirtualize]);
+  }, [isLoading]);
+  // Render real rows until their document offset is known.
+  const shouldVirtualize =
+    filteredTasks.length >= VIRTUALIZATION_THRESHOLD && tableOffset !== null;
   const rowVirtualizer = useWindowVirtualizer({
     count: filteredTasks.length,
     enabled: shouldVirtualize,
     getItemKey: (index) => filteredTasks[index].id,
     estimateSize: () => 120,
     overscan: 6,
-    scrollMargin: tableOffset,
+    scrollMargin: tableOffset ?? 0,
   });
   const virtualRows = shouldVirtualize ? rowVirtualizer.getVirtualItems() : [];
   const rowsToRender = shouldVirtualize
@@ -1186,12 +1207,12 @@ export function ExperimentTrialsTable({
     : filteredTasks.map((task, index) => ({ task, index, virtualRow: null }));
   const paddingTop =
     virtualRows.length > 0
-      ? Math.max(0, virtualRows[0].start - tableOffset)
+      ? Math.max(0, virtualRows[0].start - (tableOffset ?? 0))
       : 0;
   const paddingBottom =
     virtualRows.length > 0
       ? rowVirtualizer.getTotalSize() -
-        (virtualRows[virtualRows.length - 1].end - tableOffset)
+        (virtualRows[virtualRows.length - 1].end - (tableOffset ?? 0))
       : 0;
 
   const toggleStatus = (status: MatrixStatus) => {
@@ -2366,7 +2387,7 @@ export function ExperimentTrialsTable({
                   ))}
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody ref={tableBodyRef}>
                 {shouldVirtualize && paddingTop > 0 && (
                   <TableRow aria-hidden>
                     <TableCell

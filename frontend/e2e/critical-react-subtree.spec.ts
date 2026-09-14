@@ -703,7 +703,7 @@ test.describe("critical task and trial subtree", () => {
     });
     await expect(taskFilesButton).toBeVisible();
     await expect(
-      page.getByRole("status").filter({ hasText: "Loading files…" })
+      page.getByRole("status", { name: "Loading files", exact: true })
     ).toBeVisible();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     taskPanelGate.release();

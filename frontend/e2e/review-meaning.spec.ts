@@ -77,6 +77,69 @@ test.describe("real components with local fixture API", () => {
     });
   }
 
+  test("crossing the row threshold keeps the table origin aligned while scrolled", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?scenario=scroll-threshold");
+    const first = page.getByRole("button", {
+      name: "kafka-consumer-offset-recovery-after-broker-restart-001",
+      exact: true,
+    });
+    await expect(page.locator("tbody tr[data-index]")).toHaveCount(199);
+    await page.evaluate(() => {
+      const body = document.querySelector("tbody")!;
+      window.scrollTo(
+        0,
+        body.getBoundingClientRect().top + window.scrollY - 80
+      );
+    });
+    await expect(first).toBeInViewport();
+    const before = await first.evaluate(
+      (element) => element.getBoundingClientRect().top
+    );
+    await expect
+      .poll(async () => {
+        await page.evaluate(() =>
+          window.dispatchEvent(new Event("fixture-add-tasks"))
+        );
+        return page.locator("tbody tr[data-index]").count();
+      })
+      .toBeLessThan(199);
+    await expect(first).toBeInViewport();
+    expect(
+      Math.abs(
+        (await first.evaluate(
+          (element) => element.getBoundingClientRect().top
+        )) - before
+      )
+    ).toBeLessThan(3);
+  });
+
+  test("restoring a scrolled large table keeps its first row visible", async ({
+    page,
+  }) => {
+    await page.goto("/experiments/review-demo?scenario=scroll-restored");
+    const first = page.getByRole("button", {
+      name: "kafka-consumer-offset-recovery-after-broker-restart-001",
+      exact: true,
+    });
+    await expect(first).toBeAttached();
+    await page.evaluate(() => {
+      const body = document.querySelector("tbody")!;
+      window.scrollTo(
+        0,
+        body.getBoundingClientRect().top + window.scrollY - 80
+      );
+    });
+    await expect(first).toBeInViewport();
+    const before = await page.evaluate(() => window.scrollY);
+    await page.reload();
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(before - 3);
+    await expect(first).toBeInViewport();
+  });
+
   test("task names and result badges do not repeat themselves on hover", async ({
     page,
   }) => {
@@ -236,6 +299,69 @@ test.describe("real components with local fixture API", () => {
         await expect(
           page.getByRole("link", { name: "Experiment another-", exact: true })
         ).toBeVisible();
+    });
+  }
+
+  for (const includeMustFix of [false, true]) {
+    test(`historical findings preserve severity in the header, must-fix ${includeMustFix}`, async ({
+      page,
+    }) => {
+      const findings = [
+        {
+          ...records[0].finding!,
+          id: "optional",
+          tier: "optional",
+          title: "Optional historical finding",
+        },
+        {
+          ...records[0].finding!,
+          id: "should-fix",
+          tier: "should_fix",
+          title: "Should-fix historical finding",
+        },
+        {
+          ...records[0].finding!,
+          id: "unclassified",
+          tier: undefined,
+          title: "Unclassified historical finding",
+        },
+        ...(includeMustFix
+          ? [
+              {
+                ...records[0].finding!,
+                id: "required",
+                tier: "must_fix",
+                title: "Required fix",
+              },
+            ]
+          : []),
+      ];
+      await page.route(/\/api\/tasks\/task-a\/panel(?:\?|$)/, async (route) => {
+        const response = await route.fetch();
+        const panel = await response.json();
+        panel.version.pre_trial_status = "success";
+        panel.version.pre_trial_findings = findings;
+        panel.version.retained_findings = [];
+        await route.fulfill({ json: panel });
+      });
+      await page.goto("/experiments/review-demo?task=task-a");
+      const checks = page
+        .getByRole("heading", { name: "Task checks", exact: true })
+        .locator("..");
+      await expect(
+        checks.getByText(includeMustFix ? "1 Must fix" : "3 findings", {
+          exact: true,
+        })
+      ).toBeVisible();
+      await expect(
+        page.getByText("2 RECORDED OPTIONAL", { exact: true })
+      ).toBeVisible();
+      await expect(
+        page.getByText("1 RECORDED SHOULD FIX", { exact: true })
+      ).toBeVisible();
+      await expect(
+        checks.getByText("No required fixes", { exact: true })
+      ).toHaveCount(0);
     });
   }
 

@@ -43,8 +43,22 @@ export function FixtureExperiment() {
       ];
     return [task];
   });
+  const [expandedRows, setExpandedRows] = useState(false);
+  useEffect(() => {
+    const expand = () => setExpandedRows(true);
+    window.addEventListener("fixture-add-tasks", expand);
+    return () => window.removeEventListener("fixture-add-tasks", expand);
+  }, []);
   const scrollCount =
-    scenario === "scroll-25" ? 25 : scenario === "scroll-250" ? 250 : 0;
+    scenario === "scroll-threshold"
+      ? expandedRows
+        ? 250
+        : 199
+      : scenario === "scroll-25"
+        ? 25
+        : scenario === "scroll-250" || scenario === "scroll-restored"
+          ? 250
+          : 0;
   const displayedTasks = scrollCount
     ? Array.from({ length: scrollCount }, (_, index) => ({
         ...tasks[0],
@@ -87,6 +101,10 @@ export function FixtureExperiment() {
       headerLeft={
         <>
           <h1>Review meaning fixtures</h1>
+          {(scenario === "scroll-threshold" ||
+            scenario === "scroll-restored") && (
+            <div aria-hidden style={{ height: 1800 }} />
+          )}
           {scenario === "refresh" && (
             <button onClick={() => setRefreshing((value) => !value)}>
               Toggle background refresh

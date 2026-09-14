@@ -395,7 +395,9 @@ export function TaskOverviewPanel({
   // that never got picked up.
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
-  const mustFixCount = findingItems.length;
+  const mustFixCount = findingItems.filter(
+    (item) => item.tier === "must_fix"
+  ).length;
   const findingsSummary = checksLoading
     ? "…"
     : checksLoadError
@@ -410,7 +412,9 @@ export function TaskOverviewPanel({
               ? "Not checked"
               : mustFixCount > 0
                 ? `${mustFixCount} Must fix`
-                : "No required fixes";
+                : findingItems.length > 0
+                  ? `${findingItems.length} finding${findingItems.length === 1 ? "" : "s"}`
+                  : "No required fixes";
 
   const findingsBody = () => {
     if (checksLoading) {
