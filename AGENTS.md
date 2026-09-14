@@ -2499,3 +2499,6 @@ provider capability catalog; a provider still validates its selected model.
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
 inside the isolated local test app and intercept submission requests.
+
+The delivery QA status badge describes delivery evidence checks only. Its passed
+state does not assert that all delivery requirements or human sign-off are satisfied.

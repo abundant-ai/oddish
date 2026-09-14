@@ -114,7 +114,7 @@ def evaluate_delivery_qa(
     if version is None or qa.task_version_id != version.id:
         result.status, result.detail = (
             "outdated",
-            "Delivery checks cover another task version",
+            "Delivery evidence checks cover another task version",
         )
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
@@ -123,14 +123,14 @@ def evaluate_delivery_qa(
             else "queued"
         )
         result.detail = (
-            "Delivery checks running"
+            "Delivery evidence checks running"
             if result.status == "running"
-            else "Delivery checks queued"
+            else "Delivery evidence checks queued"
         )
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",
-            qa.error_message or qa.analysis_error or "Delivery checks incomplete",
+            qa.error_message or qa.analysis_error or "Delivery evidence checks incomplete",
         )
     elif qa.finished_at is None:
         result.status, result.detail = (
@@ -180,7 +180,7 @@ def evaluate_delivery_qa(
         elif task.verdict.get("is_good") is True:
             result.status, result.detail = (
                 "accepted",
-                "Delivery checks passed",
+                "Delivery evidence checks passed",
             )
         else:
             result.status, result.detail = (

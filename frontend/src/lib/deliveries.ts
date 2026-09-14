@@ -19,13 +19,13 @@ export const DELIVERY_CHECK_STATUS_LABELS: Record<
   DeliveryQAStatus["status"],
   string
 > = {
-  accepted: "Delivery checks passed",
-  needs_fixes: "Delivery checks blocked",
-  outdated: "Delivery checks need refresh",
-  queued: "Delivery checks queued",
-  running: "Delivery checks running",
-  error: "Delivery checks incomplete",
-  never: "Delivery checks not run",
+  accepted: "Delivery evidence checks passed",
+  needs_fixes: "Delivery evidence checks blocked",
+  outdated: "Delivery evidence checks need refresh",
+  queued: "Delivery evidence checks queued",
+  running: "Delivery evidence checks running",
+  error: "Delivery evidence checks incomplete",
+  never: "Delivery evidence checks not run",
 };
 
 export const DELIVERY_STATES = {

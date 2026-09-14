@@ -692,8 +692,8 @@ test("delivery evidence coverage is labeled as delivery checks", () => {
   ) as typeof import("../src/lib/deliveries.ts");
   assert.equal(
     deliveries.DELIVERY_CHECK_STATUS_LABELS.outdated,
-    "Delivery checks need refresh"
+    "Delivery evidence checks need refresh"
   );
   for (const label of Object.values(deliveries.DELIVERY_CHECK_STATUS_LABELS))
-    assert.ok(label.startsWith("Delivery checks"));
+    assert.ok(label.startsWith("Delivery evidence checks"));
 });
