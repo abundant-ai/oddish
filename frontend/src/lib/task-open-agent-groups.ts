@@ -1,7 +1,6 @@
 import {
   getExperimentAgentDisplay,
   getExperimentAgentKey,
-  getExperimentModelScopedAgents,
 } from "@/lib/experiment-agent-grouping";
 import type { TaskOpenAgentModelSummary, Trial } from "@/lib/types";
 
@@ -14,7 +13,6 @@ export interface TaskOpenAgentCard {
 
 export interface TaskOpenAgentGroups {
   agentCards: TaskOpenAgentCard[];
-  modelScopedAgents: Set<string>;
   realAgentCount: number;
   realTrialCount: number;
 }
@@ -103,14 +101,10 @@ export function buildTaskOpenAgentGroups(
   exactSummaries: TaskOpenAgentModelSummary[],
   previewTrials: Trial[]
 ): TaskOpenAgentGroups {
-  const modelScopedAgents = getExperimentModelScopedAgents([
-    ...exactSummaries,
-    ...previewTrials,
-  ]);
   const cards = new Map<string, TaskOpenAgentCard>();
 
   for (const source of exactSummaries) {
-    const key = getExperimentAgentKey(source, modelScopedAgents);
+    const key = getExperimentAgentKey(source);
     let card = cards.get(key);
     if (!card) {
       card = { key, label: key, summary: emptySummary(source), trials: [] };
@@ -120,7 +114,7 @@ export function buildTaskOpenAgentGroups(
   }
 
   for (const trial of previewTrials) {
-    const key = getExperimentAgentKey(trial, modelScopedAgents);
+    const key = getExperimentAgentKey(trial);
     cards.get(key)?.trials.push(trial);
   }
 
@@ -128,7 +122,6 @@ export function buildTaskOpenAgentGroups(
   for (const card of agentCards) card.summary.providers.sort();
   return {
     agentCards,
-    modelScopedAgents,
     realAgentCount: agentCards.filter((card) => !card.summary.is_probe).length,
     realTrialCount: agentCards.reduce(
       (count, card) =>

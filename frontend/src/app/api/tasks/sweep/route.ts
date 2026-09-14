@@ -22,6 +22,9 @@ export async function POST(request: NextRequest) {
       headers: {
         "Content-Type": "application/json",
         ...getAuthHeaders(token),
+        ...(request.headers.get("Idempotency-Key")
+          ? { "Idempotency-Key": request.headers.get("Idempotency-Key")! }
+          : {}),
       },
       body: JSON.stringify(body),
     });
@@ -39,7 +42,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

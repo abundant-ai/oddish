@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { extractSkillMdBody } from "@/lib/skill-md";
+import { reasoningEffortOptions } from "@/lib/reasoning-effort";
 import { apiFetch } from "@/lib/api";
 
 const AGENTS = [
@@ -81,7 +82,7 @@ function ResultFocusTextarea({
       {isSchema && (
         <Badge
           variant="secondary"
-          className="absolute right-2 top-2 text-[10px]"
+          className="absolute top-2 right-2 text-[10px]"
         >
           structured output
         </Badge>
@@ -101,6 +102,7 @@ export function ProbeSubmitForm({
   onSubmitted?: () => void;
 }) {
   const router = useRouter();
+  const [effort, setEffort] = useState("default");
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -144,7 +146,7 @@ export function ProbeSubmitForm({
     // to the legacy operator_prompt for skills with no SKILL.md file.
     const skillMd = s.files.find((f) => f.relative_path === "SKILL.md");
     setExtraInstructions(
-      skillMd ? extractSkillMdBody(skillMd.content) : (s.operator_prompt ?? ""),
+      skillMd ? extractSkillMdBody(skillMd.content) : (s.operator_prompt ?? "")
     );
     // Auto-fill the result focus / output JSON when the skill carries one
     // (plain-text question or JSON Schema); leave editable either way.
@@ -164,7 +166,16 @@ export function ProbeSubmitForm({
         body: JSON.stringify({
           task_id: taskId,
           append_to_task: true,
-          configs: [{ agent, model, n_trials: 1 }],
+          configs: [
+            {
+              agent,
+              model,
+              n_trials: 1,
+              ...(effort === "default"
+                ? {}
+                : { agent_config: { kwargs: { reasoning_effort: effort } } }),
+            },
+          ],
           user: "probe-ui",
           extra_instructions: extraInstructions,
           probe_name: selectedSkill?.name ?? null,
@@ -250,6 +261,7 @@ export function ProbeSubmitForm({
                 value={agent}
                 onValueChange={(a) => {
                   setAgent(a);
+                  setEffort("default");
                   setModel(MODELS_BY_AGENT[a][0].value);
                 }}
               >
@@ -267,7 +279,13 @@ export function ProbeSubmitForm({
             </label>
             <label className="flex-1">
               <span className="text-sm font-medium">Model</span>
-              <Select value={model} onValueChange={setModel}>
+              <Select
+                value={model}
+                onValueChange={(value) => {
+                  setModel(value);
+                  setEffort("default");
+                }}
+              >
                 <SelectTrigger className="mt-1 w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -281,6 +299,25 @@ export function ProbeSubmitForm({
               </Select>
             </label>
           </div>
+          {reasoningEffortOptions(agent, model).length > 0 && (
+            <label className="block text-sm">
+              Reasoning effort
+              <Select value={effort} onValueChange={setEffort}>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["default", ...reasoningEffortOptions(agent, model)].map(
+                    (value) => (
+                      <SelectItem key={value} value={value}>
+                        {value === "default" ? "Agent default" : value}
+                      </SelectItem>
+                    )
+                  )}
+                </SelectContent>
+              </Select>
+            </label>
+          )}
           <label className="block">
             <span className="text-sm font-medium">Instructions</span>
             <Textarea
