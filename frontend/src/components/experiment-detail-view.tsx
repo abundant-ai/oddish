@@ -75,6 +75,7 @@ import { expandTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
+import { ExperimentRunDialog } from "@/components/experiment-run-dialog";
 import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 const TrialDetailPanel = dynamic(
@@ -163,21 +164,11 @@ interface ExperimentDetailViewProps {
   loadFullTrialOnOpen?: boolean;
 }
 
-const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
+const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:v2:";
 
 function isRetryableFocusError(error: unknown): boolean {
   const status = (error as { status?: number } | null)?.status;
   return status == null || status === 408 || status === 429 || status >= 500;
-}
-
-function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
-): Set<string> {
-  return new Set(
-    summaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
-  );
 }
 
 type ExperimentSummary = {
@@ -1197,19 +1188,12 @@ export function ExperimentDetailView({
   const agentSummaryStorageKey = experimentId
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
-  const { agentSummaries, modelScopedAgents } = useMemo(
+  const agentSummaries = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
     [deferredTasksForDerivedData]
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
-  const displayModelScopedAgents = useMemo(
-    () =>
-      agentSummaries.length > 0
-        ? modelScopedAgents
-        : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
-  );
 
   useEffect(() => {
     if (!agentSummaryStorageKey) {
@@ -1245,36 +1229,33 @@ export function ExperimentDetailView({
     }
   }, [agentSummaryStorageKey, agentSummaries]);
 
-  const buildTrialGroups = useCallback(
-    (task: Task) => {
-      const trialGroups: Array<{
-        agent: string;
-        model: string | null;
-        trials: Trial[];
-      }> = [];
-      const trialsByAgent = new Map<string, Trial[]>();
-      for (const trial of task.trials ?? []) {
-        const key = getExperimentAgentKey(trial, displayModelScopedAgents);
-        const existing = trialsByAgent.get(key) ?? [];
-        existing.push(trial);
-        trialsByAgent.set(key, existing);
-      }
-      for (const [key, trials] of trialsByAgent) {
-        const model = trials.find((t) => t.model)?.model ?? null;
-        trialGroups.push({
-          agent: key,
-          model,
-          trials,
-        });
-      }
-      const orderedTrials: Trial[] = [];
-      for (const group of trialGroups) {
-        orderedTrials.push(...group.trials);
-      }
-      return { trialGroups, orderedTrials };
-    },
-    [displayModelScopedAgents]
-  );
+  const buildTrialGroups = useCallback((task: Task) => {
+    const trialGroups: Array<{
+      agent: string;
+      model: string | null;
+      trials: Trial[];
+    }> = [];
+    const trialsByAgent = new Map<string, Trial[]>();
+    for (const trial of task.trials ?? []) {
+      const key = getExperimentAgentKey(trial);
+      const existing = trialsByAgent.get(key) ?? [];
+      existing.push(trial);
+      trialsByAgent.set(key, existing);
+    }
+    for (const [key, trials] of trialsByAgent) {
+      const model = trials.find((t) => t.model)?.model ?? null;
+      trialGroups.push({
+        agent: key,
+        model,
+        trials,
+      });
+    }
+    const orderedTrials: Trial[] = [];
+    for (const group of trialGroups) {
+      orderedTrials.push(...group.trials);
+    }
+    return { trialGroups, orderedTrials };
+  }, []);
 
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
@@ -1846,7 +1827,19 @@ export function ExperimentDetailView({
                 headerStatus={headerStatus}
                 showPassAtK={showPassAtK}
                 onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-                headerRight={headerRight}
+                headerRight={
+                  <>
+                    {!readOnly && allowRetry && experimentId && (
+                      <ExperimentRunDialog
+                        experimentId={experimentId}
+                        tasks={tasksForExperiment}
+                        disabled={!pagesComplete || isLoading}
+                        onSubmitted={onRerun}
+                      />
+                    )}
+                    {headerRight}
+                  </>
+                }
                 prLink={
                   // The PR chip links into GitHub for the experiment's source
                   // branch — internal context that shouldn't surface on the
@@ -1912,7 +1905,6 @@ export function ExperimentDetailView({
               <ExperimentTrialsTable
                 tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
-                modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials && !pagesComplete}
                 pagesComplete={pagesComplete}

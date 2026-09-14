@@ -90,6 +90,13 @@ async def database(monkeypatch):
                         provider="openai",
                         queue_key="openai/gpt-5",
                         model="gpt-5",
+                        harbor_config={
+                            "agent_config": {
+                                "kwargs": {
+                                    "reasoning_effort": "high" if i % 2 else "low"
+                                }
+                            }
+                        },
                         status=TrialStatus.SUCCESS,
                         reward=1,
                     )
@@ -140,6 +147,9 @@ async def test_cursor_batches_reuse_connection_across_public_member_and_disconne
         assert records[0]["experiment"]["summary"]["task_count"] == 501
         assert records[0]["experiment"]["summary"]["trial_count"] == 1001
         assert records[-1] == {"type": "complete"}
+        trials = [record["trial"] for record in records if record["type"] == "trial"]
+        assert {trial["reasoning_effort"] for trial in trials} == {"low", "high"}
+        assert all("harbor_config" not in trial for trial in trials)
         if public:
             assert "private-owner" not in json.dumps(records)
         assert sum(sql.startswith("DECLARE") for sql in statements) == 2

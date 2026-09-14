@@ -393,6 +393,10 @@ class TaskSweepSubmission(BaseModel):
             "a new task row"
         ),
     )
+    add_trials: bool = Field(
+        False,
+        description="On append, create n_trials new trials per config instead of topping up existing counts.",
+    )
     name: str | None = Field(
         None,
         description="Human-readable task name (derived from task_id if not provided)",
@@ -1160,6 +1164,7 @@ class ExperimentTrialCell(BaseModel):
     name: str
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     provider: str
     queue_key: str
     status: TrialStatus
@@ -1244,6 +1249,7 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    reasoning_effort: str | None = None
     environment: str | None = Field(
         None,
         description="Execution sandbox environment recorded on the trial row.",
@@ -1885,6 +1891,7 @@ class TaskOpenAgentModelSummary(BaseModel):
 
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     providers: list[str] = Field(default_factory=list)
     is_probe: bool = False
     trial_count: int = 0
@@ -1957,6 +1964,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    reasoning_effort: str | None = None
     kind: str = "agent"
     status: TrialStatus
     reward: float | None = None

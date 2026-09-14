@@ -91,6 +91,7 @@ def trial_ref(row: Mapping[str, Any]) -> TaskOpenTrialRef:
         agent=str(row["agent"]),
         provider=str(row["provider"]),
         model=model,
+        reasoning_effort=row.get("reasoning_effort"),
         kind=str(row["kind"]),
         status=row["status"],
         reward=row["reward"],

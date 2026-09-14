@@ -19,8 +19,8 @@ export type ExperimentAgentSummary = {
   label: string;
   agent: string;
   model: string | null;
+  reasoningEffort?: string | null;
   queueKey: string | null;
-  isModelScoped: boolean;
 };
 
 // The "nop" baseline (no-op) makes no changes; the "oracle" baseline runs the
@@ -76,29 +76,11 @@ export function getExperimentAgentDisplay(
   return { agent, model };
 }
 
-export function getExperimentModelScopedAgents(
-  entries: ReadonlyArray<Pick<Trial, "agent" | "model" | "is_probe" | "kind">>
-): Set<string> {
-  const modelsByAgent = new Map<string, Set<string>>();
-
-  for (const entry of entries) {
-    if (entry.is_probe || !isAgentTrial(entry)) continue;
-    const display = getExperimentAgentDisplay(entry);
-    const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
-    existing.add(getModelKey(display.model));
-    modelsByAgent.set(display.agent, existing);
-  }
-
-  return new Set(
-    Array.from(modelsByAgent.entries())
-      .filter(([, models]) => models.size > 1)
-      .map(([agent]) => agent)
-  );
-}
-
 export function getExperimentAgentKey(
-  trial: Pick<Trial, "agent" | "model" | "is_probe" | "kind">,
-  modelScopedAgents: ReadonlySet<string>
+  trial: Pick<
+    Trial,
+    "agent" | "model" | "is_probe" | "kind" | "reasoning_effort"
+  >
 ): string {
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
@@ -110,23 +92,20 @@ export function getExperimentAgentKey(
     return trial.kind as string;
   }
   const display = getExperimentAgentDisplay(trial);
-  if (!modelScopedAgents.has(display.agent)) {
+  if (isBaselineAgentName(display.agent)) {
     return display.agent;
   }
-  return `${display.agent}/${getModelKey(display.model)}`;
+  return `${display.agent}/${getModelKey(display.model)}/${trial.reasoning_effort ?? "unspecified"}`;
 }
 
-export function buildExperimentAgentSummaries(tasks: Task[]): {
-  agentSummaries: ExperimentAgentSummary[];
-  modelScopedAgents: Set<string>;
-} {
-  const entries = tasks.flatMap((task) => task.trials ?? []);
-  const modelScopedAgents = getExperimentModelScopedAgents(entries);
+export function buildExperimentAgentSummaries(
+  tasks: Task[]
+): ExperimentAgentSummary[] {
   const summaries = new Map<string, ExperimentAgentSummary>();
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
-      const key = getExperimentAgentKey(trial, modelScopedAgents);
+      const key = getExperimentAgentKey(trial);
       if (summaries.has(key)) continue;
 
       if (trial.is_probe) {
@@ -136,7 +115,6 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
           agent: PROBE_AGENT_KEY,
           model: null,
           queueKey: null,
-          isModelScoped: false,
         });
         continue;
       }
@@ -149,7 +127,6 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
           agent: trial.agent,
           model: trial.model ?? null,
           queueKey: trial.provider ?? null,
-          isModelScoped: false,
         });
         continue;
       }
@@ -160,8 +137,8 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
         label: key,
         agent: display.agent,
         model: display.model,
+        reasoningEffort: trial.reasoning_effort ?? null,
         queueKey: trial.provider ?? null,
-        isModelScoped: modelScopedAgents.has(display.agent),
       });
     }
   }
@@ -172,5 +149,38 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
     ordered.push(ordered.splice(probeIndex, 1)[0]);
   }
 
-  return { agentSummaries: ordered, modelScopedAgents };
+  return ordered;
+}
+
+/** Display only: keep the provider's model identifier unchanged in API calls. */
+export function experimentModelLabel(
+  model: string | null,
+  effort?: string | null
+): string {
+  return `${model ?? "default"}/${effort ?? "unspecified"}`;
+}
+
+const EFFORT_ORDER = [
+  "unspecified",
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+  "ultracode",
+];
+export function compareReasoningEffort(
+  a?: string | null,
+  b?: string | null
+): number {
+  const left = a ?? "unspecified",
+    right = b ?? "unspecified";
+  const rank = (effort: string) => {
+    const index = EFFORT_ORDER.indexOf(effort);
+    return index < 0 ? EFFORT_ORDER.length : index;
+  };
+  return rank(left) - rank(right) || left.localeCompare(right);
 }

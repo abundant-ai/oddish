@@ -2460,3 +2460,42 @@ verdict. Generation completion is not acceptance. Keep existing --qa flags, /qa/
 routes, JSON fields, preference keys, and notification deduplication keys stable.
 Notification text distinguishes Rejected from No verdict without displaying
 generation errors as task defects. The accepted-task notification says Accepted.
+
+### Reasoning effort in experiment comparisons
+
+`TrialModel.reasoning_effort` reads the explicit value from
+`harbor_config.agent_config.kwargs.reasoning_effort`, falling back to the older
+`agent_overrides.kwargs` shape. The hybrid SQL expression projects only that
+scalar into experiment results, pages, focus reads, and task summaries/previews;
+these bounded reads must not return full Harbor configuration. Explicit JSON
+null overrides the legacy value. Missing effort is unspecified, never inferred
+from today's agent defaults. This derived field requires no database migration.
+
+The shared frontend column identity includes agent, model, and effort even when
+only one configuration has arrived. Table cells, navigation, column visibility,
+exports, and Pass/k share that identity. The model/effort label is display-only;
+model-copy and submission keep the actual model identifier. Effort suffixes
+inherit the model text's typography. Deterministic baselines and internal
+QA/probe groups retain their separate grouping rules.
+
+Sweep top-ups and failed-trial replacements match effort as well as agent/model.
+The experiment Run trials dialog submits `add_trials: true` to create the
+requested number of additional runs per task/configuration. It sends at most
+four task requests concurrently, with one Idempotency-Key per task and user
+submission. Failed requests retain their exact body/key for transport retries;
+the hosted route always replays a completed add-trials key, even if those trials
+subsequently failed. Existing declarative CLI top-ups retain their retry behavior.
+The authenticated sweep proxy forwards Idempotency-Key. Reads and public pages
+never launch runs; Run trials is available only after experiment results load.
+
+The effort selector offers the bundled runners' choices for Codex (including
+`max` on GPT-5), Gemini/Antigravity CLI, Cursor, Grok Build, mini-swe-agent,
+Aider, OpenHands, Copilot CLI, DSH, and TBH. Gemini 3 Flash exposes
+minimal/low/medium/high; Pro exposes low/high; Gemini 2.5 keeps effort unset.
+Cursor model IDs that already contain `effort=...` keep the separate control
+unset to avoid contradictory overrides. These are runner presets, not a live
+provider capability catalog; a provider still validates its selected model.
+
+Run effort UI regression tests with `pnpm exec playwright test -c
+playwright.effort.config.ts` from `frontend/`. They use the production components
+inside the isolated local test app and intercept submission requests.
