@@ -1,9 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.goto("/effort");
+  // The table and launch button server-render before their handlers attach.
+  // Recharts' client-rendered plot confirms the fixture has hydrated.
+  await expect(page.getByRole("application")).toBeVisible();
+});
+
 test("effort columns separate five trials and retain the model typography", async ({
   page,
 }) => {
-  await page.goto("/effort");
   for (const effort of ["low", "medium", "high", "xhigh"]) {
     await expect(
       page.getByText(`global.anthropic.claude-opus-5/${effort}`, {
@@ -30,8 +36,6 @@ test("effort columns separate five trials and retain the model typography", asyn
   await expect(cells).toHaveCount(5);
   for (let i = 1; i < 5; i++)
     await expect(cells.nth(i).getByRole("button")).toHaveCount(5);
-  // The table server-renders; the chart appears after client hydration.
-  await expect(page.getByRole("application")).toBeVisible();
   await cells.nth(3).getByRole("button").first().click();
   await expect(page.getByLabel("Selected effort")).toHaveText("high: 5 trials");
 });
@@ -61,7 +65,6 @@ test("run dialog counts efforts and submits independent retryable requests", asy
       json: { detail: "test interruption" },
     });
   });
-  await page.goto("/effort");
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog
@@ -118,7 +121,6 @@ for (const [agent, model, effort] of [
       configs.push(...route.request().postDataJSON().configs);
       await route.fulfill({ status: 200, json: {} });
     });
-    await page.goto("/effort");
     await page.getByRole("button", { name: "Run trials", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();
@@ -148,7 +150,6 @@ for (const [agent, model, effort] of [
 test("changing Gemini model clears Flash-only effort and excludes Gemini 2.5", async ({
   page,
 }) => {
-  await page.goto("/effort");
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();

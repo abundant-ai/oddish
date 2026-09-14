@@ -2476,4 +2476,8 @@ provider capability catalog; a provider still validates its selected model.
 
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
-inside the isolated local test app and intercept submission requests.
+inside the isolated local test app and intercept submission requests. The
+Dashboard CI workflow runs this config in a separate step and stores its
+artifacts in `frontend/effort-test-results/`; the default dashboard config
+excludes the local-only effort spec. Effort cases wait for the client-rendered
+chart before interacting with server-rendered controls.
