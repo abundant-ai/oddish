@@ -19,7 +19,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import BEDROCK_ENV_VARS, settings, to_anthropic_api_model_id
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.schemas import HarborConfig
@@ -83,6 +83,33 @@ def _child_process_env() -> dict[str, str]:
     return env
 
 
+def _claude_code_on_direct_anthropic(agent: str, is_probe: bool) -> bool:
+    """Whether this trial's claude-code agent runs against the direct Anthropic API.
+
+    Blanking ``BEDROCK_ENV_VARS`` and rewriting the model id are two halves of
+    one routing decision, so both callers below read it from here. Splitting
+    them is what let a Bedrock inference-profile id reach api.anthropic.com.
+    """
+    return "claude-code" in (
+        agent or ""
+    ).strip().lower() and _claude_code_forces_direct_api(is_probe)
+
+
+def _child_model_name(*, agent: str, model: str | None, is_probe: bool) -> str | None:
+    """Resolve the model id for the transport the child will actually use.
+
+    Bedrock inference-profile ids and direct Anthropic API ids are disjoint
+    namespaces: ``global.anthropic.claude-opus-5`` resolves only on Bedrock, and
+    ``claude-opus-5`` only on api.anthropic.com. Oddish stores every Claude
+    trial under the Bedrock id, so a child moved onto the direct API needs the
+    id converted or the very first request 404s. The in-process path pairs the
+    same two decisions in ``_build_agent_config``.
+    """
+    if not _claude_code_on_direct_anthropic(agent, is_probe):
+        return model
+    return to_anthropic_api_model_id(model)
+
+
 def _runtime_env_overrides(
     *, agent: str, model: str | None, raw_harbor_config: dict[str, Any], is_probe: bool
 ) -> dict[str, str]:
@@ -96,9 +123,7 @@ def _runtime_env_overrides(
     env: dict[str, str] = {}
     if uses_openai:
         env.update(settings.get_openai_agent_env(model=openai_model))
-    if "claude-code" in (
-        agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
+    if _claude_code_on_direct_anthropic(agent, is_probe):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
@@ -132,7 +157,7 @@ def _build_payload(
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
-        "model": model,
+        "model": _child_model_name(agent=agent, model=model, is_probe=is_probe),
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": raw_harbor_config.get("agent_config") or {},
         "verifier": raw_harbor_config.get("verifier") or {},
