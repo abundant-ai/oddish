@@ -1673,6 +1673,14 @@ Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
 within the existing 64-character column; high-volume ledger inserts must not
 truncate UUIDs to the eight-character IDs used by some other entities.
 
+### Default Harbor dependency
+
+The default Harbor pin includes Modal domain-filter initialization for restricted
+startup policies and Claude retry-session preservation. Change
+`oddish/src/oddish/harbor-pin.toml`, run `oddish/scripts/sync_harbor_pin.py`, and
+regenerate both package lockfiles together. Validate the network fix on copied
+staging tasks before production promotion; changing the pin affects worker images.
+
 ### Worker resource comparison
 
 The production workflow sets `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=20`;
