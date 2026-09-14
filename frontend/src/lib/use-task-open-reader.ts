@@ -61,6 +61,7 @@ function taskFromOpen(open: TaskOpenResponse): Task {
   const total = selected?.trial_count ?? 0;
   return {
     ...open.task,
+    must_fix_count: selected?.must_fix_count ?? null,
     experiment_id: "",
     experiment_name: "",
     verdict: open.task.verdict

@@ -10,6 +10,8 @@ NOW = datetime(2026, 8, 11, tzinfo=UTC)
 
 def _identity() -> dict[str, object]:
     return {
+        "must_fix_count": 0,
+        "pre_trial_must_fix_count": 0,
         "selected_version_id": "task-1-v1",
         "selected_version": 1,
         "selected_version_message": "first",

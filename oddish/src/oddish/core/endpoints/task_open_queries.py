@@ -40,7 +40,7 @@ IDENTITY_SQL = text(
         AND (CAST(:org_id AS text) IS NULL OR t.org_id = :org_id)
       LIMIT 1
     )
-    SELECT i.*,
+    SELECT i.*, findings.must_fix_count, findings.pre_trial_must_fix_count,
       COALESCE({VERDICT_VERSION_SQL.format(task_id="i.task_id", verdict="i.verdict")} = i.selected_version_id, false) AS review_version_matches,
       COALESCE((SELECT jsonb_agg(to_jsonb(x)) FROM (
         SELECT e.id, e.name FROM task_experiments te
@@ -83,6 +83,47 @@ IDENTITY_SQL = text(
         ORDER BY canonical.key, canonical.id LIMIT 50
       ) x), '[]'::jsonb) AS selected_version_tags
     FROM identity i
+    CROSS JOIN LATERAL (
+      WITH stored_raw AS (
+        SELECT report->'finding' AS item, 0 AS priority, ord, report->>'source' = 'pre_trial' AS from_audit
+        FROM task_versions v,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.reported_findings) = 'array' THEN v.reported_findings ELSE '[]'::jsonb END) WITH ORDINALITY AS reports(report, ord)
+        WHERE v.id = i.selected_version_id
+        UNION ALL
+        SELECT item, 1 AS priority, ord, true AS from_audit
+        FROM task_versions v,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(v.pre_trial->'items') = 'array' THEN v.pre_trial->'items' ELSE '[]'::jsonb END) WITH ORDINALITY AS audit(item, ord)
+        WHERE v.id = i.selected_version_id
+      ), stored AS (
+        SELECT DISTINCT ON (finding_key) finding_key, item, priority, from_audit
+        FROM (
+          SELECT *, COALESCE(item->>'id', COALESCE(item->>'tier', '') || '|' || COALESCE(item->>'title', '') || '|' || COALESCE(item->>'file', '')) AS finding_key
+          FROM stored_raw
+        ) keyed
+        ORDER BY finding_key, priority DESC, ord DESC
+      ), live AS (
+        SELECT item, COALESCE(item->>'id', COALESCE(item->>'tier', '') || '|' || COALESCE(item->>'title', '') || '|' || COALESCE(item->>'file', '')) AS finding_key,
+          tr.created_at, tr.id, ord
+        FROM trials tr,
+          jsonb_array_elements(CASE WHEN jsonb_typeof(tr.analysis->'action_items') = 'array' THEN tr.analysis->'action_items' ELSE '[]'::jsonb END) WITH ORDINALITY AS actions(item, ord)
+        WHERE tr.task_id = i.task_id AND tr.task_version_id = i.selected_version_id
+          AND (i.org_id IS NULL OR tr.org_id = i.org_id)
+          AND tr.deleted_at IS NULL AND tr.superseded_by_trial_id IS NULL
+          AND tr.kind = 'agent' AND NOT tr.is_probe
+          AND lower(tr.agent) !~ '^(nop$|nop-|agent-nop|oracle$|oracle-|agent-oracle)'
+          AND tr.analysis_status = 'SUCCESS'
+      ), merged AS (
+        SELECT finding_key, item, from_audit FROM stored
+        UNION ALL
+        SELECT DISTINCT ON (live.finding_key) live.finding_key, live.item, false AS from_audit
+        FROM live
+        WHERE NOT EXISTS (SELECT 1 FROM stored WHERE stored.finding_key = live.finding_key OR stored.finding_key = live.item->>'links_to')
+        ORDER BY finding_key
+      )
+      SELECT count(*) FILTER (WHERE item->>'tier' = 'must_fix') AS must_fix_count,
+        count(*) FILTER (WHERE item->>'tier' = 'must_fix' AND from_audit) AS pre_trial_must_fix_count
+      FROM merged
+    ) findings
     """
 )
 

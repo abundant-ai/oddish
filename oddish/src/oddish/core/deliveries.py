@@ -82,7 +82,7 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Source review completed",
+    "pre_trial_passed": "Pre-trial audit completed",
     "min_rollouts": "Enough rollouts",
     "verdict_ok": "No blocking defects in verdict",
     "no_must_fix": "Every defect resolved or acknowledged",
@@ -774,6 +774,7 @@ def _check(
     label: str | None = None,
     checked_by: str | None = None,
     checked_at: Any = None,
+    failure_labels: list[str] | None = None,
 ) -> DeliveryCheckResult:
     return DeliveryCheckResult(
         key=key,
@@ -781,6 +782,7 @@ def _check(
         label=label or _CHECK_LABELS.get(key, key),
         status="pass" if passed else "fail",
         detail=detail,
+        failure_labels=(failure_labels or []) if not passed else [],
         checked_by_user_id=checked_by,
         checked_at=checked_at,
     )
@@ -992,7 +994,9 @@ async def _compute_board(
         version: TaskVersionModel | None = versions.get(task.current_version_id or "")
         checks: list[DeliveryCheckResult] = []
 
-        def automated(key: str, passed: bool, detail: str) -> None:
+        def automated(
+            key: str, passed: bool, detail: str, failure_labels: list[str] | None = None
+        ) -> None:
             if not auto[key].get("enabled", True):
                 checks.append(
                     DeliveryCheckResult(
@@ -1022,12 +1026,16 @@ async def _compute_board(
                         )
                     )
                     return
-            checks.append(_check(key, passed=passed, detail=detail))
+            checks.append(
+                _check(key, passed=passed, detail=detail, failure_labels=failure_labels)
+            )
 
         defects: list[DeliveryDefect] = []
         if version is None:
             for key in DEFAULT_AUTOMATED_CHECKS:
-                automated(key, False, "task has no default version")
+                automated(
+                    key, False, "task has no default version", ["Task version missing"]
+                )
         else:
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
@@ -1041,11 +1049,8 @@ async def _compute_board(
                         title=item["title"],
                         source=item["source"],
                         finding_id=(
-                            str(
-                                item["finding"].get("links_to") or item["finding"]["id"]
-                            )
-                            if item["finding"].get("links_to")
-                            or item["finding"].get("id") is not None
+                            str(item["finding"]["id"])
+                            if item["finding"].get("id") is not None
                             else None
                         ),
                         file=item["finding"].get("file"),
@@ -1064,12 +1069,24 @@ async def _compute_board(
                 )
 
             audited = version.pre_trial_status == VerdictStatus.SUCCESS
+            audit_label = {
+                "pending": "Pre-trial audit queued",
+                "queued": "Pre-trial audit queued",
+                "running": "Pre-trial audit running",
+                "failed": "Pre-trial audit failed",
+            }.get(
+                version.pre_trial_status.value.lower()
+                if version.pre_trial_status
+                else "",
+                "Pre-trial audit needed",
+            )
             automated(
                 "pre_trial_passed",
                 audited,
-                f"source review completed on {vlabel}; defect checks are separate"
+                f"pre-trial audit completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                [audit_label],
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -1080,20 +1097,29 @@ async def _compute_board(
                 count >= min_trials and agents >= min_agents,
                 f"{count}/{min_trials} trials, {agents}/{min_agents} agents "
                 f"on {vlabel}",
+                ([f"Runs: {count}/{min_trials}"] if count < min_trials else [])
+                + ([f"Agents: {agents}/{min_agents}"] if agents < min_agents else []),
             )
 
+            verdict_label = {
+                "queued": "Verdict queued",
+                "running": "Verdict running",
+                "error": "Verdict failed",
+            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "Verdict needed")
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
                 automated(
                     "verdict_ok",
                     False,
                     f"no completed execution-review verdict on {vlabel}",
+                    [verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
                     f"verdict does not cover {vlabel}; re-run QA on it",
+                    [verdict_label],
                 )
             else:
                 accepted = bool(verdict.get("is_good"))
@@ -1103,6 +1129,7 @@ async def _compute_board(
                     "review found no blocking defects; human sign-off is separate"
                     if accepted
                     else f"blocking defect: {verdict.get('primary_issue') or ''}",
+                    ["Rejected"],
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)

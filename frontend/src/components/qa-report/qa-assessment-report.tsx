@@ -6,7 +6,7 @@ import type { PreTrialFinding } from "@/lib/types";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
-import { SeverityGroups } from "./action-items";
+import { FindingList } from "./action-items";
 import type { FeedbackRecord } from "./types";
 
 const isNa = (s: string | null | undefined) => !s || /^n\/a/i.test(s);
@@ -128,7 +128,7 @@ export function QaAssessmentReport({
             <h3 className="text-muted-foreground font-mono text-[10px] font-semibold tracking-widest uppercase">
               Action items ({items.length})
             </h3>
-            <SeverityGroups
+            <FindingList
               items={items}
               onFeedback={onFeedback}
               className="mt-2"

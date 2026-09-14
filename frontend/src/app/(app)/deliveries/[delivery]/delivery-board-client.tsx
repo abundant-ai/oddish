@@ -24,6 +24,7 @@ import {
   deliveryPageQuery,
   DELIVERY_STATES,
   deliveryTaskState,
+  deliveryTaskLabels,
   QA_ISSUE_LABELS,
 } from "@/lib/deliveries";
 import { DeliveryDisclosure } from "@/components/delivery-disclosure";
@@ -657,6 +658,18 @@ function TaskRow({
   const openDefects = row.defects.filter((defect) => !defect.acknowledged);
   const taskHref = `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}&drawer=task&taskPane=overview` : ""}`;
   const state = DELIVERY_STATES[deliveryTaskState(row)];
+  const requirementBadges = (
+    <div className="flex max-w-sm flex-wrap gap-1.5">
+      {deliveryTaskLabels(row).map((label) => (
+        <span
+          key={label}
+          className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${state.tone} ${state.background}`}
+        >
+          {label}
+        </span>
+      ))}
+    </div>
+  );
   const [editingWork, setEditingWork] = useState<DeliveryTaskBoardRow | null>(
     null
   );
@@ -745,16 +758,11 @@ function TaskRow({
             {row.version != null ? `v${row.version}` : "No version"}
             {!row.is_visible && " · Hidden from customer"}
           </span>
+          {groupBy === "state" && (
+            <div className="mt-2">{requirementBadges}</div>
+          )}
         </TableCell>
-        {groupBy !== "state" && (
-          <TableCell>
-            <span
-              className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${state.tone} ${state.background}`}
-            >
-              {state.label}
-            </span>
-          </TableCell>
-        )}
+        {groupBy !== "state" && <TableCell>{requirementBadges}</TableCell>}
         {groupBy !== "owner" && (
           <TableCell onClick={(event) => event.stopPropagation()}>
             {row.qa_work.owner_user_id ? (
@@ -897,7 +905,7 @@ function TaskRow({
                           </a>
                           <p className="text-muted-foreground text-sm sm:col-start-1">
                             {defect.source === "pre_trial"
-                              ? "Source review"
+                              ? "Pre-trial audit"
                               : "Execution review"}
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
@@ -978,22 +986,46 @@ function TaskRow({
                       {checks.map((check) => (
                         <li key={check.key} className="space-y-3 py-4">
                           <p className="text-base font-medium">
-                            {(
-                              {
-                                pre_trial_passed: "Source review",
-                                min_rollouts: "Trial and agent coverage",
-                                verdict_ok: "Execution-review verdict",
-                                no_must_fix: "Finding decisions",
-                              } as Record<string, string>
-                            )[check.key] ?? check.label}{" "}
-                            ·{" "}
-                            {acknowledged
-                              ? "Exception acknowledged"
-                              : "Requirement unmet"}
+                            {!acknowledged && check.failure_labels?.length
+                              ? check.failure_labels.join(" · ")
+                              : `${
+                                  (
+                                    {
+                                      pre_trial_passed: "Pre-trial audit",
+                                      min_rollouts: "Trial and agent coverage",
+                                      verdict_ok: "Verdict",
+                                      no_must_fix: "Finding decisions",
+                                    } as Record<string, string>
+                                  )[check.key] ?? check.label
+                                } · ${acknowledged ? "Exception acknowledged" : "Requirement unmet"}`}
                           </p>
-                          <p className="max-w-prose text-base leading-relaxed">
-                            {check.detail}
-                          </p>
+                          {(acknowledged || !check.failure_labels?.length) && (
+                            <p className="max-w-prose text-base leading-relaxed">
+                              {check.detail}
+                            </p>
+                          )}
+                          {!acknowledged &&
+                            row.version != null &&
+                            [
+                              "pre_trial_passed",
+                              "min_rollouts",
+                              "verdict_ok",
+                            ].includes(check.key) && (
+                              <Link
+                                className="inline-block text-sm underline"
+                                href={
+                                  check.key === "min_rollouts"
+                                    ? `/tasks/${encodeURIComponent(row.task_id)}?version=${row.version}`
+                                    : taskHref
+                                }
+                              >
+                                {check.key === "min_rollouts"
+                                  ? "View runs"
+                                  : check.key === "pre_trial_passed"
+                                    ? "Open pre-trial audit"
+                                    : "Open run review"}
+                              </Link>
+                            )}
                           {acknowledged ? (
                             <p className="text-muted-foreground text-sm">
                               Acknowledged by{" "}
@@ -1293,7 +1325,9 @@ function DeliveryBoardContent({
       // Refresh off-page selection metadata with the board as well. A failed
       // selection read leaves the entire previous response marked stale.
       selection: selected.size
-        ? await fetcher<DeliverySelectionItem[]>(key.replace(/\/view(?=\?|$)/, "/selection"))
+        ? await fetcher<DeliverySelectionItem[]>(
+            key.replace(/\/view(?=\?|$)/, "/selection")
+          )
         : undefined,
       requestKey: key,
       fetchedAt: Date.now(),

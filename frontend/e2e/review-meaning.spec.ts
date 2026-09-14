@@ -270,7 +270,7 @@ test.describe("real components with local fixture API", () => {
       name: "Open findings for Task A",
       exact: true,
     });
-    await expect(badge).toHaveText("1 Must fix");
+    await expect(badge).toHaveText("Rejected: 1 Must Fix");
     await expect(row).not.toContainText(
       "The verifier accepts an empty answer."
     );
@@ -392,7 +392,7 @@ test.describe("real components with local fixture API", () => {
           page.getByRole("heading", { name: finding.title, exact: true })
         ).toBeVisible();
         const checks = page
-          .getByRole("heading", { name: "Task checks", exact: true })
+          .getByRole("heading", { name: "Findings", exact: true })
           .locator("..");
         await expect(
           checks.getByText("1 Must fix", { exact: true })
@@ -455,7 +455,7 @@ test.describe("real components with local fixture API", () => {
       });
       await page.goto("/experiments/review-demo?task=task-a");
       const checks = page
-        .getByRole("heading", { name: "Task checks", exact: true })
+        .getByRole("heading", { name: "Findings", exact: true })
         .locator("..");
       await expect(
         checks.getByText(includeMustFix ? "1 Must fix" : "3 findings", {
@@ -463,10 +463,10 @@ test.describe("real components with local fixture API", () => {
         })
       ).toBeVisible();
       await expect(
-        page.getByText("2 RECORDED OPTIONAL", { exact: true })
-      ).toBeVisible();
+        page.getByText("RECORDED OPTIONAL", { exact: true })
+      ).toHaveCount(2);
       await expect(
-        page.getByText("1 RECORDED SHOULD FIX", { exact: true })
+        page.getByText("RECORDED SHOULD FIX", { exact: true })
       ).toBeVisible();
       await expect(
         checks.getByText("No required fixes", { exact: true })
@@ -564,9 +564,9 @@ test.describe("real components with local fixture API", () => {
         name: "Open findings for Task A",
         exact: true,
       })
-    ).toHaveText("1 Must fix");
+    ).toHaveText("Rejected: 1 Must Fix");
     await expect(
-      rejectedRow.getByText("1 Must fix", { exact: true })
+      rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
     ).toHaveCount(1);
     await page
       .getByRole("button", { name: "2 Review error", exact: true })
@@ -634,7 +634,7 @@ test.describe("real components with local fixture API", () => {
     });
     await page.goto(findingHref("task-a", 7, records[0].finding!));
     const source = page.getByRole("button", {
-      name: "Check task v7",
+      name: "Run pre-trial audit v7",
       exact: true,
     });
     await expect(source).toBeVisible();
@@ -917,3 +917,251 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
   });
 });
+
+test("task-page findings are counted and open independently", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const first = {
+    id: "first-fix",
+    tier: "must_fix",
+    source: "pre_trial",
+    title: "Verifier accepts empty answers",
+    detail: "First finding evidence",
+    recommendation: "Reject empty answers",
+  };
+  const second = {
+    ...first,
+    id: "second-fix",
+    title: "Missing required test coverage",
+    detail: "Second finding evidence",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 2;
+        data.selected_version.pre_trial_must_fix_count = 2;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [first, second];
+        data.version.retained_findings = [first];
+      }
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(
+    page.getByText("Rejected · Pre-trial audit", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("2 Must fix", { exact: true })).toBeVisible();
+  await expect(page.getByText(/high confidence|The source audit/)).toHaveCount(
+    0
+  );
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const one = page.locator('details[data-finding="first-fix"]');
+  const two = page.locator('details[data-finding="second-fix"]');
+  await expect(one).not.toHaveAttribute("open", "");
+  await expect(two).not.toHaveAttribute("open", "");
+  await one.locator("summary").click();
+  await expect(one.getByText(first.detail, { exact: true })).toBeVisible();
+  await expect(two.getByText(second.detail, { exact: true })).not.toBeVisible();
+  await two.locator("summary").click();
+  await expect(two.getByText(second.detail, { exact: true })).toBeVisible();
+  await one.locator("summary").click();
+  await expect(one.getByText(first.detail, { exact: true })).not.toBeVisible();
+  await expect(two.getByText(second.detail, { exact: true })).toBeVisible();
+});
+
+test("linked retained must-fix survives a historical optional audit finding", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const retained = {
+    id: "retained-fix",
+    links_to: "audit-finding",
+    source: "post_trial",
+    tier: "must_fix",
+    title: "Required verifier fix",
+  };
+  const audit = {
+    id: "audit-finding",
+    source: "pre_trial",
+    tier: "optional",
+    title: "Historical suggestion",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 1;
+        data.selected_version.pre_trial_must_fix_count = 0;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [audit];
+        data.version.retained_findings = [retained];
+      }
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const findings = page
+    .getByRole("heading", { name: "Findings", exact: true })
+    .locator("..");
+  await expect(findings.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await expect(
+    page.locator('details[data-finding="retained-fix"]')
+  ).toBeVisible();
+  await expect(
+    page.locator('details[data-finding="audit-finding"]')
+  ).toBeVisible();
+});
+
+test("rejection without structured findings keeps its reason behind a disclosure", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const reason = "The verifier cannot execute the required checks.";
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.selected_version) {
+        data.selected_version.must_fix_count = 0;
+        data.selected_version.pre_trial_must_fix_count = 0;
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+      } else {
+        data.version.pre_trial_findings = [];
+        data.version.retained_findings = [];
+      }
+      data.task.verdict = {
+        is_good: false,
+        verdict: "reject",
+        primary_issue: reason,
+        confidence: null,
+        recommendations: [],
+      };
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(page.getByText("Rejected", { exact: true })).toBeVisible();
+  await expect(page.getByText(reason, { exact: true })).not.toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const disclosure = page
+    .locator("details")
+    .filter({ has: page.getByText("Rejection reason", { exact: true }) });
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await expect(disclosure.getByText(reason, { exact: true })).not.toBeVisible();
+  await disclosure.locator("summary").click();
+  await expect(disclosure.getByText(reason, { exact: true })).toBeVisible();
+});
+
+test("a first run-review finding is counted without detailed findings in open", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const finding = {
+    id: "new-run-fix",
+    tier: "must_fix",
+    source: "post_trial",
+    title: "Run exposed a verifier defect",
+    detail: "Run evidence",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.selected_version) {
+        expect(data.selected_version).not.toHaveProperty("pre_trial_findings");
+        expect(data.selected_version).not.toHaveProperty("retained_findings");
+        data.selected_version.must_fix_count = 1;
+        data.selected_version.pre_trial_must_fix_count = 0;
+      } else {
+        data.version.pre_trial_findings = [];
+        data.version.retained_findings = [];
+      }
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.route("**/api/tasks/task-a/trials?**", (route) =>
+    route.fulfill({
+      json: [
+        {
+          ...tasks[0].trials![0],
+          analysis: {
+            ...tasks[0].trials![0].analysis!,
+            action_items: [finding],
+          },
+        },
+      ],
+    })
+  );
+  await page.goto("/tasks/task-a");
+  await expect(
+    page.getByText("Rejected · Run review", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: finding.title, exact: true })
+  ).toBeVisible();
+});
+
+for (const address of ["retained-fix", "historical-audit"]) {
+  test(`finding link ${address} opens the retained required fix`, async ({
+    page,
+  }) => {
+    test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+    await page.route(/\/api\/tasks\/task-a\/panel(?:\?|$)/, async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.version.pre_trial_findings = [
+        {
+          id: "historical-audit",
+          tier: "optional",
+          title: "Historical audit finding",
+        },
+      ];
+      data.version.retained_findings = [
+        {
+          id: "retained-fix",
+          links_to: "historical-audit",
+          tier: "must_fix",
+          source: "post_trial",
+          title: "Required retained fix",
+          detail: "Required fix evidence",
+        },
+      ];
+      await route.fulfill({ json: data });
+    });
+    await page.goto(
+      `/tasks/task-a?version=7&drawer=task&taskPane=overview&finding=${address}`
+    );
+    await expect(
+      page.locator('details[data-finding="retained-fix"]')
+    ).toHaveAttribute("open", "");
+    await expect(
+      page.getByText("Required fix evidence", { exact: true })
+    ).toBeVisible();
+  });
+}

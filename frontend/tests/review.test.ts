@@ -104,15 +104,22 @@ const presentation = badgeSource.statements.find(
 );
 assert.ok(presentation);
 const badge: {
+  Component?: React.ComponentType<{
+    task: Task;
+    variant: "card" | "inline" | "summary";
+    mustFixCount?: number;
+    rejectionSource?: "Pre-trial audit" | "Run review";
+  }>;
   present?: (
     task: Task,
     iconSize: string,
-    active: boolean
+    active: boolean,
+    count?: number
   ) => { title: string; isGood: boolean | null };
 } = {};
 runInNewContext(
   ts.transpileModule(
-    `${presentation.getText(badgeSource)}\nexports.present = presentVerdict;`,
+    `${presentation.getText(badgeSource)}\n${badgeSource.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "TaskVerdictBadge")!.getText(badgeSource)}\nexports.present = presentVerdict; exports.Component = TaskVerdictBadge;`,
     {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
@@ -131,6 +138,12 @@ runInNewContext(
     AlertTriangle: box,
     CheckCircle2: box,
     Microscope: box,
+    Card: box,
+    CardHeader: box,
+    CardTitle: box,
+    CardContent: box,
+    AnalysisProse: ({ text }: { text: string }) =>
+      React.createElement("p", null, text),
   }
 );
 
@@ -343,7 +356,7 @@ test("rejected verdict displays a single exact must-fix count on its findings bu
     })
   );
   assert.match(html, /<button[^>]*aria-label="Open findings for Broken task"/);
-  assert.equal((html.match(/1 Must fix/g) ?? []).length, 1);
+  assert.equal((html.match(/Rejected: 1 Must Fix/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Must fix Finding/);
 });
 
@@ -485,4 +498,84 @@ test("routine fetch narration is absent while errors retain a retry action", () 
   const failure = render({ complete: true, isLoading: false, hasError: true });
   assert.match(failure, /Could not refresh results/);
   assert.match(failure, /Retry/);
+});
+
+for (const verdictStatus of ["success", "running", "failed", null] as const) {
+  test(`known required fixes stay visible with ${verdictStatus} review`, () => {
+    const html = renderToStaticMarkup(
+      React.createElement(exports.Chip, {
+        task: {
+          ...task,
+          must_fix_count: 3,
+          verdict_status: verdictStatus,
+          verdict: null,
+        },
+        ungradedSettled: 0,
+        onOpen: () => {},
+      })
+    );
+    assert.equal(html.replace(/<[^>]*>/g, ""), "Rejected: 3 Must Fix");
+    assert.match(html, /aria-label="Open findings for Task"/);
+  });
+}
+for (const variant of ["inline", "summary", "card"] as const) {
+  test(`${variant} verdict shows the required count without rejection prose`, () => {
+    const html = renderToStaticMarkup(
+      React.createElement(badge.Component!, {
+        task: {
+          ...task,
+          must_fix_count: 1,
+          verdict: {
+            verdict: "reject",
+            is_good: false,
+            confidence: "high",
+            primary_issue: "Duplicate explanation",
+            recommendations: ["Duplicate fix"],
+          },
+        },
+        variant,
+        mustFixCount: 3,
+      })
+    );
+    assert.equal((html.match(/3 Must fix/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /Rejected|confidence|Duplicate|1 Must fix/);
+    if (variant !== "card")
+      assert.equal(html.replace(/<[^>]*>/g, ""), "3 Must fix");
+  });
+}
+test("task-page rejection identifies the audit and count without generated prose", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(badge.Component!, {
+      task: {
+        ...task,
+        must_fix_count: 2,
+        verdict: {
+          is_good: false,
+          confidence: "high",
+          primary_issue:
+            "The source audit found two defects with a long explanation.",
+        },
+      },
+      variant: "summary",
+      rejectionSource: "Pre-trial audit",
+    })
+  );
+  assert.equal(
+    html.replace(/<[^>]*>/g, ""),
+    "Rejected · Pre-trial audit2 Must fix"
+  );
+});
+test("selected version without findings does not reuse another version's count", () => {
+  const presented = badge.present!(
+    {
+      ...task,
+      must_fix_count: 3,
+      review_version_matches: false,
+      verdict: { verdict: "reject", is_good: false, confidence: null },
+    },
+    "",
+    false,
+    0
+  );
+  assert.equal(presented.title, "No result for this version");
 });

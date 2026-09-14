@@ -89,6 +89,8 @@ def _identity(
         "default_version": 2,
         "default_version_message": "current",
         "default_version_created_at": NOW,
+        "must_fix_count": 0,
+        "pre_trial_must_fix_count": 0,
         "selected_version_id": selected_version_id if selected else None,
         "selected_version": selected_version if selected else None,
         "selected_version_message": "selected" if selected else None,

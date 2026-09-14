@@ -133,6 +133,17 @@ export function versionFor(
   return summary;
 }
 export function openFor(task: Task, version: number): TaskOpenResponse {
+  const selected = versionFor(task, version);
+  selected.must_fix_count =
+    selected.pre_trial_findings?.filter((item) => item.tier === "must_fix")
+      .length ?? 0;
+  selected.pre_trial_must_fix_count = selected.must_fix_count;
+  // Match the real /open rollup: detailed findings only belong to /panel.
+  delete selected.pre_trial_findings;
+  delete selected.retained_findings;
+  delete selected.pre_trial_status;
+  delete selected.pre_trial_error;
+  delete selected.pre_trial_cost_usd;
   return {
     task: {
       ...task,
@@ -144,7 +155,7 @@ export function openFor(task: Task, version: number): TaskOpenResponse {
       user_tags: [],
     },
     default_version: versionFor(task, task.current_version!),
-    selected_version: versionFor(task, version),
+    selected_version: selected,
     totals: {
       cost_usd: 0,
       cost_trial_count: 0,

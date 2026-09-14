@@ -102,6 +102,8 @@ def fold_task_open_groups(
     selected = None
     if identity["selected_version_id"] is not None:
         selected = TaskOpenVersionSummary(
+            must_fix_count=identity["must_fix_count"],
+            pre_trial_must_fix_count=identity["pre_trial_must_fix_count"],
             id=str(identity["selected_version_id"]),
             version=int(identity["selected_version"]),
             message=identity["selected_version_message"],

@@ -546,7 +546,16 @@ export interface TaskOpenAgentModelSummary {
   duration_trial_count: number;
 }
 
-export interface TaskOpenVersionSummary extends TaskVersionSummary {
+export interface TaskOpenVersionSummary extends Omit<
+  TaskVersionSummary,
+  | "pre_trial_findings"
+  | "retained_findings"
+  | "pre_trial_status"
+  | "pre_trial_error"
+  | "pre_trial_cost_usd"
+> {
+  must_fix_count?: number;
+  pre_trial_must_fix_count?: number;
   agent_models: TaskOpenAgentModelSummary[];
 }
 
@@ -1404,6 +1413,7 @@ export interface Customer {
 }
 
 export interface DeliveryCheckResult {
+  failure_labels?: string[];
   key: string;
   kind: "automated" | "manual";
   label: string;
