@@ -793,12 +793,7 @@ def _build_experiments_author_filter(
         if handle
     ]
 
-    primary_task_id = (
-        select(ExperimentSummaryModel.payload["primary_task_id"].astext)
-        .where(ExperimentSummaryModel.experiment_id == ExperimentModel.id)
-        .correlate(ExperimentModel)
-        .scalar_subquery()
-    )
+    primary_task_id = _first_live_task_id_for_experiment()
     legacy_exists = (
         select(1)
         .select_from(TaskModel)

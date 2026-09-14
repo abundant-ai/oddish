@@ -516,6 +516,10 @@ async def complete_trial_import(
             detail=f"Imported trial artifacts are unreadable: {layout.failure_reason}",
         )
 
+    from oddish.core.file_index import index_trial_upload
+
+    await index_trial_upload(storage, trial=trial)
+
     # After the artifacts are in place, nudge the task status forward
     # the same way the live trial handler does when a trial finishes.
     # Retried on a deadlock loss: this task UPDATE races TAG_PROJECT

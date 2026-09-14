@@ -45,7 +45,12 @@ def directory_entries(files: list[dict]) -> list[dict]:
 
 
 async def publish_file_index(
-    session, *, source_key: str, root_prefix: str, files: list[dict]
+    session,
+    *,
+    source_key: str,
+    root_prefix: str,
+    files: list[dict],
+    only_if_pending: bool = False,
 ) -> None:
     """Publish only after uploads succeed; replace inventory in one transaction."""
     from oddish.db import utcnow
@@ -55,11 +60,14 @@ async def publish_file_index(
         .values(source_key=source_key, root_prefix=root_prefix)
         .on_conflict_do_nothing()
     )
-    await session.execute(
-        select(FileIndexModel.source_key)
+    current_revision = await session.scalar(
+        select(FileIndexModel.revision)
         .where(FileIndexModel.source_key == source_key)
         .with_for_update()
     )
+    # A background scan may have started before the writer published all files.
+    if only_if_pending and current_revision is not None:
+        return
     await session.execute(
         delete(FileEntryModel).where(FileEntryModel.source_key == source_key)
     )
@@ -197,7 +205,11 @@ async def read_file_index(
 
 
 async def index_trial_upload(
-    storage, *, trial, files: list[dict] | None = None
+    storage,
+    *,
+    trial,
+    files: list[dict] | None = None,
+    only_if_pending: bool = False,
 ) -> None:
     """Resolve Harbor's authoritative child once, before publishing its directory."""
     from oddish.core.trial_artifacts import (
@@ -225,7 +237,11 @@ async def index_trial_upload(
         ]
     async with get_session() as session:
         await publish_file_index(
-            session, source_key=trial_index_key(trial), root_prefix=root, files=files
+            session,
+            source_key=trial_index_key(trial),
+            root_prefix=root,
+            files=files,
+            only_if_pending=only_if_pending,
         )
         await session.commit()
 
@@ -327,10 +343,13 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
                                 source_key=key,
                                 root_prefix=key.rsplit("/", 1)[0] + "/",
                                 files=manifest["files"],
+                                only_if_pending=True,
                             )
                             await session.commit()
                     elif trial is not None and key == trial_index_key(trial):
-                        await index_trial_upload(storage, trial=trial)
+                        await index_trial_upload(
+                            storage, trial=trial, only_if_pending=True
+                        )
                     else:
                         async with get_session() as session:
                             await session.execute(

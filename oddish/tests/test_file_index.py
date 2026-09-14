@@ -340,3 +340,40 @@ async def test_bounded_storage_read_handles_partial_network_chunks():
     assert await storage.download_bytes("test.txt", max_bytes=3) == b"abc"
     assert storage._s3.get_object.call_args.kwargs["Range"] == "bytes=0-2"
     assert [call.args for call in body.read.call_args_list] == [(3,), (2,)]
+
+
+@pytest.mark.asyncio
+async def test_writer_replaces_early_inventory_and_late_backfill_cannot_restore_it(
+    source,
+):
+    async with get_session() as session:
+        await publish_file_index(
+            session,
+            source_key=source,
+            root_prefix="test/",
+            files=[{"path": "result.json", "size": 2}],
+            only_if_pending=True,
+        )
+        await session.commit()
+    early = await read_file_index(source_key=source)
+    async with get_session() as session:
+        await publish_file_index(
+            session,
+            source_key=source,
+            root_prefix="test/",
+            files=[{"path": "result.json", "size": 2}, {"path": "late.txt", "size": 3}],
+        )
+        await session.commit()
+    complete = await read_file_index(source_key=source)
+    assert complete["source_hash"] != early["source_hash"]
+    assert {f["path"] for f in complete["files"]} == {"result.json", "late.txt"}
+    async with get_session() as session:
+        await publish_file_index(
+            session,
+            source_key=source,
+            root_prefix="test/",
+            files=[{"path": "result.json", "size": 2}],
+            only_if_pending=True,
+        )
+        await session.commit()
+    assert await read_file_index(source_key=source) == complete

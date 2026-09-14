@@ -351,3 +351,45 @@ async def test_independent_health_sample_sees_pending_work(experiment):
     assert health["summary_lag_seconds"] >= 0
     await refresh_experiment_summaries()
     assert (await prepared_read_health())["summary_pending"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary_state", ["missing", "pending", "ready"])
+async def test_mine_includes_ownerless_experiment_before_summary_is_ready(
+    experiment, summary_state
+):
+    from oddish.db.models import task_experiments
+    from sqlalchemy import delete
+
+    org, eid, tid = experiment
+    async with get_session() as session:
+        trial = await session.get(TrialModel, tid)
+        task = await session.get(TaskModel, trial.task_id)
+        task.user = "owner-handle"
+        await session.execute(
+            task_experiments.insert().values(task_id=task.id, experiment_id=eid)
+        )
+        await session.commit()
+    if summary_state == "ready":
+        await refresh_experiment_summaries()
+    elif summary_state == "missing":
+        async with get_session() as session:
+            await session.execute(
+                delete(ExperimentSummaryModel).where(
+                    ExperimentSummaryModel.experiment_id == eid
+                )
+            )
+            await session.commit()
+    async with get_session() as session:
+        for handle, expected in [("owner-handle", [eid]), ("someone-else", [])]:
+            rows, _ = await load_dashboard_experiments(
+                session,
+                org_id=org,
+                experiments_limit=25,
+                experiments_offset=0,
+                experiments_query=None,
+                experiments_status="all",
+                experiments_author_user_id="member-id",
+                experiments_author_github_usernames=[handle],
+            )
+            assert [row["id"] for row in rows] == expected
