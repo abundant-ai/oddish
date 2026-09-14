@@ -13,7 +13,7 @@ export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
   GOOD_FAILURE: "Good failure",
   BAD_SUCCESS: "Invalid success",
   BAD_FAILURE: "Task-caused failure",
-  HARNESS_ERROR: "Could not evaluate run",
+  HARNESS_ERROR: "Invalid run",
 };
 
 import { QA_STATUS_LABELS } from "@/lib/deliveries";
@@ -45,13 +45,12 @@ export function isReviewableTrial(trial: Trial): boolean {
   );
 }
 
-/** A completed review may still be unable to evaluate a run. */
+/** Analysis completion is independent of whether the run produced a valid grade. */
 export function runReviewCounts(trials: Trial[]) {
   const counts = {
     total: 0,
-    evaluated: 0,
-    issues: 0,
-    incomplete: 0,
+    analyzed: 0,
+    failed: 0,
     running: 0,
     queued: 0,
   };
@@ -64,22 +63,12 @@ export function runReviewCounts(trials: Trial[]) {
       trial.analysis_status === "queued"
     )
       counts.queued++;
-    else if (trial.analysis_status === "failed") counts.incomplete++;
-    else if (trial.analysis_status === "success") {
-      switch (trial.analysis?.classification) {
-        case "GOOD_SUCCESS":
-        case "GOOD_FAILURE":
-          counts.evaluated++;
-          break;
-        case "BAD_SUCCESS":
-        case "BAD_FAILURE":
-          counts.evaluated++;
-          counts.issues++;
-          break;
-        case "HARNESS_ERROR":
-          counts.incomplete++;
-      }
-    }
+    else if (trial.analysis_status === "failed") counts.failed++;
+    else if (
+      trial.analysis_status === "success" &&
+      trial.analysis?.classification
+    )
+      counts.analyzed++;
   }
   return counts;
 }
@@ -88,10 +77,11 @@ export function runReviewSummary(trials: Trial[]): string {
   const counts = runReviewCounts(trials);
   if (!counts.total) return "No runs";
   return [
-    `${counts.evaluated}/${counts.total} evaluated`,
-    counts.issues ? `${counts.issues} with task issues` : null,
-    counts.incomplete ? `${counts.incomplete} couldn’t be evaluated` : null,
-    counts.running ? `${counts.running} reviewing` : null,
+    `${counts.analyzed}/${counts.total} analyzed`,
+    counts.failed
+      ? `${counts.failed} ${counts.failed === 1 ? "analysis" : "analyses"} failed`
+      : null,
+    counts.running ? `${counts.running} analyzing` : null,
     counts.queued ? `${counts.queued} queued` : null,
   ]
     .filter(Boolean)
