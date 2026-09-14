@@ -18,7 +18,7 @@ jobs:
           POSTGRES_PASSWORD: oddish
           POSTGRES_DB: oddish
         ports: ['5432:5432']
-        options: --health-cmd 'pg_isready -U oddish' --health-interval 5s --health-timeout 5s --health-retries 10
+        options: --health-cmd "pg_isready -U oddish" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
     defaults:
