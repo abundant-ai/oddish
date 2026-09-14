@@ -1,3 +1,8 @@
+import { requirementExamples } from "../../../requirement-examples";
+import {
+  pageFixture,
+  selectionFixture,
+} from "../../../../delivery-page-fixtures";
 import { NextRequest, NextResponse } from "next/server";
 import { board, tasks, openFor, versionFor } from "../../../records";
 export async function GET(request: NextRequest) {
@@ -5,6 +10,14 @@ export async function GET(request: NextRequest) {
     .slice(5)
     .split("/")
     .map(decodeURIComponent);
+  if (parts[0] === "deliveries" && parts[1] === "requirements-demo") {
+    const examples = requirementExamples();
+    return NextResponse.json(
+      parts[2] === "selection"
+        ? selectionFixture(examples, request.nextUrl.searchParams)
+        : pageFixture(examples, request.nextUrl.searchParams)
+    );
+  }
   if (parts[0] === "deliveries") return NextResponse.json(board);
   const task = tasks.find((item) => item.id === parts[1]);
   if (parts[0] === "tasks" && task) {
