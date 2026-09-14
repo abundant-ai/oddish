@@ -23,7 +23,10 @@ import {
 import { apiFetch } from "@/lib/api";
 import { isAgentTrial, type Task } from "@/lib/types";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
-import { reasoningEffortOptions } from "@/lib/reasoning-effort";
+import {
+  REASONING_EFFORT_AGENTS,
+  reasoningEffortOptions,
+} from "@/lib/reasoning-effort";
 import {
   buildExperimentRunRequests,
   submitExperimentRuns,
@@ -60,8 +63,7 @@ export function ExperimentRunDialog({
     );
   const agents = [
     ...new Set([
-      "claude-code",
-      "codex",
+      ...REASONING_EFFORT_AGENTS,
       ...solverTrials.map((trial) => trial.agent),
     ]),
   ];
