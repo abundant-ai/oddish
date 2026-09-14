@@ -2,20 +2,22 @@ import { NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   {
     params,
-  }: { params: Promise<{ token: string; trial_id: string; path: string[] }> },
+  }: { params: Promise<{ token: string; trial_id: string; path: string[] }> }
 ) {
   try {
     const { token, trial_id, path } = await params;
     const filePath = path.join("/");
     const url = getBackendUrl(
       "public/experiments",
-      `/${token}/trials/${trial_id}/files/${filePath}`,
+      `/${token}/trials/${trial_id}/files/${filePath}`
     );
 
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(`${url}${new URL(request.url).search}`, {
+      cache: "no-store",
+    });
 
     if (!res.ok) {
       const text = await res.text();
@@ -42,7 +44,7 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

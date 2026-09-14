@@ -2,6 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
+import useSWRInfinite from "swr/infinite";
+import {
+  FILE_PREVIEW_BYTES as TRUNCATE_THRESHOLD,
+  fetchTrialFilePreview,
+  trialFilePreviewKey,
+  useFileCacheScope,
+} from "@/lib/file-resources";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -11,7 +18,7 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import { fetcher } from "@/lib/api";
+import { apiFetch, fetcher } from "@/lib/api";
 import { firstFilePath } from "@/lib/file-tree-order";
 import { formatFileSize } from "@/lib/format";
 import { sameFilePath } from "@/lib/file-path";
@@ -19,7 +26,6 @@ import { recordClientError } from "@/lib/observability";
 import type { LineRange } from "@/lib/line-range";
 
 // Preview truncation threshold; matches TaskFilesPanel.
-const TRUNCATE_THRESHOLD = 100 * 1024;
 
 interface ArtifactFile {
   path: string;
@@ -29,6 +35,8 @@ interface ArtifactFile {
 }
 
 interface ArtifactsListing {
+  cursor?: string | null;
+  source_hash?: string;
   files?: ArtifactFile[];
 }
 
@@ -42,16 +50,6 @@ interface ArtifactEntry {
   fullPath: string;
   size?: number;
   url?: string;
-}
-
-// Harbor writes artifacts inside the per-trial subdirectory of the job dir,
-// so the real S3 layout served by /trials/{id}/files is:
-//   <trial_name>/artifacts/...                     (single-step)
-//   <trial_name>/steps/<step_name>/artifacts/...   (multi-step)
-// Treat any file with an `artifacts` segment anywhere in its path as an
-// artifact, not just paths that literally begin with "artifacts/".
-function isArtifactPath(path: string): boolean {
-  return path.split("/").includes("artifacts");
 }
 
 // Strip the Harbor wrapper dirs before `artifacts/` so the tree shows clean
@@ -96,6 +94,7 @@ function buildArtifactEntries(
 }
 
 interface ArtifactsViewerProps {
+  trialAttempt?: number;
   filesUrl: string;
   trialId?: string;
   successfulAnalysisTrial?: boolean;
@@ -119,6 +118,7 @@ interface ArtifactsViewerProps {
 }
 
 export function ArtifactsViewer({
+  trialAttempt = 0,
   filesUrl,
   trialId,
   successfulAnalysisTrial = false,
@@ -127,10 +127,42 @@ export function ArtifactsViewer({
   onSelectLinesChange,
   onSelectedFileChange,
 }: ArtifactsViewerProps) {
-  const { data, isLoading, isValidating, error, mutate } =
-    useSWR<ArtifactsListing>(`${filesUrl}?recursive=1`, fetcher, {
+  const scope = useFileCacheScope(filesUrl);
+  const {
+    data: pages,
+    size,
+    setSize,
+    isLoading,
+    isValidating,
+    error,
+    mutate,
+  } = useSWRInfinite<ArtifactsListing>(
+    (page, previous: ArtifactsListing | null) => {
+      if (!scope || (page > 0 && !previous?.cursor)) return null;
+      const params = new URLSearchParams({
+        indexed: "true",
+        artifacts: "true",
+        presign: "false",
+        limit: "100",
+        attempt: String(trialAttempt),
+      });
+      if (previous?.cursor) {
+        params.set("cursor", previous.cursor);
+        if (previous.source_hash) params.set("revision", previous.source_hash);
+      }
+      return ["trial-artifacts", scope, trialAttempt, `${filesUrl}?${params}`];
+    },
+    ([, , , url]: [string, string, number, string]) =>
+      fetcher<ArtifactsListing>(url, { cache: "no-store" }),
+    {
       revalidateOnFocus: false,
-    });
+      revalidateIfStale: false,
+      revalidateFirstPage: false,
+      errorRetryInterval: 2_000,
+      errorRetryCount: 30,
+      shouldRetryOnError: (error: { status?: number }) => error.status === 503,
+    }
+  );
   const errorStatus = (error as { status?: number } | undefined)?.status;
   const reportedIntegrityFailureRef = useRef<{
     trialId: string | undefined;
@@ -157,10 +189,8 @@ export function ArtifactsViewer({
 
   const entriesByPath = useMemo(
     () =>
-      buildArtifactEntries(
-        (data?.files ?? []).filter((f) => isArtifactPath(f.path))
-      ),
-    [data]
+      buildArtifactEntries((pages ?? []).flatMap((page) => page.files ?? [])),
+    [pages]
   );
 
   // Identity must only change with the listing — FileTreePane rebuilds (and
@@ -170,44 +200,39 @@ export function ArtifactsViewer({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
 
-  // A deep-linked path owns the first selection; read through a ref so the
-  // load effect doesn't re-run when the parent echoes selections back.
-  const initialFilePathRef = useRef(initialFilePath);
-  useEffect(() => {
-    initialFilePathRef.current = initialFilePath;
-  });
+  const wanted = selectedPath ?? initialFilePath;
+  const entries = [...entriesByPath.values()];
+  const selectedFile = wanted
+    ? (entriesByPath.get(wanted) ??
+      entries.find(
+        (file) =>
+          file.fullPath === wanted ||
+          sameFilePath(file.path, wanted) ||
+          sameFilePath(file.fullPath, wanted)
+      ) ??
+      null)
+    : (entriesByPath.get(firstFilePath(treePaths) ?? "") ?? null);
+  const effectiveSelectedPath = selectedFile?.path ?? null;
 
-  // Re-runs as the listing grows (a live trial keeps producing artifacts);
-  // a still-present selection is kept.
   useEffect(() => {
-    if (!entriesByPath.size) {
-      setSelectedPath(null);
-      return;
+    if (
+      initialFilePath &&
+      !selectedFile &&
+      pages?.at(-1)?.cursor &&
+      !isValidating &&
+      !error
+    ) {
+      void setSize(size + 1);
     }
-    setSelectedPath((prev) => {
-      if (prev && entriesByPath.has(prev)) return prev;
-      const wanted = initialFilePathRef.current;
-      if (wanted) {
-        // Match against the relativized tree path and the original storage
-        // path: multi-step artifacts insert the step segment into the tree
-        // path (steps/setup/artifacts/x → setup/x), so a storage path from
-        // the files API is not a suffix of it and only fullPath can match.
-        const entries = [...entriesByPath.values()];
-        const match =
-          entriesByPath.get(wanted) ??
-          entries.find((f) => f.fullPath === wanted) ??
-          entries.find((f) => sameFilePath(f.path, wanted)) ??
-          entries.find((f) => sameFilePath(f.fullPath, wanted));
-        // An unresolved deep link keeps the selection empty instead of
-        // falling through to the first file: reporting that fallback
-        // would wipe the ?file= / ?lines= address it couldn't resolve.
-        // The effect re-runs as the listing grows, so a late-arriving
-        // artifact still resolves.
-        return match?.path ?? null;
-      }
-      return firstFilePath(treePaths);
-    });
-  }, [entriesByPath, treePaths]);
+  }, [
+    initialFilePath,
+    selectedFile,
+    pages,
+    isValidating,
+    error,
+    setSize,
+    size,
+  ]);
 
   // Report file selections upward for URL sync. Nulls (transient resets)
   // are never reported — they would wipe a live ?file= anchor.
@@ -216,15 +241,12 @@ export function ArtifactsViewer({
     onSelectedFileChangeRef.current = onSelectedFileChange;
   });
   useEffect(() => {
-    if (selectedPath === null) return;
-    const file = entriesByPath.get(selectedPath);
-    onSelectedFileChangeRef.current?.(selectedPath, file?.fullPath);
+    if (effectiveSelectedPath === null) return;
+    const file = entriesByPath.get(effectiveSelectedPath);
+    onSelectedFileChangeRef.current?.(effectiveSelectedPath, file?.fullPath);
     // entriesByPath is a dependency only to read fullPath; a listing refresh
     // re-reports the same selection, a no-op upstream.
-  }, [selectedPath, entriesByPath]);
-
-  const selectedFile =
-    selectedPath != null ? (entriesByPath.get(selectedPath) ?? null) : null;
+  }, [effectiveSelectedPath, entriesByPath]);
 
   if (isLoading) {
     return (
@@ -320,10 +342,23 @@ export function ArtifactsViewer({
             className="min-h-0 flex-1"
             onSelectPath={setSelectedPath}
             paths={treePaths}
-            selectedPath={selectedPath}
+            selectedPath={effectiveSelectedPath}
           />
+          {pages?.at(-1)?.cursor && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={isValidating}
+              onClick={() => void setSize(size + 1)}
+            >
+              Load more artifacts
+            </Button>
+          )}
         </div>
         <ArtifactContentPane
+          key={`${filesUrl}:${trialAttempt}:${selectedFile?.fullPath ?? ""}`}
+          trialAttempt={trialAttempt}
+          revision={pages?.[0]?.source_hash ?? null}
           filesUrl={filesUrl}
           selectedFile={selectedFile}
           viewMode={viewMode}
@@ -337,6 +372,8 @@ export function ArtifactsViewer({
 }
 
 interface ArtifactContentPaneProps {
+  revision: string | null;
+  trialAttempt: number;
   filesUrl: string;
   selectedFile: ArtifactEntry | null;
   viewMode: "rendered" | "raw";
@@ -346,6 +383,8 @@ interface ArtifactContentPaneProps {
 }
 
 function ArtifactContentPane({
+  revision,
+  trialAttempt,
   filesUrl,
   selectedFile,
   viewMode,
@@ -354,12 +393,10 @@ function ArtifactContentPane({
   onSelectLinesChange,
 }: ArtifactContentPaneProps) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [content, setContent] = useState<string | null>(null);
-  const [contentLoading, setContentLoading] = useState(false);
-  const [contentError, setContentError] = useState<string | null>(null);
-  const [isTruncated, setIsTruncated] = useState(false);
+  const [fullContent, setFullContent] = useState<string | null>(null);
+  const [fullError, setFullError] = useState<string | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
-
+  const scope = useFileCacheScope(filesUrl);
   const fullPath = selectedFile?.fullPath ?? null;
   const presignedUrl = selectedFile?.url;
   const fileSize = selectedFile?.size;
@@ -379,79 +416,20 @@ function ArtifactContentPane({
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [selectedFile?.path]);
 
-  useEffect(() => {
-    if (!selectedFile || !proxyUrl) {
-      setContent(null);
-      setContentLoading(false);
-      setContentError(null);
-      setIsTruncated(false);
-      return;
-    }
-    if (isBinary) {
-      setContent(null);
-      setContentLoading(false);
-      setContentError(null);
-      setIsTruncated(false);
-      return;
-    }
-
-    const shouldTruncate =
-      typeof fileSize === "number" && fileSize > TRUNCATE_THRESHOLD;
-    let cancelled = false;
-    setContentLoading(true);
-    setContentError(null);
-
-    async function fetchText() {
-      try {
-        let text: string | null = null;
-        let truncated = false;
-
-        if (presignedUrl) {
-          try {
-            const headers: HeadersInit = shouldTruncate
-              ? { Range: `bytes=0-${TRUNCATE_THRESHOLD - 1}` }
-              : {};
-            const res = await fetch(presignedUrl, { headers });
-            if (res.ok || res.status === 206) {
-              text = await res.text();
-              truncated =
-                res.status === 206 ||
-                (!!shouldTruncate && text.length >= TRUNCATE_THRESHOLD);
-            }
-          } catch {
-            // fall through to proxy
-          }
-        }
-
-        if (text === null) {
-          const res = await fetch(proxyUrl!);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          text = await res.text();
-          truncated = !!shouldTruncate && text.length >= TRUNCATE_THRESHOLD;
-        }
-
-        if (!cancelled) {
-          setContent(text ?? "");
-          setIsTruncated(truncated);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setContentError(
-            err instanceof Error ? err.message : "Failed to load file"
-          );
-          setContent("");
-          setIsTruncated(false);
-        }
-      } finally {
-        if (!cancelled) setContentLoading(false);
-      }
-    }
-
-    void fetchText();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedFile, proxyUrl, presignedUrl, isBinary, fileSize]);
+  const {
+    data: preview,
+    error: previewError,
+    isLoading: contentLoading,
+  } = useSWR(
+    fullPath && !isBinary
+      ? trialFilePreviewKey(scope, filesUrl, fullPath, trialAttempt, revision)
+      : null,
+    fetchTrialFilePreview,
+    { revalidateOnFocus: false, revalidateIfStale: false }
+  );
+  const content = fullContent ?? preview?.content ?? null;
+  const contentError = fullError ?? previewError?.message ?? null;
+  const isTruncated = fullContent === null && (preview?.isTruncated ?? false);
 
   const loadFullFile = useCallback(async () => {
     if (!selectedFile || !proxyUrl) return;
@@ -462,33 +440,35 @@ function ArtifactContentPane({
           const res = await fetch(presignedUrl);
           if (res.ok) {
             const text = await res.text();
-            setContent(text);
-            setIsTruncated(false);
+            setFullContent(text);
             return;
           }
         } catch {
           // fall through to proxy
         }
       }
-      const res = await fetch(proxyUrl);
+      const res = await apiFetch(
+        `${proxyUrl}?indexed=true&attempt=${trialAttempt}`
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      setContent(text);
-      setIsTruncated(false);
+      setFullContent(text);
     } catch (err) {
-      setContentError(
+      setFullError(
         err instanceof Error ? err.message : "Failed to load full file"
       );
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile, proxyUrl, presignedUrl]);
+  }, [selectedFile, proxyUrl, presignedUrl, trialAttempt]);
 
   if (!selectedFile) {
     return null;
   }
 
-  const renderUrl = presignedUrl || proxyUrl || null;
+  const renderUrl =
+    presignedUrl ||
+    (proxyUrl ? `${proxyUrl}?indexed=true&attempt=${trialAttempt}` : null);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">

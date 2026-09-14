@@ -325,6 +325,7 @@ async def list_task_files_s3(
     source_hash: str | None = None,
     directories: list[str] | None = None,
     previews: bool = False,
+    indexed: bool = False,
 ) -> dict:
     """List files in a task's S3 directory."""
     if directories is not None and (
@@ -337,6 +338,21 @@ async def list_task_files_s3(
         )
     if previews and directories is None:
         raise HTTPException(400, "Previews require a bounded directory batch")
+    if indexed:
+        if recursive or inline or presign or previews:
+            raise HTTPException(
+                400, "Prepared directories require metadata-only options"
+            )
+        from oddish.core.file_index import read_file_index
+
+        result = await read_file_index(
+            source_key=expanded_manifest_key,
+            directories=directories,
+            prefix=prefix,
+            cursor=cursor,
+            limit=limit,
+        )
+        return {**result, "task_id": task_id, "source_hash": source_hash}
     storage = get_storage_client()
     try:
         if directories is not None:
@@ -492,8 +508,26 @@ async def list_trial_files_s3(
     cursor: str | None = None,
     presign: bool = True,
     presign_expiration: int = 900,
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
+    artifacts: bool = False,
+    directories: list[str] | None = None,
 ) -> dict:
     """List files in a trial's S3 directory with optional presigned URLs."""
+    if indexed:
+        from oddish.core.file_index import read_file_index, trial_index_key
+
+        result = await read_file_index(
+            source_key=trial_index_key(trial, attempt),
+            directories=directories,
+            prefix=prefix,
+            cursor=cursor,
+            limit=limit,
+            artifacts=artifacts,
+            revision=revision,
+        )
+        return {**result, "trial_id": trial.id}
     storage = get_storage_client()
 
     try:
@@ -520,6 +554,11 @@ async def list_trial_files_s3(
 async def get_trial_file_content_s3(
     trial: TrialModel,
     file_path: str,
+    *,
+    max_bytes: int | None = None,
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
 ) -> tuple[bytes, str]:
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
@@ -531,12 +570,32 @@ async def get_trial_file_content_s3(
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    layout = await resolve_trial_artifact_layout(trial, storage)
-    if layout.mode is TrialArtifactMode.UNAVAILABLE:
-        raise HTTPException(status_code=404, detail="No authoritative trial files")
-    assert layout.artifact_prefix is not None
-    s3_key = f"{layout.artifact_prefix}{normalized}"
+    if indexed:
+        from oddish.core.file_index import trial_index_key
+        from oddish.db import get_read_session
+        from oddish.db.models import FileIndexModel
 
-    if not await storage.object_exists(s3_key):
-        raise HTTPException(status_code=404, detail="File not found")
-    return await storage.download_bytes(s3_key), media_type
+        async with get_read_session() as session:
+            index = await session.get(FileIndexModel, trial_index_key(trial, attempt))
+            if index is None or index.revision is None:
+                raise HTTPException(503, "File directory is being prepared")
+            if revision and index.revision != revision:
+                raise HTTPException(409, "File directory changed; reload its contents")
+            root_prefix = index.root_prefix
+    else:
+        layout = await resolve_trial_artifact_layout(trial, storage)
+        if layout.mode is TrialArtifactMode.UNAVAILABLE:
+            raise HTTPException(status_code=404, detail="No authoritative trial files")
+        root_prefix = layout.artifact_prefix
+    assert root_prefix is not None
+    from botocore.exceptions import ClientError
+    from oddish.db.storage import is_missing_object
+
+    try:
+        return await storage.download_bytes(
+            f"{root_prefix}{normalized}", max_bytes=max_bytes
+        ), media_type
+    except ClientError as exc:
+        if is_missing_object(exc):
+            raise HTTPException(404, "File not found") from exc
+        raise

@@ -791,6 +791,32 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Prepared dashboard and directory reads
+
+The web dashboard reads `experiment_summaries`; background maintenance calls
+`rebuild_dashboard_experiments` for the authoritative aggregate rules. Core
+migration `prepared_reads_001` installs transactionally coalesced revision markers
+on task/trial/version/experiment membership changes. Publication acknowledges the
+captured revision only. Do not add a request-time aggregate fallback. Pending
+first builds report `summary_pending`; status predicates apply before pagination.
+
+Core migration `file_index_001` installs `file_indexes`, `file_entries`, and
+source-pointer triggers for the durable indexing queue. Task publication writes
+its index with the version-pointer transaction; trial upload indexes only
+successfully uploaded files under the authoritative attempt/child. `indexed=true`
+listings return bounded metadata without storage reads; artifacts use their
+partial index. Missing indexes return retryable 503. Trial previews use explicit
+attempt/revision identity and a byte bound; full download is separate. Keep
+legacy CLI listing behavior behind the existing default options.
+
+`file-resources.ts` owns shared browser preview identity and fetching, while
+`useTaskFileTree` owns directory pages. Org/Mine uses the existing dashboard JSON
+endpoint with account/filter-scoped SWR and browser history. Apply the React
+ownership rules: URL filters and selected paths should not be duplicated as
+separate derived state. See `docs/prepared-webapp-reads.md` for maintenance,
+rollout, alerts, and regression checks; these contracts supersede the older
+browser preview-prefetch description below.
+
 ### Task-file publication and read latency
 
 Task-file publication writes complete, immutable directories under
@@ -799,8 +825,7 @@ Task-file publication writes complete, immutable directories under
 key under the version-row lock. Publication does not delete or copy the previous
 directory. Retain published directories for in-flight readers and presigned URLs;
 also retain a candidate when commit acknowledgement is uncertain. Failed uploads
-and positively identified stale candidates can be cleaned up separately. There is
-no new schema migration or automatic backfill in this change.
+and positively identified stale candidates can be cleaned up separately. The prepared-read migrations above add directory indexing and automatic backfill.
 
 `resolve_task_file_source` returns a `TaskFileSource` snapshot containing version,
 archive prefix, published manifest key, and content hash from one authorized query.
@@ -829,8 +854,9 @@ then refreshes; panel hash changes invalidate the revision. An older server's
 root-only response remains usable. File/line selection stays in the existing URL
 owners, and an addressed file reads directly before its directory tree finishes.
 Directory completion must not emit file-selection callbacks or clear line anchors.
-The browser opts into `previews=true`: at most 16 files, 32 KiB each and 256 KiB
-combined, selected only from the requested pages with `instruction.md` first.
+The browser uses `indexed=true` metadata-only listings. Legacy API callers may
+opt into `previews=true`: at most 16 files, 32 KiB each and 256 KiB combined,
+selected only from the requested pages with `instruction.md` first.
 Storage reads previews concurrently and gives each read one second; failed, binary,
 large, and omitted members retain on-demand reads. Cached archive text needs no
 additional storage request. Hosted definition routes combine current organization

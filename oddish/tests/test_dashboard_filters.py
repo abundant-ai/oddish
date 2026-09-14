@@ -139,9 +139,11 @@ def test_author_filter_requires_primary_task_match() -> None:
     assert clause is not None
     sql = _compile_sql(clause).lower()
     # Primary-owner filter correlates on the oldest linked task id.
-    assert "order by" in sql
-    assert " limit " in sql
-    assert " asc" in sql
+    assert "experiment_summaries" in sql
+    assert "primary_task_id" in sql
+    assert "order by" not in sql
+    assert " limit " not in sql
+    assert " asc" not in sql
 
 
 def test_author_filter_without_org_scope_omits_org_predicate() -> None:

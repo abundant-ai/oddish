@@ -434,6 +434,90 @@ experiment_trials = Table(
 )
 
 
+class FileIndexModel(Base):
+    """Published storage source and retry timing for historical indexing."""
+
+    __tablename__ = "file_indexes"
+    task_version_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("task_versions.id", ondelete="CASCADE"), nullable=True
+    )
+    trial_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("trials.id", ondelete="CASCADE"), nullable=True
+    )
+    __table_args__ = (
+        Index(
+            "ix_file_indexes_pending",
+            "next_attempt_at",
+            postgresql_where=text("revision IS NULL"),
+        ),
+    )
+    source_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    root_prefix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class FileEntryModel(Base):
+    __tablename__ = "file_entries"
+    source_key: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("file_indexes.source_key", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    parent: Mapped[str] = mapped_column(Text)
+    size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    is_directory: Mapped[bool] = mapped_column(Boolean)
+    artifact: Mapped[bool] = mapped_column(Boolean)
+    __table_args__ = (
+        Index("ix_file_entries_directory", "source_key", "parent", "path"),
+        Index(
+            "ix_file_entries_artifacts",
+            "source_key",
+            "path",
+            postgresql_where=text("artifact"),
+        ),
+    )
+
+
+class ExperimentSummaryModel(Base):
+    """Last completed dashboard row and durable revision awaiting rebuild."""
+
+    __tablename__ = "experiment_summaries"
+    last_dirty_txid: Mapped[int] = mapped_column(
+        BigInteger, server_default=text("txid_current()")
+    )
+    experiment_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="CASCADE"), primary_key=True
+    )
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    revision: Mapped[int] = mapped_column(BigInteger, server_default="1")
+    built_revision: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    dirty_since: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    __table_args__ = (
+        Index(
+            "ix_experiment_summaries_pending",
+            "next_attempt_at",
+            "dirty_since",
+            postgresql_where=text("revision > built_revision"),
+        ),
+        Index("ix_experiment_summaries_reconcile", "refreshed_at"),
+    )
+
+
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 

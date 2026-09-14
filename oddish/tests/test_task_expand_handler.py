@@ -26,6 +26,15 @@ from oddish.db.storage import StorageClient  # noqa: E402
 from oddish.workers.queue import task_expand_handler  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _capture_directory_publication(monkeypatch):
+    from oddish.core import file_index
+
+    publisher = AsyncMock()
+    monkeypatch.setattr(file_index, "publish_file_index", publisher)
+    return publisher
+
+
 def _make_archive(files: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:

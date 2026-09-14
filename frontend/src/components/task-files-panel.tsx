@@ -8,6 +8,12 @@ import {
   useMemo,
   useEffectEvent,
 } from "react";
+import {
+  FILE_PREVIEW_BYTES as TRUNCATE_THRESHOLD,
+  fetchTrialFilePreview,
+  trialFilePreviewKey,
+  useFileCacheScope,
+} from "@/lib/file-resources";
 import useSWR, { unstable_serialize, useSWRConfig } from "swr";
 import {
   useTaskFileTree,
@@ -142,6 +148,7 @@ type FilePreview = { sourceHash?: string | null } & (
 );
 
 interface TaskFilesPanelProps {
+  trialAttempt?: number;
   isOpen: boolean;
   onClose: () => void;
   taskId: string | null;
@@ -230,7 +237,6 @@ function getNodeName(path: string): string {
 }
 
 // Truncate files larger than 100KB initially
-const TRUNCATE_THRESHOLD = 100 * 1024;
 
 /**
  * Build the full nested tree from a recursive listing in one pass.
@@ -456,6 +462,7 @@ function getFileIcon(name: string) {
 // Language detection is handled by getLanguageFromFilename from code-block
 
 export function TaskFilesPanel({
+  trialAttempt = 0,
   isOpen,
   onClose,
   taskId,
@@ -541,7 +548,8 @@ export function TaskFilesPanel({
   // Task drawers that already defer file bodies also page the tree by
   // directory. Trial files and eager file-only panes keep their existing
   // recursive contract until their callers opt in.
-  const loadsTaskTreeByDirectory = loadFilesLazily && !fileRouteServesBytes;
+  const loadsTaskTreeByDirectory = loadFilesLazily || fileRouteServesBytes;
+  const fileCacheScope = useFileCacheScope(resolvedFilesUrl);
   const [streamLoading, setLoading] = useState(false);
   const [streamError, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -611,6 +619,7 @@ export function TaskFilesPanel({
     url: resolvedFilesUrl,
     version: shouldScopeFilesToVersion ? currentVersion : null,
     hash: listingContentHash,
+    attempt: trialAttempt,
   });
   const { loadDirectory: loadDirectoryPage } = treeResource;
   const directoryListings = useMemo<Record<string, DirectoryListing>>(() => {
@@ -749,6 +758,10 @@ export function TaskFilesPanel({
     if (!selectedFile) return null;
     const params = new URLSearchParams();
     if (presign) params.set("presign", "1");
+    if (fileRouteServesBytes) {
+      params.set("indexed", "true");
+      params.set("attempt", String(trialAttempt));
+    }
     if (maxBytes) params.set("max_bytes", String(maxBytes));
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
@@ -779,21 +792,39 @@ export function TaskFilesPanel({
   // the version and content hash identify the contents, not the listed size.
   const previewRequestKey =
     selectedFile && !immediatePreview
-      ? [
-          "task-file-preview",
-          resolvedFilesUrl,
-          selectedFile.path,
-          shouldScopeFilesToVersion ? currentVersion : null,
-          previewContentHash,
-          loadFilesLazily,
-          fileRouteServesBytes ? "raw" : "json",
-          selectedFile.url ?? null,
-        ]
+      ? fileRouteServesBytes
+        ? trialFilePreviewKey(
+            fileCacheScope,
+            resolvedFilesUrl,
+            selectedFile.path,
+            trialAttempt,
+            treeResource.data?.source_hash ?? null
+          )
+        : [
+            "task-file-preview",
+            fileCacheScope,
+            resolvedFilesUrl,
+            selectedFile.path,
+            shouldScopeFilesToVersion ? currentVersion : null,
+            previewContentHash,
+            loadFilesLazily,
+            fileRouteServesBytes ? "raw" : "json",
+          ]
       : null;
   const { data: fetchedPreview, error: previewError } = useSWR<FilePreview>(
     previewRequestKey,
     async () => {
       if (!selectedFile) throw new Error("No file selected");
+      if (fileRouteServesBytes && fileCacheScope)
+        return fetchTrialFilePreview(
+          trialFilePreviewKey(
+            fileCacheScope,
+            resolvedFilesUrl,
+            selectedFile.path,
+            trialAttempt,
+            treeResource.data?.source_hash ?? null
+          )!
+        );
       let size = selectedFile.size ?? null;
 
       if (isBinaryRendererFile(selectedFile.name)) {
@@ -869,7 +900,11 @@ export function TaskFilesPanel({
 
       return { kind: "text", content, isTruncated, size, sourceHash };
     },
-    { revalidateOnFocus: false, shouldRetryOnError: false }
+    {
+      revalidateOnFocus: false,
+      revalidateIfStale: false,
+      shouldRetryOnError: false,
+    }
   );
   useEffect(() => {
     if (!fetchedPreview) return;

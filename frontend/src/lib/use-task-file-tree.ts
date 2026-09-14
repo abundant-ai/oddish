@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useFileCacheScope } from "@/lib/file-resources";
 import useSWR, { preload, unstable_serialize, useSWRConfig } from "swr";
 import { fetcher } from "@/lib/api";
 
@@ -36,15 +36,17 @@ type TreeKey = readonly [
   string,
   number | null,
   string | null,
+  number,
 ];
 
 function treeKey(
   scope: string,
   url: string,
   version: number | null,
-  hash: string | null
+  hash: string | null,
+  attempt = 0
 ): TreeKey {
-  return ["task-file-tree", scope, url, version, hash];
+  return ["task-file-tree", scope, url, version, hash, attempt];
 }
 
 function listingUrl(key: TreeKey, path?: string, cursor?: string | null) {
@@ -53,12 +55,13 @@ function listingUrl(key: TreeKey, path?: string, cursor?: string | null) {
     inline: "0",
     presign: "0",
     limit: "100",
+    indexed: "true",
   });
+  if (key[2].includes("/trials/")) params.set("attempt", String(key[5]));
   if (key[3] !== null) params.set("version", String(key[3]));
   if (key[4]) params.set("source_hash", key[4]);
   if (path === undefined) {
     INITIAL_DIRECTORIES.forEach((dir) => params.append("directories", dir));
-    params.set("previews", "true");
   } else if (path) params.set("prefix", path);
   if (cursor) params.set("cursor", cursor);
   return `${key[2]}?${params}`;
@@ -80,19 +83,9 @@ async function fetchTree(key: TreeKey): Promise<TaskFileTree> {
   };
 }
 
-function useTaskFileCacheScope(url: string) {
-  const { userId, orgId } = useAuth();
-  // Public URLs include their share token; never reuse an authenticated entry.
-  return url.startsWith("/api/public/")
-    ? "public"
-    : userId && orgId
-      ? `${userId}:${orgId}`
-      : null;
-}
-
 /** Warm the same resource the panel consumes, on one task's pointer/keyboard intent. */
 export function usePrefetchTaskFiles() {
-  const scope = useTaskFileCacheScope("/api");
+  const scope = useFileCacheScope("/api");
   const { cache } = useSWRConfig();
   const intentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -127,24 +120,29 @@ export function useTaskFileTree({
   url,
   version,
   hash,
+  attempt = 0,
 }: {
   enabled: boolean;
   url: string;
   version: number | null;
   hash: string | null;
+  attempt?: number;
 }) {
-  const scope = useTaskFileCacheScope(url);
+  const scope = useFileCacheScope(url);
   const { cache, mutate: mutateCache } = useSWRConfig();
   const key = useMemo(
-    () => (enabled && scope ? treeKey(scope, url, version, hash) : null),
-    [enabled, scope, url, version, hash]
+    () =>
+      enabled && scope ? treeKey(scope, url, version, hash, attempt) : null,
+    [enabled, scope, url, version, hash, attempt]
   );
   const identity = unstable_serialize(key);
   const cached = cache.get(identity)?.data as TaskFileTree | undefined;
   const { data, error, isLoading, mutate } = useSWR(key, fetchTree, {
     revalidateOnMount: !cached || Date.now() - cached.fetchedAt >= FRESH_MS,
     revalidateOnFocus: false,
-    shouldRetryOnError: false,
+    shouldRetryOnError: (error: { status?: number }) => error.status === 503,
+    errorRetryInterval: 2_000,
+    errorRetryCount: 30,
   });
   const activeRequests = useRef(new Set<string>());
   const [requests, setRequests] = useState<Record<string, "loading" | "error">>(
@@ -163,7 +161,7 @@ export function useTaskFileTree({
   useEffect(() => {
     if (key && data?.source_hash && key[4] !== data.source_hash) {
       void mutateCache(
-        treeKey(key[1], key[2], key[3], data.source_hash),
+        treeKey(key[1], key[2], key[3], data.source_hash, key[5]),
         data,
         { revalidate: false }
       );

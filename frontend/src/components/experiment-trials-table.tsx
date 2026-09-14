@@ -117,6 +117,12 @@ import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
 import { apiFetch } from "@/lib/api";
 
+function warmTrialDrawer() {
+  void import("@/components/trial-detail-panel");
+  void import("@/components/task-files-panel");
+  void import("@/components/artifacts-viewer");
+}
+
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
   {
@@ -2719,6 +2725,8 @@ export function ExperimentTrialsTable({
                                       <Button
                                         type="button"
                                         variant="unstyled"
+                                        onPointerEnter={warmTrialDrawer}
+                                        onFocus={warmTrialDrawer}
                                         onPointerDown={() => {
                                           if (!readOnly && !trial.is_probe) {
                                             void preloadTrial("/api", trial.id);

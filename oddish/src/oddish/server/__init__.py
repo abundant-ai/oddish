@@ -898,6 +898,9 @@ async def list_task_files(
             description="Repeat for 1–8 directory pages; empty means root",
         ),
     ] = None,
+    indexed: bool = Query(
+        False, description="Read prepared metadata without file-body downloads"
+    ),
     previews: bool = Query(
         False, description="Include bounded small text previews in directory batches"
     ),
@@ -936,6 +939,7 @@ async def list_task_files(
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
         **({"previews": True} if previews else {}),
+        **({"indexed": True} if indexed else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,
@@ -985,6 +989,11 @@ async def list_trial_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
+    artifacts: bool = Query(False),
+    directories: list[str] | None = Query(None),
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     trial = await _get_detached_trial(trial_id)
@@ -995,6 +1004,11 @@ async def list_trial_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        indexed=indexed,
+        attempt=attempt,
+        revision=revision,
+        artifacts=artifacts,
+        directories=directories,
     )
 
 
@@ -1008,13 +1022,29 @@ async def debug_trial_files_endpoint(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/files/{file_path:path}")
-async def get_trial_file(trial_id: str, file_path: str) -> Response:
+async def get_trial_file(
+    trial_id: str,
+    file_path: str,
+    max_bytes: Annotated[int | None, Query(ge=1, le=1048576)] = None,
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
+) -> Response:
     """Get a file from a trial's S3 directory by relative path."""
     trial = await _get_detached_trial(trial_id)
     try:
-        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        content, media_type = await get_trial_file_content_s3(
+            trial,
+            file_path,
+            max_bytes=max_bytes,
+            indexed=indexed,
+            attempt=attempt,
+            revision=revision,
+        )
         return Response(content=content, media_type=media_type)
     except HTTPException:
+        if indexed or max_bytes is not None:
+            raise
         pass
     content, media_type = await read_trial_agent_file(trial, file_path)
     return Response(content=content, media_type=media_type)

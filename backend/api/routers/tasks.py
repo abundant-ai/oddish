@@ -1814,6 +1814,9 @@ async def list_task_files(
             description="Repeat for 1–8 directory pages; empty means root",
         ),
     ] = None,
+    indexed: bool = Query(
+        False, description="Read prepared metadata without file-body downloads"
+    ),
     previews: bool = Query(
         False, description="Include bounded small text previews in directory batches"
     ),
@@ -1857,6 +1860,7 @@ async def list_task_files(
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
         **({"previews": True} if previews else {}),
+        **({"indexed": True} if indexed else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,

@@ -25,7 +25,7 @@ class _Storage:
         self.downloaded.append(key)
         return self.objects[key]
 
-    async def download_bytes(self, key):
+    async def download_bytes(self, key, max_bytes=None):
         self.downloaded.append(key)
         return self.objects[key].encode()
 
