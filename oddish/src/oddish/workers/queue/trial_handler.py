@@ -204,7 +204,12 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
 
 
 async def _issue_job_credentials(
-    *, worker_job_id: str, agent: str, model: str | None, trial_id: str
+    *,
+    worker_job_id: str,
+    agent: str,
+    model: str | None,
+    trial_id: str,
+    is_probe: bool = False,
 ) -> job_tokens.JobCredentialBundle | None:
     """Mint a job-scoped credential bundle and persist its token hash.
 
@@ -219,7 +224,12 @@ async def _issue_job_credentials(
         from oddish.db.models import WorkerJobModel
 
         bundle, token_hash = job_tokens.build_bundle(
-            agent=agent, model=model, trial_id=trial_id, settings=settings, now=utcnow()
+            agent=agent,
+            model=model,
+            trial_id=trial_id,
+            settings=settings,
+            now=utcnow(),
+            is_probe=is_probe,
         )
         async with get_session() as session:
             await session.execute(
@@ -288,6 +298,9 @@ class PreparedTrialRun:
     created_by_user_id: str | None = None
     billed_user_id: str | None = None
     trial_attempt: int = 1
+    # Probe trials are forced to the direct Anthropic API regardless of
+    # claude_code_force_direct_api, so the scoped bundle has to know.
+    is_probe: bool = False
 
 
 @dataclass(slots=True)
@@ -738,6 +751,7 @@ async def _prepare_trial_run(
             org_id=trial.org_id,
             billed_user_id=trial.billed_user_id,
             trial_attempt=trial.attempts,
+            is_probe=bool(trial.is_probe),
             created_by_user_id=(
                 (task.created_by_user_id if task else None) or experiment_owner_user_id
             ),
@@ -2124,6 +2138,7 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
+                is_probe=prepared_trial.is_probe,
             )
 
         from oddish.workers.queue.model_gateway import (

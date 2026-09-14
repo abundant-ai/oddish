@@ -218,6 +218,39 @@ def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key() -> Non
     assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
 
 
+def test_scoped_model_env_probe_scopes_anthropic_key_with_flag_off() -> None:
+    # A probe is routed to the direct Anthropic API even when
+    # claude_code_force_direct_api is off, so the bundle must follow it there
+    # rather than shipping the Bedrock routing flag the runner just blanked.
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
+    )
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+        is_probe=True,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_build_bundle_forwards_is_probe_to_the_scoped_env() -> None:
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant", claude_code_force_direct_api=False
+    )
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    bundle, _ = job_tokens.build_bundle(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        trial_id="t-1",
+        settings=settings,
+        now=_now(),
+        is_probe=True,
+    )
+    assert bundle.model_env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
 def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct() -> None:
     # The mitigation is claude-code only; SingleLLMAgent still invokes Bedrock.
     settings = _fake_settings(

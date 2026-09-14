@@ -84,7 +84,20 @@ def _agent_invokes_bedrock(agent: str | None) -> bool:
     return _agent_is_claude_code(agent) or (agent or "").strip().lower() == "single-llm"
 
 
-def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[str, str]:
+def _forced_to_direct_api(settings: Any, is_probe: bool) -> bool:
+    """Mirror ``agent_config._claude_code_forces_direct_api`` for claude-code.
+
+    A probe is routed to the direct Anthropic API whatever
+    ``claude_code_force_direct_api`` says, so the bundle has to ask the same
+    question the runner asks or it will scope a credential for the wrong
+    transport. Kept as its own helper so the two predicates stay comparable.
+    """
+    return is_probe or bool(getattr(settings, "claude_code_force_direct_api", False))
+
+
+def scoped_model_env(
+    *, agent: str, model: str | None, settings: Any, is_probe: bool = False
+) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
     Resolves the provider via ``settings.get_provider_for_trial`` and returns
@@ -120,8 +133,7 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         # Bedrock for an id only api.anthropic.com knows. Scope the key the
         # trial will actually authenticate with instead.
         if not _agent_invokes_bedrock(agent) or (
-            _agent_is_claude_code(agent)
-            and bool(getattr(settings, "claude_code_force_direct_api", False))
+            _agent_is_claude_code(agent) and _forced_to_direct_api(settings, is_probe)
         ):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}
@@ -182,6 +194,7 @@ def build_bundle(
     *,
     agent: str,
     model: str | None,
+    is_probe: bool = False,
     trial_id: str,
     settings: Any,
     now: datetime,
@@ -196,7 +209,9 @@ def build_bundle(
     """
     _, token_hash = mint_token()
     bundle = JobCredentialBundle(
-        model_env=scoped_model_env(agent=agent, model=model, settings=settings),
+        model_env=scoped_model_env(
+            agent=agent, model=model, settings=settings, is_probe=is_probe
+        ),
         s3_write_prefix=s3_write_prefix_for(trial_id),
         expires_at=now + timedelta(seconds=ttl_seconds),
     )
