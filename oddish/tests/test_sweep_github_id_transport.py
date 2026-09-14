@@ -68,6 +68,11 @@ def test_unset_github_id_does_not_change_request_hash():
     # compute_request_hash runs, minus the github_id key.
     data = submission.model_dump(mode="json")
     data.pop("github_id")
+    for config in data.get("configs") or []:
+        if isinstance(config, dict):
+            config.pop("provider", None)
+            if config.get("allow_unknown_model") is False:
+                config.pop("allow_unknown_model", None)
     if hasattr(submission, "registry_auth"):
         data["registry_auth"] = _registry_auth_fingerprints(
             getattr(submission, "registry_auth", None)
