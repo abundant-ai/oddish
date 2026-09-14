@@ -416,9 +416,11 @@ function TaskVerdictChip({
   onPrefetch?: () => void;
 }) {
   const status = taskReviewStatus(task);
+  const hasRequiredFixes = (task.must_fix_count ?? 0) > 0;
   const running = status === "queued" || status === "running";
-  const chipClass =
-    status === "error"
+  const chipClass = hasRequiredFixes
+    ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+    : status === "error"
       ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
       : status === "accepted"
         ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
@@ -428,7 +430,7 @@ function TaskVerdictChip({
             ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
             : "bg-muted text-muted-foreground";
   const label =
-    status === "needs_fixes"
+    hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
       : status === "never" && task.verdict_status === "success"
         ? "No overall result"
@@ -457,7 +459,7 @@ function TaskVerdictChip({
       onFocus={onPrefetch}
       onClick={onOpen}
       className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-      aria-label={`${status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
+      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
     >
       {chip}
     </button>

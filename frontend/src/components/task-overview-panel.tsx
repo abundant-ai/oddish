@@ -8,7 +8,6 @@ import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 import {
   EXECUTION_LABELS,
   findingHref,
-  taskReviewStatus,
   isReviewableTrial,
   runReviewSummary,
 } from "@/lib/review";
@@ -16,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
-import { SeverityGroups } from "@/components/qa-report/action-items";
+import { FindingList } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
@@ -301,7 +300,7 @@ export function TaskOverviewPanel({
       };
     }, [versionTrials, checksFindings, foreignIds]);
 
-  // The rows handed to SeverityGroups carry only copy-safe fields — its
+  // The rows handed to FindingList carry only copy-safe fields — its
   // per-item copy button serializes the row as-is, so the trial objects
   // stay behind in the lookup map and the copy gets ids.
   const findingItems = useMemo(
@@ -356,7 +355,7 @@ export function TaskOverviewPanel({
         {sourced.fromAudit ? (
           <span className="border-border text-muted-foreground inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]">
             <SearchCode className="h-3 w-3 shrink-0" aria-hidden="true" />
-            Task checks
+            Pre-trial audit
           </span>
         ) : null}
         {(sourced.trials ?? []).map((trial) => {
@@ -431,7 +430,7 @@ export function TaskOverviewPanel({
     // speak to the task itself.
     const findingsList =
       findingItems.length > 0 ? (
-        <SeverityGroups
+        <FindingList
           items={findingItems}
           selectedFinding={selectedFinding}
           findingLink={
@@ -458,7 +457,7 @@ export function TaskOverviewPanel({
       <>
         {checkState === "failed" ? (
           <p className="font-mono text-[11px] break-all text-red-500">
-            {checksError || "Task checks couldn’t finish."}
+            {checksError || "Pre-trial audit couldn’t finish."}
           </p>
         ) : checkState === "running" && findingItems.length === 0 ? (
           <div className="flex flex-col gap-2">
@@ -467,14 +466,7 @@ export function TaskOverviewPanel({
             <Skeleton className="h-3 w-2/5" />
           </div>
         ) : null}
-        {findingsList && (
-          <div className="space-y-3">
-            <h2 className="text-sm font-medium">
-              Issues to fix ({findingItems.length})
-            </h2>
-            {findingsList}
-          </div>
-        )}
+        {findingsList}
       </>
     );
   };
@@ -585,7 +577,7 @@ export function TaskOverviewPanel({
 
   return (
     <div className={cn("flex flex-col", className)}>
-      {verdictTask ? (
+      {verdictTask && mustFixCount === 0 ? (
         <div className="border-border border-b p-4">
           <div className="text-muted-foreground mb-2 text-xs">
             QA result ·{" "}
@@ -597,12 +589,7 @@ export function TaskOverviewPanel({
             task={verdictTask}
             variant="inline"
             qaActive={qaActive}
-            detail={
-              taskReviewStatus(verdictTask) === "needs_fixes" &&
-              mustFixCount > 0
-                ? `${mustFixCount} Must fix`
-                : undefined
-            }
+            mustFixCount={mustFixCount}
           />
         </div>
       ) : null}
@@ -619,7 +606,7 @@ export function TaskOverviewPanel({
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Task checks
+            {findingItems.length > 0 ? "Findings" : "Pre-trial audit"}
           </h2>
           <span className="text-muted-foreground font-mono text-[11px]">
             {findingsSummary}
@@ -639,7 +626,7 @@ export function TaskOverviewPanel({
             >
               {checksRerunning
                 ? "Queuing…"
-                : `Check task${verdictTask?.current_version != null ? ` v${verdictTask.current_version}` : ""}`}
+                : `Run pre-trial audit${verdictTask?.current_version != null ? ` v${verdictTask.current_version}` : ""}`}
             </button>
           </div>
         </div>

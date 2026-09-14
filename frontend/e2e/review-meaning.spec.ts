@@ -392,7 +392,7 @@ test.describe("real components with local fixture API", () => {
           page.getByRole("heading", { name: finding.title, exact: true })
         ).toBeVisible();
         const checks = page
-          .getByRole("heading", { name: "Task checks", exact: true })
+          .getByRole("heading", { name: "Findings", exact: true })
           .locator("..");
         await expect(
           checks.getByText("1 Must fix", { exact: true })
@@ -455,7 +455,7 @@ test.describe("real components with local fixture API", () => {
       });
       await page.goto("/experiments/review-demo?task=task-a");
       const checks = page
-        .getByRole("heading", { name: "Task checks", exact: true })
+        .getByRole("heading", { name: "Findings", exact: true })
         .locator("..");
       await expect(
         checks.getByText(includeMustFix ? "1 Must fix" : "3 findings", {
@@ -463,10 +463,10 @@ test.describe("real components with local fixture API", () => {
         })
       ).toBeVisible();
       await expect(
-        page.getByText("2 RECORDED OPTIONAL", { exact: true })
-      ).toBeVisible();
+        page.getByText("RECORDED OPTIONAL", { exact: true })
+      ).toHaveCount(2);
       await expect(
-        page.getByText("1 RECORDED SHOULD FIX", { exact: true })
+        page.getByText("RECORDED SHOULD FIX", { exact: true })
       ).toBeVisible();
       await expect(
         checks.getByText("No required fixes", { exact: true })
@@ -634,7 +634,7 @@ test.describe("real components with local fixture API", () => {
     });
     await page.goto(findingHref("task-a", 7, records[0].finding!));
     const source = page.getByRole("button", {
-      name: "Check task v7",
+      name: "Run pre-trial audit v7",
       exact: true,
     });
     await expect(source).toBeVisible();
@@ -916,4 +916,58 @@ test.describe("real components with local fixture API", () => {
       page.getByText("Signed off on v1", { exact: true })
     ).toBeVisible();
   });
+});
+
+test("task-page findings are counted and open independently", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const first = {
+    id: "first-fix",
+    tier: "must_fix",
+    source: "pre_trial",
+    title: "Verifier accepts empty answers",
+    detail: "First finding evidence",
+    recommendation: "Reject empty answers",
+  };
+  const second = {
+    ...first,
+    id: "second-fix",
+    title: "Missing required test coverage",
+    detail: "Second finding evidence",
+  };
+  await page.route(
+    /\/api\/tasks\/task-a\/(open|panel)(?:\?|$)/,
+    async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const version = data.selected_version ?? data.version;
+      version.pre_trial_findings = [first, second];
+      version.retained_findings = [first];
+      await route.fulfill({ json: data });
+    }
+  );
+  await page.goto("/tasks/task-a");
+  await expect(
+    page.getByText("Rejected · Pre-trial audit", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByText("2 Must fix", { exact: true })).toBeVisible();
+  await expect(page.getByText(/high confidence|The source audit/)).toHaveCount(
+    0
+  );
+  await page
+    .getByRole("button", { name: "View findings", exact: true })
+    .click();
+  const one = page.locator('details[data-finding="first-fix"]');
+  const two = page.locator('details[data-finding="second-fix"]');
+  await expect(one).not.toHaveAttribute("open", "");
+  await expect(two).not.toHaveAttribute("open", "");
+  await one.locator("summary").click();
+  await expect(one.getByText(first.detail, { exact: true })).toBeVisible();
+  await expect(two.getByText(second.detail, { exact: true })).not.toBeVisible();
+  await two.locator("summary").click();
+  await expect(two.getByText(second.detail, { exact: true })).toBeVisible();
+  await one.locator("summary").click();
+  await expect(one.getByText(first.detail, { exact: true })).not.toBeVisible();
+  await expect(two.getByText(second.detail, { exact: true })).toBeVisible();
 });

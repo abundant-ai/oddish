@@ -1131,6 +1131,19 @@ export function TaskDetailClient({
           <TaskVerdictBadge
             task={task}
             variant="summary"
+            rejectionSource={
+              [
+                ...(selectedVersion?.retained_findings ?? []),
+                ...(selectedVersion?.pre_trial_findings ?? []),
+              ].some(
+                (item) =>
+                  item.tier === "must_fix" && item.source !== "post_trial"
+              )
+                ? "Pre-trial audit"
+                : (task.must_fix_count ?? 0) > 0
+                  ? "Run review"
+                  : undefined
+            }
             onViewFindings={() => {
               selectTaskPane("overview");
               handleOpenTaskFiles();
@@ -1392,8 +1405,12 @@ export function TaskDetailClient({
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
-            onShowTaskChange={(showTask) => changeDrawerVisibility({ showTask })}
-            onShowTrialChange={(showTrial) => changeDrawerVisibility({ showTrial })}
+            onShowTaskChange={(showTask) =>
+              changeDrawerVisibility({ showTask })
+            }
+            onShowTrialChange={(showTrial) =>
+              changeDrawerVisibility({ showTrial })
+            }
             sideBySideLeft={
               <TaskFilesPanel
                 isOpen={drawer.mode === "trial" && drawerShowTask}
