@@ -503,8 +503,6 @@ function QAHistoryVersionRow({
           </span>
           <span>
             defects: {version.must_fix} requiring resolution or acknowledgment
-            {version.pre_trial_should_fix > 0 &&
-              ` (${version.pre_trial_should_fix} recorded should_fix in source audit)`}
           </span>
           <span>
             Verdict generation runs:{" "}

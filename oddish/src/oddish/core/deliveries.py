@@ -21,7 +21,7 @@ from oddish.core.delivery_progress import (
     delivery_progress_history,
     record_delivery_progress,
 )
-from oddish.core.task_findings import pre_trial_items, task_defect_items
+from oddish.core.task_findings import task_defect_items
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -1590,9 +1590,6 @@ async def get_task_qa_history_core(
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
-                pre_trial_should_fix=sum(
-                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
-                ),
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),

@@ -558,7 +558,7 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environm
         pre_trial={
             "items": [
                 {"id": "audit-1", "tier": "must_fix"},
-                {"id": "audit-2", "severity": "should_fix"},
+                {"id": "audit-2", "severity": "must_fix"},
                 {"id": "audit-1", "tier": "must_fix"},
                 {"title": "An old finding without an id"},
             ]
@@ -612,7 +612,7 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environm
     assert captured["environment"] == environment
     payload = captured["payload"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
-    assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
+    assert payload["pre_trial_must_fix_ids"] == ["audit-1", "audit-2"]
     assert payload["trial_evidence"] == [
         {
             "trial_id": "trial-1",

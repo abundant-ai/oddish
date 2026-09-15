@@ -2372,8 +2372,12 @@ protocol scope, operator metrics, tests, and staging rollout prerequisites.
 
 New source and execution findings use only `must_fix`; the shared
 `analysis_check_payload`/`check_analysis_result` contract enforces this at
-submission, verification, and import. `ActionTier` retains historical enum
-values for reading existing reports. Severity does not establish execution
+submission, verification, and import. `ActionTier` retains `optional` for historical reports. Apply core migration
+`merge_finding_tiers_001` before deployment: it converts retired severity fields
+to `must_fix` in audits, retained findings, analyses, and delivery snapshots.
+Database triggers normalize older-worker writes to the same columns, so retired
+severities cannot reappear. The API no longer returns `pre_trial_should_fix`;
+QA exports include converted findings in `must_fix_count`. Severity does not establish execution
 causation: unrelated findings leave `GOOD_FAILURE` unchanged.
 
 `oddish.core.task_findings` owns collection and retention. All recorded tiers
@@ -2390,7 +2394,8 @@ The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
 and exception requests require the reviewed `expected_version_id` and the actor
 from authentication. Delivery manual-check uniqueness includes version, and
 history exposes each retained version decision. New versions inherit neither
-findings nor decisions. Finalized delivery snapshots are never recomputed.
+findings nor decisions. Finalized delivery snapshots are never recomputed. The severity migration only
+renames the retired category inside them; it preserves decisions and evidence.
 Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
 
@@ -2471,6 +2476,17 @@ these bounded reads must not return full Harbor configuration. Explicit JSON
 null overrides the legacy value. Missing effort is unspecified, never inferred
 from today's agent defaults. This derived field requires no database migration.
 
+New submissions for reasoning-capable agent/model pairs explicitly default to
+`high` before sweep reconciliation and trial persistence. The resolver lives in
+`oddish.reasoning_effort.with_default_reasoning_effort`; sweep matching and queue
+insertion must use the same value. It copies AgentConfig when adding the default
+so the original request and its idempotency hash do not change. Explicit kwargs
+(including null) and known effort environment overrides win. Unsupported models,
+Gemini 2.5, baselines, and Cursor IDs with embedded effort keep their configuration.
+The worker receives the saved value. Reads/imports do not assign defaults to old
+runs, and retries retain their source configuration. Both launch forms preselect
+high for supported models and omit the ambiguous Agent default option there.
+
 The shared frontend column identity includes agent, model, and effort even when
 only one configuration has arrived. Table cells, navigation, column visibility,
 exports, and Pass/k share that identity. The model/effort label is display-only;
@@ -2498,7 +2514,15 @@ provider capability catalog; a provider still validates its selected model.
 
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
-inside the isolated local test app and intercept submission requests.
+inside the isolated local test app and intercept submission requests. The
+Dashboard CI workflow runs this config in a separate step and stores its
+artifacts in `frontend/effort-test-results/`; the default dashboard config
+excludes the local-only effort spec. Effort cases wait for the client-rendered
+chart before interacting with server-rendered controls.
+
+Finding attribution in a task overview opens trials through the host drawer,
+including trials from other experiments. Source-file clicks select the file and
+line range in the current task pane; they preserve the experiment route.
 
 The delivery QA status badge describes delivery evidence checks only. Its passed
 state does not assert that all delivery requirements or human sign-off are satisfied.

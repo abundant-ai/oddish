@@ -604,8 +604,7 @@ def history(
         console.print(
             f"  audit: {audit.lower()} · rollouts: {version['rollout_count']} "
             f"({version['rollout_agents']} agents) · defects: "
-            f"{version['must_fix']} requiring resolution or acknowledgment "
-            f"({version['pre_trial_should_fix']} recorded should_fix in source audit)"
+            f"{version['must_fix']} requiring resolution or acknowledgment"
         )
         for run in version["qa_runs"]:
             console.print(

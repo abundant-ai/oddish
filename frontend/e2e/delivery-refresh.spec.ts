@@ -941,7 +941,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
   const retained = accepted
     .getByRole("listitem")
     .filter({ hasText: "The verifier does not check" });
-  await expect(retained).toContainText("Recorded severity: should_fix");
+  await expect(retained).toContainText("Recorded severity: must_fix");
   await expect(retained).toContainText(
     "Acknowledged by Maya for v1; finding retained"
   );

@@ -2926,7 +2926,6 @@ class TaskQAHistoryVersion(BaseModel):
     # Reported defects from every source, including historical tiers;
     # kept under the existing API name for compatibility.
     must_fix: int
-    pre_trial_should_fix: int
     rollout_count: int
     rollout_agents: int
     qa_runs: list[TaskQAHistoryRun]
