@@ -218,7 +218,7 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
 #                                 real reward-0 outcome
 #   ContextWindowExceededError -- spent its own context budget
 #   OutputTokenExceededError   -- spent its own output budget
-SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES: frozenset[str] = frozenset(
+SCORE_INVALIDATING_EXCEPTIONS: frozenset[str] = frozenset(
     {
         # Credential, request, model/resource, or account-limit failures.
         "AgentAuthenticationError",
@@ -239,9 +239,9 @@ SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES: frozenset[str] = frozenset(
 )
 
 
-def is_score_invalidating_provider_exception(exception_type: str | None) -> bool:
+def invalidates_score(exception_type: str | None) -> bool:
     """Whether a recorded provider exception invalidates this trial's score."""
-    return exception_type in SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES
+    return exception_type in SCORE_INVALIDATING_EXCEPTIONS
 
 
 def build_trial_result(

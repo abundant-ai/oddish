@@ -9,8 +9,8 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 from oddish.cli.api import trial_result_to_import_spec
 from oddish.core.harbor_artifacts import (
-    SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES,
-    is_score_invalidating_provider_exception,
+    SCORE_INVALIDATING_EXCEPTIONS,
+    invalidates_score,
 )
 from oddish.db import TrialStatus
 from oddish.worker.local_runner import _verifier_reward_for_result
@@ -82,8 +82,8 @@ def _claude_trial(**overrides):
         (None, False),
     ],
 )
-def test_is_score_invalidating_provider_exception(exception_type, expected):
-    assert is_score_invalidating_provider_exception(exception_type) is expected
+def test_invalidates_score(exception_type, expected):
+    assert invalidates_score(exception_type) is expected
 
 
 def _harbor_exception_class(name: str) -> type | None:
@@ -97,14 +97,14 @@ def _harbor_exception_class(name: str) -> type | None:
 def test_every_score_invalidating_provider_name_is_a_harbor_exception():
     # The set is matched by name against ``exception_info.exception_type``.
     # A name Harbor never raises would silently protect nothing.
-    for name in SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES:
+    for name in SCORE_INVALIDATING_EXCEPTIONS:
         assert _harbor_exception_class(name) is not None, name
 
 
 def test_agent_owned_endings_do_not_invalidate_scores():
     for name in AGENT_OWNED_ENDINGS:
         assert _harbor_exception_class(name) is not None, name
-        assert name not in SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES
+        assert name not in SCORE_INVALIDATING_EXCEPTIONS
 
 
 @pytest.mark.asyncio

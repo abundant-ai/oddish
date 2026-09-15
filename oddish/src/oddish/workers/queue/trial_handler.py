@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 
 from oddish.core.harbor_artifacts import (
     build_trial_result,
-    is_score_invalidating_provider_exception,
+    invalidates_score,
 )
 from oddish.core.trial_artifacts import (
     trial_name_from_manifest,
@@ -1045,7 +1045,7 @@ async def _store_trial_results(
             # after partial agent work. Drop it and use the existing scoreless
             # path: the error surfaces, and Harbor's RetryConfig -- read below
             # by ``_is_non_retryable_outcome`` -- decides retry or fail.
-            if is_score_invalidating_provider_exception(outcome.exception_type):
+            if invalidates_score(outcome.exception_type):
                 if derived_reward is not None:
                     console.print(
                         f"[yellow]Trial {trial_id} discarding verifier "
@@ -1560,9 +1560,7 @@ async def _handle_harbor_event(
                             or "Unknown error"
                         )
                         is_agent_timeout = _is_agent_timeout_exception(exc_info)
-                        if is_score_invalidating_provider_exception(
-                            getattr(exc_info, "exception_type", None)
-                        ):
+                        if invalidates_score(getattr(exc_info, "exception_type", None)):
                             # Apply settlement's provider-failure scoring rule,
                             # including failures after partial agent work.
                             # The row deliberately stays non-terminal. Settlement

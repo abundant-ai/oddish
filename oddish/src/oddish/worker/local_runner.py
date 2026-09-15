@@ -46,7 +46,7 @@ from oddish.db import (
 )
 from oddish.core.harbor_artifacts import (
     cache_write_tokens_from_trajectory,
-    is_score_invalidating_provider_exception,
+    invalidates_score,
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
@@ -274,9 +274,7 @@ def _verifier_reward_for_result(result: object) -> float | None:
     trial out of reward rollups, which count a settled zero and skip a null.
     """
     exception_info = getattr(result, "exception_info", None) if result else None
-    if is_score_invalidating_provider_exception(
-        getattr(exception_info, "exception_type", None)
-    ):
+    if invalidates_score(getattr(exception_info, "exception_type", None)):
         return None
     verifier_result = getattr(result, "verifier_result", None) if result else None
     rewards = getattr(verifier_result, "rewards", None) if verifier_result else None

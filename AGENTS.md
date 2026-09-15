@@ -144,7 +144,7 @@ High-level flow:
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
    Harbor runs the verifier even when the agent phase raised. In
-   `oddish.core.harbor_artifacts`, `is_score_invalidating_provider_exception`
+   `oddish.core.harbor_artifacts`, `invalidates_score`
    identifies recorded provider, authentication, and transport exceptions that
    invalidate the score, including failures after partial agent work. It does
    not classify all infrastructure failures. Every settlement path — the Harbor
