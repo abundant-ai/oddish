@@ -133,7 +133,9 @@ export function buildExperimentAgentSummaries(
       const display = getExperimentAgentDisplay(trial);
       summaries.set(key, {
         key,
-        label: key,
+        label: isBaselineAgentName(display.agent)
+          ? key
+          : `${display.agent}/${experimentModelLabel(display.model, trial.reasoning_effort)}`,
         agent: display.agent,
         model: display.model,
         reasoningEffort: trial.reasoning_effort ?? null,
@@ -156,7 +158,9 @@ export function experimentModelLabel(
   model: string | null,
   effort?: string | null
 ): string {
-  return `${model ?? "default"}/${effort ?? "unspecified"}`;
+  return effort == null
+    ? (model ?? "default")
+    : `${model ?? "default"}/${effort}`;
 }
 
 const EFFORT_ORDER = [
