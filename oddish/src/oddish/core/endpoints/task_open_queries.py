@@ -18,10 +18,11 @@ VERDICT_VERSION_SQL = """(
     SELECT q.task_version_id FROM trials q
     WHERE q.task_id = {task_id} AND q.kind = 'qa' AND q.status = 'SUCCESS'
       AND q.deleted_at IS NULL
+      AND q.task_version_id IS NOT NULL
       AND (CASE WHEN {verdict}->>'_graded_by' IS NOT NULL
         THEN q.id = {verdict}->>'_graded_by'
         ELSE COALESCE(q.harbor_config->'analysis_payload'->>'with_verdict', 'true') <> 'false' END)
-    ORDER BY COALESCE(q.finished_at, q.created_at) DESC, q.id DESC LIMIT 1
+    ORDER BY COALESCE(q.finished_at, q.created_at) DESC, q.created_at DESC, q.id DESC LIMIT 1
 )"""
 
 IDENTITY_SQL = text(f"""

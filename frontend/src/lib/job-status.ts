@@ -209,8 +209,10 @@ function getActiveTrialCount(task: Task | null | undefined): number {
 export function getCancelActionLabel(task: Task | null | undefined): string {
   const activeTrials = getActiveTrialCount(task);
   if (activeTrials > 0) return `Cancel (${activeTrials})`;
-  const verdictActive =
-    taskHasActiveVerdict(task) || taskHasActiveAnalysis(task);
+  // Run analysis can be an independent job, not verdict generation. Its
+  // cancellation (or work with no known kind) uses the generic action label.
+  if (taskHasActiveAnalysis(task)) return "Cancel";
+  const verdictActive = taskHasActiveVerdict(task);
   const auditActive =
     isActivePipelineStatus(task?.pre_trial_status) ||
     (task?.active_qa_trial?.kind === "audit" &&
@@ -220,5 +222,7 @@ export function getCancelActionLabel(task: Task | null | undefined): string {
     );
   if (verdictActive && auditActive)
     return "Cancel audits and verdict generation";
-  return verdictActive ? "Cancel verdict generation" : "Cancel pre-trial audit";
+  if (verdictActive) return "Cancel verdict generation";
+  if (auditActive) return "Cancel pre-trial audit";
+  return "Cancel";
 }
