@@ -447,39 +447,41 @@ async def run_ephemeral_harbor_trial(
         effective_task_path = patched_task
 
     outcome_path = unique_parent / "outcome.json"
-    try:
-        payload = _build_payload(
-            task_path=effective_task_path,
-            jobs_dir=unique_parent,
-            outcome_path=outcome_path,
-            agent=agent,
-            model=model,
-            environment_config=environment_config,
-            raw_harbor_config=raw,
-            is_probe=is_probe,
-            extra_agent_env=extra_agent_env,
-            environment_build_timeout_multiplier=environment_build_timeout_multiplier,
-        )
-    except Exception as exc:  # noqa: BLE001 - any build failure is a trial error
-        # Same contract as the in-process runner, which builds its Harbor
-        # configs inside its try for this reason: model canonicalization and
-        # AgentConfig validation can both fail, and an unroutable model has to
-        # settle as a terminal trial error rather than escape this coroutine as
-        # a worker-level execution failure.
-        return HarborOutcome(
-            reward=None,
-            error=f"Harbor job execution failed: {_format_exception_message(exc)}",
-            exit_code=-1,
-            duration_sec=0.0,
-            job_result_path=None,
-            job_dir=None,
-            exception_type=type(exc).__name__,
-        )
     start = time.time()
     tail: list[str] = []
     process: asyncio.subprocess.Process | None = None
     payload_path: Path | None = None
     try:
+        try:
+            payload = _build_payload(
+                task_path=effective_task_path,
+                jobs_dir=unique_parent,
+                outcome_path=outcome_path,
+                agent=agent,
+                model=model,
+                environment_config=environment_config,
+                raw_harbor_config=raw,
+                is_probe=is_probe,
+                extra_agent_env=extra_agent_env,
+                environment_build_timeout_multiplier=environment_build_timeout_multiplier,
+            )
+        except Exception as exc:  # noqa: BLE001 - any build failure is a trial error
+            # Same contract as the in-process runner, which builds its Harbor
+            # configs inside the try that owns its cleanup: model canonicalization
+            # and AgentConfig validation can both fail, and an unroutable model
+            # has to settle as a terminal trial error rather than escape this
+            # coroutine as a worker-level execution failure. Returning from
+            # inside the try still runs the ``finally`` below, so a failure here
+            # cannot strand the patched copy of the task tree.
+            return HarborOutcome(
+                reward=None,
+                error=f"Harbor job execution failed: {_format_exception_message(exc)}",
+                exit_code=-1,
+                duration_sec=0.0,
+                job_result_path=None,
+                job_dir=None,
+                exception_type=type(exc).__name__,
+            )
         payload_path = _write_private_payload(payload)
         child_env = _child_process_env()
         for secret_name in (

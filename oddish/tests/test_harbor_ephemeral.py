@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -435,6 +436,55 @@ async def test_ephemeral_unroutable_model_settles_as_a_trial_error(tmp_path):
     assert outcome.reward is None
     assert outcome.exit_code == -1
     assert outcome.exception_type == "ValueError"
+    assert "Geometric serves only" in (outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_builder_failure_still_removes_the_patched_task_copy(
+    tmp_path, monkeypatch
+):
+    """A builder failure must not strand the copied task tree.
+
+    A task that patches its task.toml is copied into a temporary directory whose
+    cleanup belongs to the try/finally around the child process. Returning an
+    outcome before entering that block skips the cleanup.
+    """
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("[task]\n")
+    patched_copies: list[Path] = []
+    # Hold the TemporaryDirectory objects alive. Without a strong reference,
+    # CPython's refcounting fires their finalizer the moment this function
+    # returns, which removes the tree with a ResourceWarning and hides whether
+    # the explicit cleanup ever ran.
+    live_tmpdirs: list[tempfile.TemporaryDirectory] = []
+    real_tmpdir = tempfile.TemporaryDirectory
+
+    def _keep(*args, **kwargs):
+        created = real_tmpdir(*args, **kwargs)
+        live_tmpdirs.append(created)
+        return created
+
+    def _record(task_dir, _hc):
+        patched_copies.append(Path(task_dir))
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", _keep)
+    monkeypatch.setattr(harbor_ephemeral, "_patch_task_toml", _record)
+
+    outcome = await run_ephemeral_harbor_trial(
+        task_path=task_path,
+        agent="claude-code",
+        jobs_dir=tmp_path / "jobs",
+        model="geometric/glm-0.0-unserved",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
+        harbor_config={**_EPHEMERAL_HC, "docker_image": "example.invalid/img:1"},
+        is_probe=False,
+        skip_task_validation=True,
+    )
+
+    assert outcome.exception_type == "ValueError"
+    assert patched_copies, "the task tree should have been copied for patching"
+    assert not patched_copies[0].parent.exists()
     assert "Geometric serves only" in (outcome.error or "")
 
 
