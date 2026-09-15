@@ -143,6 +143,18 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
+   Harbor runs the verifier even when the agent phase raised, so a trial the
+   model provider refused arrives carrying a reward for an environment the agent
+   never worked in. `oddish.core.harbor_artifacts.is_infrastructure_exception`
+   names those provider-side endings, and every settlement path — the Harbor
+   `END` hook, `_store_trial_results`, and the CLI's
+   `trial_result_to_import_spec` — drops the reward rather than publishing it as
+   a score. The trial then takes the path it takes when the verifier reports
+   nothing: the error surfaces on the row and `RetryConfig` decides retry or
+   fail. Endings the agent's own run caused — `AgentTimeoutError`,
+   `AgentSafetyRefusalError`, and the context/output budget errors — keep their
+   reward, because a real 0 must stay a real 0. Add a name to that set only when
+   the provider, not the agent, ended the run.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
