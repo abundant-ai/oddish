@@ -832,13 +832,13 @@ archive prefix, published manifest key, and content hash from one authorized que
 All hosted, standalone, and public file routes pass that snapshot through. Only
 database-selected immutable directories bypass legacy manifest validation. Existing
 `v<N>-files/` layouts retain their checks; missing individual members still fall
-back to the archive. Listing responses (including the first NDJSON chunk) and file
-responses carry `source_hash` for the contents selected by the database.
+back to the archive. Listing responses and file responses carry `source_hash` for
+the contents selected by the database.
 
 Task listings also accept repeated `directories` parameters (1–8 paths; an empty
 path means root), with `recursive=false&inline=false&presign=false`. Each directory
 gets its own first page and continuation cursor under `directories`; `limit` is
-per directory. Batch mode refuses `prefix`, `cursor`, and streaming. Hosted,
+per directory. Batch mode refuses `prefix` and `cursor`. Hosted,
 standalone, and token-scoped public routes share this contract. Storage resolves
 and validates one source for the batch, then lists the bounded pages concurrently;
 archive-only sources are loaded once. Existing single-directory and recursive
