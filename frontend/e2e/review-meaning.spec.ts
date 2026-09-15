@@ -307,29 +307,33 @@ test.describe("real components with local fixture API", () => {
 
   test("analysis completion includes runs with infrastructure errors without mixing experiment scope", async ({
     page,
+    context,
   }) => {
     const original = tasks[0].trials![0];
+    const foreign = {
+      ...original,
+      id: "foreign",
+      experiment_id: "other-experiment",
+      analysis: { classification: "HARNESS_ERROR" },
+    };
     await page.route("**/api/tasks/task-a/trials?**", (route) =>
-      route.fulfill({
-        json: [
-          original,
-          {
-            ...original,
-            id: "foreign",
-            experiment_id: "other-experiment",
-            analysis: { classification: "HARNESS_ERROR" },
-          },
-        ],
-      })
+      route.fulfill({ json: [original, foreign] })
+    );
+    await page.route("**/api/trials/foreign", (route) =>
+      route.fulfill({ json: foreign })
     );
     await page.goto("/experiments/review-demo?task=task-a");
     await expect(
       page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
     ).toBeVisible();
     await expect(page.getByText("1/1 analyzed", { exact: true })).toBeVisible();
+    const otherExperiments = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Other experiments", exact: true }),
+    });
     await expect(
-      page.getByRole("link", { name: "Experiment other-ex" })
-    ).toHaveAttribute("href", "/experiments/other-experiment");
+      otherExperiments.getByText("Other experiment · other-ex", { exact: true })
+    ).toHaveAttribute("title", "other-experiment");
+    await expect(otherExperiments.getByRole("link")).toHaveCount(0);
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
@@ -341,6 +345,10 @@ test.describe("real components with local fixture API", () => {
         /Missing access:|Inspects task instructions|fair agent failure does not/
       )
     ).toHaveCount(0);
+    await otherExperiments.getByRole("button", { name: "View trial" }).click();
+    await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
+    await expect(page).toHaveURL(/trial=foreign/);
+    expect(context.pages()).toHaveLength(1);
   });
 
   test("verifier timeout retains completed trajectory analysis and its evidence", async ({
@@ -489,7 +497,7 @@ test.describe("real components with local fixture API", () => {
         ).toBeVisible();
         if (origin === "another experiment")
           await expect(
-            page.getByRole("link", { name: "Experiment another-", exact: true })
+            page.getByText("Other experiment · another-", { exact: true })
           ).toBeVisible();
       });
     }

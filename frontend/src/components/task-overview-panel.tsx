@@ -669,21 +669,12 @@ export function TaskOverviewPanel({
               {runReviewSummary(additionalRuns)}
             </p>
             {additionalRuns.map((trial) => (
-              <div key={trial.id} className="space-y-1">
-                {trial.experiment_id && (
-                  <a
-                    href={`/experiments/${encodeURIComponent(trial.experiment_id)}`}
-                    className="text-xs underline"
-                  >
-                    Experiment {trial.experiment_id.slice(0, 8)}
-                  </a>
-                )}
-                <TrialQaRow
-                  trial={trial}
-                  foreign
-                  onOpen={() => openTrial(trial)}
-                />
-              </div>
+              <TrialQaRow
+                key={trial.id}
+                trial={trial}
+                foreign
+                onOpen={() => openTrial(trial)}
+              />
             ))}
           </section>
         )}
@@ -760,8 +751,12 @@ function TrialQaRow({
         {trialLabel(trial)}
       </span>
       {foreign ? (
-        <span className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]">
+        <span
+          className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]"
+          title={trial.experiment_id ?? undefined}
+        >
           Other experiment
+          {trial.experiment_id && ` · ${trial.experiment_id.slice(0, 8)}`}
         </span>
       ) : null}
       <button
