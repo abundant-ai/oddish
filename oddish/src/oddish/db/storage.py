@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 import aioboto3
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
 from oddish.timing import current_request_timing, timed_phase
@@ -995,8 +995,7 @@ class StorageClient:
         falls back automatically.
 
         With ``inline=True`` (default), recursive listings attach small text
-        file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
-        to return the bare tree fast and stream the bodies separately.
+        file bodies as ``content``.
 
         ``expanded=False`` skips the extracted tree. A positive database hint
         still requires manifest validation: an overwrite can replace the tree
@@ -1020,106 +1019,6 @@ class StorageClient:
             presign_expiration=presign_expiration,
             inline=inline,
         )
-
-    async def list_task_directories(
-        self,
-        *,
-        task_id: str,
-        directories: list[str],
-        limit: int,
-        version: int | None = None,
-        task_s3_prefix: str | None = None,
-        expanded: bool | None = None,
-        expanded_manifest_key: str | None = None,
-        previews: bool = False,
-    ) -> dict:
-        """Bounded directory pages and optional previews from one selected source."""
-        if not 1 <= len(directories) <= 8 or not 1 <= limit <= 1000:
-            raise HTTPException(
-                400, "Request 1–8 directories and 1–1000 entries per page"
-            )
-        paths = list(dict.fromkeys(normalize_s3_relative_path(p) for p in directories))
-        source = await self._resolve_task_listing_source(
-            task_id=task_id,
-            version=version,
-            task_s3_prefix=task_s3_prefix,
-            expanded=expanded,
-            expanded_manifest_key=expanded_manifest_key,
-        )
-        pages = await asyncio.gather(
-            *(
-                self._list_task_files_from_source(
-                    source,
-                    task_id=task_id,
-                    prefix=path,
-                    recursive=False,
-                    limit=limit,
-                    cursor=None,
-                    presign=False,
-                    presign_expiration=900,
-                    inline=False,
-                )
-                for path in paths
-            )
-        )
-        if previews:
-            # Bound both storage fan-out and payload size. Missing, binary and
-            # large members remain ordinary on-demand reads. Never walk below
-            # the requested directory pages to find preview candidates.
-            candidates = {}
-            for page in pages:
-                for file in page["files"]:
-                    size = file.get("size")
-                    if isinstance(size, int) and 0 <= size <= 32 * 1024:
-                        candidates.setdefault(str(file["path"]), file)
-            selected = []
-            budget = 256 * 1024
-            for path, file in sorted(
-                candidates.items(),
-                key=lambda item: (item[0] != "instruction.md", item[0]),
-            ):
-                if len(selected) >= 16:
-                    break
-                if file["size"] <= budget:
-                    selected.append((path, file))
-                    budget -= file["size"]
-
-            async def read_preview(path, file):
-                if source.archive_texts is not None:
-                    return path, source.archive_texts.get(path)
-                try:
-                    async with asyncio.timeout(1):
-                        text, truncated = await self.download_text_prefix(
-                            str(file["key"]), 32 * 1024
-                        )
-                    return path, None if truncated else text
-                except (BotoCoreError, ClientError, UnicodeError, TimeoutError):
-                    # Directory browsing remains usable when one preview fails.
-                    return path, None
-
-            contents = dict(
-                await asyncio.gather(*(read_preview(*item) for item in selected))
-            )
-            remaining = 256 * 1024
-            for path, _file in selected:
-                content = contents[path]
-                if content is None:
-                    continue
-                size = len(content.encode("utf-8"))
-                if size > min(32 * 1024, remaining):
-                    continue
-                remaining -= size
-                for page in pages:
-                    # Archive metadata is shared by the cache; never mutate it.
-                    page["files"] = [
-                        {**file, "content": content} if file["path"] == path else file
-                        for file in page["files"]
-                    ]
-        return {
-            "task_id": task_id,
-            "version": version,
-            "directories": dict(zip(paths, pages)),
-        }
 
     async def _task_archive_head(self, task_id, version, archive_key):
         """Reuse metadata only for a cached, publisher-owned immutable archive."""
@@ -1598,57 +1497,6 @@ class StorageClient:
             "presigned": presign,
             "presign_expires_in": presign_expiration if presign else None,
         }
-
-    async def stream_task_files(
-        self,
-        *,
-        task_id: str,
-        prefix: str | None = None,
-        recursive: bool = True,
-        limit: int = 1000,
-        cursor: str | None = None,
-        presign: bool = True,
-        presign_expiration: int = 900,
-        version: int | None = None,
-        task_s3_prefix: str | None = None,
-        expanded: bool | None = None,
-        expanded_manifest_key: str | None = None,
-    ) -> AsyncIterator[dict]:
-        """Stream a task file listing: the tree first, then file contents.
-
-        Yields one ``{"type": "listing", ...}`` chunk as soon as the tree
-        is known, then ``{"type": "content", "path", "content"}`` chunks as
-        small text bodies become available (shallowest files first), so
-        clients can paint the tree without waiting for the content fan-out.
-        """
-        listing = await self.list_task_files(
-            task_id=task_id,
-            prefix=prefix,
-            recursive=recursive,
-            limit=limit,
-            cursor=cursor,
-            presign=presign,
-            presign_expiration=presign_expiration,
-            version=version,
-            task_s3_prefix=task_s3_prefix,
-            inline=False,
-            expanded=expanded,
-            expanded_manifest_key=expanded_manifest_key,
-        )
-        yield {"type": "listing", **listing}
-
-        files = list(listing.get("files") or [])
-        archive_key = listing.get("archive_key")
-        if archive_key:
-            # Cache hit from the listing above — no re-download/re-parse.
-            _bytes, _members, texts = await self._load_task_archive(str(archive_key))
-            for meta in _inline_eligible_files(files):
-                text = texts.get(str(meta["path"]))
-                if text is not None:
-                    yield {"type": "content", "path": meta["path"], "content": text}
-        else:
-            async for path, text in self._iter_object_contents(files):
-                yield {"type": "content", "path": path, "content": text}
 
     async def get_task_file_content(
         self,

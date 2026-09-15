@@ -1,3 +1,4 @@
+import { encodeFilePath } from "@/lib/file-path";
 import { NextRequest, NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/backend-config";
 
@@ -5,15 +6,15 @@ export async function GET(
   request: NextRequest,
   {
     params,
-  }: { params: Promise<{ token: string; task_id: string; path: string[] }> },
+  }: { params: Promise<{ token: string; task_id: string; path: string[] }> }
 ) {
   try {
     const { token, task_id, path } = await params;
-    const filePath = path.join("/");
+    const filePath = encodeFilePath(path.join("/"));
     const search = request.nextUrl.search;
     const url = getBackendUrl(
       "public/experiments",
-      `/${token}/tasks/${task_id}/files/${filePath}${search}`,
+      `/${token}/tasks/${task_id}/files/${filePath}${search}`
     );
     const res = await fetch(url, { cache: "no-store" });
 
@@ -25,13 +26,15 @@ export async function GET(
     const data = await res.json();
     return NextResponse.json(data, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=60",
+        "Cache-Control": data.url
+          ? "no-store"
+          : "public, max-age=300, stale-while-revalidate=60",
       },
     });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

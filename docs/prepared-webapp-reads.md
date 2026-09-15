@@ -1,4 +1,4 @@
-# Prepared dashboard rows
+# Prepared dashboard rows and file directories
 
 The dashboard reads `experiment_summaries`, which stores the last completed
 counts, effective-version scores, primary task identity, and latest runner for
@@ -65,46 +65,78 @@ starting work after 30 seconds. It never repeatedly scans the complete trial tab
 to discover missing indexes. Index publication and replacement are transactional;
 published old task sources and attempts remain available to authorized readers.
 
-Prepared file routes require `indexed=true` and metadata-only options. They
-return bounded directory pages without storage reads. Pending jobs return HTTP
-503 with `Retry-After: 2`; absent jobs return 404. Trial previews accept attempt,
-revision, and a byte bound. Stale attempts/revisions return 409, and storage reads
-enforce their byte bound even across partial network reads. Existing directory
-batches, previews, and streaming remain available to the current browser.
+The web app requests `indexed=true`, metadata-only options and 100 entries per
+folder. Artifact requests use `artifacts=true`; they do not enumerate logs or
+other directories. Pending index jobs return HTTP 503 with `Retry-After: 2`, and
+the browser retries preparation. An absent index returns HTTP 404; preparation
+is reported only when a durable job exists. Trial preview requests include the displayed attempt,
+index revision, and `max_bytes=102400`. Stale attempt/revision requests return
+HTTP 409. The storage reader sends an S3 byte range and also bounds the body read.
+Full-file loading is a separate explicit action. The authenticated and public
+Next.js trial-file proxies forward these query parameters.
 
-Apply `file_index_001` and `legacy_file_index_001` after `prepared_reads_001`.
-The hosted file maintainer runs every five seconds in the API region; standalone
-polling workers start and cancel the same loop. Independent health sampling also
-reports pending file indexes. Inspect backfill progress before browser adoption.
-File tests cover bounded reads/inserts, rollback, source-pointer publication,
-stale attempts/revisions, upload/backfill races, versionless sources, migrations,
-and the existing batch/preview/streaming API during this intermediate release.
+SWR, the browser's shared request cache, owns experiment lists, folder pages and
+previews. Keys include the signed-in user/organization (or the public-token URL),
+filters, task version/content hash or trial attempt/index revision. Org/Mine uses
+browser history and the existing dashboard JSON endpoint. The Files and Artifacts
+views use `useTaskFileTree` for inventory freshness and pagination, with separate
+bounded requests for directory pages and artifact-only pages. Trial panes refresh
+on activation, including when a retained pane reopens after an empty listing.
+Cached data stays visible during that request. A matching revision preserves
+loaded pages; a replacement discards every old page. A preview or continuation
+request returning HTTP 409 refreshes the inventory, and the new revision selects
+the next preview request. File bodies start only after that revision is known.
+Both views share one trial-preview fetcher and key; full-file contents also live
+under that key, so a new revision cannot retain an old full download. Binary and
+full-file URLs carry the same attempt and revision. Visited file panes retain
+selection while hidden and pass their active state to the hook. Hover/focus starts loading drawer modules. Search input remains an
+editable draft; applied filters belong to the URL.
 
 ## Deployment and alerts
 
-Apply migrations through `prepared_status_001` before deployment. Its task trigger
-includes execution status, so status-only QA completion invalidates summaries even
-when verdict fields do not change. It also upgrades already-installed triggers.
-Hosted summary maintenance runs every five seconds in `API_REGION` with one
-container. The standalone polling worker starts and cancels the same maintenance
-loop with its lifecycle. Migration seeds pending summaries; backfill is automatic.
-First builds display preparation and previous completed summaries remain readable.
+Apply core migrations through `archive_index_001` before deploying
+the backend and frontend; `prepared_reads_001` follows `merge_finding_tiers_001`. Hosted workers run every five seconds in `API_REGION`,
+the API's configured region. Each worker has `max_containers=1`; advisory locks
+also protect standalone deployments. The standalone worker pool starts and
+cancels both maintenance loops with its existing lifecycle.
+
+The migration seeds pending work; backfill runs automatically. Until a source's
+first build completes, the UI shows preparation rather than performing an
+unbounded fallback scan. Check backfill progress before promoting staging to
+production. Large initial backlogs can take longer than the normal refresh
+interval. Database statistics must remain current; the maintenance timeout/backoff
+also covers poor PostgreSQL plans, and does not make arbitrarily large aggregate
+rebuilds instantaneous.
 
 The independent dashboard precompute schedule records `worker.prepared_read_health`
-with pending-summary count and oldest pending-summary age. Repository-side Logfire
-alert definitions cover summary lag above 60 seconds and dashboard request p95
-above 750 ms with at least 20 observations. Notification destinations are enabled
-separately during rollout. Preview database preparation redeploys existing backend
-containers so they receive the newly rotated database password.
+with pending-summary count, oldest pending-summary age, and pending-file-index
+count. Summary rebuild failures and indexing failures emit error logs. The
+Logfire alert catalog includes rules for summary lag above 60 seconds and
+prepared-request p95 above 750 ms with at least 20 observations. These are
+repository-side alert definitions; enabling notification destinations in Logfire
+is a deployment operation, not performed by this draft PR.
 
 ## Verification
 
 `.github/workflows/prepared-reads.yml` runs migrations, PostgreSQL correctness and
-scale tests, and browser tests with real React components and controlled responses.
-Tests cover transactional invalidation and rollback, changes during a rebuild,
-coalescing, retries, daily reconciliation, collection membership and runner rules,
-ownerless Mine results, and two SQL statements with 1 versus 10,000 trials.
-The browser test covers Org/Mine request reuse, search, and browser Back behavior.
+scale tests, and Chromium tests of real React components with controlled API
+responses. Checks enforce transaction rollback, revision races, durable retries,
+daily reconciliation, bounded folder/artifact pages, zero storage operations on
+prepared listings, attempt/revision isolation, and browser cache reuse. Migration
+tests cover both an existing schema and the current-model bootstrap, legacy
+archive/directory indexing, preserved historical links, and task-pointer changes.
+Browser tests cover late publication after an empty inventory, retained-tab
+activation, 409 recovery, revision changes after full downloads, and exactly one
+preview body request on a cold trial deep link. The original task-file tests also
+preserve direct early body reads, URL line selection, and version/account isolation.
+
+The local PostgreSQL 17 scale fixture uses 1 and 10,000 trials and updates planner
+statistics after bulk seeding. Both use exactly two SQL statements per dashboard
+read and no trial-history SELECT. In the recorded run, prepared-read medians were
+1.17/1.12 ms and full aggregate rebuilds took 16.36/41.77 ms respectively. Local
+loopback measurements exclude production authentication, proxies, network travel,
+and rendering; they are not production latency predictions. Folder tests compare
+1 versus 10,000 unrelated logs and still return at most 100 artifacts per page.
 
 ## Archive directories and temporary URLs
 
@@ -122,5 +154,13 @@ index ends automatic re-enqueueing; `expanded_at` stays unset so an operator can
 still request extraction after changing the size limit. Individual file reads
 retain the archive reader.
 
-Signed task-file responses include `expires_at` in Unix seconds so browser
-preview caches can retain text while renewing temporary storage access.
+Signed task-file responses include `expires_at` in Unix seconds. Task previews
+retain text and unexpired URLs in SWR. An expired URL is hidden until the same
+SWR fetcher renews it, with a 30-second margin before server expiry. A ref guards
+the cached response against duplicate renewal effects. Image errors can request
+one renewal per source; renewal itself does not reset that allowance. Both task
+file proxies return `no-store` for signed URLs and preserve text caching.
+Browser regressions advance the clock by 16 minutes and check a second signing
+request, no request for the expired image URL, one cached text read, and no
+additional directory reads. Separate tests cover one recoverable image failure
+and repeated failures stopping after one renewal.

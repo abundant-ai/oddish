@@ -50,8 +50,6 @@ async def test_task_tree_forwards_inline_flag() -> None:
             version=3,
             directories=None,
             indexed=False,
-            previews=False,
-            stream=False,
         )
 
     list_files.assert_awaited_once_with(

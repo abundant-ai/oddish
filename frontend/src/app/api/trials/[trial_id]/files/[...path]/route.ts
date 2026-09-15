@@ -1,3 +1,4 @@
+import { encodeFilePath } from "@/lib/file-path";
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import {
@@ -12,15 +13,15 @@ import {
 
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ trial_id: string; path: string[] }> },
+  { params }: { params: Promise<{ trial_id: string; path: string[] }> }
 ) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
 
     const { trial_id, path } = await params;
-    const filePath = path.join("/");
-    const url = getBackendUrl("trials", `/${trial_id}/files/${filePath}`);
+    const filePath = encodeFilePath(path.join("/"));
+    const url = `${getBackendUrl("trials", `/${trial_id}/files/${filePath}`)}${new URL(request.url).search}`;
 
     const res = await fetch(url, {
       headers: backendFetchHeaders(request, getAuthHeaders(token)),
@@ -39,7 +40,7 @@ export async function GET(
       }
       return attachUpstreamServerTiming(
         NextResponse.json(payload, { status: res.status }),
-        res,
+        res
       );
     }
 
@@ -53,12 +54,12 @@ export async function GET(
           "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
         },
       }),
-      res,
+      res
     );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

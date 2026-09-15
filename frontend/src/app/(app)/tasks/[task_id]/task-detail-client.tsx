@@ -1412,7 +1412,6 @@ export function TaskDetailClient({
                 staticChecksTaskId={task.id}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
-                loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
@@ -1430,7 +1429,6 @@ export function TaskDetailClient({
                 onActivePaneChange={selectTaskPane}
                 taskId={task.id}
                 task={task}
-                loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}

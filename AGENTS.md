@@ -834,10 +834,6 @@ with `FOR UPDATE SKIP LOCKED` after calculation; skipped rows stay pending.
 as well as verdict fields. Do not add a request-time aggregate fallback. Pending
 first builds report `summary_pending`; status predicates apply before pagination.
 
-Org/Mine uses the existing dashboard JSON endpoint with account/filter-scoped
-SWR and browser history. Applied filters belong to the URL; search input remains
-an editable draft. See `docs/prepared-webapp-reads.md` for maintenance and tests.
-
 Core migration `file_index_001` installs `file_indexes`, `file_entries`, and
 source-pointer triggers for the durable indexing queue. Task publication writes
 its index with the version-pointer transaction; trial upload indexes only
@@ -861,6 +857,10 @@ archive indexes when an in-place upload changes the version's hash or pointer.
 Publication checks the version under lock after scanning to reject stale work.
 Task file signing responses include `expires_at` (Unix seconds), calculated
 using the same lifetime passed to storage signing; text responses omit it.
+`TaskFilesPanel` renews expired URLs through its existing SWR fetcher, keeps
+unchanged text cached, and allows one URL renewal on image failure. Authenticated
+and public task-file proxies disable HTTP caching for signed-URL responses so
+renewal cannot receive the previous signature.
 
 Bounded storage reads must call `read(size)` on the SDK's `StreamingBody`, not
 the raw HTTP response returned by its async context manager. Only missing-object
@@ -872,14 +872,24 @@ without a current version row. Their identity is `task:<id>:<storage pointer>`;
 an absent pointer retains the canonical `tasks/<id>/` storage fallback. The
 migration and task-pointer trigger enqueue those sources without modifying
 task versions or trial version links. Background indexing uses the existing
-archive/directory reader; explicit indexed requests never scan storage. Archive-member
+archive/directory reader; browser requests never scan storage. Archive-member
 keys retain the `<archive>#<member>` form. `TaskFileSource.index_key` selects
 that legacy job, an `expand:<version id>` job, or the published manifest index.
 
-Until the browser adoption change, prepared reads require `indexed=true`.
-Existing directory batches, optional previews, and streaming retain their
-existing storage implementation. Do not switch implicit directory batches until
-the browser implements preparation retries and indexed continuation pages.
+`file-resources.ts` owns shared browser preview identity and fetching, while
+`useTaskFileTree` owns Files and Artifacts inventory pages, activation refresh,
+and HTTP 409 recovery. Retained trial panes pass their active state; re-entry
+shows cached data immediately and revalidates even empty inventories. A matching
+revision preserves loaded pages; a changed revision replaces them. Trial bodies
+wait for a known revision and share account/trial/attempt/revision/path keys.
+Full-file contents use those same keys, so replacement also drops old full
+contents. Preview or continuation-page 409 responses refresh the inventory;
+the new revision selects a fresh preview request. Org/Mine uses the existing dashboard JSON
+endpoint with account/filter-scoped SWR and browser history. Apply the React
+ownership rules: URL filters and selected paths should not be duplicated as
+separate derived state. See `docs/prepared-webapp-reads.md` for maintenance,
+rollout, alerts, and regression checks; these contracts supersede the older
+browser preview-prefetch description below.
 
 ### Task-file publication and read latency
 
@@ -896,13 +906,13 @@ archive prefix, published manifest key, and content hash from one authorized que
 All hosted, standalone, and public file routes pass that snapshot through. Only
 database-selected immutable directories bypass legacy manifest validation. Existing
 `v<N>-files/` layouts retain their checks; missing individual members still fall
-back to the archive. Listing responses (including the first NDJSON chunk) and file
-responses carry `source_hash` for the contents selected by the database.
+back to the archive. Listing responses and file responses carry `source_hash` for
+the contents selected by the database.
 
 Task listings also accept repeated `directories` parameters (1–8 paths; an empty
 path means root), with `recursive=false&inline=false&presign=false`. Each directory
 gets its own first page and continuation cursor under `directories`; `limit` is
-per directory. Batch mode refuses `prefix`, `cursor`, and streaming. Hosted,
+per directory. Batch mode refuses `prefix` and `cursor`. Hosted,
 standalone, and token-scoped public routes share this contract. Storage resolves
 and validates one source for the batch, then lists the bounded pages concurrently;
 archive-only sources are loaded once. Existing single-directory and recursive
@@ -918,11 +928,8 @@ then refreshes; panel hash changes invalidate the revision. An older server's
 root-only response remains usable. File/line selection stays in the existing URL
 owners, and an addressed file reads directly before its directory tree finishes.
 Directory completion must not emit file-selection callbacks or clear line anchors.
-The browser opts into `previews=true`: at most 16 files, 32 KiB each and 256 KiB
-combined, selected only from the requested pages with `instruction.md` first.
-Storage reads previews concurrently and gives each read one second; failed, binary,
-large, and omitted members retain on-demand reads. Cached archive text needs no
-additional storage request. Hosted definition routes combine current organization
+The browser uses `indexed=true` metadata-only listings, and `directories=`
+batches always read the prepared index. Hosted definition routes combine current organization
 approval with exact task/version source selection in one SQL statement for ordinary
 credentials; bound analysis credentials retain additional resource checks. Cached
 publisher-owned `vN-revisions/<32-hex-token>/` archives skip HEAD only while their
@@ -2203,6 +2210,12 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 ---
 
 ## `frontend/` — Next.js Dashboard
+
+`frontend/src/lib/file-path.ts` owns `encodeFilePath` for relative file paths in
+catch-all request URLs. Encode each filename segment, preserving `/` separators.
+Use the same function when file proxies forward Next.js's decoded path parameters;
+literal `%`, `?`, and `#` belong to the filename, not the URL query or fragment.
+File selections and cache keys retain the decoded path.
 
 Task and experiment drawers share the `experiment.trial-drawer` layout saved
 through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).

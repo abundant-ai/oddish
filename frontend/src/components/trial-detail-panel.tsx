@@ -157,9 +157,21 @@ function DrawerPanelLoading({ label }: { label: string }) {
 
 function ActiveTabContent({
   active,
+  retain = false,
   ...props
-}: React.ComponentProps<typeof TabsContent> & { active: boolean }) {
-  return active ? <TabsContent {...props} /> : null;
+}: React.ComponentProps<typeof TabsContent> & {
+  active: boolean;
+  retain?: boolean;
+}) {
+  const [visited, setVisited] = useState(active);
+  if (active && !visited) setVisited(true);
+  return active || (retain && visited) ? (
+    <TabsContent
+      {...props}
+      forceMount={retain ? true : undefined}
+      hidden={!active}
+    />
+  ) : null;
 }
 
 interface TrialDetailPanelProps {
@@ -1801,6 +1813,8 @@ export function TrialDetailPanel({
           </ActiveTabContent>
 
           <ActiveTabContent
+            key={`${trial.id}:${trial.attempts}:files`}
+            retain
             active={effectiveTab === "files"}
             value="files"
             className="m-0 h-full p-0"
@@ -1810,10 +1824,12 @@ export function TrialDetailPanel({
             ) : (
               <TaskFilesPanel
                 isOpen={isOpen}
+                isActive={effectiveTab === "files"}
                 onClose={() => {}}
                 activePane="file"
                 taskId={null}
                 filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                trialAttempt={trial.attempts}
                 initialFilePath={filesTargetPath}
                 selectedLines={selectedLines}
                 onSelectLinesChange={setSelectedLines}
@@ -1824,6 +1840,8 @@ export function TrialDetailPanel({
           </ActiveTabContent>
 
           <ActiveTabContent
+            key={`${trial.id}:${trial.attempts}:artifacts`}
+            retain
             active={effectiveTab === "artifacts"}
             value="artifacts"
             className="m-0 h-full p-0"
@@ -1832,7 +1850,9 @@ export function TrialDetailPanel({
               trialDetailErrorContent
             ) : (
               <ArtifactsViewer
+                isActive={isOpen && effectiveTab === "artifacts"}
                 filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+                trialAttempt={trial.attempts}
                 trialId={trial.id}
                 successfulAnalysisTrial={
                   trial.status === "success" &&

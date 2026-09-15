@@ -344,7 +344,7 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
     )
     monkeypatch.setattr("oddish.core.file_index.read_file_index", read_index)
     response = client.get(
-        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0&indexed=true"
+        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0"
     )
     assert response.status_code == 200, response.text
     assert response.json()["source_hash"] == "hash-7"
@@ -358,7 +358,6 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
         "recursive=1",
         "inline=1",
         "presign=1",
-        "stream=1",
         "cursor=page-2",
         "prefix=tests",
     ],
@@ -424,50 +423,3 @@ def test_public_directory_batch_keeps_share_token_and_version_scope(
         assert storage.await_args.kwargs["inline"] is False
         assert storage.await_args.kwargs["source_hash"] == "hash-7"
         assert response.json()["directories"]["tests"]["cursor"] == "page-2"
-
-
-def test_legacy_batch_uses_one_authorized_source_and_releases_session_before_storage(
-    client, monkeypatch
-):
-    active = False
-    sessions = 0
-
-    @asynccontextmanager
-    async def session():
-        nonlocal active, sessions
-        sessions += 1
-        active = True
-        yield object()
-        active = False
-
-    async def resolve(*_, **kwargs):
-        assert kwargs == {"task_id": "task-1", "version": 7}
-        async with session():
-            return TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7", "expand:task-1-v7")
-
-    async def list_directories(**kwargs):
-        assert not active
-        assert kwargs["directories"] == ["", "tests"]
-        assert kwargs["previews"] is True
-        assert kwargs["version"] == 7
-        assert kwargs["limit"] == 100
-        return {
-            "task_id": "task-1",
-            "directories": {"": {"cursor": "root-2"}, "tests": {"cursor": "tests-2"}},
-        }
-
-    from types import SimpleNamespace
-
-    monkeypatch.setattr("auth.get_read_session", session)
-    monkeypatch.setattr("api.routers.tasks.resolve_authorized_task_file_source", resolve)
-    monkeypatch.setattr(
-        "oddish.core.sharing.helpers.get_storage_client",
-        lambda: SimpleNamespace(list_task_directories=list_directories),
-    )
-    response = client.get(
-        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0&previews=true"
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["source_hash"] == "hash-7"
-    assert response.json()["directories"]["tests"]["cursor"] == "tests-2"
-    assert sessions == 1

@@ -1,3 +1,4 @@
+import { encodeFilePath } from "@/lib/file-path";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import {
@@ -12,21 +13,22 @@ import {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ task_id: string; path: string[] }> },
+  { params }: { params: Promise<{ task_id: string; path: string[] }> }
 ) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
 
     const { task_id, path } = await params;
-    const filePath = path.join("/");
+    const filePath = encodeFilePath(path.join("/"));
     const search = request.nextUrl.search;
 
     const url = getBackendUrl(
       "tasks",
-      `/${task_id}/files/${filePath}${search}`,
+      `/${task_id}/files/${filePath}${search}`
     );
     const res = await fetch(url, {
+      cache: "no-store",
       headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
@@ -34,25 +36,27 @@ export async function GET(
       const error = await res.json().catch(() => ({ detail: res.statusText }));
       return attachUpstreamServerTiming(
         NextResponse.json(error, { status: res.status }),
-        res,
+        res
       );
     }
 
     const data = await res.json();
 
-    // Cache file content for 5 minutes (fallback path, presigned URLs are preferred)
+    // Text may be cached; renewing a temporary URL must obtain a fresh signature.
     return attachUpstreamServerTiming(
       NextResponse.json(data, {
         headers: {
-          "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
+          "Cache-Control": data.url
+            ? "private, no-store"
+            : "private, max-age=300, stale-while-revalidate=60",
         },
       }),
-      res,
+      res
     );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

@@ -17,10 +17,9 @@ import {
  *     again on mount.
  *  2. Hovering and opening a trial issues one GET /api/trials/{id}. The
  *     preload and drawer share the same SWR cache entry.
- *  3. No task-files request uses stream=1 during this flow. Opening a
- *     trial used to download the task's entire file contents behind a
- *     pane that showed only the overview. No stream request of any kind
- *     may happen until a file view is on screen.
+ *  3. No trial-files request happens during this flow until a file view is
+ *     on screen. Opening a trial used to download the task's entire file
+ *     contents behind a pane that showed only the overview.
  *  4. Tab resources remain gated on the tab the user selected.
  *
  * Like tasks-view.spec.ts, this needs a running dev stack and Clerk dev
@@ -46,12 +45,10 @@ const EXPERIMENT_OPEN_RE = /\/api\/experiments\/[^/]+\/open/;
 // /trajectory are separate resources and must not count here.
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
 const TASK_FILES_RE = /\/api\/tasks\/[^/]+\/files\?/;
-const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
-// Requests with stream=1 return every file's contents. The visible task pane
-// may request its plain tree, but trial-file requests wait for the Files or
-// Artifacts tab (covered strictly by critical-react-subtree.spec.ts).
-const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
-const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
+// The visible task pane may request its directory pages, but trial-file
+// requests wait for the Files or Artifacts tab (covered strictly by
+// critical-react-subtree.spec.ts).
+const TRIAL_FILES_RE = /\/api\/trials\/[^/]+\/files\?/;
 
 test.describe("experiment page network shape", () => {
   test.skip(
@@ -72,7 +69,7 @@ test.describe("experiment page network shape", () => {
       EXPERIMENT_OPEN_RE,
       TRIAL_DETAIL_RE,
       TASK_FILES_RE,
-      TRIAL_FILES_STREAM_RE,
+      TRIAL_FILES_RE,
     ]);
     const log = recordRequests(page);
 
@@ -122,8 +119,8 @@ test.describe("experiment page network shape", () => {
     expect(countSince(log, 0, TRIAL_DETAIL_RE)).toBe(0);
 
     // Phase 2 — hover and open a trial. The preload and mounted drawer share
-    // one request. The visible task pane fetches its plain tree listing, and
-    // nothing downloads file contents.
+    // one request. The visible task pane fetches its directory pages, and
+    // nothing lists or downloads trial files.
     const openMark = Date.now();
     await trialCell.hover();
     await trialCell.click();
@@ -142,22 +139,16 @@ test.describe("experiment page network shape", () => {
         timeout: 10_000,
       })
       .toBe(1);
-    expect(countSince(log, openMark, ANY_FILES_STREAM_RE)).toBe(0);
+    expect(countSince(log, openMark, TRIAL_FILES_RE)).toBe(0);
 
     // Phase 3 — the file-view listing fires only once the Files tab is
-    // actually shown. The panel sends this listing with stream=1, and the
-    // trial-files endpoint ignores that parameter and answers with a
-    // plain listing.
+    // actually shown, as one prepared directory batch.
     const filesMark = Date.now();
     await page.getByRole("tab", { name: "Files" }).click();
     await expect
-      .poll(() => countSince(log, filesMark, TRIAL_FILES_STREAM_RE), {
+      .poll(() => countSince(log, filesMark, TRIAL_FILES_RE), {
         timeout: 10_000,
       })
       .toBe(1);
-
-    // Across the whole journey, the task's file contents were never
-    // streamed: every task-files listing must be a plain one.
-    expect(countSince(log, 0, TASK_FILES_STREAM_RE)).toBe(0);
   });
 });
