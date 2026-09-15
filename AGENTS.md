@@ -147,9 +147,9 @@ High-level flow:
    model provider refused arrives carrying a reward for an environment the agent
    never worked in. `oddish.core.harbor_artifacts.is_infrastructure_exception`
    names those provider-side endings, and every settlement path — the Harbor
-   `END` hook, `_store_trial_results`, and the CLI's
-   `trial_result_to_import_spec` — drops the reward rather than publishing it as
-   a score. The trial then takes the path it takes when the verifier reports
+   `END` hook, `_store_trial_results`, the CLI's `trial_result_to_import_spec`,
+   and the legacy `worker/local_runner.py` — drops the reward rather than
+   publishing it as a score. The trial then takes the path it takes when the verifier reports
    nothing: the error surfaces on the row and `RetryConfig` decides retry or
    fail. Endings the agent's own run caused — `AgentTimeoutError`,
    `AgentSafetyRefusalError`, and the context/output budget errors — keep their
