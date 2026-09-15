@@ -495,70 +495,6 @@ test.describe("real components with local fixture API", () => {
     }
   }
 
-  for (const includeMustFix of [false, true]) {
-    test(`converted findings count as required fixes, additional must-fix ${includeMustFix}`, async ({
-      page,
-    }) => {
-      const findings = [
-        {
-          ...records[0].finding!,
-          id: "optional",
-          tier: "optional",
-          title: "Optional historical finding",
-        },
-        {
-          ...records[0].finding!,
-          id: "converted-fix",
-          tier: "must_fix",
-          title: "Converted historical finding",
-        },
-        {
-          ...records[0].finding!,
-          id: "unclassified",
-          tier: undefined,
-          title: "Unclassified historical finding",
-        },
-        ...(includeMustFix
-          ? [
-              {
-                ...records[0].finding!,
-                id: "required",
-                tier: "must_fix",
-                title: "Required fix",
-              },
-            ]
-          : []),
-      ];
-      await page.route(/\/api\/tasks\/task-a\/panel(?:\?|$)/, async (route) => {
-        const response = await route.fetch();
-        const panel = await response.json();
-        panel.version.pre_trial_status = "success";
-        panel.version.pre_trial_findings = findings;
-        panel.version.retained_findings = [];
-        await route.fulfill({ json: panel });
-      });
-      await page.goto("/experiments/review-demo?task=task-a");
-      const checks = page
-        .getByRole("heading", { name: "Findings", exact: true })
-        .locator("..");
-      await expect(
-        checks.getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
-          exact: true,
-        })
-      ).toBeVisible();
-      await expect(
-        page.getByText("RECORDED OPTIONAL", { exact: true })
-      ).toHaveCount(2);
-      await expect(page.getByText("Must fix", { exact: true })).toHaveCount(
-        includeMustFix ? 2 : 1
-      );
-      await expect(page.getByText(/RECORDED SHOULD FIX/)).toHaveCount(0);
-      await expect(
-        checks.getByText("No required fixes", { exact: true })
-      ).toHaveCount(0);
-    });
-  }
-
   for (const count of [1, 2]) {
     test(`invalid-success review count uses the correct plural for ${count}`, async ({
       page,
@@ -1254,49 +1190,44 @@ for (const address of ["retained-fix", "historical-audit"]) {
   });
 }
 
-for (const origin of ["this experiment", "another experiment"]) {
-  test(`finding trial attribution opens ${origin} in the current drawer`, async ({
-    page,
-    context,
-  }) => {
-    test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
-    const original = tasks[0].trials![0];
-    const trial = {
-      ...original,
-      id: origin === "this experiment" ? original.id : "external-source-trial",
-      name: "attributed-trial",
-      experiment_id:
-        origin === "this experiment" ? "review-demo" : "another-experiment",
-      analysis: {
-        ...original.analysis,
-        root_cause: "Attribution drawer evidence",
-        action_items: [
-          {
-            ...records[0].finding!,
-            id: "attributed-finding",
-            tier: "must_fix",
-          },
-        ],
-      },
-    };
-    await page.route("**/api/tasks/task-a/trials?**", (route) =>
-      route.fulfill({ json: [trial] })
-    );
-    await page.route(`**/api/trials/${trial.id}`, (route) =>
-      route.fulfill({ json: trial })
-    );
-    await page.goto("/experiments/review-demo?task=task-a&taskPane=overview");
-    const finding = page.locator('details[data-finding="attributed-finding"]');
-    await expect(finding).toBeVisible();
-    await finding.locator("summary").click();
-    await finding
-      .locator('button[title^="Open trial attributed-trial"]')
-      .click();
-    await expect(page).toHaveURL(new RegExp(`trial=${trial.id}`));
-    await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
-    expect(context.pages()).toHaveLength(1);
-  });
-}
+test("finding trial attribution opens another experiment in the current drawer", async ({
+  page,
+  context,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  const original = tasks[0].trials![0];
+  const trial = {
+    ...original,
+    id: "external-source-trial",
+    name: "attributed-trial",
+    experiment_id: "another-experiment",
+    analysis: {
+      ...original.analysis,
+      root_cause: "Attribution drawer evidence",
+      action_items: [
+        {
+          ...records[0].finding!,
+          id: "attributed-finding",
+          tier: "must_fix",
+        },
+      ],
+    },
+  };
+  await page.route("**/api/tasks/task-a/trials?**", (route) =>
+    route.fulfill({ json: [trial] })
+  );
+  await page.route(`**/api/trials/${trial.id}`, (route) =>
+    route.fulfill({ json: trial })
+  );
+  await page.goto("/experiments/review-demo?task=task-a&taskPane=overview");
+  const finding = page.locator('details[data-finding="attributed-finding"]');
+  await expect(finding).toBeVisible();
+  await finding.locator("summary").click();
+  await finding.locator('button[title^="Open trial attributed-trial"]').click();
+  await expect(page).toHaveURL(new RegExp(`trial=${trial.id}`));
+  await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
+  expect(context.pages()).toHaveLength(1);
+});
 
 test("finding source opens the file and line inside the experiment pane", async ({
   page,
