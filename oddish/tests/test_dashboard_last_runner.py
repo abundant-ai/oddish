@@ -34,6 +34,41 @@ from oddish.db.models import (  # noqa: E402
     utcnow,
 )
 
+
+async def read_after_summary_rebuild(session, **kwargs):
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from oddish.core.dashboard import (
+        dashboard_experiment_rows,
+        rebuild_dashboard_experiments,
+    )
+    from oddish.db.models import ExperimentSummaryModel
+
+    org_id = kwargs.get("org_id")
+    page_rows = (
+        (
+            await session.execute(
+                dashboard_experiment_rows().where(ExperimentModel.org_id == org_id)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    if page_rows:
+        payloads = await rebuild_dashboard_experiments(
+            session, page_rows=page_rows, org_id=org_id
+        )
+        for payload in payloads:
+            await session.execute(
+                pg_insert(ExperimentSummaryModel)
+                .values(experiment_id=payload["id"], payload=payload)
+                .on_conflict_do_update(
+                    index_elements=[ExperimentSummaryModel.experiment_id],
+                    set_={"payload": payload},
+                )
+            )
+    return await load_dashboard_experiments(session, **kwargs)
+
+
 _ORG = f"lastrunner-org-{uuid.uuid4().hex[:8]}"
 
 
@@ -103,7 +138,7 @@ async def test_last_runner_user_id_is_latest_trials_billed_user(session):
     )
     await session.flush()
 
-    rows, _has_more = await load_dashboard_experiments(
+    rows, _has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=10,
@@ -154,7 +189,7 @@ async def test_last_runner_ignores_superseded_trials(session):
     session.add_all([live_older, superseded_newest])
     await session.flush()
 
-    rows, _has_more = await load_dashboard_experiments(
+    rows, _has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=10,
@@ -205,7 +240,7 @@ async def test_last_runner_resolves_for_collections(session):
         [{"experiment_id": collection.id, "trial_id": trial.id}],
     )
 
-    rows, _has_more = await load_dashboard_experiments(
+    rows, _has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=10,
@@ -229,7 +264,7 @@ async def test_last_runner_user_id_none_without_trials(session):
     session.add(experiment)
     await session.flush()
 
-    rows, _has_more = await load_dashboard_experiments(
+    rows, _has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=10,
@@ -260,7 +295,7 @@ async def test_resolved_member_owner_search_filters_before_pagination(session):
     session.add_all([newer_unrelated, older_kyle])
     await session.flush()
 
-    rows, has_more = await load_dashboard_experiments(
+    rows, has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=1,
@@ -304,7 +339,7 @@ async def test_resolved_member_search_matches_latest_visible_runner(session):
     )
     await session.flush()
 
-    rows, _has_more = await load_dashboard_experiments(
+    rows, _has_more = await read_after_summary_rebuild(
         session,
         org_id=_ORG,
         experiments_limit=1,

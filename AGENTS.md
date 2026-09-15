@@ -822,6 +822,19 @@ usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
 token fields are the billed-user subset used by the frontend's New spend tile.
 
+### Prepared dashboard and directory reads
+
+The web dashboard reads `experiment_summaries`; background maintenance calls
+`rebuild_dashboard_experiments` for the authoritative aggregate rules. Core
+migration `prepared_reads_001` installs transactionally coalesced revision markers
+on task/trial/version/experiment membership changes. Publication acknowledges the
+captured revision only. Do not add a request-time aggregate fallback. Pending
+first builds report `summary_pending`; status predicates apply before pagination.
+
+Org/Mine uses the existing dashboard JSON endpoint with account/filter-scoped
+SWR and browser history. Applied filters belong to the URL; search input remains
+an editable draft. See `docs/prepared-webapp-reads.md` for maintenance and tests.
+
 ### Task-file publication and read latency
 
 Task-file publication writes complete, immutable directories under
@@ -1976,6 +1989,12 @@ Preview deployment parses the unique `-api.modal.run` URL from Modal's output
 with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 `-api-qa-model.modal.run` URL is a separate endpoint and must never become the
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
+
+Preview database preparation rotates the branch password on every run. Every
+previously deployed preview backend must therefore redeploy, including after
+frontend-only or no-code pushes; replacing the Modal secret alone leaves running
+API and scheduled-worker containers with the previous password. PRs that have
+never deployed a backend retain the frontend-only path.
 
 PR preview deploys and manual preview resets set
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=400`, allowing each worker function up to
