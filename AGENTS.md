@@ -1681,6 +1681,13 @@ startup policies and Claude retry-session preservation. Change
 regenerate both package lockfiles together. Validate the network fix on copied
 staging tasks before production promotion; changing the pin affects worker images.
 
+`OddishClaudeCode` records session IDs from successful command output because
+the pinned Harbor records them only on errors. Multi-step Claude tasks with
+`resume_trajectory=true` need that ID to continue after a successful step.
+Keep the missing/conflicting-session rejection and provider-error retry behavior;
+the same runner is inherited by probes. Cover successful continuation with
+`oddish/tests/test_claude_code_agent.py` when updating Harbor or this runner.
+
 ### Worker resource comparison
 
 The production workflow sets `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=20`;

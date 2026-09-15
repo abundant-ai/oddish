@@ -9,11 +9,11 @@ import { taskHasActiveVerdict, taskHasActiveAnalysis } from "@/lib/job-status";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 
 export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
-  GOOD_SUCCESS: "Agent succeeded",
+  GOOD_SUCCESS: "Good success",
   GOOD_FAILURE: "Good failure",
-  BAD_SUCCESS: "Invalid success",
-  BAD_FAILURE: "Task-caused failure",
-  HARNESS_ERROR: "Infrastructure error",
+  BAD_SUCCESS: "Bad success",
+  BAD_FAILURE: "Bad failure",
+  HARNESS_ERROR: "Harness error",
 };
 
 export const VERDICT_LABELS = {
