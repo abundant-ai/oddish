@@ -9,8 +9,8 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 from oddish.cli.api import trial_result_to_import_spec
 from oddish.core.harbor_artifacts import (
-    INFRASTRUCTURE_EXCEPTION_TYPES,
-    is_infrastructure_exception,
+    SCORE_INVALIDATING_EXCEPTIONS,
+    invalidates_score,
 )
 from oddish.db import TrialStatus
 from oddish.worker.local_runner import _verifier_reward_for_result
@@ -82,8 +82,8 @@ def _claude_trial(**overrides):
         (None, False),
     ],
 )
-def test_is_infrastructure_exception(exception_type, expected):
-    assert is_infrastructure_exception(exception_type) is expected
+def test_invalidates_score(exception_type, expected):
+    assert invalidates_score(exception_type) is expected
 
 
 def _harbor_exception_class(name: str) -> type | None:
@@ -94,17 +94,17 @@ def _harbor_exception_class(name: str) -> type | None:
     return None
 
 
-def test_every_infrastructure_name_is_a_harbor_exception():
+def test_every_score_invalidating_provider_name_is_a_harbor_exception():
     # The set is matched by name against ``exception_info.exception_type``.
     # A name Harbor never raises would silently protect nothing.
-    for name in INFRASTRUCTURE_EXCEPTION_TYPES:
+    for name in SCORE_INVALIDATING_EXCEPTIONS:
         assert _harbor_exception_class(name) is not None, name
 
 
-def test_agent_owned_endings_are_never_infrastructure():
+def test_agent_owned_endings_do_not_invalidate_scores():
     for name in AGENT_OWNED_ENDINGS:
         assert _harbor_exception_class(name) is not None, name
-        assert name not in INFRASTRUCTURE_EXCEPTION_TYPES
+        assert name not in SCORE_INVALIDATING_EXCEPTIONS
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,12 @@ async def test_unusable_model_id_is_not_a_score(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transient_provider_failure_retries_instead_of_scoring_zero(monkeypatch):
+@pytest.mark.parametrize(
+    "reward, total_steps, output_tokens", [(0.0, 1, 0), (0.4, 8, 1200)]
+)
+async def test_transient_provider_failure_discards_score_even_after_partial_work(
+    monkeypatch, reward, total_steps, output_tokens
+):
     # Harbor's retry policy still owns the retry decision. Dropping the reward
     # only puts the trial back on the path it takes when no reward is reported.
     trial = _claude_trial()
@@ -161,16 +166,20 @@ async def test_transient_provider_failure_retries_instead_of_scoring_zero(monkey
         monkeypatch,
         trial,
         _outcome(
-            reward=0.0,
+            reward=reward,
             error="ApiOverloadedError: 529 overloaded",
             exception_type="ApiOverloadedError",
             http_status=529,
+            total_steps=total_steps,
+            output_tokens=output_tokens,
         ),
     )
 
     assert trial.reward is None
     assert trial.status == TrialStatus.RETRYING
     assert trial.finished_at is None
+    assert trial.total_steps == total_steps
+    assert trial.output_tokens == output_tokens
 
 
 @pytest.mark.asyncio
@@ -214,9 +223,8 @@ async def test_clean_run_keeps_a_passing_reward(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provider_rejection_drops_even_a_passing_reward(monkeypatch):
-    # The rule reads the exception, never the reward's value. A 1.0 from a run
-    # the provider cut short is as unmeasured as a 0.0, and a rule that let the
-    # good news through would be the kind of heuristic this replaces.
+    # The policy discards rewards based on the recorded exception, including
+    # a passing reward. It does not use the reward to infer completed work.
     trial = _claude_trial()
     await _store(
         monkeypatch,
