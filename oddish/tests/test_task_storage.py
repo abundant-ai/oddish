@@ -1217,6 +1217,9 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
     assert payload["content"] == "name = 'demo-expanded'\n"
     assert payload["key"] == f"{expanded_prefix}task.toml"
 
+    from datetime import datetime, timezone
+
+    before_signing = datetime.now(timezone.utc).timestamp()
     presigned_payload = await storage.get_task_file_content(
         task_id="task-123",
         file_path="task.toml",
@@ -1224,6 +1227,11 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
         version=3,
     )
     assert presigned_payload["url"] == "https://example.com/expanded-task"
+    assert (
+        before_signing + 900
+        <= presigned_payload["expires_at"]
+        <= datetime.now(timezone.utc).timestamp() + 900
+    )
     assert "content" not in presigned_payload
 
     preview_payload = await storage.get_task_file_content(
@@ -1279,7 +1287,6 @@ async def test_download_bytes_keeps_sdk_stream_after_entering_context(
         call.args[0] for call in response.content.read.call_args_list
     ] == requested_sizes
     assert response.closed
-
 
 
 @pytest.mark.asyncio
@@ -1723,3 +1730,38 @@ async def test_published_definition_preview_failure_does_not_hide_other_files(
     assert "content" not in files["large.txt"]
     assert "content" not in files["slow.txt"]
     assert download.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_download_file_streams_sdk_body_in_bounded_chunks(tmp_path):
+    data = b"x" * (2 * 1024 * 1024 + 3)
+    reads = []
+
+    class Body:
+        offset = 0
+        closed = False
+
+        async def __aenter__(self):
+            # The real SDK yields an HTTP response; read(size) belongs to Body.
+            return object()
+
+        async def __aexit__(self, *args):
+            self.closed = True
+
+        async def read(self, size):
+            assert 0 < size <= 1024 * 1024
+            reads.append(size)
+            chunk = data[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    body = Body()
+    storage = storage_mod.StorageClient()
+    storage._ensure_client = AsyncMock()
+    storage._client = AsyncMock()
+    storage._client.get_object.return_value = {"Body": body}
+    destination = tmp_path / "download"
+    await storage.download_file("archive", destination)
+    assert destination.read_bytes() == data
+    assert body.closed
+    assert len(reads) == 4

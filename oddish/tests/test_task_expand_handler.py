@@ -636,6 +636,10 @@ async def test_expand_is_idempotent_on_matching_etag(monkeypatch, _patched_get_s
 
 @pytest.mark.asyncio
 async def test_expand_skips_oversize_archive(monkeypatch, _patched_get_session):
+    from oddish.core import file_index
+
+    index_archive = AsyncMock(return_value=True)
+    monkeypatch.setattr(file_index, "index_task_archive", index_archive)
     archive_bytes = _make_archive({"task.toml": b"x" * 1024})
     storage = _FakeStorage(
         archive_key="tasks/task-abc/v1/.oddish-task.tar.gz",
@@ -662,6 +666,8 @@ async def test_expand_skips_oversize_archive(monkeypatch, _patched_get_session):
 
     assert summary["status"] == "skipped"
     assert summary["reason"] == "archive_too_large"
+    assert summary["directory_indexed"] is True
+    index_archive.assert_awaited_once()
     # Nothing written beyond the archive itself.
     assert storage.upload_calls == []
     # expanded_at must remain NULL so a future cap raise can re-pick

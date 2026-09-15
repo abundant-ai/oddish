@@ -258,6 +258,52 @@ def trial_index_key(trial, attempt: int | None = None) -> str:
     return f"trial:{trial.id}:{trial.attempts or 0}:{trial.trial_s3_key or ''}"
 
 
+async def index_task_archive(
+    storage,
+    *,
+    task_id: str,
+    version: int,
+    archive_key: str,
+    expected_content_hash: str | None,
+) -> bool:
+    """Publish metadata from the expansion worker without extracting objects.
+
+    The existing worker owns heartbeats and retries for this potentially long
+    scan. Lock the version only after storage work, checking for an overwrite
+    before publishing so an old archive cannot replace the new directory.
+    """
+    from oddish.db import get_session, TaskVersionModel
+    from oddish.db.storage import StorageClient
+
+    files = await storage.list_task_archive_members(archive_key)
+    async with get_session() as session:
+        row = await session.scalar(
+            select(TaskVersionModel)
+            .where(
+                TaskVersionModel.task_id == task_id, TaskVersionModel.version == version
+            )
+            .with_for_update()
+        )
+        if (
+            row is None
+            or row.deleted_at is not None
+            or row.content_hash != expected_content_hash
+            or row.expanded_manifest_key is not None
+            or row.task_s3_key
+            and StorageClient._task_archive_key_from_prefix(row.task_s3_key)
+            != archive_key
+        ):
+            return False
+        await publish_file_index(
+            session,
+            source_key=f"expand:{row.id}",
+            root_prefix=archive_key + "#",
+            files=files,
+            only_if_pending=True,
+        )
+    return True
+
+
 async def backfill_file_indexes(*, limit: int = 8) -> int:
     """Drain durable index jobs; a crash leaves the pending row available."""
     from oddish.db import (

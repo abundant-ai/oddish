@@ -105,3 +105,22 @@ Tests cover transactional invalidation and rollback, changes during a rebuild,
 coalescing, retries, daily reconciliation, collection membership and runner rules,
 ownerless Mine results, and two SQL statements with 1 versus 10,000 trials.
 The browser test covers Org/Mine request reuse, search, and browser Back behavior.
+
+## Archive directories and temporary URLs
+
+Apply migrations through `archive_index_001`. It merges the existing file-index
+chain with `prepared_status_001`, including for databases already on
+`legacy_file_index_001`, and invalidates unexpanded archive indexes on overwrite.
+
+When extraction exceeds `tasks_expand_max_bytes`, the existing `TASK_EXPAND` job
+downloads to temporary disk in 1 MiB chunks and scans the compressed tar stream
+for member names and sizes. It publishes through `publish_file_index` using the
+same 500-entry batches. The job retains the existing heartbeat and retry policy;
+no additional scheduler or foreground storage scan is introduced. The version
+lock and captured hash reject publication after an in-place upload. A completed
+index ends automatic re-enqueueing; `expanded_at` stays unset so an operator can
+still request extraction after changing the size limit. Individual file reads
+retain the archive reader.
+
+Signed task-file responses include `expires_at` in Unix seconds so browser
+preview caches can retain text while renewing temporary storage access.

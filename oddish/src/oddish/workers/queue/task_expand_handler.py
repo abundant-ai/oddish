@@ -492,11 +492,22 @@ async def run_task_expand_job(
 
         max_bytes = int(settings.tasks_expand_max_bytes)
         if max_bytes and archive_size > max_bytes:
+            from oddish.core.file_index import index_task_archive
+
+            if not await index_task_archive(
+                storage,
+                task_id=task_id,
+                version=version,
+                archive_key=archive_key,
+                expected_content_hash=expected_content_hash,
+            ):
+                return {"status": "stale_source"}
             summary = {
                 "status": "skipped",
                 "reason": "archive_too_large",
                 "archive_size": archive_size,
                 "limit": max_bytes,
+                "directory_indexed": True,
             }
             console.print(
                 f"[yellow]TASK_EXPAND skip: archive_size={archive_size} "

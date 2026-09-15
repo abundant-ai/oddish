@@ -851,6 +851,17 @@ partial index. Pending index jobs return retryable 503; an absent index returns
 attempt/revision identity and a byte bound; full download is separate. Keep
 legacy CLI listing behavior behind the existing default options.
 
+Archives above `tasks_expand_max_bytes` keep the same extraction limit. Their
+existing `TASK_EXPAND` worker streams the archive to temporary disk, reads member
+metadata off the event loop, and publishes an `expand:<version id>` index. It
+reuses the worker's heartbeat and retry lifecycle; directory maintenance stops
+enqueuing once that index is ready. Opening a member uses the existing archive
+reader. `archive_index_001` merges the summary-status upgrade and invalidates
+archive indexes when an in-place upload changes the version's hash or pointer.
+Publication checks the version under lock after scanning to reject stale work.
+Task file signing responses include `expires_at` (Unix seconds), calculated
+using the same lifetime passed to storage signing; text responses omit it.
+
 Bounded storage reads must call `read(size)` on the SDK's `StreamingBody`, not
 the raw HTTP response returned by its async context manager. Only missing-object
 storage errors become task-file 404 responses; unexpected read failures must

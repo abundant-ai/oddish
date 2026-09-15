@@ -684,3 +684,139 @@ async def test_legacy_migration_backfills_existing_sources_and_preserves_links(
             text("SELECT count(*) FROM file_indexes WHERE task_id='legacy'")
         )
     ).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_oversize_archive_is_indexed_without_extraction_or_repeated_jobs(
+    monkeypatch,
+):
+    import io
+    import tarfile
+    from pathlib import Path
+    from datetime import datetime, UTC
+    import oddish.db
+    import oddish.queue
+    from oddish.config import settings
+    from oddish.core.file_index import backfill_file_indexes, index_task_archive
+    from oddish.core.task_files import resolve_task_file_source
+    from oddish.db import TaskModel, TaskVersionModel
+    from oddish.db.storage import StorageClient
+    from oddish.workers.queue import task_expand_handler
+
+    task_id = "archive-index-" + uuid4().hex[:16]
+    version_id = task_id + "-v1"
+    root = f"tasks/{task_id}/v1/"
+    archive_key = root + ".oddish-task.tar.gz"
+    content = b"Read this archive member\n"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name in ["instruction.md", "nested/file.txt"]:
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    archive_bytes = buffer.getvalue()
+    storage = StorageClient()
+    storage.head_object = AsyncMock(
+        return_value={"ContentLength": len(archive_bytes), "ETag": task_id}
+    )
+    storage.download_bytes = AsyncMock(return_value=archive_bytes)
+    downloads = []
+
+    async def download_file(key, path):
+        assert key == archive_key
+        downloads.append(path)
+        Path(path).write_bytes(archive_bytes)
+
+    storage.download_file = download_file
+    storage.upload_bytes = AsyncMock(
+        side_effect=AssertionError("indexing must not extract/upload members")
+    )
+    monkeypatch.setattr(oddish.db, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+    monkeypatch.setattr(settings, "tasks_expand_max_bytes", 1)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(oddish.queue, "enqueue_task_expand_worker_job", enqueue)
+    async with get_session() as session:
+        session.add(
+            TaskModel(id=task_id, name=task_id, user="tester", task_path="archive")
+        )
+        await session.flush()
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=1,
+                task_path="archive",
+                task_s3_key=root,
+                content_hash="before",
+            )
+        )
+        await session.flush()
+        task = await session.get(TaskModel, task_id)
+        task.current_version_id = version_id
+        index = await session.get(FileIndexModel, f"expand:{version_id}")
+        index.next_attempt_at = datetime(1970, 1, 1, tzinfo=UTC)
+    try:
+        assert await backfill_file_indexes(limit=1) == 0
+        enqueue.assert_awaited_once()
+        result = await task_expand_handler.run_task_expand_job(task_id, 1)
+        assert result["reason"] == "archive_too_large"
+        assert result["directory_indexed"] is True
+        assert len(downloads) == 1 and not downloads[0].exists()
+        storage.download_bytes.assert_not_awaited()  # no in-memory archive cache
+        storage.upload_bytes.assert_not_awaited()
+        async with get_session() as session:
+            source = await resolve_task_file_source(session, task_id=task_id, version=1)
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.expanded_at is None and version.expanded_manifest_key is None
+        listing = await read_file_index(
+            source_key=source.index_key, directories=["", "nested"]
+        )
+        assert (
+            listing["directories"][""]["files"][0]["key"]
+            == archive_key + "#instruction.md"
+        )
+        assert listing["directories"]["nested"]["files"][0]["size"] == len(content)
+        body = await storage.get_task_file_content(
+            task_id=task_id,
+            version=1,
+            task_s3_prefix=root,
+            expanded=False,
+            file_path="instruction.md",
+            presign=False,
+        )
+        assert body["content"] == content.decode()
+        # A ready index is no longer durable pending work, even after retry time.
+        async with get_session() as session:
+            index = await session.get(FileIndexModel, source.index_key)
+            index.next_attempt_at = datetime(1970, 1, 1, tzinfo=UTC)
+        enqueue.reset_mock()
+        await backfill_file_indexes()
+        assert not any(
+            call.kwargs["task_id"] == task_id for call in enqueue.await_args_list
+        )
+        # An in-place upload must hide the old directory and reject a late scan.
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            version.content_hash = "after"
+        with pytest.raises(HTTPException) as pending:
+            await read_file_index(source_key=source.index_key)
+        assert pending.value.status_code == 503
+        assert not await index_task_archive(
+            storage,
+            task_id=task_id,
+            version=1,
+            archive_key=archive_key,
+            expected_content_hash="before",
+        )
+        assert await index_task_archive(
+            storage,
+            task_id=task_id,
+            version=1,
+            archive_key=archive_key,
+            expected_content_hash="after",
+        )
+        assert (await read_file_index(source_key=source.index_key))["files"]
+    finally:
+        async with get_session() as session:
+            await session.execute(delete(TaskModel).where(TaskModel.id == task_id))

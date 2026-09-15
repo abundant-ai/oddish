@@ -1787,8 +1787,14 @@ class StorageClient:
         max_bytes: int | None,
     ) -> dict:
         if presign:
+            expires_at = datetime.now(timezone.utc).timestamp() + presign_expiration
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
-            return {"path": file_path, "key": s3_key, "url": url}
+            return {
+                "path": file_path,
+                "key": s3_key,
+                "url": url,
+                "expires_at": expires_at,
+            }
         if max_bytes is None:
             content = await self.download_text(s3_key)
             is_truncated = False
@@ -1851,16 +1857,38 @@ class StorageClient:
         )
 
     async def download_file(self, s3_key: str, local_path: Path) -> None:
-        """Download a file from S3."""
+        """Download to disk with bounded memory, including multi-GiB archives."""
         await self._ensure_client()
-        response = await self._s3.get_object(
-            Bucket=settings.s3_bucket,
-            Key=s3_key,
-        )
-        async with response["Body"] as stream:
-            content = await stream.read()
+        with storage_operation("get", s3_key):
+            response = await self._s3.get_object(
+                Bucket=settings.s3_bucket,
+                Key=s3_key,
+            )
+        stream = response["Body"]
+        async with stream:
             with open(local_path, "wb") as f:
-                f.write(content)
+                while chunk := await stream.read(1024 * 1024):
+                    f.write(chunk)
+
+    async def list_task_archive_members(self, archive_key: str) -> list[dict]:
+        """Read member names and sizes without retaining archive bodies in RAM."""
+
+        def read_members(path: Path) -> list[dict]:
+            files = {}
+            # Sequential decompression bounds memory independently of archive
+            # size. Run off the event loop so worker heartbeats can continue.
+            with tarfile.open(path, mode="r|gz", stream=True) as archive:
+                for member in archive:
+                    if member.isfile():
+                        name = normalize_s3_relative_path(member.name)
+                        if name:
+                            files[name] = {"path": name, "size": member.size}
+            return list(files.values())
+
+        with tempfile.TemporaryDirectory(prefix="oddish-archive-index-") as directory:
+            path = Path(directory) / "archive.tar.gz"
+            await self.download_file(archive_key, path)
+            return await asyncio.to_thread(read_members, path)
 
     async def download_bytes(self, s3_key: str, max_bytes: int | None = None) -> bytes:
         """Download binary content from S3."""
