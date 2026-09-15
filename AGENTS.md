@@ -1716,7 +1716,9 @@ truncate UUIDs to the eight-character IDs used by some other entities.
 ### Default Harbor dependency
 
 The default Harbor pin includes Modal domain-filter initialization for restricted
-startup policies and Claude retry-session preservation. Change
+startup policies, Claude retry-session preservation, and the pause-proxy sidecar
+joining `main`'s network namespace (so compose tasks may set `hostname`, `ports`
+or `networks` on `main`). Change
 `oddish/src/oddish/harbor-pin.toml`, run `oddish/scripts/sync_harbor_pin.py`, and
 regenerate both package lockfiles together. Validate the network fix on copied
 staging tasks before production promotion; changing the pin affects worker images.
