@@ -2378,7 +2378,12 @@ submission, verification, and import. `ActionTier` retains `optional` for histor
 `merge_finding_tiers_001` before deployment: it converts retired severity fields
 to `must_fix` in audits, retained findings, analyses, and delivery snapshots.
 Database triggers normalize older-worker writes to the same columns, so retired
-severities cannot reappear. The API no longer returns `pre_trial_should_fix`;
+severities cannot reappear. The migration commits each trigger before converting
+history in 500-row primary-key batches, releasing table locks before the scans.
+Lock waits are capped at five seconds; interrupted upgrades can be rerun. This
+updates the existing revision for databases that have not applied it; databases
+already at `merge_finding_tiers_001` need no further conversion.
+The API no longer returns `pre_trial_should_fix`;
 QA exports include converted findings in `must_fix_count`. Severity does not establish execution
 causation: unrelated findings leave `GOOD_FAILURE` unchanged.
 
