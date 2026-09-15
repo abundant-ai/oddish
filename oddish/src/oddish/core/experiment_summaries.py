@@ -57,7 +57,11 @@ async def refresh_experiment_summaries(*, batch_size: int = 32) -> int:
                     (summary.revision > summary.built_revision)
                     | (summary.refreshed_at < now - timedelta(days=1)),
                 )
-                .order_by(summary.next_attempt_at, summary.dirty_since)
+                .order_by(
+                    (summary.revision > summary.built_revision).desc(),
+                    summary.next_attempt_at,
+                    summary.dirty_since,
+                )
                 .limit(batch_size)
             )
         ).all()

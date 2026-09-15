@@ -532,3 +532,39 @@ async def test_status_only_completion_invalidates_pending_qa(
     async with get_session() as session:
         rows, _ = await page(session, org)
         assert rows[0]["verdict_pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_rebuild_precedes_daily_reconciliation(experiment):
+    from datetime import timedelta
+    from oddish.db import utcnow
+
+    org, eid, tid = experiment
+    async with get_session() as session:
+        clean = ExperimentModel(name="daily-reconcile", org_id=org)
+        session.add(clean)
+        await session.flush()
+        clean_id = clean.id
+        await session.commit()
+    await refresh_experiment_summaries()
+    async with get_session() as session:
+        marker = await session.get(ExperimentSummaryModel, clean_id)
+        marker.refreshed_at = utcnow() - timedelta(days=2)
+        marker.next_attempt_at = marker.refreshed_at
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == tid)
+            .values(status=TrialStatus.SUCCESS)
+        )
+        await session.commit()
+    assert await refresh_experiment_summaries(batch_size=1) == 1
+    async with get_session() as session:
+        pending = await session.get(ExperimentSummaryModel, eid)
+        clean = await session.get(ExperimentSummaryModel, clean_id)
+        assert pending.revision == pending.built_revision
+        assert pending.payload["active_trials"] == 0
+        assert clean.refreshed_at < utcnow() - timedelta(days=1)
+    assert await refresh_experiment_summaries(batch_size=1) == 1
+    async with get_session() as session:
+        clean = await session.get(ExperimentSummaryModel, clean_id)
+        assert clean.refreshed_at > utcnow() - timedelta(minutes=1)

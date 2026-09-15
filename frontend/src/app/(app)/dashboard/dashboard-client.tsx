@@ -391,7 +391,7 @@ function ExperimentsTableBody({
     {
       revalidateOnFocus: false,
       revalidateIfStale: false,
-      dedupingInterval: 30_000,
+      dedupingInterval: 2_000,
       refreshInterval: (current) =>
         current?.experiments?.some(
           (row) => row.summary_pending || row.active_trials > 0
@@ -1226,7 +1226,9 @@ export function DashboardClient() {
         Array.isArray(key) &&
         key[0] === "dashboard-experiments" &&
         key[1] === userId &&
-        key[2] === orgId
+        key[2] === orgId,
+      undefined,
+      { revalidate: true }
     );
   };
   const handleSearchChange = (value: string) => {

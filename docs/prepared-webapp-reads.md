@@ -25,13 +25,18 @@ concurrent change remains pending. Failures preserve the previous payload and
 retry after 30 seconds. Each group has a separate database session and a
 20-second wall-clock limit, so cancellation cannot invalidate the publication
 transaction. Statements have a 15-second limit. Clean rows are also rebuilt
-after 24 hours to reconcile discrepancies. A never-built row explicitly reports
+after 24 hours to reconcile discrepancies. Eligible pending revisions take priority
+over clean daily reconciliations; failed rows retain their retry delay. A never-built row explicitly reports
 `summary_pending`, displayed as “Preparing…” rather than a fabricated count.
 
 SWR, the browser's shared request cache, owns experiment lists. Keys include the
 signed-in user, organization, and all URL filters. Org/Mine uses browser history
 and the existing dashboard JSON endpoint. Search input remains an editable draft;
-applied filters belong to the URL.
+applied filters belong to the URL. Deleting an experiment clears all cached list
+variants for the current user and organization and refreshes the mounted list;
+other variants fetch once on their next visit. Request deduplication lasts two
+seconds so five-second polls for pending summaries and active trials can run.
+Completed lists retain their thirty-second polling interval.
 
 ## Deployment and alerts
 
