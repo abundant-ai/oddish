@@ -23,7 +23,10 @@ import {
 import { apiFetch } from "@/lib/api";
 import { isAgentTrial, type Task } from "@/lib/types";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
-import { reasoningEffortOptions } from "@/lib/reasoning-effort";
+import {
+  REASONING_EFFORT_AGENTS,
+  reasoningEffortOptions,
+} from "@/lib/reasoning-effort";
 import {
   buildExperimentRunRequests,
   submitExperimentRuns,
@@ -60,8 +63,7 @@ export function ExperimentRunDialog({
     );
   const agents = [
     ...new Set([
-      "claude-code",
-      "codex",
+      ...REASONING_EFFORT_AGENTS,
       ...solverTrials.map((trial) => trial.agent),
     ]),
   ];
@@ -91,7 +93,14 @@ export function ExperimentRunDialog({
       ) ?? solverTrials[0];
     setAgent(first?.agent ?? "claude-code");
     setModel(first?.model ?? "");
-    setEfforts(["default"]);
+    setEfforts(
+      reasoningEffortOptions(
+        first?.agent ?? "claude-code",
+        first?.model ?? ""
+      ).includes("high")
+        ? ["high"]
+        : ["default"]
+    );
     setPending(null);
     setErrors([]);
     setCompleted(0);
@@ -170,11 +179,15 @@ export function ExperimentRunDialog({
                   value={agent}
                   onValueChange={(value) => {
                     setAgent(value);
-                    setModel(
+                    const nextModel =
                       solverTrials.find((trial) => trial.agent === value)
-                        ?.model ?? ""
+                        ?.model ?? "";
+                    setModel(nextModel);
+                    setEfforts(
+                      reasoningEffortOptions(value, nextModel).includes("high")
+                        ? ["high"]
+                        : ["default"]
                     );
-                    setEfforts(["default"]);
                   }}
                 >
                   <SelectTrigger className="w-full">
@@ -195,7 +208,14 @@ export function ExperimentRunDialog({
                   value={model}
                   onChange={(event) => {
                     setModel(event.target.value);
-                    setEfforts(["default"]);
+                    setEfforts(
+                      reasoningEffortOptions(
+                        agent,
+                        event.target.value
+                      ).includes("high")
+                        ? ["high"]
+                        : ["default"]
+                    );
                   }}
                   list="experiment-run-models"
                   placeholder="Model ID"
@@ -211,7 +231,7 @@ export function ExperimentRunDialog({
             <div>
               <div className="mb-2 text-sm">Reasoning effort</div>
               <div className="flex flex-wrap gap-2">
-                {["default", ...options].map((effort) => (
+                {(options.length ? options : ["default"]).map((effort) => (
                   <label
                     key={effort}
                     className="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs"
@@ -232,9 +252,8 @@ export function ExperimentRunDialog({
               </div>
               <p className="text-muted-foreground mt-2 text-xs">
                 {options.length
-                  ? "Each selected effort gets its own column."
-                  : "Effort selection is unavailable for this agent/model."}{" "}
-                Agent default leaves effort unset.
+                  ? "New runs default to high. Each selected effort gets its own column."
+                  : "Effort selection is unavailable for this agent/model."}
               </p>
             </div>
             <label className="block max-w-40 space-y-2 text-sm">

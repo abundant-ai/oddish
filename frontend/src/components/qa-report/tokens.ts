@@ -49,17 +49,15 @@ export const FALLBACK_TOKEN: VerdictToken = {
   chip: "border-border",
 };
 
-export const TIER_ORDER = ["must_fix", "should_fix", "optional"] as const;
+export const TIER_ORDER = ["must_fix", "optional"] as const;
 
 export const TIER_LABELS: Record<string, string> = {
   must_fix: "Must fix",
-  should_fix: "RECORDED SHOULD FIX",
   optional: "RECORDED OPTIONAL",
 };
 
 // Preserve the recorded severity for historical findings.
 export const TIER_BADGE: Record<string, string> = {
   must_fix: "bg-destructive text-destructive-foreground",
-  should_fix: "border-foreground/25 bg-foreground/10 text-foreground border",
   optional: "border-border text-muted-foreground border bg-transparent",
 };

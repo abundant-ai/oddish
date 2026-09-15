@@ -109,6 +109,7 @@ export function TaskOverviewPanel({
   checksLoadError,
   qaActive,
   onOpenTrial,
+  onOpenSource,
   executionReviewAction,
   executionReviewError,
   className,
@@ -149,6 +150,7 @@ export function TaskOverviewPanel({
    * back to the task page deep link.
    */
   onOpenTrial?: (trial: Trial) => boolean;
+  onOpenSource?: (item: PreTrialFinding) => void;
   className?: string;
 }) {
   const router = useRouter();
@@ -332,12 +334,6 @@ export function TaskOverviewPanel({
   };
 
   const openTrial = (trial: Trial) => {
-    // Trials from elsewhere open in a new tab; the drawer keeps its context.
-    if (foreignIds?.has(trial.id)) {
-      const href = taskTrialHref(trial);
-      if (href) window.open(href, "_blank", "noopener,noreferrer");
-      return;
-    }
     if (onOpenTrial?.(trial)) return;
     const href = taskTrialHref(trial);
     if (href) router.push(href);
@@ -371,7 +367,7 @@ export function TaskOverviewPanel({
               )}
               title={
                 foreign
-                  ? `Open trial ${trial.name} in a new tab — ran outside this experiment`
+                  ? `Open trial ${trial.name} — ran outside this experiment`
                   : `Open trial ${trial.name}`
               }
             >
@@ -438,6 +434,7 @@ export function TaskOverviewPanel({
               ? (item, file) => findingHref(taskId, version, item, file)
               : undefined
           }
+          onOpenSource={onOpenSource}
           renderItemFooter={renderFindingSources}
         />
       ) : null;
@@ -541,15 +538,13 @@ export function TaskOverviewPanel({
                 )}
               >
                 <Icon className="h-3 w-3" aria-hidden="true" />
-                {classification === "GOOD_FAILURE"
-                  ? `${count} good failure${count === 1 ? "" : "s"}`
-                  : classification === "GOOD_SUCCESS"
-                    ? `${count} agent${count === 1 ? "" : "s"} succeeded`
-                    : classification === "HARNESS_ERROR"
-                      ? `${count} invalid run${count === 1 ? "" : "s"}`
-                      : classification === "BAD_SUCCESS"
-                        ? `${count} invalid success${count === 1 ? "" : "es"}`
-                        : `${count} task-caused failure${count === 1 ? "" : "s"}`}
+                {count} {EXECUTION_LABELS[classification].toLowerCase()}
+                {count === 1
+                  ? ""
+                  : classification === "GOOD_SUCCESS" ||
+                      classification === "BAD_SUCCESS"
+                    ? "es"
+                    : "s"}
               </span>
             );
           })}

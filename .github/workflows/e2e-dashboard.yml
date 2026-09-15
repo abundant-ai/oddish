@@ -210,6 +210,11 @@ jobs:
           cat /tmp/frontend.log
           exit 1
 
+      - name: Run effort selector fixture tests
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.effort.config.ts --output effort-test-results
+
       - name: Run Playwright dashboard spec
         if: steps.gate.outputs.have_clerk == 'true'
         working-directory: frontend
@@ -250,6 +255,7 @@ jobs:
             frontend/playwright-report/
             frontend/test-results/
             frontend/fixture-test-results/
+            frontend/effort-test-results/
             frontend/delivery-test-results/
             /tmp/backend.log
             /tmp/frontend.log
