@@ -1171,6 +1171,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
   `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
   Bedrock routing for that trial.
+  The ephemeral Claude Code runner applies this credential precedence when building
+  its child payload: routing sees the trial's Anthropic key, and HDO wins over
+  user and worker keys even when the HDO key is missing. The child receives
+  the selected key and matching model/Bedrock settings through the private
+  payload. Temporary worker-environment changes end before the child starts.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
