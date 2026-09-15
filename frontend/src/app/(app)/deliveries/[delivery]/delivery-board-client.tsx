@@ -15,6 +15,10 @@ import {
 } from "lucide-react";
 
 import { findingHref, verdictOutcome, VERDICT_LABELS } from "@/lib/review";
+import {
+  isActiveTrialStatus,
+  isWorkerOwnedTrialStatus,
+} from "@/lib/job-status";
 import { fetcher } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/utils";
 import {
@@ -406,25 +410,33 @@ function QAHistoryPanel({
             Refreshing history; previously loaded details may be out of date.
           </p>
         )}
-      {versions.map((version) => (
-        <QAHistoryVersionRow
-          key={version.version_id}
-          version={version}
-          isCurrent={
-            frozen ? version.is_current : version.version_id === versionId
-          }
-          verdictStatus={
-            version.version_id === data.current_version_id
-              ? data.verdict_status
-              : undefined
-          }
-          verdict={
-            version.version_id === data.verdict_version_id
-              ? (data.verdict ?? null)
-              : null
-          }
-        />
-      ))}
+      {versions.map((version) => {
+        // History is newest-first. Use the latest verdict run's live progress;
+        // the task aggregate still owns the settled judgment after import.
+        const latestRun = version.qa_runs.find((run) => run.kind === "qa");
+        const status = isActiveTrialStatus(latestRun?.status)
+          ? latestRun?.status
+          : data.verdict_status;
+        return (
+          <QAHistoryVersionRow
+            key={version.version_id}
+            version={version}
+            isCurrent={
+              frozen ? version.is_current : version.version_id === versionId
+            }
+            verdictStatus={
+              version.version_id === data.current_version_id
+                ? status
+                : undefined
+            }
+            verdict={
+              version.version_id === data.verdict_version_id
+                ? (data.verdict ?? null)
+                : null
+            }
+          />
+        );
+      })}
       {data.versions.length > QA_HISTORY_PAGE && !showAll && (
         <button
           type="button"
@@ -466,8 +478,8 @@ function QAHistoryVersionRow({
   verdict: TaskQAHistoryResponse["verdict"];
   verdictStatus?: string | null;
 }) {
-  const queued = verdictStatus === "pending" || verdictStatus === "queued";
-  const running = verdictStatus === "running";
+  const running = isWorkerOwnedTrialStatus(verdictStatus);
+  const queued = isActiveTrialStatus(verdictStatus) && !running;
   const outcome =
     queued || running || verdictStatus === "failed"
       ? null

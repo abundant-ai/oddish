@@ -1940,7 +1940,14 @@ for (const [status, verdict, expected] of [
     page,
   }) => {
     const state = await controlledAPI(page);
-    state.history.verdict_status = status;
+    state.history.versions[0].qa_runs[0].status = status;
+    // Live run status wins when the aggregate has not caught up.
+    state.history.verdict_status =
+      status === "queued"
+        ? "running"
+        : status === "running"
+          ? "queued"
+          : status;
     state.history.verdict_version_id = state.history.current_version_id;
     state.history.verdict = verdict;
     await openBoard(page);
@@ -1962,6 +1969,7 @@ for (const status of ["queued", "running", "failed"] as const) {
       page,
     }) => {
       const state = await controlledAPI(page);
+      state.history.versions[0].qa_runs[0].status = status;
       state.history.verdict_status = status;
       state.history.verdict_version_id = "version-6";
       state.history.verdict = {
