@@ -410,8 +410,7 @@ function QAHistoryPanel({
             frozen ? version.is_current : version.version_id === versionId
           }
           verdictStatus={
-            version.version_id === data.current_version_id ||
-            version.version_id === data.verdict_version_id
+            version.version_id === data.current_version_id
               ? data.verdict_status
               : undefined
           }
@@ -1213,7 +1212,7 @@ function TaskRow({
                   <p>{row.qa.detail}</p>
                   {row.qa.finished_at && (
                     <p className="text-muted-foreground">
-                      Delivery checks finished{" "}
+                      Verdict generation finished{" "}
                       {frozen
                         ? new Date(row.qa.finished_at).toLocaleString()
                         : formatRelativeTime(row.qa.finished_at)}

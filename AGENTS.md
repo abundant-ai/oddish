@@ -2526,3 +2526,9 @@ line range in the current task pane; they preserve the experiment route.
 
 The delivery QA status badge describes delivery evidence checks only. Its passed
 state does not assert that all delivery requirements or human sign-off are satisfied.
+
+Task-history generation progress applies only to the current version. An older
+version’s stored verdict and reasoning remain visible when current-version
+generation is queued, running, or failed. Bulk cancellation names both audits
+and verdict generation; the task-stage filter says Awaiting verdict because
+that stage includes work that is still queued.

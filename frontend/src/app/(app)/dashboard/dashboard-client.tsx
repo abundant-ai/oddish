@@ -534,7 +534,7 @@ function ExperimentsTableBody({
                               className="text-muted-foreground rounded border border-amber-500/30 px-1 py-px text-[10px] leading-none whitespace-nowrap hover:border-amber-500/60 hover:underline"
                               title="Open this experiment's verdict report"
                             >
-                              qa report
+                              Verdict report
                             </Link>
                           )}
                       </div>

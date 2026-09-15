@@ -396,7 +396,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: "Analysis failed / invalid run",
+    label: "Analysis failed / infrastructure error",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -2166,7 +2166,7 @@ export function ExperimentTrialsTable({
                       >
                         {isCancellingQA
                           ? "Cancelling"
-                          : "Cancel verdict generation"}
+                          : "Cancel audits and verdict generation"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>

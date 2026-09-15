@@ -1957,3 +1957,52 @@ for (const [status, verdict, expected] of [
       ).toHaveCount(0);
   });
 }
+
+for (const status of ["queued", "running", "failed"] as const) {
+  for (const outcome of ["accept", "reject"] as const) {
+    test(`v6 ${outcome} survives ${status} generation on v7`, async ({
+      page,
+    }) => {
+      const state = await controlledAPI(page);
+      state.history.verdict_status = status;
+      state.history.verdict_version_id = "version-6";
+      state.history.verdict = {
+        verdict: outcome,
+        is_good: outcome === "accept",
+        reasoning: "Published explanation for v6",
+      };
+      state.history.versions.find((version) => version.version === 6)!.qa_runs =
+        [{ trial_id: "qa-6", kind: "qa", status: "success" }];
+      await openBoard(page);
+      await current(page).click();
+      const currentDetails = current(page).locator("..");
+      const currentLabel =
+        status === "failed" ? "No verdict" : `Verdict ${status}`;
+      await expect(
+        currentDetails.getByText(`Verdict: ${currentLabel}`, { exact: true })
+      ).toBeVisible();
+      await expect(
+        currentDetails.getByText("Published explanation for v6", {
+          exact: true,
+        })
+      ).toHaveCount(0);
+      const previous = page
+        .locator("summary")
+        .filter({ hasText: /^v6Version 6 notes/ });
+      await previous.click();
+      await expect(
+        previous
+          .locator("..")
+          .getByText(
+            `Verdict: ${outcome === "accept" ? "Accepted" : "Rejected"}`,
+            { exact: true }
+          )
+      ).toBeVisible();
+      await expect(
+        previous
+          .locator("..")
+          .getByText("Published explanation for v6", { exact: true })
+      ).toBeVisible();
+    });
+  }
+}
