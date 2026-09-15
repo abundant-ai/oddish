@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -230,6 +232,65 @@ def test_selected_file_http_error_handling(
     assert response.status_code == storage_status
     assert response.json() == {"detail": detail}
     assert handled_statuses == expected_handled_statuses
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "storage_error",
+    [
+        OSError("connection reset"),
+        ClientError(
+            {
+                "Error": {"Code": "AccessDenied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "GetObject",
+        ),
+    ],
+)
+async def test_file_reader_does_not_report_storage_failures_as_missing(
+    monkeypatch, storage_error
+):
+    from oddish.core.sharing import helpers
+
+    monkeypatch.setattr(
+        helpers,
+        "get_storage_client",
+        lambda: SimpleNamespace(
+            get_task_file_content=AsyncMock(side_effect=storage_error)
+        ),
+    )
+    with pytest.raises(type(storage_error)) as caught:
+        await helpers.get_task_file_content_s3(
+            task_id="task-1",
+            file_path="instruction.md",
+            presign=False,
+            task_s3_prefix=None,
+        )
+    assert caught.value is storage_error
+
+
+@pytest.mark.asyncio
+async def test_file_reader_reports_an_absent_storage_object_as_missing(monkeypatch):
+    from oddish.core.sharing import helpers
+
+    error = ClientError(
+        {"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 404}},
+        "GetObject",
+    )
+    monkeypatch.setattr(
+        helpers,
+        "get_storage_client",
+        lambda: SimpleNamespace(get_task_file_content=AsyncMock(side_effect=error)),
+    )
+    with pytest.raises(HTTPException) as caught:
+        await helpers.get_task_file_content_s3(
+            task_id="task-1",
+            file_path="instruction.md",
+            presign=False,
+            task_s3_prefix=None,
+        )
+    assert caught.value.status_code == 404
 
 
 def test_batch_uses_one_authorized_source_and_releases_session_before_storage(

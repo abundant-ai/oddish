@@ -1719,7 +1719,10 @@ class StorageClient:
                 Bucket=settings.s3_bucket, Key=s3_key, **options
             )
         with timed_phase("storage_read"):
-            async with response["Body"] as stream:
+            # StreamingBody.__aenter__ returns the raw aiohttp response, whose
+            # read() cannot accept a byte limit. Keep using the SDK wrapper.
+            stream = response["Body"]
+            async with stream:
                 if max_bytes is None:
                     content: bytes = await stream.read()
                 else:

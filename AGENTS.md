@@ -812,6 +812,11 @@ partial index. Missing indexes return retryable 503. Trial previews use explicit
 attempt/revision identity and a byte bound; full download is separate. Keep
 legacy CLI listing behavior behind the existing default options.
 
+Bounded storage reads must call `read(size)` on the SDK's `StreamingBody`, not
+the raw HTTP response returned by its async context manager. Only missing-object
+storage errors become task-file 404 responses; unexpected read failures must
+reach the server error handler rather than claiming historical files were deleted.
+
 `file-resources.ts` owns shared browser preview identity and fetching, while
 `useTaskFileTree` owns directory pages. Org/Mine uses the existing dashboard JSON
 endpoint with account/filter-scoped SWR and browser history. Apply the React

@@ -31,7 +31,7 @@ jobs:
           python-version: '3.13'
       - run: uv sync --frozen --extra server --extra dev
       - run: uv run alembic upgrade head
-      - run: uv run pytest tests/test_prepared_dashboard.py tests/test_file_index.py tests/test_dashboard_collection_aggregates.py tests/test_dashboard_last_runner.py -q -s
+      - run: uv run pytest tests/test_prepared_dashboard.py tests/test_file_index.py tests/test_task_storage.py tests/test_dashboard_collection_aggregates.py tests/test_dashboard_last_runner.py -q -s
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15

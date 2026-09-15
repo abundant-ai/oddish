@@ -380,6 +380,9 @@ async def get_task_file_content_s3(
     source_hash: str | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
+    from botocore.exceptions import ClientError
+    from oddish.db.storage import is_missing_object
+
     storage = get_storage_client()
 
     try:
@@ -394,10 +397,10 @@ async def get_task_file_content_s3(
             expanded_manifest_key=expanded_manifest_key,
         )
         return {**result, "source_hash": source_hash}
-    except HTTPException:
+    except ClientError as exc:
+        if is_missing_object(exc):
+            raise HTTPException(status_code=404, detail="File not found") from exc
         raise
-    except Exception:
-        raise HTTPException(status_code=404, detail="File not found")
 
 
 async def list_trial_files_s3(
