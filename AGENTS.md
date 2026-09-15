@@ -173,7 +173,7 @@ High-level flow:
    change their trial kinds or stored `is_probe` flags. `summarize` uses these
    rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
-   agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
+   agent trial of a task is terminal and `run_analysis` is enabled, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
@@ -185,6 +185,8 @@ High-level flow:
    baseline rejects the task even with zero eligible solver trials. With zero
    eligible trials and no established rejection, the task completes with no
    verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+   With `run_analysis=False`, automatic settlement completes the task without
+   writing a verdict or review error; explicit QA requests still run.
    Delivery requirements remain independently configurable (defaults: five
    trials and three agents); a verdict alone does not qualify a task for delivery. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
