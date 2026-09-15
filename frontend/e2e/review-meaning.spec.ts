@@ -305,7 +305,7 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
   });
 
-  test("analysis completion includes invalid runs without mixing experiment scope", async ({
+  test("analysis completion includes runs with infrastructure errors without mixing experiment scope", async ({
     page,
   }) => {
     const original = tasks[0].trials![0];
