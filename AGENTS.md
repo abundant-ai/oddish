@@ -2466,6 +2466,18 @@ subsequently failed. Existing declarative CLI top-ups retain their retry behavio
 The authenticated sweep proxy forwards Idempotency-Key. Reads and public pages
 never launch runs; Run trials is available only after experiment results load.
 
+The effort selector offers the bundled runners' choices for Codex (including
+`max` on GPT-5), Gemini/Antigravity CLI, Cursor, Grok Build, mini-swe-agent,
+Aider, OpenHands, Copilot CLI, DSH, and TBH. Gemini 3 Flash exposes
+minimal/low/medium/high; Pro exposes low/high; Gemini 2.5 keeps effort unset.
+Cursor model IDs that already contain `effort=...` keep the separate control
+unset to avoid contradictory overrides. These are runner presets, not a live
+provider capability catalog; a provider still validates its selected model.
+
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
-inside the isolated local test app and intercept submission requests.
+inside the isolated local test app and intercept submission requests. The
+Dashboard CI workflow runs this config in a separate step and stores its
+artifacts in `frontend/effort-test-results/`; the default dashboard config
+excludes the local-only effort spec. Effort cases wait for the client-rendered
+chart before interacting with server-rendered controls.

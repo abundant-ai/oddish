@@ -1,9 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.goto("/effort");
+  // The table and launch button server-render before their handlers attach.
+  // Recharts' client-rendered plot confirms the fixture has hydrated.
+  await expect(page.getByRole("application")).toBeVisible();
+});
+
 test("effort columns separate five trials and retain the model typography", async ({
   page,
 }) => {
-  await page.goto("/effort");
   for (const effort of ["low", "medium", "high", "xhigh"]) {
     await expect(
       page.getByText(`global.anthropic.claude-opus-5/${effort}`, {
@@ -59,7 +65,6 @@ test("run dialog counts efforts and submits independent retryable requests", asy
       json: { detail: "test interruption" },
     });
   });
-  await page.goto("/effort");
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog
@@ -97,4 +102,71 @@ test("run dialog counts efforts and submits independent retryable requests", asy
   expect(submissions[3]).toEqual(
     submissions.find((item) => item.body.task_id === "repair-writes")
   );
+});
+
+for (const [agent, model, effort] of [
+  ["codex", "openai/gpt-5.6", "max"],
+  ["gemini-cli", "google/gemini-3.5-flash", "minimal"],
+  ["antigravity-cli", "google/gemini-3.7-flash", "medium"],
+  ["cursor-cli", "anthropic/claude-opus-5", "max"],
+  ["grok-build", "xai/vendor-latest-learnability", "xhigh"],
+  ["mini-swe-agent", "openai/gpt-5.6", "max"],
+]) {
+  test(`launch selector submits ${agent} with ${effort}`, async ({ page }) => {
+    const configs: {
+      model: string;
+      agent_config: { kwargs: { reasoning_effort: string } };
+    }[] = [];
+    await page.route("**/api/tasks/sweep", async (route) => {
+      configs.push(...route.request().postDataJSON().configs);
+      await route.fulfill({ status: 200, json: {} });
+    });
+    await page.getByRole("button", { name: "Run trials", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();
+    await page.getByRole("option", { name: agent, exact: true }).click();
+    await dialog
+      .getByRole("combobox", { name: "Model", exact: true })
+      .fill(model);
+    await dialog
+      .getByRole("checkbox", { name: "Agent default", exact: true })
+      .uncheck();
+    await dialog.getByRole("checkbox", { name: effort, exact: true }).check();
+    await dialog
+      .getByRole("button", { name: "Run 15 trials", exact: true })
+      .click();
+    await expect(dialog).not.toBeVisible();
+    expect(configs).toHaveLength(3);
+    expect(
+      configs.every(
+        (config) =>
+          config.model === model &&
+          config.agent_config.kwargs.reasoning_effort === effort
+      )
+    ).toBe(true);
+  });
+}
+
+test("changing Gemini model clears Flash-only effort and excludes Gemini 2.5", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Run trials", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();
+  await page.getByRole("option", { name: "gemini-cli", exact: true }).click();
+  const model = dialog.getByRole("combobox", { name: "Model", exact: true });
+  await model.fill("google/gemini-3.5-flash");
+  await dialog.getByRole("checkbox", { name: "medium", exact: true }).check();
+  await model.fill("google/gemini-3.1-pro-preview");
+  await expect(
+    dialog.getByRole("checkbox", { name: "medium", exact: true })
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("checkbox", { name: "Agent default", exact: true })
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole("checkbox", { name: "high", exact: true })
+  ).not.toBeChecked();
+  await model.fill("google/gemini-2.5-flash");
+  await expect(dialog.getByRole("checkbox")).toHaveCount(1);
 });
