@@ -290,6 +290,70 @@ def test_scoped_model_env_keeps_bedrock_when_no_ambient_anthropic_key(
     assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
 
 
+def test_scoped_model_env_byok_key_surfaces_for_the_routing_check(
+    monkeypatch,
+) -> None:
+    """A BYOK Anthropic key must reach the bundle's routing check.
+
+    The runner surfaces the user's key into the environment before it asks
+    ``_claude_code_forces_direct_api``, and blanks Bedrock whenever one is
+    present. A bundle built from the bare worker environment -- no platform
+    key -- would keep the Bedrock routing flag, and that flag is merged into
+    the agent env last, so the user's key would be ignored.
+    """
+    settings = _fake_settings(anthropic_api_key=None)
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key=None)
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+        byok_env={"ANTHROPIC_API_KEY": "sk-user"},
+    )
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env
+    assert env == {}
+
+
+def test_surfaced_anthropic_env_matches_the_runner_cases(monkeypatch) -> None:
+    """Pin the extraction so the runner and the bundle keep the same view."""
+    from oddish.workers.harbor import agent_config
+
+    monkeypatch.setattr(
+        agent_config, "_resolve_anthropic_hdo_api_key", lambda: "sk-hdo"
+    )
+    surfaced = agent_config.surfaced_anthropic_env
+    # HDO model: the platform HDO key, and it wins over a BYOK key.
+    assert surfaced(
+        agent="claude-code",
+        model="anthropic-hdo/claude-opus-5",
+        agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+    ) == {"ANTHROPIC_API_KEY": "sk-hdo"}
+    # claude-code with a BYOK key: the user's key.
+    assert surfaced(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+    ) == {"ANTHROPIC_API_KEY": "sk-user"}
+    # claude-code without one: nothing surfaced.
+    assert (
+        surfaced(
+            agent="claude-code",
+            model="global.anthropic.claude-opus-5",
+            agent_env=None,
+        )
+        == {}
+    )
+    # BYOK surfacing is claude-code only.
+    assert (
+        surfaced(
+            agent="mini-swe-agent",
+            model="global.anthropic.claude-opus-5",
+            agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+        )
+        == {}
+    )
+
+
 def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct(
     monkeypatch,
 ) -> None:

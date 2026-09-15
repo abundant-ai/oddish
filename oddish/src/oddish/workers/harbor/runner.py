@@ -39,7 +39,6 @@ from oddish.config import (
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
     infer_model_provider_prefix,
-    is_anthropic_hdo_model,
     settings,
 )
 from oddish.costs.modal_cost import (
@@ -67,7 +66,7 @@ from .agent_config import (
     _apply_antigravity_cli_oddish_wrapper,
     _apply_gemini_cli_oddish_wrapper,
     _apply_cursor_cli_oddish_wrapper,
-    _resolve_anthropic_hdo_api_key,
+    surfaced_anthropic_env,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -1928,13 +1927,9 @@ async def _run_harbor_trial_async_impl(
         # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
         # and auth both use the HDO credential instead of Bedrock / the default
         # Anthropic key. HDO wins over BYOK when the model prefix opts in.
-        byok_anthropic_env: dict[str, str] = {}
-        if is_anthropic_hdo_model(model):
-            byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
-        elif "claude-code" in (agent or "").strip().lower():
-            _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
-            if _byok_key:
-                byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key
+        byok_anthropic_env = surfaced_anthropic_env(
+            agent=agent, model=model, agent_env=extra_agent_env
+        )
 
         with _temporary_env(byok_anthropic_env):
             agent_config = _build_agent_config(

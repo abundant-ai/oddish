@@ -84,21 +84,41 @@ def _agent_invokes_bedrock(agent: str | None) -> bool:
     return _agent_is_claude_code(agent) or (agent or "").strip().lower() == "single-llm"
 
 
-def _forced_to_direct_api(is_probe: bool) -> bool:
+def _forced_to_direct_api(
+    is_probe: bool,
+    *,
+    agent: str,
+    model: str | None,
+    byok_env: Mapping[str, str] | None,
+) -> bool:
     """Defer to the predicate that actually selects the transport.
 
     ``agent_config._claude_code_forces_direct_api`` gates on an ambient
     ``ANTHROPIC_API_KEY`` as well as the probe flag and the force-direct
-    setting: with no key there is nothing to route to, so the trial stays on
-    Bedrock. Restating any part of that here has drifted before, so call it.
+    setting. The runner asks it with any BYOK or HDO credential surfaced into
+    the environment first, so ask it under that same view here: a bundle built
+    from the bare worker environment would keep a Bedrock routing flag that the
+    runner is about to blank. Restating any part of this has drifted before,
+    so call the shared pieces.
     """
-    from oddish.workers.harbor.agent_config import _claude_code_forces_direct_api
+    from oddish.workers.harbor.agent_config import (
+        _claude_code_forces_direct_api,
+        _temporary_env,
+        surfaced_anthropic_env,
+    )
 
-    return _claude_code_forces_direct_api(is_probe)
+    surfaced = surfaced_anthropic_env(agent=agent, model=model, agent_env=byok_env)
+    with _temporary_env(surfaced):
+        return _claude_code_forces_direct_api(is_probe)
 
 
 def scoped_model_env(
-    *, agent: str, model: str | None, settings: Any, is_probe: bool = False
+    *,
+    agent: str,
+    model: str | None,
+    settings: Any,
+    is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
@@ -135,7 +155,10 @@ def scoped_model_env(
         # Bedrock for an id only api.anthropic.com knows. Scope the key the
         # trial will actually authenticate with instead.
         if not _agent_invokes_bedrock(agent) or (
-            _agent_is_claude_code(agent) and _forced_to_direct_api(is_probe)
+            _agent_is_claude_code(agent)
+            and _forced_to_direct_api(
+                is_probe, agent=agent, model=model, byok_env=byok_env
+            )
         ):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}
@@ -197,6 +220,7 @@ def build_bundle(
     agent: str,
     model: str | None,
     is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
     trial_id: str,
     settings: Any,
     now: datetime,
@@ -212,7 +236,11 @@ def build_bundle(
     _, token_hash = mint_token()
     bundle = JobCredentialBundle(
         model_env=scoped_model_env(
-            agent=agent, model=model, settings=settings, is_probe=is_probe
+            agent=agent,
+            model=model,
+            settings=settings,
+            is_probe=is_probe,
+            byok_env=byok_env,
         ),
         s3_write_prefix=s3_write_prefix_for(trial_id),
         expires_at=now + timedelta(seconds=ttl_seconds),
