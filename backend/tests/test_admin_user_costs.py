@@ -376,14 +376,20 @@ async def test_stack_by_series_are_scoped_to_the_billed_user(costs_fixture):
         _COMPUTE_TARGET_COST
     )
 
-    assert {k["key"] for k in by_type["keys"]} == {"inference", "qa", "compute"}
+    assert {k["key"] for k in by_type["keys"]} == {
+        "inference",
+        "qa",
+        "compute",
+        "verifier",
+    }
     totals = {
         key: sum(b["costs"].get(key, 0.0) for b in by_type["buckets"])
-        for key in ("inference", "qa", "compute")
+        for key in ("inference", "qa", "compute", "verifier")
     }
     assert totals["inference"] == pytest.approx(body["totals"]["cost_usd"])
     assert totals["qa"] == pytest.approx(_QA_TARGET_COST)
     assert totals["compute"] == pytest.approx(_COMPUTE_TARGET_COST)
+    assert totals["verifier"] == pytest.approx(body["totals"].get("verifier_cost_usd", 0.0))
 
 
 @requires_db

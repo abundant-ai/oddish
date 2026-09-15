@@ -32,3 +32,24 @@ export function QaCostSuffix({
     </span>
   );
 }
+
+export function VerifierCostSuffix({
+  costUsd,
+  size = "row",
+  title = "CUA/verifier LLM spend for this trial. Not included in the cost figure.",
+}: {
+  costUsd: number | null | undefined;
+  size?: keyof typeof SIZES;
+  title?: string;
+}) {
+  if (!hasDisplayableCostUsd(costUsd)) return null;
+
+  return (
+    <span
+      className={`font-mono font-normal text-[color:var(--paper-ink-3)] ${SIZES[size]}`}
+      title={title}
+    >
+      +{formatCostUsd(costUsd)} Verifier
+    </span>
+  );
+}

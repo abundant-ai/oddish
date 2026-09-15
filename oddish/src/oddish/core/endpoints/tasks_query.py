@@ -76,6 +76,7 @@ from oddish.core.task_browse_metrics import (
     trial_bucket_label,
 )
 from oddish.core.endpoints.qa_cost import get_task_qa_costs
+from oddish.core.endpoints.verifier_cost import get_task_verifier_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -2107,6 +2108,11 @@ async def browse_tasks_core(
         org_id=org_id,
         trial_scope_pairs=task_version_pairs,
     )
+    verifier_by_task = await get_task_verifier_costs(
+        session,
+        task_ids=task_ids,
+        org_id=org_id,
+    )
 
     build_started_at = now()
     response = TaskBrowseResponse(
@@ -2172,6 +2178,11 @@ async def browse_tasks_core(
                 qa_cost_usd=(
                     qa_by_task[str(row["task_id"])].qa_cost_usd
                     if str(row["task_id"]) in qa_by_task
+                    else 0.0
+                ),
+                verifier_cost_usd=(
+                    verifier_by_task[str(row["task_id"])].verifier_cost_usd
+                    if str(row["task_id"]) in verifier_by_task
                     else 0.0
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),

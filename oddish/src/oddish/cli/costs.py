@@ -43,6 +43,18 @@ def _render_org_costs(data: dict[str, Any]) -> None:
         f"{totals.get('user_count', 0)} users, "
         f"{totals.get('experiment_count', 0)} experiments"
     )
+    qa = totals.get("qa_cost_usd")
+    compute = totals.get("compute_cost_usd")
+    verifier = totals.get("verifier_cost_usd")
+    extras = []
+    if qa:
+        extras.append(f"QA {_fmt_usd(qa)}")
+    if compute:
+        extras.append(f"compute {_fmt_usd(compute)}")
+    if verifier:
+        extras.append(f"verifier {_fmt_usd(verifier)}")
+    if extras:
+        console.print(f"[dim]Also: {', '.join(extras)}[/dim]")
     month_budget = totals.get("month_budget_usd")
     if month_budget is not None:
         console.print(

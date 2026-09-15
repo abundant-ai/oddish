@@ -192,6 +192,7 @@ export interface Trial {
   // endpoint that served this trial (most do not) -- distinct from 0, which
   // would mean "resolved, and there was no QA".
   qa_cost_usd?: number | null;
+  verifier_cost_usd?: number | null;
   is_billed?: boolean;
   cost_exclusion_reason?: string | null;
   has_trajectory?: boolean;
@@ -420,6 +421,7 @@ export interface TaskBrowseItem {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
   latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
@@ -653,6 +655,7 @@ interface TaskCostTotals {
   billed_has_native: boolean;
   total_trials: number;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
 }
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
@@ -693,6 +696,9 @@ export interface ExperimentCostTotals {
   qa_cost_usd?: number;
   owned_qa_cost_usd?: number;
   qa_has_estimated?: boolean;
+  verifier_cost_usd?: number;
+  owned_verifier_cost_usd?: number;
+  verifier_has_estimated?: boolean;
   excluded_cost_usd?: number;
   owned_excluded_cost_usd?: number;
   experiment_cost_excluded?: boolean;
@@ -1262,6 +1268,7 @@ interface CostTotals {
   cost_native_usd: number;
   cost_estimated_usd: number;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
   compute_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;

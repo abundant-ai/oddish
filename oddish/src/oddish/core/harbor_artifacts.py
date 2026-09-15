@@ -351,13 +351,28 @@ def cache_write_tokens_from_trajectory(data: object) -> int | None:
     return None
 
 
+def _is_verifier_trajectory_path(traj_path: Path) -> bool:
+    """True when this ATIF file belongs to a verifier (e.g. CUA), not the solver.
+
+    Solver cost must never be filled from ``verifier/trajectory.json``: a
+    CUA-only tree used to win ``rglob`` when no agent trajectory existed.
+    """
+    return any(part.lower() == "verifier" for part in traj_path.parts)
+
+
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
-    """Read one valid ATIF JSON object and derive its queryable metrics."""
+    """Read one valid **agent** ATIF JSON object and derive its queryable metrics.
+
+    Skips trajectories under a ``verifier/`` directory so CUA Computer1
+    usage cannot leak into ``trials.cost_usd``.
+    """
     if not path or not path.exists():
         return HarborTrajectoryMetrics()
 
     found_readable = False
     for traj_path in sorted(path.rglob("trajectory.json")):
+        if _is_verifier_trajectory_path(traj_path):
+            continue
         try:
             data = json.loads(traj_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
