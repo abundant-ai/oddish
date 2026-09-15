@@ -146,7 +146,6 @@ _DIMENSION_HEADING_SPELLINGS = {
 
 class ActionTier(str, Enum):
     MUST_FIX = "must_fix"
-    SHOULD_FIX = "should_fix"
     OPTIONAL = "optional"
 
 
@@ -170,7 +169,7 @@ class ActionItem(BaseModel):
     detail: str = Field(description="What is wrong")
     recommendation: str = Field(description="Concrete fix")
     tier: ActionTier = Field(
-        description="New task defects must be must_fix. Historical tiers remain readable.",
+        description="New task defects must be must_fix. Historical optional findings remain readable.",
         json_schema_extra={"enum": ["must_fix"]},
     )
 

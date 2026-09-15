@@ -35,6 +35,9 @@ oddish status <task_id> --watch
 oddish pull <task_id> --watch
 ```
 
+New submissions for supported reasoning models default to `high` effort.
+Use `--agent-kwarg reasoning_effort=low` (or another supported value) to override it.
+
 The CLI targets Oddish Cloud by default. All API-backed commands require
 `ODDISH_API_KEY`. For self-deployed instances, also set `ODDISH_API_URL`.
 
@@ -61,7 +64,7 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
-- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
 
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
