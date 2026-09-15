@@ -11,6 +11,7 @@ import site
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,7 +20,13 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
-from oddish.config import BEDROCK_ENV_VARS, settings, to_anthropic_api_model_id
+from oddish.config import (
+    BEDROCK_ENV_VARS,
+    anthropic_hdo_bare_model_id,
+    is_anthropic_hdo_model,
+    settings,
+    to_anthropic_api_model_id,
+)
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.schemas import HarborConfig
@@ -90,31 +97,32 @@ def _child_process_env() -> dict[str, str]:
     return env
 
 
-def _claude_code_on_direct_anthropic(agent: str, is_probe: bool) -> bool:
+def _claude_code_on_direct_anthropic(
+    agent: str, model: str | None, is_probe: bool
+) -> bool:
     """Whether this trial's claude-code agent runs against the direct Anthropic API.
 
     Blanking ``BEDROCK_ENV_VARS`` and rewriting the model id are two halves of
     one routing decision, so both callers below read it from here. Splitting
     them is what let a Bedrock inference-profile id reach api.anthropic.com.
     """
-    return "claude-code" in (
-        agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe)
+    return "claude-code" in (agent or "").strip().lower() and (
+        is_anthropic_hdo_model(model) or _claude_code_forces_direct_api(is_probe)
+    )
 
 
 def _child_model_name(*, agent: str, model: str | None, is_probe: bool) -> str | None:
     """Resolve the model id for the transport the child will actually use.
 
-    Bedrock inference-profile ids and direct Anthropic API ids are disjoint
-    namespaces: ``global.anthropic.claude-opus-5`` resolves only on Bedrock, and
-    ``claude-opus-5`` only on api.anthropic.com. Oddish stores every Claude
-    trial under the Bedrock id, so a child moved onto the direct API needs the
-    id converted or the very first request 404s. The in-process path rewrites
-    under this same predicate in ``_build_agent_config``, and the two must not
-    disagree: which dispatch path ran a trial is an Oddish scheduling detail.
+    A direct Anthropic request needs ``claude-opus-5`` instead of the stored
+    Bedrock id ``global.anthropic.claude-opus-5`` or the account-selecting
+    prefix in ``anthropic-hdo/claude-opus-5``. Only the child request changes;
+    the trial keeps its stored model identity.
     """
-    if not _claude_code_on_direct_anthropic(agent, is_probe):
+    if not _claude_code_on_direct_anthropic(agent, model, is_probe):
         return model
+    if is_anthropic_hdo_model(model):
+        model = anthropic_hdo_bare_model_id(model or "")
     return to_anthropic_api_model_id(model)
 
 
@@ -131,7 +139,7 @@ def _runtime_env_overrides(
     env: dict[str, str] = {}
     if uses_openai:
         env.update(settings.get_openai_agent_env(model=openai_model))
-    if _claude_code_on_direct_anthropic(agent, is_probe):
+    if _claude_code_on_direct_anthropic(agent, model, is_probe):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
@@ -209,20 +217,26 @@ def _child_model_id(routed: AgentConfig, *, model: str | None) -> str | None:
 
 
 def _child_extra_agent_env(
-    *, model: str | None, extra_agent_env: dict[str, str] | None
+    *,
+    model: str | None,
+    extra_agent_env: dict[str, str] | None,
+    anthropic_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """The env layer the child merges last.
 
-    In process the HDO credential is re-applied after the probe/BYOK merge so it
-    wins outright. The child's last layer is this one, so the same credential
-    rides here; otherwise a probe or BYOK ``ANTHROPIC_API_KEY`` would overwrite
-    it and the trial would authenticate with the wrong key. A gateway-routed
-    analysis trial supplies its own Anthropic route, and neither path injects
-    the HDO credential over it.
+    The trial's own Anthropic credential (a BYOK key, or the HDO key for an
+    ``anthropic-hdo/`` model) is layered over the submitted env so the child
+    authenticates with it. In process the HDO credential is then re-applied
+    after the probe/BYOK merge so it wins outright; the child's last layer is
+    this one, so the same overlay rides here. A gateway-routed analysis trial
+    supplies its own Anthropic route, and neither path injects a credential
+    over it.
     """
     env = dict(extra_agent_env or {})
-    if not _gateway_env(extra_agent_env):
-        env.update(_anthropic_hdo_credential_env(model))
+    if _gateway_env(extra_agent_env):
+        return env
+    env.update(anthropic_env or {})
+    env.update(_anthropic_hdo_credential_env(model))
     return env
 
 
@@ -254,10 +268,14 @@ def _build_payload(
     # ``_claude_code_forces_direct_api``, which reads ``os.environ``. The
     # in-process runner surfaces the trial's own Anthropic credential there
     # first; without it a worker holding only Bedrock credentials answers the
-    # routing question for an HDO trial as if the key did not exist.
-    with _temporary_env(
-        surfaced_anthropic_env(agent=agent, model=model, agent_env=extra_agent_env)
-    ):
+    # routing question for an HDO trial as if the key did not exist. The same
+    # credential is then shipped to the child, so its own routing checks and its
+    # agent see the trial's key, with HDO precedence over a user-supplied key.
+    # ``_temporary_env`` restores the worker environment before any child work.
+    anthropic_env = surfaced_anthropic_env(
+        agent=agent, model=model, agent_env=extra_agent_env
+    )
+    with _temporary_env(anthropic_env):
         routed = _build_routed_agent_config(
             agent=agent,
             model=model,
@@ -309,11 +327,11 @@ def _build_payload(
             else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
-        "runtime_env": runtime_env,
+        "runtime_env": {**anthropic_env, **runtime_env},
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
         "extra_agent_env": _child_extra_agent_env(
-            model=model, extra_agent_env=extra_agent_env
+            model=model, extra_agent_env=extra_agent_env, anthropic_env=anthropic_env
         ),
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,

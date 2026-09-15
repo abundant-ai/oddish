@@ -463,7 +463,7 @@ function ExperimentsTableBody({
         <Alert variant="destructive">
           <AlertTitle>Failed to load experiments</AlertTitle>
           <AlertDescription>
-            Check the API connection and try again.
+            Try refreshing the page. If this keeps happening, contact Abundant.
           </AlertDescription>
         </Alert>
       ) : experiments.length === 0 && !hasMore && !hasFilters ? (

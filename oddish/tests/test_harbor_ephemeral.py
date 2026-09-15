@@ -404,11 +404,22 @@ def test_ephemeral_litellm_agent_gets_the_routed_hdo_model():
     assert payload["model"] == "anthropic/claude-opus-4-5"
 
 
-def test_ephemeral_claude_code_model_id_stays_as_submitted():
-    """claude-code's Bedrock/direct id is the child normalization's decision."""
+def test_ephemeral_claude_code_model_id_follows_the_child_normalization():
+    """claude-code's Bedrock/direct id is ``_child_model_name``'s decision.
+
+    The routed builder never overrides it: ``_child_model_id`` returns its
+    ``model`` argument unchanged for claude-code, and the payload carries the
+    id that the child normalization resolved under the surfaced credential.
+    """
+    from harbor.models.trial.config import AgentConfig
+
+    from oddish.workers.harbor.ephemeral import _child_model_id
+
     payload = _compat_payload("anthropic-hdo/claude-opus-4-5")
 
-    assert payload["model"] == "anthropic-hdo/claude-opus-4-5"
+    assert payload["model"] == "claude-opus-4-5"
+    routed = AgentConfig(name="claude-code", model_name="routed-spelling")
+    assert _child_model_id(routed, model="as-submitted") == "as-submitted"
 
 
 @pytest.mark.asyncio
@@ -1383,11 +1394,19 @@ def test_build_payload_normalizes_claude_model_when_bedrock_is_blanked(monkeypat
     assert payload["model"] == "claude-opus-5"
 
 
-def test_build_payload_keeps_bedrock_model_when_bedrock_stays_on(monkeypatch):
+@pytest.mark.parametrize(
+    "force_direct,ambient_key", [(False, "sk-ant-test"), (True, None)]
+)
+def test_build_payload_keeps_bedrock_model_when_bedrock_stays_on(
+    monkeypatch, force_direct, ambient_key
+):
     """With Bedrock routing left in place the stored Bedrock id is correct."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    if ambient_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ambient_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(
-        harbor_ephemeral.settings, "claude_code_force_direct_api", False
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
     )
     payload = _build_payload(
         task_path=Path("/tmp/task"),
@@ -1416,6 +1435,7 @@ def test_build_payload_leaves_non_claude_agents_alone(monkeypatch):
         environment=EnvironmentType.MODAL,
         raw_harbor_config=dict(_EPHEMERAL_HC),
         is_probe=False,
+        extra_agent_env={"ANTHROPIC_API_KEY": "test-user-key"},
     )
 
     assert payload["runtime_env"] == {}
@@ -1454,3 +1474,91 @@ def test_dispatch_paths_agree_on_the_claude_model_id(monkeypatch):
     )
 
     assert payload["model"] == in_process.model_name == "claude-opus-5"
+
+
+@pytest.mark.parametrize(
+    "force_direct,is_probe", [(True, False), (False, True), (False, False)]
+)
+def test_payload_routes_with_trial_anthropic_key(monkeypatch, force_direct, is_probe):
+    from oddish.config import BEDROCK_ENV_VARS
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-token")
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
+    )
+    agent_env = {
+        "ANTHROPIC_API_KEY": "test-user-key",
+        "ODDISH_API_KEY": "test-read-key",
+    }
+    before = dict(os.environ)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=is_probe,
+        extra_agent_env=agent_env,
+    )
+    child_agent = _build_job_config(payload).agents[0]
+
+    assert os.environ == before
+    assert agent_env == {
+        "ANTHROPIC_API_KEY": "test-user-key",
+        "ODDISH_API_KEY": "test-read-key",
+    }
+    assert child_agent.env["ANTHROPIC_API_KEY"] == "test-user-key"
+    assert child_agent.env["ODDISH_API_KEY"] == "test-read-key"
+    if force_direct or is_probe:
+        assert child_agent.model_name == "claude-opus-5"
+        assert all(payload["runtime_env"][name] == "" for name in BEDROCK_ENV_VARS)
+        assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)
+    else:
+        assert child_agent.model_name == "global.anthropic.claude-opus-5"
+        assert "CLAUDE_CODE_USE_BEDROCK" not in payload["runtime_env"]
+    assert payload["runtime_env"]["ANTHROPIC_API_KEY"] == "test-user-key"
+
+
+@pytest.mark.parametrize("force_direct", [True, False])
+@pytest.mark.parametrize("hdo_key", ["test-hdo-key", ""])
+@pytest.mark.parametrize("worker_key", ["test-worker-key", None])
+def test_payload_hdo_key_wins_over_worker_and_user_keys(
+    monkeypatch, force_direct, hdo_key, worker_key
+):
+    from oddish.config import BEDROCK_ENV_VARS
+
+    if worker_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", worker_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-token")
+    monkeypatch.delenv("ANTHROPIC_HDO_API_KEY", raising=False)
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", hdo_key)
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
+    )
+    before = dict(os.environ)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="anthropic-hdo/claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+        extra_agent_env={"ANTHROPIC_API_KEY": "test-user-key"},
+    )
+    child_agent = _build_job_config(payload).agents[0]
+
+    assert os.environ == before
+    assert child_agent.model_name == "claude-opus-5"
+    assert payload["runtime_env"]["ANTHROPIC_API_KEY"] == hdo_key
+    assert child_agent.env["ANTHROPIC_API_KEY"] == hdo_key
+    assert all(payload["runtime_env"][name] == "" for name in BEDROCK_ENV_VARS)
+    assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)

@@ -143,18 +143,23 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
-   Harbor runs the verifier even when the agent phase raised, so a trial the
-   model provider refused arrives carrying a reward for an environment the agent
-   never worked in. `oddish.core.harbor_artifacts.is_infrastructure_exception`
-   names those provider-side endings, and every settlement path — the Harbor
+   Harbor runs the verifier even when the agent phase raised. In
+   `oddish.core.harbor_artifacts`, `invalidates_score`
+   identifies recorded provider, authentication, and transport exceptions that
+   invalidate the score, including failures after partial agent work. It does
+   not classify all infrastructure failures. Every settlement path — the Harbor
    `END` hook, `_store_trial_results`, the CLI's `trial_result_to_import_spec`,
    and the legacy `worker/local_runner.py` — drops the reward rather than
-   publishing it as a score. The trial then takes the path it takes when the verifier reports
-   nothing: the error surfaces on the row and `RetryConfig` decides retry or
+   publishing it as a score. The trial follows the existing path for a missing
+   verifier reward: the error surfaces and `RetryConfig` decides retry or
    fail. Endings the agent's own run caused — `AgentTimeoutError`,
    `AgentSafetyRefusalError`, and the context/output budget errors — keep their
    reward, because a real 0 must stay a real 0. Add a name to that set only when
    the provider, not the agent, ended the run.
+   `oddish.workers.harbor.runner.uses_probe_routing` identifies shared routing rules for
+   operator probes and `qa`, `qa_eval`, and `audit` analysis trials. It does not
+   change their trial kinds or stored `is_probe` flags. `summarize` uses these
+   rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
@@ -1166,6 +1171,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
   `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
   Bedrock routing for that trial.
+  The ephemeral Claude Code runner applies this credential precedence when building
+  its child payload: routing sees the trial's Anthropic key, and HDO wins over
+  user and worker keys even when the HDO key is missing. The child receives
+  the selected key and matching model/Bedrock settings through the private
+  payload. Temporary worker-environment changes end before the child starts.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -1396,8 +1406,12 @@ request issues is its latency budget. Three rules keep that number down:
   read session **refuses to flush**: any pending ORM change raises
   `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
   write fails in tests instead of autocommitting statement by statement. The
-  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
-  a default policy) stays on `get_session()`.
+  GETs that write on purpose use `get_session()` for those writes:
+  `tags.py` `get_policy` lazily inserts a default policy. The dashboard resolves
+  author filters in a write transaction because a missing attribution profile
+  saves discovered identities and reclaims unowned experiments. That transaction
+  commits before a separate `get_read_session()` loads the dashboard, so the
+  first Mine response includes newly claimed experiments.
 - **Reads that tolerate a not-yet-migrated table go through
   `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
   `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
