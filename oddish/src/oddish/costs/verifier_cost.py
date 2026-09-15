@@ -17,6 +17,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -451,16 +452,22 @@ async def upsert_verifier_cost_rows(
     task_id: str | None,
     task_version_id: str | None,
     cost_source_override: str | None = None,
+    created_at: datetime | None = None,
 ) -> int:
     """Insert or no-op existing ``(trial_id, attempt, component)`` rows.
 
     Never updates an existing live row — failed attempts keep their spend;
     a later SUCCESS does not overwrite. Returns the number of rows inserted.
+
+    ``created_at`` defaults to now (live settlement). Backfill must pass the
+    trial's ``finished_at`` so admin windows bucket historical CUA spend with
+    the period it actually occurred, not the sweep day.
     """
     if not drafts:
         return 0
     inserted = 0
     now = utcnow()
+    stamped = created_at or now
     for draft in drafts:
         source = cost_source_override or draft.cost_source
         values = {
@@ -483,7 +490,7 @@ async def upsert_verifier_cost_rows(
             "cost_usd": draft.cost_usd,
             "cost_source": source,
             "unpriced_reason": draft.unpriced_reason,
-            "created_at": now,
+            "created_at": stamped,
             "updated_at": now,
             "deleted_at": None,
         }
@@ -513,12 +520,14 @@ async def record_verifier_llm_costs(
     task_id: str | None,
     task_version_id: str | None,
     cost_source_override: str | None = None,
+    created_at: datetime | None = None,
     session: AsyncSession | None = None,
 ) -> int:
     """Best-effort settlement write. Never raises into the trial path.
 
     When ``session`` is provided, uses it (caller owns commit). Otherwise opens
-    a short write session.
+    a short write session. Pass ``created_at`` (usually ``trial.finished_at``)
+    for historical backfill so admin windows do not dump old spend into today.
     """
     if job_dir is None:
         return 0
@@ -538,6 +547,7 @@ async def record_verifier_llm_costs(
                 task_id=task_id,
                 task_version_id=task_version_id,
                 cost_source_override=cost_source_override,
+                created_at=created_at,
             )
 
         if session is not None:
@@ -653,6 +663,7 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                         org_id=trial.org_id,
                         task_id=trial.task_id,
                         task_version_id=trial.task_version_id,
+                        created_at=trial.finished_at,
                     )
                     inserted_total += n
                     continue
@@ -683,6 +694,7 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                             org_id=trial.org_id,
                             task_id=trial.task_id,
                             task_version_id=trial.task_version_id,
+                            created_at=trial.finished_at,
                         )
                     else:
                         n = await record_verifier_llm_costs(
@@ -695,6 +707,7 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                             task_id=trial.task_id,
                             task_version_id=trial.task_version_id,
                             cost_source_override=COST_BACKFILL,
+                            created_at=trial.finished_at,
                             session=session,
                         )
                     inserted_total += n
