@@ -13,8 +13,10 @@ from oddish.costs.verifier_cost import (
     COST_NATIVE,
     ROUTE_ANTHROPIC,
     ROUTE_BEDROCK,
+    attempt_s3_prefix,
     build_verifier_cost_drafts,
     infer_verifier_route,
+    load_cua_model_config,
     task_has_cua_signals,
 )
 
@@ -71,6 +73,34 @@ def test_task_has_cua_signals_inline_swe_m(tmp_path: Path) -> None:
     )
     assert task_has_cua_signals(tmp_path) is True
     assert task_has_cua_signals(tmp_path / "missing") is False
+
+
+def test_load_cua_model_from_harbor_verifiers_block(tmp_path: Path) -> None:
+    (tmp_path / "task.toml").write_text(
+        """
+[[verifiers]]
+name = "correctness"
+type = "shell"
+
+[[verifiers]]
+name = "ux"
+type = "cua"
+model = "anthropic/claude-opus-4-7"
+judge_model = "anthropic/claude-sonnet-4-5"
+timeout_sec = 600
+""".strip(),
+        encoding="utf-8",
+    )
+    cfg = load_cua_model_config(tmp_path)
+    assert cfg["model"] == "anthropic/claude-opus-4-7"
+    assert cfg["judge_model"] == "anthropic/claude-sonnet-4-5"
+
+
+def test_attempt_s3_prefix_rewrites_sibling_attempts() -> None:
+    key = "tasks/t1/trials/t1-1/attempt-3/"
+    assert attempt_s3_prefix(key, 1) == "tasks/t1/trials/t1-1/attempt-1/"
+    assert attempt_s3_prefix(key, 2) == "tasks/t1/trials/t1-1/attempt-2/"
+    assert attempt_s3_prefix("tasks/t1/trials/t1-1/", 1) is None
 
 
 def test_build_drafts_loop_and_judge_from_ux_artifacts(tmp_path: Path) -> None:
