@@ -689,7 +689,14 @@ def _apply_probe_oddish_creds(
     agent_config.env = env
 
 
-def _build_agent_config(
+def _gateway_env(probe_oddish_env: dict[str, str] | None) -> dict[str, str] | None:
+    """The analysis gateway env, when the probe creds route the model themselves."""
+    if (probe_oddish_env or {}).get("ODDISH_QA_MODEL_ROUTED") == "1":
+        return probe_oddish_env
+    return None
+
+
+def _build_routed_agent_config(
     *,
     agent: str,
     model: str | None,
@@ -697,12 +704,17 @@ def _build_agent_config(
     is_probe: bool = False,
     probe_oddish_env: dict[str, str] | None = None,
 ) -> AgentConfig:
-    """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
-    gateway_env = (
-        probe_oddish_env
-        if (probe_oddish_env or {}).get("ODDISH_QA_MODEL_ROUTED") == "1"
-        else None
-    )
+    """Build the AgentConfig through every provider routing decision.
+
+    Shapes ``model_name``, ``env``, and ``kwargs`` only; ``name`` and
+    ``import_path`` are left exactly as submitted. That boundary is what lets
+    the out-of-process ephemeral path share this: the child runs its own Harbor,
+    which has none of the Oddish wrapper agent classes ``_build_agent_config``
+    installs afterwards, but it needs the same provider routing an in-process
+    trial gets. Which dispatch path ran a trial is an Oddish scheduling detail,
+    so it must never decide which endpoint the agent talks to.
+    """
+    gateway_env = _gateway_env(probe_oddish_env)
     raw_agent_config = raw_harbor_config.get("agent_config")
     agent_config = (
         AgentConfig.model_validate(raw_agent_config)
@@ -822,6 +834,27 @@ def _build_agent_config(
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
     _apply_claude_code_probe_subagent_model(agent_config, is_probe)
+
+    return agent_config
+
+
+def _build_agent_config(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+    is_probe: bool = False,
+    probe_oddish_env: dict[str, str] | None = None,
+) -> AgentConfig:
+    """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
+    gateway_env = _gateway_env(probe_oddish_env)
+    agent_config = _build_routed_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+        is_probe=is_probe,
+        probe_oddish_env=probe_oddish_env,
+    )
 
     # Gate on agent_keeps_public_model_identity: a harness that routes the model
     # through its own service (Cursor) or pins its egress to one provider

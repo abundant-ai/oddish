@@ -22,6 +22,7 @@ from oddish.core.harbor_source import (
 )
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
+from oddish.workers.harbor.agent_config import _build_agent_config
 from oddish.workers.harbor._entry import (
     _ProbeClaudeCode,
     _build_job_config,
@@ -220,6 +221,145 @@ def test_build_payload_carries_agent_config():
         is_probe=False,
     )
     assert payload["agent_config"] == agent_config
+
+
+# Every Anthropic-compatible provider Oddish routes through the claude-code
+# harness, with a model id each one's endpoint actually serves.
+_COMPAT_PROVIDER_MODELS = [
+    "openrouter/anthropic/claude-opus-4.8",
+    "fireworks/glm-5p2",
+    "zai/glm-4.6",
+    "geometric/glm-5.3",
+    "minimax/minimax-m3",
+    "moonshot/kimi-k2",
+]
+
+
+def _compat_payload(model, *, agent="claude-code", raw_harbor_config=None, **over):
+    base = {
+        "task_path": Path("/tmp/task"),
+        "jobs_dir": Path("/tmp/jobs"),
+        "outcome_path": Path("/tmp/jobs/outcome.json"),
+        "agent": agent,
+        "model": model,
+        "environment_config": EnvironmentConfig(type=EnvironmentType.DOCKER),
+        "raw_harbor_config": raw_harbor_config or dict(_EPHEMERAL_HC),
+        "is_probe": False,
+    }
+    base.update(over)
+    return _build_payload(**base)
+
+
+@pytest.mark.parametrize("model", _COMPAT_PROVIDER_MODELS)
+def test_ephemeral_agent_env_matches_in_process_for_compat_providers(model):
+    """Which dispatch path ran a trial must not change where the agent dials.
+
+    Without the shared routing, an ephemeral Fireworks/z.ai/Kimi trial reached
+    the child with no ``ANTHROPIC_BASE_URL``, so Harbor's claude-code agent took
+    its direct-API branch and asked api.anthropic.com for a model that only the
+    provider serves.
+    """
+    raw_harbor_config = dict(_EPHEMERAL_HC)
+    in_process = _build_agent_config(
+        agent="claude-code",
+        model=model,
+        raw_harbor_config=dict(raw_harbor_config),
+        is_probe=False,
+    )
+    payload = _compat_payload(model, raw_harbor_config=raw_harbor_config)
+
+    assert payload["agent_config"]["env"] == in_process.env
+    assert payload["agent_config"]["env"]["ANTHROPIC_BASE_URL"]
+    assert payload["agent_config"]["env"]["ANTHROPIC_AUTH_TOKEN"]
+
+
+@pytest.mark.parametrize("model", _COMPAT_PROVIDER_MODELS)
+def test_ephemeral_agent_kwargs_match_in_process_for_compat_providers(model):
+    in_process = _build_agent_config(
+        agent="claude-code",
+        model=model,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+    payload = _compat_payload(model)
+
+    assert payload["agent_config"].get("kwargs", {}) == in_process.kwargs
+
+
+def test_ephemeral_fireworks_agent_reaches_the_fireworks_endpoint(monkeypatch):
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+
+    env = _compat_payload("fireworks/glm-5p2")["agent_config"]["env"]
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
+    assert env["ANTHROPIC_MODEL"] == "accounts/fireworks/models/glm-5p2"
+    # Ambient platform credentials are blanked so the Fireworks route wins.
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+
+
+def test_ephemeral_compat_env_defers_to_a_submitted_base_url():
+    payload = _compat_payload(
+        "zai/glm-4.6",
+        raw_harbor_config={
+            **_EPHEMERAL_HC,
+            "agent_config": {"env": {"ANTHROPIC_BASE_URL": "https://custom.example"}},
+        },
+    )
+
+    assert (
+        payload["agent_config"]["env"]["ANTHROPIC_BASE_URL"] == "https://custom.example"
+    )
+
+
+def test_ephemeral_direct_anthropic_trial_keeps_its_submitted_shape():
+    """A plain Claude trial has no compat provider, so nothing is shaped in."""
+    payload = _compat_payload("claude-opus-4-5")
+
+    assert "ANTHROPIC_BASE_URL" not in payload["agent_config"].get("env", {})
+    assert payload["model"] == "claude-opus-4-5"
+
+
+def test_ephemeral_non_claude_agent_keeps_its_submitted_import_path():
+    """Only env/kwargs cross the boundary: the child resolves the agent class."""
+    payload = _compat_payload(
+        "fireworks/glm-5p2",
+        agent="ignored-built-in-name",
+        raw_harbor_config={
+            **_EPHEMERAL_HC,
+            "agent_config": {"import_path": "custom.module:CustomAgent"},
+        },
+    )
+
+    assert payload["agent_config"]["import_path"] == "custom.module:CustomAgent"
+    assert "name" not in payload["agent_config"]
+
+
+def test_child_merges_worker_env_over_shaped_compat_env(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    payload = _compat_payload("fireworks/glm-5p2")
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": payload["model"],
+            "environment_config": {},
+            "agent_config": payload["agent_config"],
+            "verifier": {},
+            "artifacts": [],
+            "runtime_env": payload["runtime_env"],
+            "extra_agent_env": {"ANTHROPIC_AUTH_TOKEN": "byok-token"},
+        }
+    )
+
+    env = config.agents[0].env
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+    assert env["ANTHROPIC_MODEL"] == "accounts/fireworks/models/glm-5p2"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "byok-token"
 
 
 def test_child_applies_submitted_agent_config(tmp_path):

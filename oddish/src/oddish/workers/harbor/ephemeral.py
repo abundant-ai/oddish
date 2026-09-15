@@ -28,6 +28,7 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
+    _build_routed_agent_config,
     _claude_code_forces_direct_api,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -129,6 +130,44 @@ def _runtime_env_overrides(
     return env
 
 
+def _child_agent_config(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+    is_probe: bool,
+    extra_agent_env: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Serialize the child's ``AgentConfig`` with in-process provider routing applied.
+
+    The routing an Anthropic-compatible provider needs -- ``ANTHROPIC_BASE_URL``,
+    its auth token, the model id its endpoint serves, and blanked ambient
+    platform credentials -- lives in ``agent_config.env``, so it is resolved here
+    by the same builder the in-process path uses rather than restated for the
+    child. Only what that builder shapes -- ``env`` and ``kwargs`` -- is
+    projected onto the submitted dict: the child resolves ``name`` and
+    ``import_path`` against its own Harbor, which has none of Oddish's wrapper
+    agent classes, and every other submitted field crosses unchanged.
+
+    The shaped env stays the *base* layer of the child's merge, which keeps the
+    in-process precedence intact -- a submitted agent env and the worker's
+    runtime/extra env still win over these defaults.
+    """
+    payload = dict(raw_harbor_config.get("agent_config") or {})
+    routed = _build_routed_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+        is_probe=is_probe,
+        probe_oddish_env=extra_agent_env,
+    )
+    if routed.env:
+        payload["env"] = dict(routed.env)
+    if routed.kwargs:
+        payload["kwargs"] = dict(routed.kwargs)
+    return payload
+
+
 def _build_payload(
     *,
     task_path: Path,
@@ -160,7 +199,13 @@ def _build_payload(
         "agent": agent,
         "model": _child_model_name(agent=agent, model=model, is_probe=is_probe),
         "environment_config": environment_config.model_dump(mode="json"),
-        "agent_config": raw_harbor_config.get("agent_config") or {},
+        "agent_config": _child_agent_config(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+            extra_agent_env=extra_agent_env,
+        ),
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
         "timeout_multiplier": raw_harbor_config.get("timeout_multiplier"),
