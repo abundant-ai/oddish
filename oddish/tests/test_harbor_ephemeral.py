@@ -973,3 +973,102 @@ async def test_upload_probe_assets_fails_when_qa_submission_contract_is_missing(
 
     with pytest.raises(RuntimeError, match="required QA submission contract"):
         await _upload_probe_assets(FailingEnv(), assets, "qa-1")
+
+
+def test_build_payload_normalizes_claude_model_when_bedrock_is_blanked(monkeypatch):
+    """A claude-code trial forced to the direct Anthropic API must not carry a
+    Bedrock inference-profile id.
+
+    Oddish stores every Claude trial under its Bedrock id
+    (``global.anthropic.claude-opus-5``), which exists only on Bedrock. Blanking
+    ``BEDROCK_ENV_VARS`` moves the child onto api.anthropic.com, whose ids are a
+    different namespace, so the two must change together.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert payload["runtime_env"]["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert payload["model"] == "claude-opus-5"
+
+
+def test_build_payload_keeps_bedrock_model_when_bedrock_stays_on(monkeypatch):
+    """With Bedrock routing left in place the stored Bedrock id is correct."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", False
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert "CLAUDE_CODE_USE_BEDROCK" not in payload["runtime_env"]
+    assert payload["model"] == "global.anthropic.claude-opus-5"
+
+
+def test_build_payload_leaves_non_claude_agents_alone(monkeypatch):
+    """Only claude-code is rerouted, so other agents keep their submitted id."""
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="mini-swe-agent",
+        model="openrouter/tencent/hy3",
+        environment=EnvironmentType.MODAL,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert payload["runtime_env"] == {}
+    assert payload["model"] == "openrouter/tencent/hy3"
+
+
+def test_dispatch_paths_agree_on_the_claude_model_id(monkeypatch):
+    """Both dispatch paths must hand Claude Code the same model id.
+
+    The in-process path normalizes in ``_build_agent_config`` and the ephemeral
+    path in ``_build_payload``. Which one ran a trial is an Oddish scheduling
+    detail, so it must not change the model id that reaches the provider.
+    """
+    from oddish.workers.harbor.agent_config import _build_agent_config
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    agent = "claude-code"
+    model = "global.anthropic.claude-opus-5"
+
+    in_process = _build_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent=agent,
+        model=model,
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert payload["model"] == in_process.model_name == "claude-opus-5"
