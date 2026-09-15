@@ -460,3 +460,75 @@ async def test_publication_and_retry_skip_writer_locks(
             marker = await session.get(ExperimentSummaryModel, experiment_id)
             assert marker.revision == marker.built_revision
             assert marker.payload is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upgrade_existing_trigger", [False, True])
+async def test_status_only_completion_invalidates_pending_qa(
+    experiment, upgrade_existing_trigger
+):
+    from oddish.db import TaskStatus, VerdictStatus, task_experiments
+
+    org, eid, tid = experiment
+    if upgrade_existing_trigger:
+        import importlib.util
+        from pathlib import Path
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        spec = importlib.util.spec_from_file_location(
+            "prepared_status_migration",
+            Path(__file__).parents[1] / "alembic/versions/prepared_status_001.py",
+        )
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        async with get_session() as session:
+            connection = await session.connection()
+
+            def upgrade_from_old_trigger(connection):
+                migration.op = Operations(MigrationContext.configure(connection))
+                migration.downgrade()
+                definition = connection.scalar(
+                    text(
+                        "SELECT pg_get_triggerdef(oid) FROM pg_trigger "
+                        "WHERE tgname='experiment_summary_changed' AND tgrelid='tasks'::regclass"
+                    )
+                )
+                assert ", status" not in definition
+                migration.upgrade()
+
+            await connection.run_sync(upgrade_from_old_trigger)
+    async with get_session() as session:
+        task_id = await session.scalar(
+            select(TrialModel.task_id).where(TrialModel.id == tid)
+        )
+        await session.execute(
+            task_experiments.insert().values(task_id=task_id, experiment_id=eid)
+        )
+        await session.execute(
+            update(TaskModel)
+            .where(TaskModel.id == task_id)
+            .values(
+                run_analysis=True,
+                status=TaskStatus.VERDICT_PENDING,
+                verdict_status=VerdictStatus.SUCCESS,
+            )
+        )
+    await refresh_experiment_summaries()
+    async with get_session() as session:
+        marker = await session.get(ExperimentSummaryModel, eid)
+        before = marker.revision
+        assert marker.payload["verdict_pending"] == 1
+        await session.execute(
+            update(TaskModel)
+            .where(TaskModel.id == task_id)
+            .values(status=TaskStatus.COMPLETED)
+        )
+    async with get_session() as session:
+        marker = await session.get(ExperimentSummaryModel, eid)
+        assert marker.revision == before + 1
+        assert marker.built_revision == before
+    await refresh_experiment_summaries()
+    async with get_session() as session:
+        rows, _ = await page(session, org)
+        assert rows[0]["verdict_pending"] == 0

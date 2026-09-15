@@ -18,6 +18,8 @@ The pending marker survives worker restarts. The maintainer groups up to 32
 candidates by organization and reuses the same aggregate calculation. A
 PostgreSQL advisory lock permits only one maintainer, including across hosted
 and standalone processes. It holds no summary-row lock while calculating.
+Publication and retry scheduling lock available rows with `FOR UPDATE SKIP LOCKED`;
+writer-owned rows retain their pending work and retry time for the next pass.
 Publication acknowledges only the revision captured before calculation; a
 concurrent change remains pending. Failures preserve the previous payload and
 retry after 30 seconds. Each group has a separate database session and a
@@ -33,7 +35,9 @@ applied filters belong to the URL.
 
 ## Deployment and alerts
 
-Apply `prepared_reads_001` after `merge_finding_tiers_001` before deployment.
+Apply migrations through `prepared_status_001` before deployment. Its task trigger
+includes execution status, so status-only QA completion invalidates summaries even
+when verdict fields do not change. It also upgrades already-installed triggers.
 Hosted summary maintenance runs every five seconds in `API_REGION` with one
 container. The standalone polling worker starts and cancels the same maintenance
 loop with its lifecycle. Migration seeds pending summaries; backfill is automatic.

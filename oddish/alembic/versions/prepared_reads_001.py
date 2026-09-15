@@ -137,6 +137,7 @@ DEPENDENCIES = {
         "created_by_user_id",
         "current_version_id",
         "run_analysis",
+        "status",
         "verdict",
         "verdict_status",
         "deleted_at",

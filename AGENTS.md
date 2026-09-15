@@ -828,7 +828,10 @@ The web dashboard reads `experiment_summaries`; background maintenance calls
 `rebuild_dashboard_experiments` for the authoritative aggregate rules. Core
 migration `prepared_reads_001` installs transactionally coalesced revision markers
 on task/trial/version/experiment membership changes. Publication acknowledges the
-captured revision only. Do not add a request-time aggregate fallback. Pending
+captured revision only. Publication and retry scheduling acquire summary locks
+with `FOR UPDATE SKIP LOCKED` after calculation; skipped rows stay pending.
+`prepared_status_001` upgrades existing task triggers to watch execution status
+as well as verdict fields. Do not add a request-time aggregate fallback. Pending
 first builds report `summary_pending`; status predicates apply before pagination.
 
 Org/Mine uses the existing dashboard JSON endpoint with account/filter-scoped
