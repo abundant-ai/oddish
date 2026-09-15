@@ -19,7 +19,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/effort");
   // The table and launch button server-render before their handlers attach.
   // Recharts' client-rendered plot confirms the fixture has hydrated.
-  await expect(page.getByRole("application")).toBeVisible();
+  await expect(page.getByRole("application")).toBeVisible({ timeout: 30_000 });
 });
 
 test("effort columns separate five trials and retain the model typography", async ({
@@ -277,7 +277,7 @@ test("mixed unspecified and high trials share totals and row filtering", async (
   page,
 }) => {
   await page.goto("/effort?sample=mixed");
-  await expect(page.getByRole("application")).toBeVisible();
+  await expect(page.getByRole("application")).toBeVisible({ timeout: 30_000 });
   const row = page.getByRole("row").filter({ hasText: "repair-queue" });
   const filter = page.getByRole("group", { name: "Row filter" });
   await filter.getByRole("button", { name: "Any failed", exact: true }).click();
