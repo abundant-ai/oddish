@@ -16,6 +16,7 @@ import {
   taskVerdictActionLabel,
 } from "@/lib/review";
 import type { Task } from "@/lib/types";
+import { getCancelActionLabel } from "@/lib/job-status";
 
 type VerdictPresentation = {
   pending: boolean;
@@ -30,12 +31,10 @@ type VerdictPresentation = {
 function presentVerdict(
   task: Task,
   iconSizeClass: string,
-  qaActive: boolean,
   mustFixCount = task.must_fix_count ?? 0
 ): VerdictPresentation {
   const verdict = task.verdict ?? null;
-  const taskStatus = taskReviewStatus(task);
-  const review = qaActive && taskStatus !== "queued" ? "running" : taskStatus;
+  const review = taskReviewStatus(task);
   const pending = review === "queued" || review === "running";
   const isGood =
     review === "accepted" ? true : review === "needs_fixes" ? false : null;
@@ -102,7 +101,6 @@ export function TaskVerdictBadge({
   onRunJudge,
   onCancelJudge,
   isRunning,
-  qaActive = false,
   isCancelling,
   error,
   mustFixCount = task.must_fix_count ?? 0,
@@ -114,14 +112,13 @@ export function TaskVerdictBadge({
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
   isRunning?: boolean;
-  qaActive?: boolean;
   isCancelling?: boolean;
   error?: string | null;
   /** Required findings for the selected version, including run reviews. */
   mustFixCount?: number;
 }) {
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
-  const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
+  const p = presentVerdict(task, iconSize, mustFixCount);
   const shownDetail = mustFixCount > 0 ? null : p.detail;
   const rejectionDetail =
     shownDetail && p.isGood === false && variant !== "summary" ? (
@@ -237,7 +234,7 @@ export function TaskVerdictBadge({
             ) : (
               <OctagonX className="mr-1 h-3.5 w-3.5" />
             )}
-            {isCancelling ? "Cancelling..." : "Cancel verdict generation"}
+            {isCancelling ? "Cancelling..." : getCancelActionLabel(task, "qa")}
           </Button>
         ) : showRunButton ? (
           <Button

@@ -113,7 +113,6 @@ const badge: {
   present?: (
     task: Task,
     iconSize: string,
-    active: boolean,
     count?: number
   ) => { title: string; isGood: boolean | null; detail: string | null };
 } = {};
@@ -134,6 +133,7 @@ runInNewContext(
       return jsx;
     },
     ...review,
+    ...jobs,
     Loader2: box,
     AlertTriangle: box,
     CheckCircle2: box,
@@ -165,7 +165,7 @@ for (const [label, is_good, expected] of [
       review.taskReviewFilter(reviewed),
       expected === "accepted" ? "accepted" : "rejected"
     );
-    const presented = badge.present!(reviewed, "", false);
+    const presented = badge.present!(reviewed, "");
     assert.equal(presented.title, review.VERDICT_LABELS[expected]);
     assert.equal(presented.isGood, expected === "accepted");
     for (const [override, state] of [
@@ -174,7 +174,7 @@ for (const [label, is_good, expected] of [
       [{ verdict_status: "queued" }, "queued"],
       [{ verdict_status: "running" }, "running"],
     ] as const) {
-      const inactive = badge.present!({ ...reviewed, ...override }, "", false);
+      const inactive = badge.present!({ ...reviewed, ...override }, "");
       assert.equal(inactive.title, review.VERDICT_LABELS[state]);
       assert.equal(inactive.isGood, null);
       assert.equal(
@@ -240,7 +240,7 @@ test("missing and inconclusive verdicts have no verdict", () => {
 
 test("failed verdict generation has no rejection label", () => {
   assert.equal(
-    badge.present!({ ...task, verdict_status: "failed" }, "", false).title,
+    badge.present!({ ...task, verdict_status: "failed" }, "").title,
     "No verdict"
   );
 });
@@ -566,7 +566,6 @@ test("selected version without findings does not reuse another version's count",
       verdict: { verdict: "reject", is_good: false, confidence: null },
     },
     "",
-    false,
     0
   );
   assert.equal(presented.title, "No verdict");
@@ -604,7 +603,7 @@ for (const [name, override, reason] of [
   test(`${name} uses only the neutral No verdict label in rows and details`, () => {
     const absent = { ...task, ...override };
     assert.equal(review.taskReviewFilter(absent), "no_verdict");
-    const presentation = badge.present!(absent, "", false);
+    const presentation = badge.present!(absent, "");
     assert.equal(presentation.title, "No verdict");
     assert.equal(presentation.detail, null);
     for (const html of [
@@ -636,9 +635,9 @@ test("active verdicts hide earlier errors and receive separate queued and runnin
       verdict_error: "Old error",
     };
     assert.equal(review.taskReviewFilter(active), status);
-    assert.equal(badge.present!(active, "", false).detail, null);
+    assert.equal(badge.present!(active, "").detail, null);
     assert.equal(
-      badge.present!(active, "", false).title,
+      badge.present!(active, "").title,
       status === "queued" ? "Verdict queued" : "Verdict running"
     );
   }
@@ -667,9 +666,9 @@ test("verdict actions describe generation and keep the default version explicit"
   );
 });
 
-test("an active panel preserves the queued verdict state", () => {
+test("queued verdict presentation follows the task status", () => {
   const queued = { ...task, verdict_status: "queued" as const };
-  const presented = badge.present!(queued, "", true);
+  const presented = badge.present!(queued, "");
   assert.equal(presented.title, "Verdict queued");
   assert.equal(presented.detail, null);
 });

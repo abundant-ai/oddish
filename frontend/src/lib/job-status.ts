@@ -206,9 +206,12 @@ function getActiveTrialCount(task: Task | null | undefined): number {
   ).length;
 }
 
-export function getCancelActionLabel(task: Task | null | undefined): string {
+export function getCancelActionLabel(
+  task: Task | null | undefined,
+  scope: "task" | "qa" = "task"
+): string {
   const activeTrials = getActiveTrialCount(task);
-  if (activeTrials > 0) return `Cancel (${activeTrials})`;
+  if (scope === "task" && activeTrials > 0) return `Cancel (${activeTrials})`;
   // Run analysis can be an independent job, not verdict generation. Its
   // cancellation (or work with no known kind) uses the generic action label.
   if (taskHasActiveAnalysis(task)) return "Cancel";
