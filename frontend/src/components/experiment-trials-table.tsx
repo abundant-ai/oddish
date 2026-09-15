@@ -2395,7 +2395,7 @@ export function ExperimentTrialsTable({
                                   handleCopyAgentModel(agent.key, agent.model!)
                                 }
                                 className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
-                                aria-label={`Copy model id ${agent.model}; reasoning effort: ${agent.reasoningEffort ?? "unspecified"}`}
+                                aria-label={`Copy model id ${agent.model}${agent.reasoningEffort == null ? "" : `; reasoning effort: ${agent.reasoningEffort}`}`}
                               >
                                 {copiedAgentModelKey === agent.key ? (
                                   <Check className="h-3 w-3 shrink-0 text-emerald-500" />
@@ -2409,9 +2409,11 @@ export function ExperimentTrialsTable({
                                 )}
                                 <span className="min-w-0 break-all whitespace-normal">
                                   {agent.model}
-                                  <span className="whitespace-nowrap">
-                                    /{agent.reasoningEffort ?? "unspecified"}
-                                  </span>
+                                  {agent.reasoningEffort != null && (
+                                    <span className="whitespace-nowrap">
+                                      /{agent.reasoningEffort}
+                                    </span>
+                                  )}
                                 </span>
                               </Button>
                             ) : (

@@ -143,6 +143,35 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
+   Harbor runs the verifier even when the agent phase raised. In
+   `oddish.core.harbor_artifacts`, `invalidates_score`
+   identifies recorded provider, authentication, and transport exceptions that
+   invalidate the score, including failures after partial agent work. It does
+   not classify all infrastructure failures. Every settlement path — the Harbor
+   `END` hook, `_store_trial_results`, the CLI's `trial_result_to_import_spec`,
+   and the legacy `worker/local_runner.py` — drops the reward rather than
+   publishing it as a score. The trial follows the existing path for a missing
+   verifier reward: the error surfaces and `RetryConfig` decides retry or
+   fail. Endings the agent's own run caused — `AgentTimeoutError`,
+   `AgentSafetyRefusalError`, and the context/output budget errors — keep their
+   reward, because a real 0 must stay a real 0. Add a name to that set only when
+   the provider, not the agent, ended the run.
+   That rule needs the exception to reach settlement. Pinned Harbor omits
+   `trial_results` from the job summary it writes, so a caller that rebuilds a
+   `JobResult` from that file loses the per-trial exception and phase timing.
+   The in-process runner passes the populated object `Job.run()` returns and is
+   unaffected; the ephemeral parent reads the file, so
+   `_extract_outcome_from_job_result` falls back to
+   `_trial_results_from_job_dir`, which reads each trial's own `result.json`
+   through Harbor's `JobScanner`. It reads every trial directory rather than the
+   `oddish_trial_name` selector, because the recovered list stands in for
+   `trial_results` and the caller applies its own first-error rule across the
+   whole list. The reward itself always survived the omission: it resolves from
+   the job-level `stats.evals` block, which that summary keeps.
+   `oddish.workers.harbor.runner.uses_probe_routing` identifies shared routing rules for
+   operator probes and `qa`, `qa_eval`, and `audit` analysis trials. It does not
+   change their trial kinds or stored `is_probe` flags. `summarize` uses these
+   rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
@@ -1201,6 +1230,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
   `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
   Bedrock routing for that trial.
+  The ephemeral Claude Code runner applies this credential precedence when building
+  its child payload: routing sees the trial's Anthropic key, and HDO wins over
+  user and worker keys even when the HDO key is missing. The child receives
+  the selected key and matching model/Bedrock settings through the private
+  payload. Temporary worker-environment changes end before the child starts.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
@@ -1431,8 +1465,12 @@ request issues is its latency budget. Three rules keep that number down:
   read session **refuses to flush**: any pending ORM change raises
   `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
   write fails in tests instead of autocommitting statement by statement. The
-  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
-  a default policy) stays on `get_session()`.
+  GETs that write on purpose use `get_session()` for those writes:
+  `tags.py` `get_policy` lazily inserts a default policy. The dashboard resolves
+  author filters in a write transaction because a missing attribution profile
+  saves discovered identities and reclaims unowned experiments. That transaction
+  commits before a separate `get_read_session()` loads the dashboard, so the
+  first Mine response includes newly claimed experiments.
 - **Reads that tolerate a not-yet-migrated table go through
   `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
   `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
@@ -2525,16 +2563,12 @@ these bounded reads must not return full Harbor configuration. Explicit JSON
 null overrides the legacy value. Missing effort is unspecified, never inferred
 from today's agent defaults. This derived field requires no database migration.
 
-New submissions for reasoning-capable agent/model pairs explicitly default to
-`high` before sweep reconciliation and trial persistence. The resolver lives in
-`oddish.reasoning_effort.with_default_reasoning_effort`; sweep matching and queue
-insertion must use the same value. It copies AgentConfig when adding the default
-so the original request and its idempotency hash do not change. Explicit kwargs
-(including null) and known effort environment overrides win. Unsupported models,
-Gemini 2.5, baselines, and Cursor IDs with embedded effort keep their configuration.
-The worker receives the saved value. Reads/imports do not assign defaults to old
-runs, and retries retain their source configuration. Both launch forms preselect
-high for supported models and omit the ambiguous Agent default option there.
+New submissions leave reasoning effort unset unless the caller supplies it.
+Sweep matching and queue insertion preserve explicit kwargs, including null,
+and environment overrides. Both launch forms start on Agent default and omit
+reasoning effort for that choice. Explicit effort still separates experiment
+columns and sweep counts. Historical configurations and retries keep their
+saved settings; missing effort is never inferred from the agent's runtime default.
 
 The shared frontend column identity includes agent, model, and effort even when
 only one configuration has arrived. Table cells, navigation, column visibility,

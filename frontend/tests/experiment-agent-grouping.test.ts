@@ -67,7 +67,13 @@ test("unspecified effort stays separate and keys remain stable as more trials ar
   ]);
   assert.equal(before, after[0].key);
   assert.equal(after.length, 3);
-  assert.equal(experimentModelLabel(model, null), `${model}/unspecified`);
+  assert.equal(experimentModelLabel(model, null), model);
+  assert.equal(experimentModelLabel(model), model);
+  assert.equal(experimentModelLabel(null, null), "default");
+  assert.equal(experimentModelLabel(model, "none"), `${model}/none`);
+  assert.equal(experimentModelLabel(model, "high"), `${model}/high`);
+  assert.equal(after[0].label, `claude-code/${model}`);
+  assert.equal(after[1].label, `claude-code/${model}/low`);
   assert.equal(first.model, model);
 });
 test("baselines, QA and probes retain their own groups", () => {
