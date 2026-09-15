@@ -19,9 +19,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -233,6 +234,14 @@ def resolve_cua_bundle(job_dir: Path, task_path: Path | None = None) -> CuaArtif
             str(judge_report.get("verifier_model") or "").strip() or None
         )
         judge_model = str(judge_report.get("judge_model") or "").strip() or None
+    if loop_model is None and traj_path is not None:
+        traj = _load_json(traj_path)
+        if isinstance(traj, dict):
+            agent = traj.get("agent")
+            if isinstance(agent, dict):
+                loop_model = (
+                    str(agent.get("model_name") or "").strip() or None
+                )
     if loop_model is None and task_path is not None:
         cfg = load_cua_model_config(task_path)
         loop_model = cfg.get("model")
@@ -417,6 +426,22 @@ def draft_loop_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft:
     )
 
 
+def _judge_criteria_count(report: dict[str, Any]) -> int:
+    """How many rubric rows the judge priced — list or map shaped reports."""
+    verdicts = report.get("verdicts")
+    if isinstance(verdicts, list):
+        return max(len(verdicts), 1)
+    if isinstance(verdicts, dict) and verdicts:
+        return len(verdicts)
+    for key in ("criteria", "cua_criteria", "results"):
+        block = report.get(key)
+        if isinstance(block, list) and block:
+            return len(block)
+        if isinstance(block, dict) and block:
+            return len(block)
+    return 1
+
+
 def draft_judge_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft | None:
     report = bundle.judge_report
     if not isinstance(report, dict):
@@ -424,10 +449,7 @@ def draft_judge_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft | None:
     model = bundle.judge_model or bundle.loop_model
     route = infer_verifier_route(model)
     key_hash = _key_hash_for_route(route)
-    verdicts = report.get("verdicts")
-    criteria_count = len(verdicts) if isinstance(verdicts, list) else 0
-    if criteria_count <= 0:
-        criteria_count = 1
+    criteria_count = _judge_criteria_count(report)
     inp = _JUDGE_INPUT_TOKENS_PER_CRITERION * criteria_count
     out = _JUDGE_OUTPUT_TOKENS_PER_CRITERION * criteria_count
     estimated = estimate_cost_usd(model, inp, out, 0, 0)
@@ -477,8 +499,10 @@ async def upsert_verifier_cost_rows(
 ) -> int:
     """Insert or no-op existing ``(trial_id, attempt, component)`` rows.
 
-    Never updates an existing live row — failed attempts keep their spend;
-    a later SUCCESS does not overwrite. Returns the number of rows inserted.
+    Never updates a priced live row — failed attempts keep their spend; a
+    later SUCCESS does not overwrite. A prior ``no_cua_artifacts`` sentinel
+    (wrong-path backfill) IS replaced when a later pass finds real drafts.
+    Returns the number of rows inserted or replaced.
 
     ``created_at`` defaults to now (live settlement). Backfill must pass the
     trial's ``finished_at`` so admin windows bucket historical CUA spend with
@@ -515,16 +539,45 @@ async def upsert_verifier_cost_rows(
             "updated_at": now,
             "deleted_at": None,
         }
+        # Replace only false "no artifacts" sentinels; keep real spend rows.
+        update_cols = {
+            key: values[key]
+            for key in (
+                "model",
+                "route",
+                "llm_key_hash",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "cost_source",
+                "unpriced_reason",
+                "updated_at",
+                "experiment_id",
+                "org_id",
+                "task_id",
+                "task_version_id",
+            )
+        }
+        # Preserve the original created_at on sentinel replacement so admin
+        # windows still bucket to the trial finish day.
         stmt = (
             pg_insert(VerifierCostModel)
             .values(**values)
-            .on_conflict_do_nothing(
+            .on_conflict_do_update(
                 index_elements=["trial_id", "attempt", "component"],
                 index_where=VerifierCostModel.deleted_at.is_(None),
+                set_=update_cols,
+                where=(
+                    VerifierCostModel.unpriced_reason
+                    == UNPRICED_NO_CUA_ARTIFACTS
+                ),
             )
         )
         result = await session.execute(stmt)
-        # rowcount is 1 on insert, 0 on conflict (dialect-dependent; treat None as 0)
+        # rowcount is 1 on insert or qualifying update; 0 when a priced row
+        # already exists (dialect-dependent; treat None as 0).
         if result.rowcount and result.rowcount > 0:
             inserted += 1
     return inserted
@@ -608,29 +661,34 @@ def attempt_s3_prefix(trial_s3_key: str | None, attempt: int) -> str | None:
     return f"{match.group('root')}attempt-{attempt}/"
 
 
-def _no_artifacts_sentinel() -> VerifierCostDraft:
-    """Marks an attempt as inspected so cleanup does not rescan it forever."""
-    return _loop_draft(
-        model=None,
-        route=ROUTE_OTHER,
-        key_hash=None,
-        cost_source=COST_BACKFILL,
-        unpriced_reason=UNPRICED_NO_CUA_ARTIFACTS,
+def _trial_result_has_cua_signal(result: Any) -> bool:
+    """True when stored trial.result looks like a CUA/UX verifier ran."""
+    if not isinstance(result, dict):
+        return False
+    return any(
+        key in result
+        for key in (
+            "cua_criteria",
+            "cua_rubric_score",
+            "cua_passed_count",
+            "cua_failed_count",
+            "cua_passed_ids",
+            "cua_partial_count",
+        )
     )
 
 
 async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
     """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
 
-    Selects finished agent trials with an S3 attempt prefix whose attempt
-    coverage in ``verifier_costs`` is incomplete (``distinct attempts`` less
-    than ``trials.attempts``). For each missing attempt 1..N, downloads that
-    attempt's artifacts when the stored ``trial_s3_key`` is attempt-scoped;
-    otherwise inserts a sentinel so the trial leaves the sweep.
+    Selects finished agent trials whose attempt coverage in ``verifier_costs``
+    is incomplete, plus CUA-signaled trials that only have false
+    ``no_cua_artifacts`` sentinels (from a prior wrong-path download). For each
+    missing attempt 1..N, resolves the Harbor trial subdirectory via
+    ``resolve_trial_artifact_layout`` and downloads CUA artifacts from that
+    prefix — not the bare ``attempt-N/`` root, where Harbor never writes them.
     """
     import tempfile
-
-    from sqlalchemy import func, or_
 
     from oddish.core.trial_artifacts import (
         TrialArtifactMode,
@@ -645,7 +703,7 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
         ClientError = Exception  # type: ignore[misc, assignment]
 
     async with get_session() as session:
-        covered = (
+        all_covered = (
             select(
                 VerifierCostModel.trial_id.label("trial_id"),
                 func.count(func.distinct(VerifierCostModel.attempt)).label(
@@ -656,12 +714,43 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
             .group_by(VerifierCostModel.trial_id)
             .subquery()
         )
+        # Exclude false "no artifacts" sentinels so CUA trials poisoned by the
+        # bare-attempt download path re-enter until real spend is written.
+        real_covered = (
+            select(
+                VerifierCostModel.trial_id.label("trial_id"),
+                func.count(func.distinct(VerifierCostModel.attempt)).label(
+                    "covered"
+                ),
+            )
+            .where(
+                VerifierCostModel.deleted_at.is_(None),
+                or_(
+                    VerifierCostModel.unpriced_reason.is_(None),
+                    VerifierCostModel.unpriced_reason
+                    != UNPRICED_NO_CUA_ARTIFACTS,
+                ),
+            )
+            .group_by(VerifierCostModel.trial_id)
+            .subquery()
+        )
+        cua_signal = or_(
+            TrialModel.result.has_key("cua_criteria"),
+            TrialModel.result.has_key("cua_rubric_score"),
+            TrialModel.result.has_key("cua_passed_count"),
+            TrialModel.result.has_key("cua_failed_count"),
+            TrialModel.result.has_key("cua_passed_ids"),
+            TrialModel.result.has_key("cua_partial_count"),
+        )
         # No load_only: this is a worker sweep, not a compact FE response path,
         # and a stray load_only trips the CI load_only_guard tripwire.
         candidates = (
             await session.execute(
                 select(TrialModel)
-                .outerjoin(covered, covered.c.trial_id == TrialModel.id)
+                .outerjoin(all_covered, all_covered.c.trial_id == TrialModel.id)
+                .outerjoin(
+                    real_covered, real_covered.c.trial_id == TrialModel.id
+                )
                 .where(
                     TrialModel.kind == "agent",
                     TrialModel.finished_at.isnot(None),
@@ -674,8 +763,15 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                         )
                     ),
                     or_(
-                        covered.c.trial_id.is_(None),
-                        covered.c.covered < TrialModel.attempts,
+                        all_covered.c.trial_id.is_(None),
+                        all_covered.c.covered < TrialModel.attempts,
+                        and_(
+                            cua_signal,
+                            or_(
+                                real_covered.c.trial_id.is_(None),
+                                real_covered.c.covered < TrialModel.attempts,
+                            ),
+                        ),
                     ),
                 )
                 .order_by(TrialModel.finished_at.desc())
@@ -691,62 +787,81 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
         failures = 0
         for trial in candidates:
             try:
-                have = {
-                    int(a)
-                    for a in (
-                        await session.execute(
-                            select(VerifierCostModel.attempt).where(
-                                VerifierCostModel.trial_id == trial.id,
-                                VerifierCostModel.deleted_at.is_(None),
-                            )
+                reopen_sentinels = _trial_result_has_cua_signal(trial.result)
+                row_meta = (
+                    await session.execute(
+                        select(
+                            VerifierCostModel.attempt,
+                            VerifierCostModel.unpriced_reason,
+                        ).where(
+                            VerifierCostModel.trial_id == trial.id,
+                            VerifierCostModel.deleted_at.is_(None),
                         )
-                    ).scalars()
-                }
+                    )
+                ).all()
+                have_real: set[int] = set()
+                have_any: set[int] = set()
+                for attempt_num, reason in row_meta:
+                    n = int(attempt_num)
+                    have_any.add(n)
+                    if reason != UNPRICED_NO_CUA_ARTIFACTS:
+                        have_real.add(n)
                 max_attempt = max(int(trial.attempts or 1), 1)
                 for attempt in range(1, max_attempt + 1):
-                    if attempt in have:
+                    if attempt in have_real:
                         continue
-                    prefix = attempt_s3_prefix(trial.trial_s3_key, attempt)
-                    if prefix is None:
-                        # Legacy shared prefix: only the current attempt is
-                        # addressable via the layout resolver.
-                        if attempt != max_attempt:
-                            n = await upsert_verifier_cost_rows(
-                                session,
-                                drafts=[_no_artifacts_sentinel()],
-                                trial_id=trial.id,
-                                attempt=attempt,
-                                experiment_id=trial.experiment_id,
-                                org_id=trial.org_id,
-                                task_id=trial.task_id,
-                                task_version_id=trial.task_version_id,
-                                created_at=trial.finished_at,
-                            )
-                            inserted_total += n
-                            have.add(attempt)
-                            continue
-                        layout = await resolve_trial_artifact_layout(
-                            trial, storage
+                    if attempt in have_any and not reopen_sentinels:
+                        continue
+                    sibling = attempt_s3_prefix(trial.trial_s3_key, attempt)
+                    if sibling is None and attempt != max_attempt:
+                        # Legacy shared prefix: earlier attempts are not
+                        # addressable; mark them inspected and move on.
+                        n = await upsert_verifier_cost_rows(
+                            session,
+                            drafts=[_no_artifacts_sentinel()],
+                            trial_id=trial.id,
+                            attempt=attempt,
+                            experiment_id=trial.experiment_id,
+                            org_id=trial.org_id,
+                            task_id=trial.task_id,
+                            task_version_id=trial.task_version_id,
+                            created_at=trial.finished_at,
                         )
-                        if (
-                            layout.mode is TrialArtifactMode.UNAVAILABLE
-                            or not layout.artifact_prefix
-                        ):
-                            n = await upsert_verifier_cost_rows(
-                                session,
-                                drafts=[_no_artifacts_sentinel()],
-                                trial_id=trial.id,
-                                attempt=attempt,
-                                experiment_id=trial.experiment_id,
-                                org_id=trial.org_id,
-                                task_id=trial.task_id,
-                                task_version_id=trial.task_version_id,
-                                created_at=trial.finished_at,
-                            )
-                            inserted_total += n
-                            have.add(attempt)
-                            continue
-                        prefix = layout.artifact_prefix.rstrip("/") + "/"
+                        inserted_total += n
+                        have_any.add(attempt)
+                        continue
+                    # Always resolve through the Harbor trial subdirectory.
+                    # Artifacts live at attempt-N/<trial_name>/verifier/...,
+                    # never at the bare attempt-N/ root.
+                    pointer = SimpleNamespace(
+                        id=trial.id,
+                        trial_s3_key=sibling or trial.trial_s3_key,
+                        kind=getattr(trial, "kind", "agent") or "agent",
+                        attempts=attempt if sibling else (trial.attempts or 1),
+                        finished_at=trial.finished_at,
+                    )
+                    layout = await resolve_trial_artifact_layout(
+                        pointer, storage
+                    )
+                    if (
+                        layout.mode is TrialArtifactMode.UNAVAILABLE
+                        or not layout.artifact_prefix
+                    ):
+                        n = await upsert_verifier_cost_rows(
+                            session,
+                            drafts=[_no_artifacts_sentinel()],
+                            trial_id=trial.id,
+                            attempt=attempt,
+                            experiment_id=trial.experiment_id,
+                            org_id=trial.org_id,
+                            task_id=trial.task_id,
+                            task_version_id=trial.task_version_id,
+                            created_at=trial.finished_at,
+                        )
+                        inserted_total += n
+                        have_any.add(attempt)
+                        continue
+                    prefix = layout.artifact_prefix.rstrip("/") + "/"
                     with tempfile.TemporaryDirectory(
                         prefix="cua-backfill-"
                     ) as tmp:
@@ -791,7 +906,9 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                                 session=session,
                             )
                         inserted_total += n
-                        have.add(attempt)
+                        have_any.add(attempt)
+                        if found_any:
+                            have_real.add(attempt)
             except Exception:
                 failures += 1
                 if failures <= 3:

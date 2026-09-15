@@ -129,6 +129,63 @@ def test_build_drafts_loop_and_judge_from_ux_artifacts(tmp_path: Path) -> None:
     assert judge.cost_usd is not None or judge.unpriced_reason is not None
 
 
+def test_judge_counts_dict_verdicts(tmp_path: Path) -> None:
+    """SWE-M judge reports store verdicts as a criterion→PASS map."""
+    ux = tmp_path / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=1.0)
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "judge_model": "anthropic/claude-opus-4-7",
+                "verdicts": {"auth_gate": "PASS", "projects": "PARTIAL"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    drafts = build_verifier_cost_drafts(tmp_path)
+    judge = next(d for d in drafts if d.component == COMPONENT_JUDGE)
+    assert judge.input_tokens == 4000
+
+
+def test_loop_model_falls_back_to_trajectory_agent(tmp_path: Path) -> None:
+    """Backfill has no task_path; model must come from ATIF when report omits it."""
+    ux = tmp_path / "verifier" / "ux"
+    ux.mkdir(parents=True)
+    (ux / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "agent": {"name": "computer-1", "model_name": "anthropic/claude-fable-5-1"},
+                "final_metrics": {
+                    "total_prompt_tokens": 100,
+                    "total_completion_tokens": 20,
+                    "total_cached_tokens": 0,
+                    "total_cost_usd": 0.5,
+                },
+                "steps": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps({"verdicts": {"a": "PASS"}}),
+        encoding="utf-8",
+    )
+    drafts = build_verifier_cost_drafts(tmp_path)
+    loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
+    assert loop.model == "anthropic/claude-fable-5-1"
+    assert loop.route == ROUTE_ANTHROPIC
+    assert loop.cost_usd == 0.5
+
+
+def test_trial_result_cua_signal() -> None:
+    from oddish.costs.verifier_cost import _trial_result_has_cua_signal
+
+    assert _trial_result_has_cua_signal({"cua_rubric_score": 0.7}) is True
+    assert _trial_result_has_cua_signal({"reward": 1.0}) is False
+    assert _trial_result_has_cua_signal(None) is False
+
+
 def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
     """Settlement receives the Harbor job root, not the selected trial dir."""
     ux = tmp_path / "task__abc123" / "verifier" / "ux"
