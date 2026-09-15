@@ -1,6 +1,21 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/skills", (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "test-skill",
+          name: "Queue check",
+          is_seed: false,
+          operator_prompt: "Check the queue behavior.",
+          result_focus: null,
+          evaluation_metric: null,
+          files: [],
+        },
+      ],
+    })
+  );
   await page.goto("/effort");
   // The table and launch button server-render before their handlers attach.
   // Recharts' client-rendered plot confirms the fixture has hydrated.
@@ -67,7 +82,9 @@ test("run dialog counts efforts and submits independent retryable requests", asy
   });
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("checkbox", { name: "high", exact: true }).uncheck();
+  await dialog
+    .getByRole("checkbox", { name: "Agent default", exact: true })
+    .uncheck();
   await dialog.getByRole("checkbox", { name: "medium", exact: true }).check();
   await dialog.getByRole("checkbox", { name: "high", exact: true }).check();
   await dialog.getByRole("spinbutton", { name: "Trials per effort" }).fill("3");
@@ -126,7 +143,9 @@ for (const [agent, model, effort] of [
     await dialog
       .getByRole("combobox", { name: "Model", exact: true })
       .fill(model);
-    await dialog.getByRole("checkbox", { name: "high", exact: true }).uncheck();
+    await dialog
+      .getByRole("checkbox", { name: "Agent default", exact: true })
+      .uncheck();
     await dialog.getByRole("checkbox", { name: effort, exact: true }).check();
     await dialog
       .getByRole("button", { name: "Run 15 trials", exact: true })
@@ -159,42 +178,66 @@ test("changing Gemini model clears Flash-only effort and excludes Gemini 2.5", a
   ).toHaveCount(0);
   await expect(
     dialog.getByRole("checkbox", { name: "high", exact: true })
-  ).toBeChecked();
+  ).not.toBeChecked();
   await expect(
     dialog.getByRole("checkbox", { name: "Agent default", exact: true })
-  ).toHaveCount(0);
+  ).toBeChecked();
   await model.fill("google/gemini-2.5-flash");
   await expect(dialog.getByRole("checkbox")).toHaveCount(1);
 });
 
-test("new runs select and submit high without an effort interaction", async ({
+test("new runs leave effort unset without an effort interaction", async ({
   page,
 }) => {
-  const efforts: string[] = [];
+  const configs: Record<string, unknown>[] = [];
   await page.route("**/api/tasks/sweep", async (route) => {
-    efforts.push(
-      ...route
-        .request()
-        .postDataJSON()
-        .configs.map(
-          (config: {
-            agent_config: { kwargs: { reasoning_effort: string } };
-          }) => config.agent_config.kwargs.reasoning_effort
-        )
-    );
+    configs.push(...route.request().postDataJSON().configs);
     await route.fulfill({ status: 200, json: {} });
   });
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
     dialog.getByRole("checkbox", { name: "high", exact: true })
-  ).toBeChecked();
+  ).not.toBeChecked();
   await expect(
     dialog.getByRole("checkbox", { name: "Agent default", exact: true })
-  ).toHaveCount(0);
+  ).toBeChecked();
   await dialog
     .getByRole("button", { name: "Run 15 trials", exact: true })
     .click();
   await expect(dialog).not.toBeVisible();
-  expect(efforts).toEqual(["high", "high", "high"]);
+  expect(configs).toHaveLength(3);
+  for (const config of configs)
+    expect(config).not.toHaveProperty("agent_config");
 });
+
+for (const effort of ["default", "high"]) {
+  test(`probe submits ${effort} effort`, async ({ page }) => {
+    const requests: {
+      agent_config?: { kwargs: { reasoning_effort: string } };
+    }[] = [];
+    await page.route("**/api/tasks/sweep", async (route) => {
+      requests.push(...route.request().postDataJSON().configs);
+      await route.fulfill({ status: 200, json: {} });
+    });
+    const form = page.getByRole("region", { name: "Probe launch" });
+    await form.getByRole("combobox", { name: "Skill", exact: true }).click();
+    await page
+      .getByRole("option", { name: "Queue check", exact: true })
+      .click();
+    const selector = form.getByRole("combobox", { name: "Reasoning effort" });
+    await expect(selector).toHaveText("Agent default");
+    if (effort === "high") {
+      await selector.click();
+      await page.getByRole("option", { name: "high", exact: true }).click();
+    }
+    await form
+      .getByRole("textbox", { name: "Instructions" })
+      .fill("Check the queue behavior.");
+    await form.getByRole("button", { name: "Submit probe run" }).click();
+    await expect.poll(() => requests.length).toBe(1);
+    if (effort === "default")
+      expect(requests[0]).not.toHaveProperty("agent_config");
+    else expect(requests[0].agent_config?.kwargs.reasoning_effort).toBe("high");
+  });
+}
