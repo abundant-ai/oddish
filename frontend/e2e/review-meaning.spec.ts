@@ -334,7 +334,7 @@ test.describe("real components with local fixture API", () => {
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
     await expect(
-      page.getByText("1 infrastructure error", { exact: true })
+      page.getByText("1 harness error", { exact: true })
     ).toHaveCount(0);
     await expect(
       page.getByText(
@@ -372,7 +372,7 @@ test.describe("real components with local fixture API", () => {
       page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
     ).toBeVisible();
     await expect(
-      page.getByText("1 infrastructure error", { exact: true })
+      page.getByText("1 harness error", { exact: true })
     ).toHaveCount(1);
     await page.getByText("GRADING ERROR", { exact: true }).click();
     await expect(
@@ -560,7 +560,7 @@ test.describe("real components with local fixture API", () => {
   }
 
   for (const count of [1, 2]) {
-    test(`invalid-success review count uses the correct plural for ${count}`, async ({
+    test(`bad-success review count uses the correct plural for ${count}`, async ({
       page,
     }) => {
       const original = tasks[0].trials![0];
@@ -575,10 +575,9 @@ test.describe("real components with local fixture API", () => {
       );
       await page.goto("/tasks/task-a?version=7&drawer=task&taskPane=overview");
       await expect(
-        page.getByText(
-          count === 1 ? "1 invalid success" : "2 invalid successes",
-          { exact: true }
-        )
+        page.getByText(count === 1 ? "1 bad success" : "2 bad successes", {
+          exact: true,
+        })
       ).toBeVisible();
     });
   }
