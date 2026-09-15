@@ -2454,6 +2454,17 @@ these bounded reads must not return full Harbor configuration. Explicit JSON
 null overrides the legacy value. Missing effort is unspecified, never inferred
 from today's agent defaults. This derived field requires no database migration.
 
+New submissions for reasoning-capable agent/model pairs explicitly default to
+`high` before sweep reconciliation and trial persistence. The resolver lives in
+`oddish.reasoning_effort.with_default_reasoning_effort`; sweep matching and queue
+insertion must use the same value. It copies AgentConfig when adding the default
+so the original request and its idempotency hash do not change. Explicit kwargs
+(including null) and known effort environment overrides win. Unsupported models,
+Gemini 2.5, baselines, and Cursor IDs with embedded effort keep their configuration.
+The worker receives the saved value. Reads/imports do not assign defaults to old
+runs, and retries retain their source configuration. Both launch forms preselect
+high for supported models and omit the ambiguous Agent default option there.
+
 The shared frontend column identity includes agent, model, and effort even when
 only one configuration has arrived. Table cells, navigation, column visibility,
 exports, and Pass/k share that identity. The model/effort label is display-only;

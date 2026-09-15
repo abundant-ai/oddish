@@ -35,6 +35,9 @@ oddish status <task_id> --watch
 oddish pull <task_id> --watch
 ```
 
+New submissions for supported reasoning models default to `high` effort.
+Use `--agent-kwarg reasoning_effort=low` (or another supported value) to override it.
+
 The CLI targets Oddish Cloud by default. All API-backed commands require
 `ODDISH_API_KEY`. For self-deployed instances, also set `ODDISH_API_URL`.
 

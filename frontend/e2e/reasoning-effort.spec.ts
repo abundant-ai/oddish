@@ -67,9 +67,7 @@ test("run dialog counts efforts and submits independent retryable requests", asy
   });
   await page.getByRole("button", { name: "Run trials", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("checkbox", { name: "Agent default", exact: true })
-    .uncheck();
+  await dialog.getByRole("checkbox", { name: "high", exact: true }).uncheck();
   await dialog.getByRole("checkbox", { name: "medium", exact: true }).check();
   await dialog.getByRole("checkbox", { name: "high", exact: true }).check();
   await dialog.getByRole("spinbutton", { name: "Trials per effort" }).fill("3");
@@ -128,9 +126,7 @@ for (const [agent, model, effort] of [
     await dialog
       .getByRole("combobox", { name: "Model", exact: true })
       .fill(model);
-    await dialog
-      .getByRole("checkbox", { name: "Agent default", exact: true })
-      .uncheck();
+    await dialog.getByRole("checkbox", { name: "high", exact: true }).uncheck();
     await dialog.getByRole("checkbox", { name: effort, exact: true }).check();
     await dialog
       .getByRole("button", { name: "Run 15 trials", exact: true })
@@ -162,11 +158,43 @@ test("changing Gemini model clears Flash-only effort and excludes Gemini 2.5", a
     dialog.getByRole("checkbox", { name: "medium", exact: true })
   ).toHaveCount(0);
   await expect(
-    dialog.getByRole("checkbox", { name: "Agent default", exact: true })
+    dialog.getByRole("checkbox", { name: "high", exact: true })
   ).toBeChecked();
   await expect(
-    dialog.getByRole("checkbox", { name: "high", exact: true })
-  ).not.toBeChecked();
+    dialog.getByRole("checkbox", { name: "Agent default", exact: true })
+  ).toHaveCount(0);
   await model.fill("google/gemini-2.5-flash");
   await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+});
+
+test("new runs select and submit high without an effort interaction", async ({
+  page,
+}) => {
+  const efforts: string[] = [];
+  await page.route("**/api/tasks/sweep", async (route) => {
+    efforts.push(
+      ...route
+        .request()
+        .postDataJSON()
+        .configs.map(
+          (config: {
+            agent_config: { kwargs: { reasoning_effort: string } };
+          }) => config.agent_config.kwargs.reasoning_effort
+        )
+    );
+    await route.fulfill({ status: 200, json: {} });
+  });
+  await page.getByRole("button", { name: "Run trials", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("checkbox", { name: "high", exact: true })
+  ).toBeChecked();
+  await expect(
+    dialog.getByRole("checkbox", { name: "Agent default", exact: true })
+  ).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "Run 15 trials", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  expect(efforts).toEqual(["high", "high", "high"]);
 });
