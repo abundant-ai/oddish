@@ -97,7 +97,6 @@ async def refresh_experiment_summaries(*, batch_size: int = 32) -> int:
                         (payload["id"], revisions[payload["id"]], payload)
                         for payload in payloads
                     )
-                    completed += len(payloads)
                     pending_times = [row[2] for row in group if row[3]]
                     oldest = min(pending_times) if pending_times else now
                     if (now - oldest).total_seconds() > 60:
@@ -113,8 +112,24 @@ async def refresh_experiment_summaries(*, batch_size: int = 32) -> int:
                     ids,
                 )
                 retries.extend(ids)
-        # Do not hold dirty-marker row locks while calculating another summary.
+        # Lock only after calculation. Never wait on a writer while holding
+        # another summary lock: task writes may touch several experiments.
+        # Skipped rows retain their revision and retry time for the next pass.
+        ready_ids = {row[0] for row in publications} | set(retries)
+        locked_ids = (
+            set(
+                await session.scalars(
+                    select(summary.experiment_id)
+                    .where(summary.experiment_id.in_(ready_ids))
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            if ready_ids
+            else set()
+        )
         for experiment_id, revision, payload in publications:
+            if experiment_id not in locked_ids:
+                continue
             await session.execute(
                 update(summary)
                 .where(summary.experiment_id == experiment_id)
@@ -125,7 +140,10 @@ async def refresh_experiment_summaries(*, batch_size: int = 32) -> int:
                     next_attempt_at=now,
                 )
             )
+            completed += 1
         for experiment_id in retries:
+            if experiment_id not in locked_ids:
+                continue
             await session.execute(
                 update(summary)
                 .where(summary.experiment_id == experiment_id)

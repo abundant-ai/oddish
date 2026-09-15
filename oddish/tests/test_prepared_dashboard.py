@@ -393,3 +393,70 @@ async def test_mine_includes_ownerless_experiment_before_summary_is_ready(
                 experiments_author_github_usernames=[handle],
             )
             assert [row["id"] for row in rows] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rebuild_fails", [False, True])
+async def test_publication_and_retry_skip_writer_locks(
+    experiment, monkeypatch, rebuild_fails
+):
+    from oddish.core import dashboard
+    from oddish.db import task_experiments, utcnow
+
+    org, eid, tid = experiment
+    async with get_session() as session:
+        task_id = await session.scalar(
+            select(TrialModel.task_id).where(TrialModel.id == tid)
+        )
+        other = ExperimentModel(name="shared-task", org_id=org)
+        session.add(other)
+        await session.flush()
+        other_id = other.id
+        await session.execute(
+            task_experiments.insert().values(task_id=task_id, experiment_id=other_id)
+        )
+    original = dashboard.rebuild_dashboard_experiments
+    if rebuild_fails:
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("simulated rebuild failure")
+
+        monkeypatch.setattr(dashboard, "rebuild_dashboard_experiments", broken)
+
+    async with get_session() as writer:
+        locked = await writer.scalar(
+            select(ExperimentSummaryModel)
+            .where(ExperimentSummaryModel.experiment_id == eid)
+            .with_for_update()
+        )
+        before = (locked.built_revision, locked.next_attempt_at)
+        # Maintenance must finish while the writer owns one of two summaries.
+        # Without SKIP LOCKED this waits for the writer, which is waiting here.
+        completed = await asyncio.wait_for(refresh_experiment_summaries(), timeout=5)
+        assert completed == (0 if rebuild_fails else 1)
+        await writer.refresh(locked)
+        assert (locked.built_revision, locked.next_attempt_at) == before
+        async with get_session() as reader:
+            available = await reader.get(ExperimentSummaryModel, other_id)
+            if rebuild_fails:
+                assert available.next_attempt_at > utcnow()
+            else:
+                assert available.built_revision == available.revision
+        # This task write dirties both experiments in the same transaction.
+        await writer.execute(
+            update(TaskModel).where(TaskModel.id == task_id).values(run_analysis=True)
+        )
+        await asyncio.wait_for(writer.commit(), timeout=5)
+    monkeypatch.setattr(dashboard, "rebuild_dashboard_experiments", original)
+    async with get_session() as session:
+        await session.execute(
+            update(ExperimentSummaryModel)
+            .where(ExperimentSummaryModel.experiment_id.in_([eid, other_id]))
+            .values(next_attempt_at=utcnow())
+        )
+    assert await asyncio.wait_for(refresh_experiment_summaries(), timeout=5) == 2
+    async with get_session() as session:
+        for experiment_id in [eid, other_id]:
+            marker = await session.get(ExperimentSummaryModel, experiment_id)
+            assert marker.revision == marker.built_revision
+            assert marker.payload is not None
