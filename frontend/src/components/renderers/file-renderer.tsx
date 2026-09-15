@@ -194,6 +194,8 @@ interface FileRendererProps {
   selectedLines?: LineRange | null;
   /** Selection changes from the line-oriented renderers, for URL sync. */
   onSelectLines?: (range: LineRange | null) => void;
+  /** Let the preview owner renew a failed temporary image URL. */
+  onImageError?: () => void;
 }
 
 /**
@@ -210,6 +212,7 @@ export function FileRenderer({
   viewMode = "rendered",
   selectedLines,
   onSelectLines,
+  onImageError,
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
@@ -228,7 +231,9 @@ export function FileRenderer({
   switch (resolvedKind) {
     case "image":
       if (!url) return <MissingUrl fileName={fileName} />;
-      return <ImageRenderer url={url} fileName={fileName} />;
+      return (
+        <ImageRenderer url={url} fileName={fileName} onError={onImageError} />
+      );
     case "video":
       if (!url) return <MissingUrl fileName={fileName} />;
       return <VideoRenderer url={url} fileName={fileName} />;

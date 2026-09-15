@@ -571,3 +571,117 @@ test("an artifact pagination conflict discards all pages from the old revision",
   ).toHaveCount(0);
   expect(cursors).toEqual([null, "page-2", "page-3", null]);
 });
+
+for (const failure of ["expiry", "first-url", "every-url"] as const) {
+  test(`task image URLs renew on ${failure} without reloading directory or text`, async ({
+    page,
+  }) => {
+    let signings = 0;
+    let listings = 0;
+    let textReads = 0;
+    const images: string[] = [];
+    const start = Date.now();
+    await page.route("**/api/tasks/task-a/files?**", (route) => {
+      listings++;
+      return route.fulfill({
+        json: {
+          source_hash: "fixture-v7",
+          directories: {
+            "": {
+              files: [
+                { path: "chart.png", size: 68 },
+                { path: "notes.txt", size: 10 },
+              ],
+              dirs: [],
+              cursor: null,
+            },
+            tests: { files: [], dirs: [] },
+            solution: { files: [], dirs: [] },
+            environment: { files: [], dirs: [] },
+          },
+        },
+      });
+    });
+    await page.route(
+      "**/api/tasks/task-a/files/chart.png?**",
+      async (route) => {
+        signings++;
+        const now = await page.evaluate(() => Date.now());
+        await route.fulfill({
+          json: {
+            url: `/signed-chart.png?signature=${signings}`,
+            expires_at: now / 1000 + 900,
+            source_hash: "fixture-v7",
+          },
+        });
+      }
+    );
+    await page.route("**/api/tasks/task-a/files/notes.txt?**", (route) => {
+      textReads++;
+      return route.fulfill({
+        json: { content: "Cached image notes", source_hash: "fixture-v7" },
+      });
+    });
+    await page.route("**/signed-chart.png?**", (route) => {
+      const signature = new URL(route.request().url()).searchParams.get(
+        "signature"
+      )!;
+      images.push(signature);
+      return route.fulfill(
+        failure === "every-url" ||
+          (failure === "first-url" && signature === "1")
+          ? { status: 403, body: "Request has expired" }
+          : {
+              contentType: "image/png",
+              body: Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7XcAAAAASUVORK5CYII=",
+                "base64"
+              ),
+            }
+      );
+    });
+    await page.goto(
+      "/experiments/review-demo?task=task-a&taskPane=file&taskFile=chart.png"
+    );
+    const image = page.getByRole("img", { name: "chart.png", exact: true });
+    await expect(image).toBeVisible();
+    if (failure === "every-url") {
+      await expect.poll(() => images).toEqual(["1", "2"]);
+      for (let i = 0; i < 3; i++) await image.dispatchEvent("error");
+      expect(signings).toBe(2);
+      return;
+    }
+    await expect
+      .poll(() =>
+        image.evaluate((element: HTMLImageElement) => element.naturalWidth)
+      )
+      .toBe(1);
+    expect(signings).toBe(failure === "expiry" ? 1 : 2);
+    const initialListings = listings;
+    await page.getByRole("button", { name: /notes.txt/ }).click();
+    await expect(
+      page.getByText("Cached image notes", { exact: true })
+    ).toBeVisible();
+    await page.getByRole("button", { name: /chart.png/ }).click();
+    await expect(image).toBeVisible();
+    expect(signings).toBe(failure === "expiry" ? 1 : 2);
+    await page.getByRole("button", { name: /notes.txt/ }).click();
+    await expect(
+      page.getByText("Cached image notes", { exact: true })
+    ).toBeVisible();
+    expect(textReads).toBe(1);
+    if (failure === "expiry") {
+      const beforeExpiryImages = images.length;
+      await page.clock.setSystemTime(new Date(start + 16 * 60 * 1000));
+      await page.getByRole("button", { name: /chart.png/ }).click();
+      await expect.poll(() => signings).toBe(2);
+      await expect
+        .poll(() =>
+          image.evaluate((element: HTMLImageElement) => element.naturalWidth)
+        )
+        .toBe(1);
+      expect(images.slice(beforeExpiryImages)).toEqual(["2"]);
+    }
+    expect(listings).toBe(initialListings);
+  });
+}

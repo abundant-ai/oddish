@@ -154,5 +154,13 @@ index ends automatic re-enqueueing; `expanded_at` stays unset so an operator can
 still request extraction after changing the size limit. Individual file reads
 retain the archive reader.
 
-Signed task-file responses include `expires_at` in Unix seconds so browser
-preview caches can retain text while renewing temporary storage access.
+Signed task-file responses include `expires_at` in Unix seconds. Task previews
+retain text and unexpired URLs in SWR. An expired URL is hidden until the same
+SWR fetcher renews it, with a 30-second margin before server expiry. A ref guards
+the cached response against duplicate renewal effects. Image errors can request
+one renewal per source; renewal itself does not reset that allowance. Both task
+file proxies return `no-store` for signed URLs and preserve text caching.
+Browser regressions advance the clock by 16 minutes and check a second signing
+request, no request for the expired image URL, one cached text read, and no
+additional directory reads. Separate tests cover one recoverable image failure
+and repeated failures stopping after one renewal.

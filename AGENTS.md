@@ -857,6 +857,10 @@ archive indexes when an in-place upload changes the version's hash or pointer.
 Publication checks the version under lock after scanning to reject stale work.
 Task file signing responses include `expires_at` (Unix seconds), calculated
 using the same lifetime passed to storage signing; text responses omit it.
+`TaskFilesPanel` renews expired URLs through its existing SWR fetcher, keeps
+unchanged text cached, and allows one URL renewal on image failure. Authenticated
+and public task-file proxies disable HTTP caching for signed-URL responses so
+renewal cannot receive the previous signature.
 
 Bounded storage reads must call `read(size)` on the SDK's `StreamingBody`, not
 the raw HTTP response returned by its async context manager. Only missing-object

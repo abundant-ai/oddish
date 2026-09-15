@@ -107,7 +107,7 @@ interface DirectoryListing {
 
 type FilePreview = { sourceHash?: string | null } & (
   | { kind: "text"; content: string; isTruncated: boolean; size: number | null }
-  | { kind: "binary"; url: string; size: number | null }
+  | { kind: "binary"; url: string; size: number | null; expiresAt: number }
 );
 
 interface TaskFilesPanelProps {
@@ -403,6 +403,8 @@ export function TaskFilesPanel({
     [onSelectedFileChange]
   );
   const { mutate: mutateResource } = useSWRConfig();
+  const recoveredPreview = useRef<string | null>(null);
+  const expiredPreviewRequest = useRef<FilePreview | null>(null);
   const [loadingFullFiles, setLoadingFullFiles] = useState<Set<string>>(
     new Set()
   );
@@ -629,7 +631,12 @@ export function TaskFilesPanel({
             previewContentHash,
           ]
       : null;
-  const { data: fetchedPreview, error: previewError } = useSWR<FilePreview>(
+  const previewIdentity = unstable_serialize(previewRequestKey);
+  const {
+    data: fetchedPreview,
+    error: previewError,
+    mutate: renewPreview,
+  } = useSWR<FilePreview>(
     previewRequestKey,
     async () => {
       if (!selectedFile) throw new Error("No file selected");
@@ -648,16 +655,26 @@ export function TaskFilesPanel({
       if (isBinaryRendererFile(selectedFile.name)) {
         const url = buildSelectedFileUrl(true);
         if (!url) throw new Error("File URL unavailable");
-        const res = await fetch(url);
+        // Renewal must reach the signing endpoint, including behind a proxy.
+        const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) throw new Error("Failed to fetch file URL");
         const data = (await res.json()) as {
           url?: string;
+          expires_at: number;
           source_hash?: string | null;
         };
-        if (!data.url) throw new Error("File URL unavailable");
+        if (!data.url || !Number.isFinite(data.expires_at))
+          throw new Error("File URL or expiration unavailable");
+        const expiresAt = data.expires_at * 1000 - 30_000;
+        if (expiresAt <= Date.now())
+          throw new Error(
+            "The file URL has expired. Reload the page to retry."
+          );
         return {
           kind: "binary",
           url: data.url,
+          // Renew slightly early so the URL remains usable during the next load.
+          expiresAt,
           size,
           sourceHash: data.source_hash ?? null,
         };
@@ -693,6 +710,20 @@ export function TaskFilesPanel({
       onError: treeResource.onFileError,
     }
   );
+  const previewExpired =
+    fetchedPreview?.kind === "binary" && fetchedPreview.expiresAt <= Date.now();
+  useEffect(() => {
+    if (
+      previewExpired &&
+      !previewError &&
+      expiredPreviewRequest.current !== fetchedPreview
+    ) {
+      // Reuse SWR's fetcher and error handling. Guard this cached response so
+      // repeated effects cannot issue duplicate renewals while it is in flight.
+      expiredPreviewRequest.current = fetchedPreview;
+      void renewPreview();
+    }
+  }, [previewExpired, fetchedPreview, previewError, renewPreview]);
   useEffect(() => {
     if (!fetchedPreview) return;
     setPreviewRevision((revision) =>
@@ -705,8 +736,8 @@ export function TaskFilesPanel({
     previewSourceIdentity,
     observedPreviewRevision.observedHash,
   ]);
-  const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
-  const previewIdentity = unstable_serialize(previewRequestKey);
+  const selectedPreview =
+    immediatePreview ?? (previewExpired ? null : (fetchedPreview ?? null));
   const loadingFullFile = loadingFullFiles.has(previewIdentity);
 
   const verdictSource = panel?.task ?? task;
@@ -1377,6 +1408,18 @@ export function TaskFilesPanel({
             viewMode={viewMode}
             selectedLines={selectedLines}
             onSelectLines={onSelectLinesChange}
+            onImageError={() => {
+              if (
+                immediatePreview ||
+                fetchedPreview?.kind !== "binary" ||
+                recoveredPreview.current === previewIdentity
+              )
+                return;
+              // One recovery for this source; SWR owns the request and errors.
+              // Do not reset on renewal, or an invalid image would loop forever.
+              recoveredPreview.current = previewIdentity;
+              void renewPreview();
+            }}
           />
         </div>
         {!isBinary &&
