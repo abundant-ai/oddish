@@ -640,6 +640,32 @@ def _agent_uses_bedrock() -> bool:
     return False
 
 
+def surfaced_anthropic_env(
+    *, agent: str | None, model: str | None, agent_env: Mapping[str, str] | None
+) -> dict[str, str]:
+    """The Anthropic credential a trial's routing check must see as ambient.
+
+    ``_claude_code_forces_direct_api`` reads ``os.environ``, so a credential
+    that only arrives in the agent env has to be surfaced there before the
+    routing question is asked. An ``anthropic-hdo/`` model overwrites the
+    ambient key with the platform HDO credential; a claude-code trial carrying
+    a BYOK ``ANTHROPIC_API_KEY`` surfaces the user's key. HDO wins over BYOK
+    when the model prefix opts in.
+
+    The runner applies this around ``_build_agent_config``. Job-scoped
+    credential scoping applies it around its own routing check, so the bundle
+    and the agent answer the same question under the same view.
+    """
+    env: dict[str, str] = {}
+    if is_anthropic_hdo_model(model):
+        env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+    elif "claude-code" in (agent or "").strip().lower():
+        byok_key = (agent_env or {}).get("ANTHROPIC_API_KEY")
+        if byok_key:
+            env["ANTHROPIC_API_KEY"] = byok_key
+    return env
+
+
 def _claude_code_forces_direct_api(is_probe: bool) -> bool:
     """Whether a claude-code agent must use the direct Anthropic API over Bedrock."""
     if not os.environ.get("ANTHROPIC_API_KEY", "").strip():

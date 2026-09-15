@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -204,7 +206,13 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
 
 
 async def _issue_job_credentials(
-    *, worker_job_id: str, agent: str, model: str | None, trial_id: str
+    *,
+    worker_job_id: str,
+    agent: str,
+    model: str | None,
+    trial_id: str,
+    is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
 ) -> job_tokens.JobCredentialBundle | None:
     """Mint a job-scoped credential bundle and persist its token hash.
 
@@ -219,7 +227,13 @@ async def _issue_job_credentials(
         from oddish.db.models import WorkerJobModel
 
         bundle, token_hash = job_tokens.build_bundle(
-            agent=agent, model=model, trial_id=trial_id, settings=settings, now=utcnow()
+            agent=agent,
+            model=model,
+            trial_id=trial_id,
+            settings=settings,
+            now=utcnow(),
+            is_probe=is_probe,
+            byok_env=byok_env,
         )
         async with get_session() as session:
             await session.execute(
@@ -288,6 +302,20 @@ class PreparedTrialRun:
     created_by_user_id: str | None = None
     billed_user_id: str | None = None
     trial_attempt: int = 1
+
+
+def _prepared_trial_is_probe(prepared_trial: PreparedTrialRun) -> bool:
+    """The runner's probe test, sourced from the runner itself.
+
+    Credential scoping must agree with the transport the agent is routed to, so
+    this defers to ``harbor.runner.trial_is_probe`` rather than restating it.
+    """
+    from oddish.workers.harbor.runner import trial_is_probe
+
+    return trial_is_probe(
+        harbor_config=prepared_trial.trial_harbor_config,
+        trial_kind=prepared_trial.trial_kind,
+    )
 
 
 @dataclass(slots=True)
@@ -1627,10 +1655,7 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        harbor_config = prepared_trial.trial_harbor_config or {}
-        is_probe = bool(harbor_config.get("extra_instructions")) and (
-            prepared_trial.trial_kind != "summarize"
-        )
+        is_probe = _prepared_trial_is_probe(prepared_trial)
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
@@ -2124,6 +2149,8 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
+                is_probe=_prepared_trial_is_probe(prepared_trial),
+                byok_env=byok_env,
             )
 
         from oddish.workers.queue.model_gateway import (
