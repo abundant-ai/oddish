@@ -159,7 +159,7 @@ Options
 - `--force-build/--no-force-build` - Force a rebuild of the environment image
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
-- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times. New submissions for supported reasoning models default to `reasoning_effort=high`; override with e.g. `--agent-kwarg reasoning_effort=low`. The server saves the selected effort with the trial.
+- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times. Omitted reasoning effort uses the agent’s own default. Set it explicitly with e.g. `--agent-kwarg reasoning_effort=high`; the server saves that choice with the trial.
 - `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
 - `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial

@@ -10,10 +10,7 @@ from oddish.config import (
     require_geometric_served_model_id,
     settings,
 )
-from oddish.reasoning_effort import (
-    normalize_reasoning_effort,
-    with_default_reasoning_effort,
-)
+from oddish.reasoning_effort import normalize_reasoning_effort
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
@@ -90,9 +87,6 @@ def build_trial_specs_from_sweep(
         except ValueError as exc:
             # Preserve create_task's client error when validating before creation.
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        agent_config = with_default_reasoning_effort(
-            config.agent, norm_model, config.agent_config
-        )
         n = config.n_trials
         if existing_counts is not None:
             existing = existing_counts.get(
@@ -100,8 +94,8 @@ def build_trial_specs_from_sweep(
                     config.agent,
                     norm_model,
                     normalize_reasoning_effort(
-                        agent_config.kwargs.get("reasoning_effort")
-                        if agent_config
+                        config.agent_config.kwargs.get("reasoning_effort")
+                        if config.agent_config
                         else None
                     ),
                 ),
@@ -115,8 +109,8 @@ def build_trial_specs_from_sweep(
                 "model": config.model,
                 "environment": trial_environment,
             }
-            if agent_config:
-                trial_kwargs["agent_config"] = agent_config
+            if config.agent_config:
+                trial_kwargs["agent_config"] = config.agent_config
             trials.append(TrialSpec(**trial_kwargs))
 
     return trials

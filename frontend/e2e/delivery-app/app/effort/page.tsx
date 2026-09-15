@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { ExperimentTrialsTable } from "../../../../src/components/experiment-trials-table";
+import { ProbeSubmitForm } from "../../../../src/components/probe-submit-form";
 import { ExperimentRunDialog } from "../../../../src/components/experiment-run-dialog";
 import { buildExperimentAgentSummaries } from "../../../../src/lib/experiment-agent-grouping";
 import type { Task, Trial } from "../../../../src/lib/types";
@@ -75,6 +76,9 @@ export default function Page() {
             )
           }
         />
+        <section aria-label="Probe launch">
+          <ProbeSubmitForm taskId="repair-queue" />
+        </section>
         <output aria-label="Selected effort">{selected}</output>
       </div>
     </Suspense>
