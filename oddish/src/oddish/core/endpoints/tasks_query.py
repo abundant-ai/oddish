@@ -2112,6 +2112,7 @@ async def browse_tasks_core(
         session,
         task_ids=task_ids,
         org_id=org_id,
+        trial_scope_pairs=task_version_pairs,
     )
 
     build_started_at = now()

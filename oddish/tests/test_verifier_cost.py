@@ -40,6 +40,8 @@ def _write_atif(path: Path, *, cost: float, prompt: int = 100, completion: int =
 def test_infer_route_prefers_anthropic_prefix() -> None:
     assert infer_verifier_route("anthropic/claude-opus-4-7") == ROUTE_ANTHROPIC
     assert infer_verifier_route("bedrock/anthropic.claude-opus") == ROUTE_BEDROCK
+    assert infer_verifier_route("us.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+    assert infer_verifier_route("global.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
 
 
 def test_extract_trajectory_metrics_skips_verifier_tree(tmp_path: Path) -> None:

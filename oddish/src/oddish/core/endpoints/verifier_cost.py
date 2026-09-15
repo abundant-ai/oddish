@@ -11,9 +11,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pydantic import BaseModel
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.core.experiment_membership import experiment_trial_scope
 from oddish.db.models import TrialModel, VerifierCostModel
 
@@ -50,9 +51,12 @@ def _fold(rows) -> VerifierCostTotals:
 
 
 def _group_flags(cost_source):
+    # Only ``estimated`` means the tile should say "includes estimated".
+    # ``backfill`` preserves native/estimated drafts via override but is not
+    # itself an estimate flag; null-cost sentinels also use backfill.
     return (
         func.bool_or(cost_source == "native").label("has_native"),
-        func.bool_or(cost_source != "native").label("has_estimated"),
+        func.bool_or(cost_source == "estimated").label("has_estimated"),
     )
 
 
@@ -65,6 +69,7 @@ async def get_trial_verifier_costs(
     """``trial_id -> verifier dollars``, omitting trials with no spend.
 
     Trials with no CUA are ABSENT rather than zero so the UI renders nothing.
+    Null-cost backfill sentinels (``no_cua_artifacts``) are omitted.
     """
     if not trial_ids:
         return {}
@@ -74,7 +79,11 @@ async def get_trial_verifier_costs(
             VerifierCostModel.trial_id.label("trial_id"),
             func.sum(_COST).label("cost_usd"),
         )
-        .where(_LIVE, VerifierCostModel.trial_id.in_(list(trial_ids)))
+        .where(
+            _LIVE,
+            VerifierCostModel.trial_id.in_(list(trial_ids)),
+            VerifierCostModel.cost_usd.isnot(None),
+        )
         .group_by(VerifierCostModel.trial_id)
     )
     if org_id is not None:
@@ -83,6 +92,7 @@ async def get_trial_verifier_costs(
     return {
         row.trial_id: float(row.cost_usd)
         for row in (await session.execute(query)).all()
+        if float(row.cost_usd) > 0
     }
 
 
@@ -91,48 +101,62 @@ async def get_task_verifier_costs(
     *,
     task_ids: Sequence[str],
     org_id: str | None = None,
+    trial_scope_pairs: Sequence[tuple[str, str]] | None = None,
 ) -> dict[str, VerifierCostTotals]:
     """``task_id -> VerifierCostTotals``, omitting tasks with no verifier spend.
 
     Counts ledger rows attributed to the task directly or via a trial of that
-    task. Soft-deleted trials still count (include_deleted).
+    task. ``trial_scope_pairs`` mirrors ``get_task_qa_costs`` so browse cards
+    use the same current-version / non-probe population as agent and QA cost.
     """
     if not task_ids:
         return {}
 
     ids = list(task_ids)
-    direct = select(
+    scoped = trial_scope_pairs is not None
+    ledger = (
         VerifierCostModel.id.label("row_id"),
         _COST.label("cost_usd"),
         VerifierCostModel.cost_source.label("cost_source"),
-        VerifierCostModel.task_id.label("task_id"),
-    ).where(_LIVE, VerifierCostModel.task_id.in_(ids))
+    )
+    direct = select(*ledger, VerifierCostModel.task_id.label("task_id")).where(
+        _LIVE,
+        VerifierCostModel.task_id.in_(ids),
+        VerifierCostModel.cost_usd.isnot(None),
+    )
     via_trials = (
-        select(
-            VerifierCostModel.id.label("row_id"),
-            _COST.label("cost_usd"),
-            VerifierCostModel.cost_source.label("cost_source"),
-            TrialModel.task_id.label("task_id"),
-        )
+        select(*ledger, TrialModel.task_id.label("task_id"))
         .select_from(VerifierCostModel)
         .join(TrialModel, TrialModel.id == VerifierCostModel.trial_id)
-        .where(_LIVE, TrialModel.task_id.in_(ids))
+        .where(
+            _LIVE,
+            TrialModel.task_id.in_(ids),
+            VerifierCostModel.cost_usd.isnot(None),
+        )
     )
+    if scoped:
+        via_trials = via_trials.where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+            not_combine_copy_filter(),
+            tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                list(trial_scope_pairs)
+            ),
+        )
     if org_id is not None:
         direct = direct.where(VerifierCostModel.org_id == org_id)
         via_trials = via_trials.where(VerifierCostModel.org_id == org_id)
 
     u = direct.union(via_trials).subquery()
-    query = (
-        select(
-            u.c.task_id,
-            func.sum(u.c.cost_usd).label("cost_usd"),
-            func.count().label("row_count"),
-            *_group_flags(u.c.cost_source),
-        )
-        .group_by(u.c.task_id)
-        .execution_options(include_deleted=True)
-    )
+    query = select(
+        u.c.task_id,
+        func.sum(u.c.cost_usd).label("cost_usd"),
+        func.count().label("row_count"),
+        *_group_flags(u.c.cost_source),
+    ).group_by(u.c.task_id)
+    if not scoped:
+        query = query.execution_options(include_deleted=True)
+
     return {
         row.task_id: _fold([row]) for row in (await session.execute(query)).all()
     }
@@ -165,6 +189,7 @@ async def get_experiment_verifier_cost_totals(
         .outerjoin(TrialModel, TrialModel.id == VerifierCostModel.trial_id)
         .where(
             _LIVE,
+            VerifierCostModel.cost_usd.isnot(None),
             or_(
                 VerifierCostModel.trial_id.in_(
                     experiment_trial_scope(

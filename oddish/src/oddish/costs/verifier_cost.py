@@ -5,9 +5,9 @@ Distinct from ``trials.cost_usd`` (solver) and ``analysis_costs`` (QA). Covers:
 * Harbor ``type = "cua"`` (artifacts under ``verifier/``)
 * SWE-Marathon-style inline CUA (``verifier/ux/``, ``cua_judge_report.json``)
 
-Route prefers the **credential that actually bills**, not the Bedrock-looking
-model spelling Oddish sometimes stores: SWE-M and force-direct Claude Code
-spend hit ``ANTHROPIC_API_KEY`` / the Claude console.
+Route uses the model id spelling: ``anthropic/…`` → Claude console;
+``bedrock/…`` and Bedrock inference-profile ids → AWS. SWE-M CUA configs
+use the ``anthropic/`` prefix on the platform ``ANTHROPIC_API_KEY``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +50,9 @@ _JUDGE_OUTPUT_TOKENS_PER_CRITERION = 300
 
 _JUDGE_REPORT_NAMES = ("cua_judge_report.json",)
 _TRAJECTORY_NAMES = ("trajectory.json",)
+# Known CUA output roots (Harbor + SWE-M). Prefer these over rglob.
+_CUA_OUTPUT_RELS = ("verifier/ux", "verifier")
+UNPRICED_NO_CUA_ARTIFACTS = "no_cua_artifacts"
 
 
 @dataclass(frozen=True)
@@ -84,31 +86,24 @@ def infer_verifier_route(model: str | None) -> str:
     """Map a verifier model id to a billing recon bucket.
 
     ``anthropic/…`` and bare Claude ids → Anthropic (Claude console).
-    Explicit ``bedrock/…`` → Bedrock (AWS), even though Oddish often *labels*
-    Claude Code as Bedrock while force-direct bills Anthropic — CUA configs
-    that mean Anthropic use the ``anthropic/`` prefix (SWE-M).
+    Explicit ``bedrock/…`` or Bedrock inference-profile ids
+    (``us.anthropic.*`` / ``global.anthropic.*``) → Bedrock.
     """
     raw = (model or "").strip().lower()
     if not raw:
         return ROUTE_OTHER
-    if raw.startswith("bedrock/") or raw.startswith("bedrock."):
+    if (
+        raw.startswith("bedrock/")
+        or raw.startswith("bedrock.")
+        or raw.startswith("us.anthropic.")
+        or raw.startswith("global.anthropic.")
+    ):
         return ROUTE_BEDROCK
     if (
         raw.startswith("anthropic/")
         or raw.startswith("claude")
         or "/claude" in raw
-        or raw.startswith("us.anthropic.")
-        or raw.startswith("global.anthropic.")
     ):
-        # us.anthropic.* without bedrock/ is still often an Anthropic-shaped
-        # id that force-direct rewrote; attribute to Anthropic for console recon
-        # when not explicitly bedrock-prefixed.
-        if raw.startswith("us.anthropic.") or raw.startswith("global.anthropic."):
-            # These look like Bedrock inference-profile ids. Prefer Anthropic
-            # when the platform Anthropic key is present (force-direct reality).
-            if os.environ.get("ANTHROPIC_API_KEY", "").strip():
-                return ROUTE_ANTHROPIC
-            return ROUTE_BEDROCK
         return ROUTE_ANTHROPIC
     return ROUTE_OTHER
 
@@ -181,36 +176,22 @@ def find_cua_artifact_dirs(job_dir: Path) -> list[Path]:
         return []
     found: list[Path] = []
     seen: set[Path] = set()
-    for name in _JUDGE_REPORT_NAMES:
-        for report in sorted(job_dir.rglob(name)):
-            parent = report.parent.resolve()
-            if parent in seen:
-                continue
-            seen.add(parent)
-            found.append(parent)
-    if found:
-        return found
-    # Trajectory under verifier/ without a judge report (partial run).
-    for traj in sorted(job_dir.rglob("trajectory.json")):
-        parts = {p.lower() for p in traj.parts}
-        if "verifier" not in parts:
+    for rel in _CUA_OUTPUT_RELS:
+        directory = (job_dir / rel).resolve()
+        if directory in seen or not directory.is_dir():
             continue
-        parent = traj.parent.resolve()
-        if parent in seen:
-            continue
-        seen.add(parent)
-        found.append(parent)
+        has_report = any((directory / name).is_file() for name in _JUDGE_REPORT_NAMES)
+        has_traj = any((directory / name).is_file() for name in _TRAJECTORY_NAMES)
+        if has_report or has_traj:
+            seen.add(directory)
+            found.append(directory)
     return found
 
 
 def resolve_cua_bundle(job_dir: Path, task_path: Path | None = None) -> CuaArtifactBundle | None:
     """Locate CUA artifacts under a Harbor job directory."""
     dirs = find_cua_artifact_dirs(job_dir)
-    if not dirs and task_path is not None and not task_has_cua_signals(task_path):
-        return None
     if not dirs:
-        # Task claims CUA but artifacts missing — still return a stub dir for
-        # unpriced rows when the caller knows this attempt ran a CUA stage.
         return None
 
     verifier_dir = dirs[0]
@@ -226,10 +207,6 @@ def resolve_cua_bundle(job_dir: Path, task_path: Path | None = None) -> CuaArtif
     for name in _TRAJECTORY_NAMES:
         candidate = verifier_dir / name
         if candidate.is_file():
-            traj_path = candidate
-            break
-    if traj_path is None:
-        for candidate in sorted(verifier_dir.rglob("trajectory.json")):
             traj_path = candidate
             break
 
@@ -319,46 +296,59 @@ def load_cua_model_config(task_path: Path) -> dict[str, str | None]:
     return out
 
 
+def _loop_draft(
+    *,
+    model: str | None,
+    route: str,
+    key_hash: str | None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    cost_usd: float | None = None,
+    cost_source: str = COST_ESTIMATED,
+    unpriced_reason: str | None = None,
+) -> VerifierCostDraft:
+    return VerifierCostDraft(
+        component=COMPONENT_LOOP,
+        model=model,
+        route=route,
+        llm_key_hash=key_hash,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+        unpriced_reason=unpriced_reason,
+    )
+
+
 def draft_loop_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft:
     model = bundle.loop_model
     route = infer_verifier_route(model)
     key_hash = _key_hash_for_route(route)
     if bundle.trajectory_path is None or not bundle.trajectory_path.is_file():
-        return VerifierCostDraft(
-            component=COMPONENT_LOOP,
+        return _loop_draft(
             model=model,
             route=route,
-            llm_key_hash=key_hash,
-            input_tokens=None,
-            output_tokens=None,
-            cache_read_tokens=None,
-            cache_write_tokens=None,
-            cost_usd=None,
-            cost_source=COST_ESTIMATED,
+            key_hash=key_hash,
             unpriced_reason=UNPRICED_MISSING_TRAJECTORY,
         )
     data = _load_json(bundle.trajectory_path)
     if not data:
-        return VerifierCostDraft(
-            component=COMPONENT_LOOP,
+        return _loop_draft(
             model=model,
             route=route,
-            llm_key_hash=key_hash,
-            input_tokens=None,
-            output_tokens=None,
-            cache_read_tokens=None,
-            cache_write_tokens=None,
-            cost_usd=None,
-            cost_source=COST_ESTIMATED,
+            key_hash=key_hash,
             unpriced_reason=UNPRICED_MISSING_TRAJECTORY,
         )
     inp, out, cache, cache_write, cost = _metrics_from_atif(data)
     if cost is not None and cost > 0:
-        return VerifierCostDraft(
-            component=COMPONENT_LOOP,
+        return _loop_draft(
             model=model,
             route=route,
-            llm_key_hash=key_hash,
+            key_hash=key_hash,
             input_tokens=inp,
             output_tokens=out,
             cache_read_tokens=cache,
@@ -368,29 +358,24 @@ def draft_loop_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft:
         )
     estimated = estimate_cost_usd(model, inp, out, cache, cache_write)
     if estimated is not None:
-        return VerifierCostDraft(
-            component=COMPONENT_LOOP,
+        return _loop_draft(
             model=model,
             route=route,
-            llm_key_hash=key_hash,
+            key_hash=key_hash,
             input_tokens=inp,
             output_tokens=out,
             cache_read_tokens=cache,
             cache_write_tokens=cache_write,
             cost_usd=estimated,
-            cost_source=COST_ESTIMATED,
         )
-    return VerifierCostDraft(
-        component=COMPONENT_LOOP,
+    return _loop_draft(
         model=model,
         route=route,
-        llm_key_hash=key_hash,
+        key_hash=key_hash,
         input_tokens=inp,
         output_tokens=out,
         cache_read_tokens=cache,
         cache_write_tokens=cache_write,
-        cost_usd=None,
-        cost_source=COST_ESTIMATED,
         unpriced_reason=UNPRICED_MISSING_USAGE,
     )
 
@@ -428,6 +413,8 @@ def build_verifier_cost_drafts(
     job_dir: Path, task_path: Path | None = None
 ) -> list[VerifierCostDraft]:
     """Return loop (+ judge) drafts when CUA artifacts are present."""
+    if task_path is not None and not task_has_cua_signals(task_path):
+        return []
     bundle = resolve_cua_bundle(job_dir, task_path=task_path)
     if bundle is None:
         return []
@@ -511,17 +498,23 @@ async def record_verifier_llm_costs(
     task_id: str | None,
     task_version_id: str | None,
     cost_source_override: str | None = None,
+    session: AsyncSession | None = None,
 ) -> int:
-    """Best-effort settlement write. Never raises into the trial path."""
+    """Best-effort settlement write. Never raises into the trial path.
+
+    When ``session`` is provided, uses it (caller owns commit). Otherwise opens
+    a short write session.
+    """
     if job_dir is None:
         return 0
     try:
         drafts = build_verifier_cost_drafts(job_dir, task_path=task_path)
         if not drafts:
             return 0
-        async with get_session() as session:
-            n = await upsert_verifier_cost_rows(
-                session,
+
+        async def _write(s: AsyncSession) -> int:
+            return await upsert_verifier_cost_rows(
+                s,
                 drafts=drafts,
                 trial_id=trial_id,
                 attempt=attempt,
@@ -531,7 +524,11 @@ async def record_verifier_llm_costs(
                 task_version_id=task_version_id,
                 cost_source_override=cost_source_override,
             )
-        return n
+
+        if session is not None:
+            return await _write(session)
+        async with get_session() as s:
+            return await _write(s)
     except Exception:
         log.exception(
             "verifier LLM cost settlement failed trial_id=%s attempt=%s",
@@ -539,23 +536,6 @@ async def record_verifier_llm_costs(
             attempt,
         )
         return 0
-
-
-async def existing_verifier_cost_keys(
-    session: AsyncSession, trial_ids: list[str]
-) -> set[tuple[str, int]]:
-    """``(trial_id, attempt)`` pairs that already have at least one ledger row."""
-    if not trial_ids:
-        return set()
-    rows = (
-        await session.execute(
-            select(VerifierCostModel.trial_id, VerifierCostModel.attempt).where(
-                VerifierCostModel.deleted_at.is_(None),
-                VerifierCostModel.trial_id.in_(trial_ids),
-            )
-        )
-    ).all()
-    return {(row.trial_id, int(row.attempt)) for row in rows}
 
 
 _BACKFILL_BATCH = 200
@@ -569,15 +549,28 @@ _BACKFILL_ARTIFACT_CANDIDATES = (
 )
 
 
+def _no_artifacts_sentinel() -> VerifierCostDraft:
+    """Marks an attempt as inspected so cleanup does not rescan it forever."""
+    return _loop_draft(
+        model=None,
+        route=ROUTE_OTHER,
+        key_hash=None,
+        cost_source=COST_BACKFILL,
+        unpriced_reason=UNPRICED_NO_CUA_ARTIFACTS,
+    )
+
+
 async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
     """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
 
     Selects finished agent trials with an S3 attempt prefix and no
-    ``verifier_costs`` row for that attempt, downloads CUA artifacts when
-    present, and inserts with ``cost_source=backfill``. Missing artifacts
-    skip the trial (retry next sweep). Never invents duration-based prices.
+    ``verifier_costs`` row for that attempt. Inserts priced rows when
+    artifacts exist; otherwise inserts a null-cost sentinel so the same
+    non-CUA trials are not reselected every sweep.
     """
     import tempfile
+
+    from sqlalchemy.orm import load_only
 
     from oddish.core.trial_artifacts import (
         TrialArtifactMode,
@@ -592,8 +585,6 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
         ClientError = Exception  # type: ignore[misc, assignment]
 
     async with get_session() as session:
-        # Anti-join: finished agent trials with S3 key and no ledger row for
-        # the current attempt. Prefer recent finishes so live recon catches up.
         existing = (
             select(VerifierCostModel.trial_id, VerifierCostModel.attempt)
             .where(VerifierCostModel.deleted_at.is_(None))
@@ -602,6 +593,19 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
         candidates = (
             await session.execute(
                 select(TrialModel)
+                .options(
+                    load_only(
+                        TrialModel.id,
+                        TrialModel.attempts,
+                        TrialModel.experiment_id,
+                        TrialModel.org_id,
+                        TrialModel.task_id,
+                        TrialModel.task_version_id,
+                        TrialModel.trial_s3_key,
+                        TrialModel.kind,
+                        TrialModel.finished_at,
+                    )
+                )
                 .outerjoin(
                     existing,
                     (existing.c.trial_id == TrialModel.id)
@@ -625,55 +629,84 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
             )
         ).scalars().all()
 
-    if not candidates:
-        return 0
+        if not candidates:
+            return 0
 
-    storage = StorageClient()
-    inserted_total = 0
-    for trial in candidates:
-        try:
-            layout = await resolve_trial_artifact_layout(trial, storage)
-            if layout.mode is TrialArtifactMode.UNAVAILABLE or not layout.artifact_prefix:
-                continue
-            prefix = layout.artifact_prefix.rstrip("/") + "/"
-            with tempfile.TemporaryDirectory(prefix="cua-backfill-") as tmp:
-                tmp_path = Path(tmp)
-                verifier_dir = tmp_path / "verifier" / "ux"
-                verifier_dir.mkdir(parents=True, exist_ok=True)
-                found_any = False
-                for relative, local_name in _BACKFILL_ARTIFACT_CANDIDATES:
-                    key = f"{prefix}{relative}"
-                    try:
-                        body = await storage.download_bytes(key)
-                    except ClientError as exc:
-                        if is_missing_object(exc):
-                            continue
-                        raise
-                    except Exception:
-                        # Missing-object helpers vary by backend; treat soft miss.
-                        if not await storage.object_exists(key):
-                            continue
-                        raise
-                    (verifier_dir / local_name).write_bytes(body)
-                    found_any = True
-                if not found_any:
+        storage = StorageClient()
+        inserted_total = 0
+        failures = 0
+        for trial in candidates:
+            try:
+                layout = await resolve_trial_artifact_layout(trial, storage)
+                if (
+                    layout.mode is TrialArtifactMode.UNAVAILABLE
+                    or not layout.artifact_prefix
+                ):
+                    n = await upsert_verifier_cost_rows(
+                        session,
+                        drafts=[_no_artifacts_sentinel()],
+                        trial_id=trial.id,
+                        attempt=int(trial.attempts or 1),
+                        experiment_id=trial.experiment_id,
+                        org_id=trial.org_id,
+                        task_id=trial.task_id,
+                        task_version_id=trial.task_version_id,
+                    )
+                    inserted_total += n
                     continue
-                n = await record_verifier_llm_costs(
-                    job_dir=tmp_path,
-                    task_path=None,
-                    trial_id=trial.id,
-                    attempt=int(trial.attempts or 1),
-                    experiment_id=trial.experiment_id,
-                    org_id=trial.org_id,
-                    task_id=trial.task_id,
-                    task_version_id=trial.task_version_id,
-                    cost_source_override=COST_BACKFILL,
-                )
-                inserted_total += n
-        except Exception:
-            log.exception(
-                "verifier cost backfill failed trial_id=%s",
-                trial.id,
+                prefix = layout.artifact_prefix.rstrip("/") + "/"
+                with tempfile.TemporaryDirectory(prefix="cua-backfill-") as tmp:
+                    tmp_path = Path(tmp)
+                    verifier_dir = tmp_path / "verifier" / "ux"
+                    verifier_dir.mkdir(parents=True, exist_ok=True)
+                    found_any = False
+                    for relative, local_name in _BACKFILL_ARTIFACT_CANDIDATES:
+                        key = f"{prefix}{relative}"
+                        try:
+                            body = await storage.download_bytes(key)
+                        except ClientError as exc:
+                            if is_missing_object(exc):
+                                continue
+                            raise
+                        (verifier_dir / local_name).write_bytes(body)
+                        found_any = True
+                    if not found_any:
+                        drafts = [_no_artifacts_sentinel()]
+                        n = await upsert_verifier_cost_rows(
+                            session,
+                            drafts=drafts,
+                            trial_id=trial.id,
+                            attempt=int(trial.attempts or 1),
+                            experiment_id=trial.experiment_id,
+                            org_id=trial.org_id,
+                            task_id=trial.task_id,
+                            task_version_id=trial.task_version_id,
+                        )
+                    else:
+                        n = await record_verifier_llm_costs(
+                            job_dir=tmp_path,
+                            task_path=None,
+                            trial_id=trial.id,
+                            attempt=int(trial.attempts or 1),
+                            experiment_id=trial.experiment_id,
+                            org_id=trial.org_id,
+                            task_id=trial.task_id,
+                            task_version_id=trial.task_version_id,
+                            cost_source_override=COST_BACKFILL,
+                            session=session,
+                        )
+                    inserted_total += n
+            except Exception:
+                failures += 1
+                if failures <= 3:
+                    log.exception(
+                        "verifier cost backfill failed trial_id=%s",
+                        trial.id,
+                    )
+                continue
+        if failures > 3:
+            log.warning(
+                "verifier cost backfill: %s additional trial failures suppressed",
+                failures - 3,
             )
-            continue
-    return inserted_total
+        return inserted_total
