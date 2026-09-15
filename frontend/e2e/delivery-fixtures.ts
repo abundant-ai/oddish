@@ -88,13 +88,12 @@ export function history(
         is_current: n === current,
         pre_trial_status: n >= 8 ? null : "success",
         must_fix: 0,
-        pre_trial_should_fix: 0,
         rollout_count: n >= 8 ? 0 : 5,
         rollout_agents: n >= 8 ? 0 : 3,
         qa_runs: n >= 8 ? [] : [{ trial_id: `qa-${n}`, kind: "qa", status }],
         findings: [
           {
-            tier: "should_fix",
+            tier: "must_fix",
             title: `v${n} historical finding`,
             source: "pre_trial",
           },
@@ -181,13 +180,13 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
         "The verifier does not check that errors avoid unhandled promise rejections.",
       source: "pre_trial",
       acknowledged: false,
-      recorded_tier: "should_fix",
+      recorded_tier: "must_fix",
       file: "tests/test.sh",
       line_start: 7,
       line_end: 9,
       finding: {
         id: "verifier",
-        tier: "should_fix",
+        tier: "must_fix",
         title:
           "The verifier does not check that errors avoid unhandled promise rejections.",
         file: "tests/test.sh",
@@ -213,7 +212,7 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
         "Agent environment is missing the global.self polyfill that the verifier defines.",
       source: "trial",
       acknowledged: false,
-      recorded_tier: "should_fix",
+      recorded_tier: "must_fix",
     },
   ];
   return row;

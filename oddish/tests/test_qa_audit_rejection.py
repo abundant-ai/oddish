@@ -298,7 +298,7 @@ async def settle(trial_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", None])
+@pytest.mark.parametrize("tier", ["must_fix", None])
 @pytest.mark.parametrize("run_count", [1, 3])
 async def test_same_agent_runs_store_verdict_after_qa(audit_task, tier, run_count):
     task_id, version_id, source_id, artifacts = audit_task
