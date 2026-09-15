@@ -411,6 +411,24 @@ def _resolve_anthropic_hdo_api_key() -> str:
     return (os.environ.get("ANTHROPIC_HDO_API_KEY") or "").strip()
 
 
+def _anthropic_hdo_credential_env(model_name: str | None) -> dict[str, str]:
+    """The HDO credentials that must outrank any probe/BYOK Anthropic key.
+
+    Returned as an overlay rather than written, because the two dispatch paths
+    apply the last word in different places. In process it is the final write
+    onto ``agent_config.env``; the ephemeral child merges its own layers, so the
+    same credentials have to ride the layer it merges last. Only credentials
+    belong here -- the model id is a routing decision, settled earlier.
+    """
+    if not is_anthropic_hdo_model(model_name):
+        return {}
+    return {
+        "ANTHROPIC_API_KEY": _resolve_anthropic_hdo_api_key(),
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+    }
+
+
 def _inject_anthropic_hdo_api_key(
     agent_config: AgentConfig, *, model_name: str | None
 ) -> None:
@@ -420,14 +438,12 @@ def _inject_anthropic_hdo_api_key(
     that original id as *model_name*). Always overwrites: an empty HDO key must
     not fall through to the platform Anthropic / Bedrock credentials.
     """
-    if not is_anthropic_hdo_model(model_name):
+    credentials = _anthropic_hdo_credential_env(model_name)
+    if not credentials:
         return
     bare_model = anthropic_hdo_bare_model_id(model_name or "")
     api_model = to_anthropic_api_model_id(bare_model) or bare_model
-    env = dict(agent_config.env or {})
-    env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    env = {**(agent_config.env or {}), **credentials}
     if _is_claude_code_agent(agent_config) and api_model:
         env["ANTHROPIC_MODEL"] = api_model
         for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
@@ -689,7 +705,14 @@ def _apply_probe_oddish_creds(
     agent_config.env = env
 
 
-def _build_agent_config(
+def _gateway_env(probe_oddish_env: dict[str, str] | None) -> dict[str, str] | None:
+    """The analysis gateway env, when the probe creds route the model themselves."""
+    if (probe_oddish_env or {}).get("ODDISH_QA_MODEL_ROUTED") == "1":
+        return probe_oddish_env
+    return None
+
+
+def _build_routed_agent_config(
     *,
     agent: str,
     model: str | None,
@@ -697,12 +720,17 @@ def _build_agent_config(
     is_probe: bool = False,
     probe_oddish_env: dict[str, str] | None = None,
 ) -> AgentConfig:
-    """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
-    gateway_env = (
-        probe_oddish_env
-        if (probe_oddish_env or {}).get("ODDISH_QA_MODEL_ROUTED") == "1"
-        else None
-    )
+    """Build the AgentConfig through every provider routing decision.
+
+    Shapes ``model_name``, ``env``, and ``kwargs`` only; ``name`` and
+    ``import_path`` are left exactly as submitted. That boundary is what lets
+    the out-of-process ephemeral path share this: the child runs its own Harbor,
+    which has none of the Oddish wrapper agent classes ``_build_agent_config``
+    installs afterwards, but it needs the same provider routing an in-process
+    trial gets. Which dispatch path ran a trial is an Oddish scheduling detail,
+    so it must never decide which endpoint the agent talks to.
+    """
+    gateway_env = _gateway_env(probe_oddish_env)
     raw_agent_config = raw_harbor_config.get("agent_config")
     agent_config = (
         AgentConfig.model_validate(raw_agent_config)
@@ -822,6 +850,27 @@ def _build_agent_config(
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
     _apply_claude_code_probe_subagent_model(agent_config, is_probe)
+
+    return agent_config
+
+
+def _build_agent_config(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+    is_probe: bool = False,
+    probe_oddish_env: dict[str, str] | None = None,
+) -> AgentConfig:
+    """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
+    gateway_env = _gateway_env(probe_oddish_env)
+    agent_config = _build_routed_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+        is_probe=is_probe,
+        probe_oddish_env=probe_oddish_env,
+    )
 
     # Gate on agent_keeps_public_model_identity: a harness that routes the model
     # through its own service (Cursor) or pins its egress to one provider
