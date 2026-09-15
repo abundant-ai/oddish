@@ -8,6 +8,8 @@ the version they attested to and only count while it is still the default.
 
 from __future__ import annotations
 
+from oddish.verdict import verdict_label
+
 from typing import Any, Sequence
 
 from fastapi import HTTPException
@@ -1105,7 +1107,7 @@ async def _compute_board(
                 + ([f"Agents: {agents}/{min_agents}"] if agents < min_agents else []),
             )
 
-            verdict_label = {
+            missing_verdict_label = {
                 "queued": "Verdict queued",
                 "running": "Verdict running",
                 "error": "No verdict",
@@ -1116,26 +1118,31 @@ async def _compute_board(
                     "verdict_ok",
                     False,
                     f"No verdict on {vlabel}",
-                    [verdict_label],
+                    [missing_verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
                     f"verdict does not cover {vlabel}; regenerate the verdict",
-                    [verdict_label],
+                    [missing_verdict_label],
                 )
             else:
-                accepted = bool(verdict.get("is_good"))
+                label = verdict_label(task.verdict_status, verdict)
+                accepted = label == "Accepted"
                 automated(
                     "verdict_ok",
                     accepted,
                     (
                         "Verdict: Accepted; human sign-off is separate"
                         if accepted
-                        else f"blocking defect: {verdict.get('primary_issue') or ''}"
+                        else (
+                            f"blocking defect: {verdict.get('primary_issue') or ''}"
+                            if label == "Rejected"
+                            else label
+                        )
                     ),
-                    ["Rejected"],
+                    [label],
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)

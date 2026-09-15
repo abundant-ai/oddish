@@ -962,9 +962,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
   await expect(
     page.getByRole("table").getByText("Ready", { exact: true })
   ).toBeVisible();
-  await expect(
-    page.getByText("Delivery evidence checks incomplete", { exact: true })
-  ).toBeVisible();
+  await expect(page.getByText("No verdict", { exact: true })).toBeVisible();
   expect(state.writes.map(({ body }) => body.check_key)).toEqual([
     "ack:verifier",
     "ack:environment",
@@ -2009,4 +2007,29 @@ for (const status of ["queued", "running", "failed"] as const) {
       ).toBeVisible();
     });
   }
+}
+
+for (const [status, label] of [
+  ["accepted", "Accepted"],
+  ["needs_fixes", "Rejected"],
+  ["queued", "Verdict queued"],
+  ["running", "Verdict running"],
+  ["error", "No verdict"],
+  ["outdated", "No verdict"],
+  ["never", "No verdict"],
+] as const) {
+  test(`delivery badge uses ${label} for ${status}`, async ({ page }) => {
+    const state = await controlledAPI(page);
+    state.board.tasks[0].qa.status = status;
+    state.board.tasks[0].qa.detail = "Internal generation detail";
+    await page.goto("/?task=task-a");
+    const badge = page.getByText(label, { exact: true });
+    await expect(badge).toBeVisible();
+    await expect(badge).not.toHaveAttribute("title");
+    if (label === "No verdict") {
+      await expect(badge).toHaveClass(/text-muted-foreground/);
+      await expect(badge).not.toHaveClass(/amber|red/);
+    }
+    await expect(page.getByText(/Delivery evidence checks/)).toHaveCount(0);
+  });
 }

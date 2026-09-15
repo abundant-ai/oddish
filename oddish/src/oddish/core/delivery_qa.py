@@ -24,6 +24,7 @@ from oddish.db import (
 )
 from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.schemas import DeliveryQAStatus
+from oddish.verdict import verdict_label
 
 
 async def delivery_qa_statuses(
@@ -114,7 +115,7 @@ def evaluate_delivery_qa(
     if version is None or qa.task_version_id != version.id:
         result.status, result.detail = (
             "outdated",
-            "Delivery evidence checks cover another task version",
+            "No verdict",
         )
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
@@ -123,19 +124,17 @@ def evaluate_delivery_qa(
             else "queued"
         )
         result.detail = (
-            "Delivery evidence checks running"
-            if result.status == "running"
-            else "Delivery evidence checks queued"
+            "Verdict running" if result.status == "running" else "Verdict queued"
         )
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",
-            qa.error_message or qa.analysis_error or "Delivery evidence checks incomplete",
+            qa.error_message or qa.analysis_error or "No verdict",
         )
     elif qa.finished_at is None:
         result.status, result.detail = (
             "outdated",
-            "Delivery check completion time was not recorded",
+            "Verdict completion time was not recorded",
         )
     else:
         try:
@@ -145,7 +144,7 @@ def evaluate_delivery_qa(
         except AnalysisPayloadError:
             result.status, result.detail = (
                 "outdated",
-                "Delivery evidence coverage was not recorded; regenerate the verdict",
+                "Verdict evidence was not recorded; regenerate the verdict",
             )
             return result
         pinned = list(payload.trial_evidence + payload.baseline_evidence)
@@ -177,14 +176,15 @@ def evaluate_delivery_qa(
             != qa.id
         ):
             result.status, result.detail = "error", "No verdict"
-        elif task.verdict.get("is_good") is True:
-            result.status, result.detail = (
-                "accepted",
-                "Delivery evidence checks passed",
-            )
         else:
-            result.status, result.detail = (
-                "needs_fixes",
-                task.verdict.get("primary_issue") or "Rejected",
-            )
+            label = verdict_label(task.verdict_status, task.verdict)
+            if label == "Accepted":
+                result.status, result.detail = "accepted", label
+            elif label == "Rejected":
+                result.status, result.detail = (
+                    "needs_fixes",
+                    task.verdict.get("primary_issue") or label,
+                )
+            else:
+                result.status, result.detail = "error", "No verdict"
     return result

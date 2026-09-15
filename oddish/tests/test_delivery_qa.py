@@ -443,3 +443,31 @@ async def test_concurrent_claims_through_different_deliveries_have_one_owner(ses
         await session.delete(task)
         await session.delete(experiment)
         await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "verdict, expected",
+    [
+        ({"verdict": "accept", "is_good": False}, "accepted"),
+        ({"verdict": "reject", "is_good": True}, "needs_fixes"),
+        ({"verdict": "accept"}, "accepted"),
+        ({"verdict": "reject"}, "needs_fixes"),
+        ({"is_good": None}, "error"),
+    ],
+)
+async def test_delivery_verdict_uses_explicit_outcomes(session, verdict, expected):
+    delivery, task, _, _, _, _ = await _reviewed_delivery(session)
+    task.verdict = verdict
+    await session.flush()
+    session.expunge_all()
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    assert board.tasks[0].qa.status == expected
+    check = next(item for item in board.tasks[0].checks if item.key == "verdict_ok")
+    assert check.status == ("pass" if expected == "accepted" else "fail")
+    if expected != "accepted":
+        assert check.failure_labels == (
+            ["No verdict"] if expected == "error" else ["Rejected"]
+        )
+    if expected == "error":
+        assert board.tasks[0].qa.detail == "No verdict"

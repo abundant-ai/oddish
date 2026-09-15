@@ -1,5 +1,4 @@
 import {
-  AlertCircle,
   CheckCircle2,
   CircleDashed,
   Clock,
@@ -8,32 +7,29 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { DELIVERY_CHECK_STATUS_LABELS } from "@/lib/deliveries";
+import { VERDICT_LABELS } from "@/lib/review";
 import type { DeliveryQAStatus } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 
-const DELIVERY_CHECK_PRESENTATION = {
+const VERDICT_PRESENTATION = {
   accepted: {
     Icon: CheckCircle2,
     tone: "text-emerald-700 dark:text-emerald-400",
   },
   needs_fixes: { Icon: XCircle, tone: "text-red-700 dark:text-red-400" },
-  error: { Icon: AlertCircle, tone: "text-amber-700 dark:text-amber-400" },
-  outdated: { Icon: Clock, tone: "text-amber-700 dark:text-amber-400" },
+  error: { Icon: CircleDashed, tone: "text-muted-foreground" },
+  outdated: { Icon: CircleDashed, tone: "text-muted-foreground" },
   running: { Icon: Loader2, tone: "text-blue-700 dark:text-blue-400" },
   queued: { Icon: Clock, tone: "text-blue-700 dark:text-blue-400" },
   never: { Icon: CircleDashed, tone: "text-muted-foreground" },
 };
 
-export function DeliveryCheckStatusBadge({ qa }: { qa: DeliveryQAStatus }) {
-  const { Icon, tone } = DELIVERY_CHECK_PRESENTATION[qa.status];
+export function DeliveryVerdictBadge({ qa }: { qa: DeliveryQAStatus }) {
+  const { Icon, tone } = VERDICT_PRESENTATION[qa.status];
   return (
-    <span
-      title={qa.detail}
-      className={cn("inline-flex items-center gap-1 text-sm", tone)}
-    >
+    <span className={cn("inline-flex items-center gap-1 text-sm", tone)}>
       <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-      {DELIVERY_CHECK_STATUS_LABELS[qa.status]}
+      {VERDICT_LABELS[qa.status]}
     </span>
   );
 }

@@ -45,7 +45,7 @@ import type {
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   DeliveryStatusBadge,
-  DeliveryCheckStatusBadge,
+  DeliveryVerdictBadge,
 } from "@/components/delivery-status";
 import {
   AlertDialog,
@@ -904,7 +904,7 @@ function TaskRow({
                 )
               ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <DeliveryCheckStatusBadge qa={row.qa} />
+                <DeliveryVerdictBadge qa={row.qa} />
                 {groupBy === "owner" &&
                   !row.qa_work.owner_user_id &&
                   !frozen &&

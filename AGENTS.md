@@ -2536,8 +2536,10 @@ Finding attribution in a task overview opens trials through the host drawer,
 including trials from other experiments. Source-file clicks select the file and
 line range in the current task pane; they preserve the experiment route.
 
-The delivery QA status badge describes delivery evidence checks only. Its passed
-state does not assert that all delivery requirements or human sign-off are satisfied.
+Delivery verdict badges reuse VERDICT_LABELS: Accepted, Rejected, No verdict,
+Verdict queued, and Verdict running. Missing, outdated, and failed states share
+a neutral No verdict badge without explanation tooltips. Acceptance does not
+assert that all delivery requirements or human sign-off are satisfied.
 
 Task-history generation progress applies only to the current version. An older
 version’s stored verdict and reasoning remain visible when current-version

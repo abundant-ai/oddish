@@ -686,14 +686,52 @@ test("history verdicts distinguish explicit labels, legacy booleans, and missing
     assert.equal(review.verdictOutcome(verdict), expected);
 });
 
-test("delivery evidence coverage is labeled as delivery checks", () => {
-  const deliveries = load(
-    "@/lib/deliveries"
-  ) as typeof import("../src/lib/deliveries.ts");
-  assert.equal(
-    deliveries.DELIVERY_CHECK_STATUS_LABELS.outdated,
-    "Delivery evidence checks need refresh"
+test("delivery badges render the shared verdict labels without absence explanations", () => {
+  const module: {
+    DeliveryVerdictBadge?: React.ComponentType<{
+      qa: { status: string; detail: string };
+    }>;
+  } = {};
+  runInNewContext(
+    ts.transpileModule(
+      readFileSync(
+        new URL("../src/components/delivery-status.tsx", import.meta.url),
+        "utf8"
+      ),
+      {
+        compilerOptions: {
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+      }
+    ).outputText,
+    {
+      exports: module,
+      require: (name: string) => {
+        if (name === "react/jsx-runtime") return jsx;
+        if (name === "@/lib/review") return review;
+        if (name === "@/lib/utils")
+          return { cn: (...parts: string[]) => parts.join(" ") };
+        if (name === "@/components/ui/badge") return { Badge: box };
+        assert.equal(name, "lucide-react");
+        return new Proxy({}, { get: () => () => null });
+      },
+    }
   );
-  for (const label of Object.values(deliveries.DELIVERY_CHECK_STATUS_LABELS))
-    assert.ok(label.startsWith("Delivery evidence checks"));
+  for (const [status, label] of Object.entries(review.VERDICT_LABELS)) {
+    const html = renderToStaticMarkup(
+      React.createElement(module.DeliveryVerdictBadge!, {
+        qa: { status, detail: "Internal generation detail" },
+      })
+    );
+    assert.equal(html.replace(/<[^>]*>/g, ""), label);
+    assert.doesNotMatch(
+      html,
+      /title=|Internal generation detail|Delivery evidence/
+    );
+    if (label === "No verdict") {
+      assert.match(html, /text-muted-foreground/);
+      assert.doesNotMatch(html, /amber|red/);
+    }
+  }
 });
