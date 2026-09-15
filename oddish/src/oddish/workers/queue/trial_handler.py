@@ -21,7 +21,10 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
-from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.harbor_artifacts import (
+    build_trial_result,
+    is_infrastructure_exception,
+)
 from oddish.core.trial_artifacts import (
     trial_name_from_manifest,
     validate_uploaded_analysis_artifacts,
@@ -1038,7 +1041,23 @@ async def _store_trial_results(
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
             derived_reward = None if analysis_artifact_error else outcome.reward
-            if derived_reward is None and is_timeout and not analysis_artifact_error:
+            # Harbor runs the verifier even when the agent phase raised, so a
+            # trial the model provider refused still arrives carrying a reward
+            # for an environment the agent never worked in. Settling that number
+            # would publish an infrastructure failure as a genuine score, and an
+            # experiment cannot tell the two apart afterwards. Drop it and let
+            # the trial take the path it already takes when the verifier reports
+            # nothing: the error surfaces, and Harbor's own RetryConfig -- read
+            # below by ``_is_non_retryable_outcome`` -- decides retry or fail.
+            if is_infrastructure_exception(outcome.exception_type):
+                if derived_reward is not None:
+                    console.print(
+                        f"[yellow]Trial {trial_id} discarding verifier "
+                        f"reward={derived_reward}: {outcome.exception_type} "
+                        "ended the run before the agent was measured[/yellow]"
+                    )
+                derived_reward = None
+            elif derived_reward is None and is_timeout and not analysis_artifact_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -1545,7 +1564,24 @@ async def _handle_harbor_event(
                             or "Unknown error"
                         )
                         is_agent_timeout = _is_agent_timeout_exception(exc_info)
-                        if is_agent_timeout:
+                        if is_infrastructure_exception(
+                            getattr(exc_info, "exception_type", None)
+                        ):
+                            # Same rule settlement applies below: the provider
+                            # ended the run before the agent was measured, so
+                            # the verifier's reward is not this trial's score.
+                            # The row deliberately stays non-terminal. Settlement
+                            # owns the retry-or-fail decision with the whole
+                            # outcome in hand, and stamping FAILED here would
+                            # send a last-attempt trial down the cancellation
+                            # short circuit above, which stores metering only.
+                            # A worker that dies before settlement then leaves a
+                            # running row for the stale-heartbeat sweep instead
+                            # of a terminal SUCCESS carrying a reward the agent
+                            # never earned.
+                            extracted_reward = None
+                            trial.error_message = str(error_msg)
+                        elif is_agent_timeout:
                             if (
                                 extracted_reward is None
                                 and result.verifier_result is not None
