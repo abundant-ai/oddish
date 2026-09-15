@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence, cast
 
-
 ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
 
 
@@ -197,12 +196,12 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
     return None
 
 
-# Harbor raises these when the model provider -- not the agent -- ended the
-# trial: the request was refused, or the connection carrying it failed. No model
-# output reached the environment, yet Harbor still runs the verifier afterwards,
-# and a verifier grading an untouched environment reports a real number (usually
-# 0.0). That number measures the provider failure, not the agent, so no caller
-# may settle it as the trial's score.
+# Harbor runs the verifier after an agent-phase exception. The scoring policy
+# discards its reward for these recorded provider, authentication, and transport
+# failures, even when the agent completed work before the failure. The exception
+# name alone does not establish whether the environment was changed. This list
+# defines which provider exceptions invalidate scores; it is not a general
+# classifier for sandbox, verifier, or other infrastructure failures.
 #
 # Membership is an explicit list of names rather than a subclass check against
 # Harbor's ``ApiError``. ``exception_type`` is a name persisted in Harbor's
@@ -219,16 +218,15 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
 #                                 real reward-0 outcome
 #   ContextWindowExceededError -- spent its own context budget
 #   OutputTokenExceededError   -- spent its own output budget
-INFRASTRUCTURE_EXCEPTION_TYPES: frozenset[str] = frozenset(
+SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES: frozenset[str] = frozenset(
     {
-        # The provider refused the request outright: credential, model id, or
-        # account quota. Another attempt cannot repair any of them.
+        # Credential, request, model/resource, or account-limit failures.
         "AgentAuthenticationError",
         "ApiClientError",
         "ApiProviderResourceNotFoundError",
         "ApiUsageLimitError",
         "ModelNotFoundError",
-        # The provider accepted the account but never served the request.
+        # Provider or transport failures, including interrupted responses.
         "ApiConnectionClosedError",
         "ApiInternalServerError",
         "ApiOverloadedError",
@@ -241,9 +239,9 @@ INFRASTRUCTURE_EXCEPTION_TYPES: frozenset[str] = frozenset(
 )
 
 
-def is_infrastructure_exception(exception_type: str | None) -> bool:
-    """Whether the provider, not the agent, ended a trial with this exception."""
-    return exception_type in INFRASTRUCTURE_EXCEPTION_TYPES
+def is_score_invalidating_provider_exception(exception_type: str | None) -> bool:
+    """Whether a recorded provider exception invalidates this trial's score."""
+    return exception_type in SCORE_INVALIDATING_PROVIDER_EXCEPTION_TYPES
 
 
 def build_trial_result(

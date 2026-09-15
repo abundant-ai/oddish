@@ -61,7 +61,7 @@ from oddish.core.harbor_artifacts import (
     extract_trajectory_metrics,
     extract_trial_result_fields,
     extract_verifier_metrics,
-    is_infrastructure_exception,
+    is_score_invalidating_provider_exception,
     write_trial_selection_manifest,
 )
 from oddish.core.idempotency import compute_sweep_idempotency_key
@@ -1772,11 +1772,12 @@ def trial_result_to_import_spec(
             fields.exception_type,
         )
 
-    # A reward the verifier produced after the model provider ended the agent
-    # phase grades an environment the agent never worked in, so it is not this
-    # trial's score. Matches the live worker's settlement.
+    # Match live settlement: these recorded provider failures invalidate the
+    # verifier reward, including failures after partial agent work.
     reward = (
-        None if is_infrastructure_exception(fields.exception_type) else fields.reward
+        None
+        if is_score_invalidating_provider_exception(fields.exception_type)
+        else fields.reward
     )
 
     # SUCCESS iff the verifier produced a reward (partial counts as

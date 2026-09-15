@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 
 from oddish.core.harbor_artifacts import (
     build_trial_result,
-    is_infrastructure_exception,
+    is_score_invalidating_provider_exception,
 )
 from oddish.core.trial_artifacts import (
     trial_name_from_manifest,
@@ -307,15 +307,15 @@ class PreparedTrialRun:
     trial_attempt: int = 1
 
 
-def _prepared_trial_is_probe(prepared_trial: PreparedTrialRun) -> bool:
-    """The runner's probe test, sourced from the runner itself.
+def _prepared_trial_uses_probe_routing(prepared_trial: PreparedTrialRun) -> bool:
+    """Whether the prepared run shares operator-probe routing rules.
 
     Credential scoping must agree with the transport the agent is routed to, so
-    this defers to ``harbor.runner.trial_is_probe`` rather than restating it.
+    this defers to ``harbor.runner.uses_probe_routing`` rather than restating it.
     """
-    from oddish.workers.harbor.runner import trial_is_probe
+    from oddish.workers.harbor.runner import uses_probe_routing
 
-    return trial_is_probe(
+    return uses_probe_routing(
         harbor_config=prepared_trial.trial_harbor_config,
         trial_kind=prepared_trial.trial_kind,
     )
@@ -1041,20 +1041,16 @@ async def _store_trial_results(
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
             derived_reward = None if analysis_artifact_error else outcome.reward
-            # Harbor runs the verifier even when the agent phase raised, so a
-            # trial the model provider refused still arrives carrying a reward
-            # for an environment the agent never worked in. Settling that number
-            # would publish an infrastructure failure as a genuine score, and an
-            # experiment cannot tell the two apart afterwards. Drop it and let
-            # the trial take the path it already takes when the verifier reports
-            # nothing: the error surfaces, and Harbor's own RetryConfig -- read
-            # below by ``_is_non_retryable_outcome`` -- decides retry or fail.
-            if is_infrastructure_exception(outcome.exception_type):
+            # Recorded provider failures invalidate the verifier reward even
+            # after partial agent work. Drop it and use the existing scoreless
+            # path: the error surfaces, and Harbor's RetryConfig -- read below
+            # by ``_is_non_retryable_outcome`` -- decides retry or fail.
+            if is_score_invalidating_provider_exception(outcome.exception_type):
                 if derived_reward is not None:
                     console.print(
                         f"[yellow]Trial {trial_id} discarding verifier "
                         f"reward={derived_reward}: {outcome.exception_type} "
-                        "ended the run before the agent was measured[/yellow]"
+                        "invalidates the score under provider-failure policy[/yellow]"
                     )
                 derived_reward = None
             elif derived_reward is None and is_timeout and not analysis_artifact_error:
@@ -1564,12 +1560,11 @@ async def _handle_harbor_event(
                             or "Unknown error"
                         )
                         is_agent_timeout = _is_agent_timeout_exception(exc_info)
-                        if is_infrastructure_exception(
+                        if is_score_invalidating_provider_exception(
                             getattr(exc_info, "exception_type", None)
                         ):
-                            # Same rule settlement applies below: the provider
-                            # ended the run before the agent was measured, so
-                            # the verifier's reward is not this trial's score.
+                            # Apply settlement's provider-failure scoring rule,
+                            # including failures after partial agent work.
                             # The row deliberately stays non-terminal. Settlement
                             # owns the retry-or-fail decision with the whole
                             # outcome in hand, and stamping FAILED here would
@@ -1577,8 +1572,7 @@ async def _handle_harbor_event(
                             # short circuit above, which stores metering only.
                             # A worker that dies before settlement then leaves a
                             # running row for the stale-heartbeat sweep instead
-                            # of a terminal SUCCESS carrying a reward the agent
-                            # never earned.
+                            # of a terminal SUCCESS carrying an invalid score.
                             extracted_reward = None
                             trial.error_message = str(error_msg)
                         elif is_agent_timeout:
@@ -1691,7 +1685,7 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        is_probe = _prepared_trial_is_probe(prepared_trial)
+        probe_routing = _prepared_trial_uses_probe_routing(prepared_trial)
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
@@ -1701,7 +1695,7 @@ async def _execute_trial(
             hook_callback=partial(
                 _handle_harbor_event,
                 trial_id=trial_id,
-                probe_task_dir=task_path_to_run if is_probe else None,
+                probe_task_dir=task_path_to_run if probe_routing else None,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
@@ -2185,7 +2179,7 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
-                is_probe=_prepared_trial_is_probe(prepared_trial),
+                is_probe=_prepared_trial_uses_probe_routing(prepared_trial),
                 byok_env=byok_env,
             )
 
