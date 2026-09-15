@@ -543,7 +543,7 @@ export function TaskOverviewPanel({
                   : classification === "GOOD_SUCCESS"
                     ? `${count} agent${count === 1 ? "" : "s"} succeeded`
                     : classification === "HARNESS_ERROR"
-                      ? `${count} invalid run${count === 1 ? "" : "s"}`
+                      ? `${count} infrastructure error${count === 1 ? "" : "s"}`
                       : classification === "BAD_SUCCESS"
                         ? `${count} invalid success${count === 1 ? "" : "es"}`
                         : `${count} task-caused failure${count === 1 ? "" : "s"}`}
