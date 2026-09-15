@@ -396,7 +396,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: "Analysis failed / infrastructure error",
+    label: `Analysis failed / ${EXECUTION_LABELS.HARNESS_ERROR}`,
     dotClass: "bg-yellow-400",
   },
 ];
