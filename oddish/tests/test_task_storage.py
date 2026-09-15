@@ -1733,7 +1733,8 @@ async def test_published_definition_preview_failure_does_not_hide_other_files(
 
 
 @pytest.mark.asyncio
-async def test_download_file_streams_sdk_body_in_bounded_chunks(tmp_path):
+@pytest.mark.parametrize("fails", [False, True])
+async def test_download_file_streams_sdk_body_in_bounded_chunks(tmp_path, fails):
     data = b"x" * (2 * 1024 * 1024 + 3)
     reads = []
 
@@ -1749,6 +1750,8 @@ async def test_download_file_streams_sdk_body_in_bounded_chunks(tmp_path):
             self.closed = True
 
         async def read(self, size):
+            if fails and self.offset:
+                raise OSError("interrupted download")
             assert 0 < size <= 1024 * 1024
             reads.append(size)
             chunk = data[self.offset : self.offset + size]
@@ -1761,7 +1764,14 @@ async def test_download_file_streams_sdk_body_in_bounded_chunks(tmp_path):
     storage._client = AsyncMock()
     storage._client.get_object.return_value = {"Body": body}
     destination = tmp_path / "download"
-    await storage.download_file("archive", destination)
-    assert destination.read_bytes() == data
+    destination.write_bytes(b"previous complete download")
+    if fails:
+        with pytest.raises(OSError, match="interrupted download"):
+            await storage.download_file("archive", destination)
+        assert destination.read_bytes() == b"previous complete download"
+    else:
+        await storage.download_file("archive", destination)
+        assert destination.read_bytes() == data
+        assert len(reads) == 4
     assert body.closed
-    assert len(reads) == 4
+    assert list(tmp_path.iterdir()) == [destination]

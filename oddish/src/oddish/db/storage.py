@@ -1866,9 +1866,14 @@ class StorageClient:
             )
         stream = response["Body"]
         async with stream:
-            with open(local_path, "wb") as f:
-                while chunk := await stream.read(1024 * 1024):
-                    f.write(chunk)
+            # A failed read previously left an existing destination untouched.
+            # Keep that behavior while streaming by replacing it only on success.
+            with tempfile.TemporaryDirectory(dir=local_path.parent) as directory:
+                staged = Path(directory) / local_path.name
+                with staged.open("wb") as f:
+                    while chunk := await stream.read(1024 * 1024):
+                        f.write(chunk)
+                staged.replace(local_path)
 
     async def list_task_archive_members(self, archive_key: str) -> list[dict]:
         """Read member names and sizes without retaining archive bodies in RAM."""
