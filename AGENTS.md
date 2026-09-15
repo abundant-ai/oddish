@@ -156,6 +156,18 @@ High-level flow:
    `AgentSafetyRefusalError`, and the context/output budget errors — keep their
    reward, because a real 0 must stay a real 0. Add a name to that set only when
    the provider, not the agent, ended the run.
+   That rule needs the exception to reach settlement. Pinned Harbor omits
+   `trial_results` from the job summary it writes, so a caller that rebuilds a
+   `JobResult` from that file loses the per-trial exception and phase timing.
+   The in-process runner passes the populated object `Job.run()` returns and is
+   unaffected; the ephemeral parent reads the file, so
+   `_extract_outcome_from_job_result` falls back to
+   `_trial_results_from_job_dir`, which reads each trial's own `result.json`
+   through Harbor's `JobScanner`. It reads every trial directory rather than the
+   `oddish_trial_name` selector, because the recovered list stands in for
+   `trial_results` and the caller applies its own first-error rule across the
+   whole list. The reward itself always survived the omission: it resolves from
+   the job-level `stats.evals` block, which that summary keeps.
    `oddish.workers.harbor.runner.uses_probe_routing` identifies shared routing rules for
    operator probes and `qa`, `qa_eval`, and `audit` analysis trials. It does not
    change their trial kinds or stored `is_probe` flags. `summarize` uses these

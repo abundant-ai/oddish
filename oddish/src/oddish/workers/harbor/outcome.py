@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from harbor.models.job.result import JobResult
+from harbor.viewer.scanner import JobScanner
 
 from oddish.core.harbor_artifacts import (
     extract_ctrf_summary,
@@ -71,6 +72,37 @@ class HarborOutcome:
     retry_after_seconds: float | None = None
 
 
+def _trial_results_from_job_dir(job_dir: Path) -> list[Any]:
+    """Read the per-trial results Harbor leaves out of its job summary.
+
+    Harbor writes the job-level ``result.json`` with
+    ``exclude_trial_results=True``. A caller that rebuilds ``JobResult`` from
+    that file therefore gets an empty ``trial_results`` list, and loses the
+    exception, the HTTP status, and the phase timing of the trial. The
+    in-process runner never notices, because it passes the object ``Job.run()``
+    returns, which is populated. The ephemeral parent reads the file.
+
+    Each trial still writes its own complete ``TrialResult`` beside the job
+    summary, so read those back. Every trial directory is read rather than one
+    selected directory, because this list stands in for ``trial_results`` and
+    the caller below applies its own first-error rule to the whole list.
+    """
+    scanner = JobScanner(job_dir.parent)
+    results: list[Any] = []
+    try:
+        trial_names = scanner.list_trials(job_dir.name)
+    except OSError:
+        return results
+    for trial_name in trial_names:
+        try:
+            trial_result = scanner.get_trial_result(job_dir.name, trial_name)
+        except OSError:
+            continue
+        if trial_result is not None:
+            results.append(trial_result)
+    return results
+
+
 def _extract_outcome_from_job_result(
     job_result: JobResult,
     job_result_path: Path,
@@ -93,7 +125,9 @@ def _extract_outcome_from_job_result(
     phase_timing: dict[str, Any] | None = None
     trial_reward: float | None = None
 
-    for trial_result in job_result.trial_results:
+    for trial_result in job_result.trial_results or _trial_results_from_job_dir(
+        job_dir
+    ):
         fields = extract_trial_result_fields(trial_result)
         if error is None and fields.error is not None:
             error = fields.error
