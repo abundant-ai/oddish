@@ -12,8 +12,8 @@ from decimal import Decimal
 from urllib.parse import quote
 
 import modal
-from sqlalchemy import and_, case, func, or_, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import and_, case, func, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 
 from auth.provisioning import fetch_slack_user_id_from_clerk
 from modal_app import app, image, slack_notification_secrets
@@ -162,6 +162,7 @@ class QaFailure:
     task_name: str
     task_version_id: str | None
     verdict_status: VerdictStatus | None
+    verdict_outcome: str | None
     owner_email: str | None = None
     owner_clerk_user_id: str | None = None
 
@@ -171,6 +172,7 @@ class TaskFinished:
     task_id: str
     task_name: str
     task_version_id: str | None
+    verdict_outcome: str | None
     owner_email: str | None = None
     owner_clerk_user_id: str | None = None
 
@@ -512,7 +514,7 @@ def build_alerts(
         add_failure_dm(
             f"qa-failed:{bucket}",
             qa_failure.owner_email,
-            f":mag: *Verdict: {verdict_label(qa_failure.verdict_status, {'is_good': False})}*\n"
+            f":mag: *Verdict: {verdict_label(qa_failure.verdict_status, {'verdict': qa_failure.verdict_outcome})}*\n"
             f"Task: *{_escape(qa_failure.task_name)}*\n"
             f"<{task_url}|open task>",
             qa_failure.owner_clerk_user_id,
@@ -528,7 +530,7 @@ def build_alerts(
         add_failure_dm(
             f"task-finished:{bucket}",
             task_finished.owner_email,
-            ":tada: *Verdict: Accepted*\n"
+            f":tada: *Verdict: {verdict_label('success', {'verdict': task_finished.verdict_outcome})}*\n"
             f"Task: *{_escape(task_finished.task_name)}*\n"
             f"<{task_url}|open task>",
             task_finished.owner_clerk_user_id,
@@ -936,10 +938,19 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         # verdict_status FAILED also covers user-cancelled verdicts, which are
         # not QA verdicts at all -- excluding them here keeps cancellations from
         # DMing owners a bogus "QA failed".
+        # Explicit outcomes are authoritative; use exact JSON booleans only
+        # for legacy records, matching the public verdict formatter.
+        stored_outcome = TaskModel.verdict["verdict"].astext
+        verdict_outcome = case(
+            (stored_outcome.in_(["accept", "reject"]), stored_outcome),
+            (TaskModel.verdict["is_good"] == literal(True, JSONB), "accept"),
+            (TaskModel.verdict["is_good"] == literal(False, JSONB), "reject"),
+            else_=None,
+        )
         qa_failed = or_(
             and_(
                 TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                TaskModel.verdict["is_good"].astext == "false",
+                verdict_outcome == "reject",
             ),
             and_(
                 TaskModel.verdict_status == VerdictStatus.FAILED,
@@ -952,6 +963,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     TaskModel.id,
                     TaskModel.name,
                     TaskModel.current_version_id,
+                    verdict_outcome.label("verdict_outcome"),
                     TaskModel.verdict_status,
                     TaskModel.verdict_error,
                     UserModel.email.label("owner_email"),
@@ -980,7 +992,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         # version happens in build_alerts, exactly as for QA failures.
         task_finished = and_(
             TaskModel.verdict_status == VerdictStatus.SUCCESS,
-            TaskModel.verdict["is_good"].astext == "true",
+            verdict_outcome == "accept",
         )
         task_finished_rows = (
             await session.execute(
@@ -988,6 +1000,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     TaskModel.id,
                     TaskModel.name,
                     TaskModel.current_version_id,
+                    verdict_outcome.label("verdict_outcome"),
                     UserModel.email.label("owner_email"),
                     UserModel.clerk_user_id.label("owner_clerk_user_id"),
                 )
@@ -1131,6 +1144,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             task_id=str(row.id),
             task_name=str(row.name),
             task_version_id=row.current_version_id,
+            verdict_outcome=row.verdict_outcome,
             verdict_status=row.verdict_status,
             owner_email=row.owner_email,
             owner_clerk_user_id=row.owner_clerk_user_id,
@@ -1142,6 +1156,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             task_id=str(row.id),
             task_name=str(row.name),
             task_version_id=row.current_version_id,
+            verdict_outcome=row.verdict_outcome,
             owner_email=row.owner_email,
             owner_clerk_user_id=row.owner_clerk_user_id,
         )

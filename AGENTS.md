@@ -2532,3 +2532,9 @@ version’s stored verdict and reasoning remain visible when current-version
 generation is queued, running, or failed. Bulk cancellation names both audits
 and verdict generation; the task-stage filter says Awaiting verdict because
 that stage includes work that is still queued.
+
+GitHub task summaries carry verdict-version provenance from the shared bounded
+query and read it alongside the verdict payload. Mismatched verdicts must not
+appear in headings, counts, rows, or recommendations. Notification candidate
+queries prefer explicit accept/reject values over exact legacy JSON booleans,
+and pass the selected outcome to message formatting.

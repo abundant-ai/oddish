@@ -922,6 +922,7 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
                     task_name="Task <One>",
                     task_version_id="task/1@v2",
                     verdict_status=VerdictStatus.SUCCESS,
+                    verdict_outcome="reject",
                     owner_email="author@example.com",
                 ),
                 QaFailure(
@@ -929,6 +930,7 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
                     task_name="Task <One>",
                     task_version_id="task/1@v2",
                     verdict_status=VerdictStatus.FAILED,
+                    verdict_outcome=None,
                     owner_email="author@example.com",
                 ),
             ],
@@ -958,6 +960,7 @@ def test_build_alerts_reports_finished_tasks_as_dm_only() -> None:
                     task_id="task/1",
                     task_name="Task <One>",
                     task_version_id="task/1@v2",
+                    verdict_outcome="accept",
                     owner_email="author@example.com",
                 )
             ],
@@ -986,6 +989,7 @@ def test_build_alerts_collapses_finished_tasks_per_task_version() -> None:
             task_id="task/1",
             task_name="Task",
             task_version_id=task_version_id,
+            verdict_outcome="accept",
             owner_email="author@example.com",
         )
 
@@ -3007,7 +3011,12 @@ def test_verdict_notifications_distinguish_rejection_from_absence(status, expect
         AlertCandidates(
             qa_failures=[
                 QaFailure(
-                    "task/1", "Task", None, status, owner_email="author@example.com"
+                    "task/1",
+                    "Task",
+                    None,
+                    status,
+                    "reject" if status == VerdictStatus.SUCCESS else None,
+                    owner_email="author@example.com",
                 )
             ]
         ),
@@ -3019,3 +3028,96 @@ def test_verdict_notifications_distinguish_rejection_from_absence(status, expect
     assert f"*Verdict: {expected}*" in alerts[0].text
     assert "QA failed" not in alerts[0].text
     assert "Reason:" not in alerts[0].text
+
+
+@pytest.mark.asyncio
+async def test_load_alerts_explicit_verdicts_override_legacy_booleans():
+    suffix = uuid4().hex[:12]
+    org_id, user_id = f"verdict-org-{suffix}", f"verdict-user-{suffix}"
+    now = datetime.now(timezone.utc)
+    cases = [
+        (
+            "accept-conflict",
+            {"verdict": "accept", "is_good": False},
+            VerdictStatus.SUCCESS,
+            "Accepted",
+        ),
+        (
+            "reject-conflict",
+            {"verdict": "reject", "is_good": True},
+            VerdictStatus.SUCCESS,
+            "Rejected",
+        ),
+        ("accept-only", {"verdict": "accept"}, VerdictStatus.SUCCESS, "Accepted"),
+        ("reject-only", {"verdict": "reject"}, VerdictStatus.SUCCESS, "Rejected"),
+        ("legacy-accept", {"is_good": True}, VerdictStatus.SUCCESS, "Accepted"),
+        ("legacy-reject", {"is_good": False}, VerdictStatus.SUCCESS, "Rejected"),
+        (
+            "unknown-label",
+            {"verdict": "unknown", "is_good": True},
+            VerdictStatus.SUCCESS,
+            "Accepted",
+        ),
+        ("missing", None, VerdictStatus.SUCCESS, None),
+        ("null", {"is_good": None}, VerdictStatus.SUCCESS, None),
+        ("string-bool", {"is_good": "true"}, VerdictStatus.SUCCESS, None),
+        ("failed", None, VerdictStatus.FAILED, "No verdict"),
+    ]
+    task_ids = [f"{name}-{suffix}" for name, *_ in cases]
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Verdict tests", slug=org_id))
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email=f"{user_id}@example.com",
+                name="Verdict owner",
+            )
+        )
+        await session.flush()
+        for task_id, (_, verdict, status, _) in zip(task_ids, cases):
+            session.add(
+                TaskModel(
+                    id=task_id,
+                    name=task_id,
+                    org_id=org_id,
+                    user="test",
+                    task_path="/tmp/test",
+                    created_by_user_id=user_id,
+                    verdict=verdict,
+                    verdict_status=status,
+                    verdict_finished_at=now,
+                )
+            )
+        await session.commit()
+    try:
+        alerts = await load_alerts(now)
+        for task_id, (_, _, _, expected) in zip(task_ids, cases):
+            matching = [
+                alert
+                for alert in alerts
+                if alert.key in {f"qa-failed:{task_id}", f"task-finished:{task_id}"}
+            ]
+            if expected is None:
+                assert matching == []
+                continue
+            assert len(matching) == 1
+            assert f"*Verdict: {expected}*" in matching[0].text
+            assert (
+                matching[0].key
+                == f"{'task-finished' if expected == 'Accepted' else 'qa-failed'}:{task_id}"
+            )
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+            await session.commit()

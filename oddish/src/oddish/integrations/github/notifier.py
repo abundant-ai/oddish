@@ -9,10 +9,11 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -93,13 +94,36 @@ async def _build_task_summary(
 
     task_url = f"{DASHBOARD_URL}/experiments/{experiment_id}"
 
+    # Read the verdict and its provenance together so a concurrent update
+    # cannot pair an older payload with a newer version-match flag.
+    verdict_row = (
+        await session.execute(
+            select(
+                TaskModel.verdict_status,
+                TaskModel.verdict,
+                func.coalesce(
+                    literal_column(
+                        VERDICT_VERSION_SQL.format(
+                            task_id="tasks.id", verdict="tasks.verdict"
+                        )
+                    )
+                    == TaskModel.current_version_id,
+                    False,
+                ).label("review_version_matches"),
+            ).where(TaskModel.id == task.id)
+        )
+    ).one()
+
     return TaskSummary(
         task_id=task.id,
         task_name=task.name,
         task_url=task_url,
         trials=trial_summaries,
-        verdict_status=task.verdict_status.value if task.verdict_status else None,
-        verdict=task.verdict,
+        verdict_status=(
+            verdict_row.verdict_status.value if verdict_row.verdict_status else None
+        ),
+        verdict=verdict_row.verdict,
+        review_version_matches=verdict_row.review_version_matches,
     )
 
 

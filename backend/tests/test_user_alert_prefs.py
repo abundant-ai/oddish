@@ -110,7 +110,9 @@ def test_each_failure_toggle_off_drops_its_own_dm():
     assert _build(trial_failed, UserAlertPrefs(trial_failed_enabled=False)) == []
 
     qa_failed = AlertCandidates(
-        qa_failures=[QaFailure("task/1", "Task", None, "success", owner_email=OWNER)]
+        qa_failures=[
+            QaFailure("task/1", "Task", None, "success", "reject", owner_email=OWNER)
+        ]
     )
     assert _keys(_build(qa_failed)) == ["qa-failed:task/1"]
     assert _build(qa_failed, UserAlertPrefs(qa_failed_enabled=False)) == []
@@ -134,7 +136,9 @@ def test_each_finish_toggle_off_drops_its_own_dm():
     assert _build(trial_finished, UserAlertPrefs(trial_finished_enabled=False)) == []
 
     task_finished = AlertCandidates(
-        tasks_finished=[TaskFinished("task/1", "Task", None, owner_email=OWNER)]
+        tasks_finished=[
+            TaskFinished("task/1", "Task", None, "accept", owner_email=OWNER)
+        ]
     )
     assert _keys(_build(task_finished)) == ["task-finished:task/1"]
     assert _build(task_finished, UserAlertPrefs(task_finished_enabled=False)) == []

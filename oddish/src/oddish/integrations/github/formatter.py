@@ -42,6 +42,7 @@ class TaskSummary:
     trials: list[TrialSummary]
     verdict_status: str | None  # pending, running, success, failed, None
     verdict: dict | None
+    review_version_matches: bool | None = None
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -166,7 +167,9 @@ def format_task_comment(
         1 for t in task.trials if t.analysis_status == "success" and t.classification
     )
 
-    label = verdict_label(task.verdict_status, task.verdict)
+    label = verdict_label(
+        task.verdict_status, task.verdict, version_matches=task.review_version_matches
+    )
     lines.append(f"### Verdict: **{label}**")
     if (
         label in {"Accepted", "Rejected"}
@@ -216,7 +219,7 @@ def format_task_comment(
 
     lines.append("")
 
-    if task.verdict and task.verdict_status == "success":
+    if task.verdict and label in {"Accepted", "Rejected"}:
         lines.append("<details>")
         lines.append("<summary>Verdict Details</summary>")
         lines.append("")
@@ -300,7 +303,12 @@ def format_experiment_comment(
     )
     total_tasks = len(tasks)
 
-    labels = [verdict_label(t.verdict_status, t.verdict) for t in tasks]
+    labels = [
+        verdict_label(
+            t.verdict_status, t.verdict, version_matches=t.review_version_matches
+        )
+        for t in tasks
+    ]
     tasks_with_verdict = [
         t for t, label in zip(tasks, labels) if label in {"Accepted", "Rejected"}
     ]
@@ -355,7 +363,11 @@ def format_experiment_comment(
                 1 for t in task.trials if t.status in ("success", "failed", "skipped")
             )
 
-            verdict_str = verdict_label(task.verdict_status, task.verdict)
+            verdict_str = verdict_label(
+                task.verdict_status,
+                task.verdict,
+                version_matches=task.review_version_matches,
+            )
             if (
                 verdict_str == "Rejected"
                 and task.verdict

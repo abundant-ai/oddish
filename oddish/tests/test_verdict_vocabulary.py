@@ -53,10 +53,8 @@ def test_verdict_labels_in_cli_and_github(status, verdict, matches, expected):
         )
     )
     assert expected in output.getvalue()
-    if matches is False:
-        return  # GitHub summaries are already scoped by their publisher.
     task = TaskSummary(
-        "task-1", "Task", "https://example.test/task", [], status, verdict
+        "task-1", "Task", "https://example.test/task", [], status, verdict, matches
     )
     for text in [
         format_task_comment(task, "exp", "https://example.test/exp"),
@@ -67,3 +65,30 @@ def test_verdict_labels_in_cli_and_github(status, verdict, matches, expected):
         if expected == "No verdict":
             assert "Accepted" not in text
             assert "Rejected" not in text
+
+
+@pytest.mark.parametrize("outcome", ["accept", "reject"])
+def test_github_hides_mismatched_verdict_details(outcome):
+    task = TaskSummary(
+        "task-1",
+        "Task",
+        "https://example.test/task",
+        [],
+        "success",
+        {
+            "verdict": outcome,
+            "is_good": outcome == "accept",
+            "primary_issue": "Old issue",
+            "recommendations": ["Old fix"],
+        },
+        review_version_matches=False,
+    )
+    for text in [
+        format_task_comment(task, "exp", "https://example.test/exp"),
+        format_experiment_comment([task], "exp", "https://example.test/exp"),
+    ]:
+        assert "No verdict" in text
+        assert "Accepted" not in text
+        assert "Rejected" not in text
+        assert "Old issue" not in text
+        assert "Old fix" not in text
