@@ -305,7 +305,7 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
   });
 
-  test("analysis completion includes invalid runs without mixing experiment scope", async ({
+  test("analysis completion includes runs with infrastructure errors without mixing experiment scope", async ({
     page,
   }) => {
     const original = tasks[0].trials![0];
@@ -333,9 +333,9 @@ test.describe("real components with local fixture API", () => {
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
-    await expect(page.getByText("1 invalid run", { exact: true })).toHaveCount(
-      0
-    );
+    await expect(
+      page.getByText("1 infrastructure error", { exact: true })
+    ).toHaveCount(0);
     await expect(
       page.getByText(
         /Missing access:|Inspects task instructions|fair agent failure does not/
@@ -371,9 +371,9 @@ test.describe("real components with local fixture API", () => {
     await expect(
       page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
     ).toBeVisible();
-    await expect(page.getByText("1 invalid run", { exact: true })).toHaveCount(
-      1
-    );
+    await expect(
+      page.getByText("1 infrastructure error", { exact: true })
+    ).toHaveCount(1);
     await page.getByText("GRADING ERROR", { exact: true }).click();
     await expect(
       page.getByText(

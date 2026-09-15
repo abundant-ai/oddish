@@ -422,7 +422,7 @@ test("verdict summary hides empty categories and keeps clearing an active filter
   assert.match(html, /Show all tasks/);
 });
 
-test("completed analysis counts invalid runs as analyzed", () => {
+test("completed analysis counts runs with infrastructure errors as analyzed", () => {
   const trials = Array.from(
     { length: 15 },
     (_, index) =>

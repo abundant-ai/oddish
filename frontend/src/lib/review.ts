@@ -13,7 +13,7 @@ export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
   GOOD_FAILURE: "Good failure",
   BAD_SUCCESS: "Invalid success",
   BAD_FAILURE: "Task-caused failure",
-  HARNESS_ERROR: "Invalid run",
+  HARNESS_ERROR: "Infrastructure error",
 };
 
 import { QA_STATUS_LABELS } from "@/lib/deliveries";
