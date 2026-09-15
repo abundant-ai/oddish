@@ -57,8 +57,11 @@ def test_new_findings_require_must_fix_at_shared_validation_boundary(kind, tier)
     assert bool(errors) == (tier != "must_fix"), errors
     if errors:
         assert any("tier must be one of ['must_fix']" in error for error in errors)
-    # Parsing historical records does not rewrite their original severity.
-    assert ActionItem.model_validate(item).tier.value == tier
+    if tier == "should_fix":
+        with pytest.raises(ValueError):
+            ActionItem.model_validate(item)
+    else:
+        assert ActionItem.model_validate(item).tier.value == tier
 
 
 def test_unrelated_defect_rejects_task_without_changing_fair_execution_failure():
@@ -97,7 +100,7 @@ def test_unrelated_defect_rejects_task_without_changing_fair_execution_failure()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+@pytest.mark.parametrize("tier", ["must_fix", "optional"])
 @pytest.mark.parametrize("source", ["pre_trial", "trial"])
 async def test_v7_exception_retains_evidence_person_and_version(session, tier, source):
     task, version, experiment = await _green_task(
@@ -297,7 +300,7 @@ async def test_pre_policy_finalized_snapshot_is_not_recomputed(session):
 
     delivery.status = "finalized"
     delivery.finalized_at = utcnow()
-    version.pre_trial = {"items": [{**FINDING, "tier": "should_fix"}]}
+    version.pre_trial = {"items": [{**FINDING, "tier": "must_fix"}]}
     await session.flush()
     stored = deepcopy(snapshot.snapshot)
     result = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)

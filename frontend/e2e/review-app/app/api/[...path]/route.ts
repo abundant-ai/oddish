@@ -18,7 +18,13 @@ export async function GET(request: NextRequest) {
         : pageFixture(examples, request.nextUrl.searchParams)
     );
   }
-  if (parts[0] === "deliveries") return NextResponse.json(board);
+  if (parts[0] === "deliveries") {
+    return NextResponse.json(
+      parts[2] === "selection"
+        ? selectionFixture(board, request.nextUrl.searchParams)
+        : pageFixture(board, request.nextUrl.searchParams)
+    );
+  }
   const task = tasks.find((item) => item.id === parts[1]);
   if (parts[0] === "tasks" && task) {
     const versionId = request.nextUrl.searchParams.get("version_id");
