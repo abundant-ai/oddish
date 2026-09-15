@@ -48,6 +48,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
             "tasks/task-1/v3/",
             "tasks/task-1/v3-files/.oddish-manifest.json",
             "hash-v3",
+            "tasks/task-1/v3-files/.oddish-manifest.json",
         )
     )
     list_files = AsyncMock(
@@ -62,7 +63,9 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
+        patch(
+            "api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source
+        ),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -72,6 +75,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
     assert response.status_code == 200
     assert response.json()["files"] == [{"path": "instruction.md", "size": 12}]
     list_files.assert_awaited_once_with(
+        index_key="tasks/task-1/v3-files/.oddish-manifest.json",
         task_id="task-1",
         prefix=None,
         recursive=True,
@@ -98,6 +102,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
             "tasks/task-1/v3/",
             "tasks/task-1/v3-files/.oddish-manifest.json",
             "hash-v3",
+            "tasks/task-1/v3-files/.oddish-manifest.json",
         )
     )
     list_files = AsyncMock(
@@ -114,7 +119,9 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
+        patch(
+            "api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source
+        ),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -125,6 +132,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
     assert response.status_code == 200
     assert response.json()["cursor"] == "next-page"
     list_files.assert_awaited_once_with(
+        index_key="tasks/task-1/v3-files/.oddish-manifest.json",
         task_id="task-1",
         prefix="environment",
         recursive=False,
@@ -151,6 +159,7 @@ def test_selected_file_forwards_preview_limit(client):
             "tasks/task-1/v3/",
             "tasks/task-1/v3-files/.oddish-manifest.json",
             "hash-v3",
+            "tasks/task-1/v3-files/.oddish-manifest.json",
         )
     )
     get_file = AsyncMock(
@@ -164,7 +173,9 @@ def test_selected_file_forwards_preview_limit(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
+        patch(
+            "api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source
+        ),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get(
@@ -218,13 +229,16 @@ def test_selected_file_http_error_handling(
             "tasks/task-1/v3/",
             "tasks/task-1/v3-files/.oddish-manifest.json",
             "hash-v3",
+            "tasks/task-1/v3-files/.oddish-manifest.json",
         )
     )
     get_file = AsyncMock(side_effect=HTTPException(storage_status, detail=detail))
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
+        patch(
+            "api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source
+        ),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get("/tasks/task-1/files/test.sh?version=3")
@@ -310,12 +324,14 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
     async def resolve(*_, **kwargs):
         assert kwargs == {"task_id": "task-1", "version": 7}
         async with session():
-            return TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
+            return TaskFileSource(
+                7, "tasks/task-1/v7/", None, "hash-7", "expand:task-1-v7"
+            )
 
     async def read_index(**kwargs):
         assert not active
         assert kwargs["directories"] == ["", "tests"]
-        assert kwargs["source_key"] is None
+        assert kwargs["source_key"] == "expand:task-1-v7"
         assert kwargs["limit"] == 100
         return {
             "directories": {"": {"cursor": "root-2"}, "tests": {"cursor": "tests-2"}},
@@ -323,7 +339,9 @@ def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
         }
 
     monkeypatch.setattr("auth.get_read_session", session)
-    monkeypatch.setattr("api.routers.tasks.resolve_authorized_task_file_source", resolve)
+    monkeypatch.setattr(
+        "api.routers.tasks.resolve_authorized_task_file_source", resolve
+    )
     monkeypatch.setattr("oddish.core.file_index.read_file_index", read_index)
     response = client.get(
         "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0"
@@ -352,7 +370,11 @@ def test_batch_rejects_incompatible_listing_modes(client, monkeypatch, extra):
     monkeypatch.setattr("auth.get_read_session", session)
     monkeypatch.setattr(
         "api.routers.tasks.resolve_authorized_task_file_source",
-        AsyncMock(return_value=TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")),
+        AsyncMock(
+            return_value=TaskFileSource(
+                7, "tasks/task-1/v7/", None, "hash-7", "expand:task-1-v7"
+            )
+        ),
     )
     storage = AsyncMock()
     monkeypatch.setattr("oddish.core.sharing.helpers.get_storage_client", storage)
@@ -373,7 +395,9 @@ def test_public_directory_batch_keeps_share_token_and_version_scope(
 
     access = AsyncMock(return_value=object() if visible else None)
     resolve = AsyncMock(
-        return_value=TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
+        return_value=TaskFileSource(
+            7, "tasks/task-1/v7/", None, "hash-7", "expand:task-1-v7"
+        )
     )
     storage = AsyncMock(
         return_value={"directories": {"tests": {"files": [], "cursor": "page-2"}}}

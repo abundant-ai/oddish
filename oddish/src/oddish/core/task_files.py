@@ -17,6 +17,7 @@ class TaskFileSource:
     task_s3_prefix: str | None
     expanded_manifest_key: str | None
     content_hash: str | None
+    index_key: str
 
     @property
     def expanded(self) -> bool | None:
@@ -58,6 +59,7 @@ def task_file_source_query(
     )
     query = select(
         TaskModel.id.label("task_id"),
+        TaskVersionModel.id.label("version_id"),
         TaskVersionModel.version,
         TaskVersionModel.task_s3_key.label("version_s3_key"),
         TaskVersionModel.expanded_manifest_key,
@@ -92,4 +94,18 @@ def task_file_source_from_row(row) -> TaskFileSource:
         str(prefix) if prefix else None,
         row.expanded_manifest_key,
         row.content_hash,
+        (
+            row.expanded_manifest_key or f"expand:{row.version_id}"
+            if row.version is not None
+            else legacy_task_index_key(row.task_id, row.legacy_task_s3_key)
+        ),
     )
+
+
+def legacy_task_index_key(task_id: str, task_s3_prefix: str | None) -> str:
+    """Versionless sources belong to the task and its selected storage pointer.
+
+    A missing pointer retains storage's canonical ``tasks/<id>/`` fallback.
+    This identity is also written by the legacy file-directory queue trigger.
+    """
+    return f"task:{task_id}:{task_s3_prefix or ''}"

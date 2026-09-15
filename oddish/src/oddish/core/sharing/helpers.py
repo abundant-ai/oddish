@@ -321,6 +321,7 @@ async def list_task_files_s3(
     source_hash: str | None = None,
     directories: list[str] | None = None,
     indexed: bool = False,
+    index_key: str | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
     if directories is not None and (
@@ -339,7 +340,7 @@ async def list_task_files_s3(
         from oddish.core.file_index import read_file_index
 
         result = await read_file_index(
-            source_key=expanded_manifest_key,
+            source_key=index_key,
             directories=directories,
             prefix=prefix,
             cursor=cursor,
@@ -480,7 +481,11 @@ async def get_trial_file_content_s3(
 
         async with get_read_session() as session:
             index = await session.get(FileIndexModel, trial_index_key(trial, attempt))
-            if index is None or index.revision is None:
+            if index is None:
+                raise HTTPException(
+                    404, "No file directory is available for this source"
+                )
+            if index.revision is None:
                 raise HTTPException(503, "File directory is being prepared")
             if revision and index.revision != revision:
                 raise HTTPException(409, "File directory changed; reload its contents")

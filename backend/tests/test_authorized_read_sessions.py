@@ -191,6 +191,7 @@ async def test_file_reads_release_connection_before_waiting_on_storage(
             "tasks/task-1/v7/",
             "tasks/task-1/v7-files/.oddish-manifest.json",
             "hash-v7",
+            "tasks/task-1/v7-files/.oddish-manifest.json",
         )
 
     entered, release = asyncio.Event(), asyncio.Event()

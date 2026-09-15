@@ -908,6 +908,7 @@ async def list_task_files(
 
     return await list_task_files_s3(
         task_id=task_id,
+        index_key=source.index_key,
         **({"directories": directories} if directories is not None else {}),
         **({"indexed": True} if indexed else {}),
         prefix=prefix,

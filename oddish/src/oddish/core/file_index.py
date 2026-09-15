@@ -164,7 +164,9 @@ async def read_file_index(
             .mappings()
             .all()
         )
-        if not records or records[0]["revision"] is None:
+        if not records:
+            raise HTTPException(404, "No file directory is available for this source")
+        if records[0]["revision"] is None:
             raise HTTPException(
                 503, "File directory is being prepared", headers={"Retry-After": "2"}
             )
@@ -268,6 +270,7 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
         utcnow,
     )
     from sqlalchemy import text
+    from oddish.core.task_files import legacy_task_index_key
 
     storage = get_storage_client()
     completed = 0
@@ -284,6 +287,7 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
                         FileIndexModel.source_key,
                         FileIndexModel.task_version_id,
                         FileIndexModel.trial_id,
+                        FileIndexModel.task_id,
                     )
                     .where(
                         FileIndexModel.revision.is_(None),
@@ -293,7 +297,7 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
                     .limit(limit)
                 )
             ).all()
-        for key, version_id, trial_id in pending:
+        for key, version_id, trial_id, task_id in pending:
             if time.monotonic() - started > 30:
                 break
             try:
@@ -308,6 +312,9 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
                             await session.get(TrialModel, trial_id)
                             if trial_id
                             else None
+                        )
+                        task = (
+                            await session.get(TaskModel, task_id) if task_id else None
                         )
                     if version is not None:
                         if version.expanded_manifest_key is None:
@@ -354,6 +361,39 @@ async def backfill_file_indexes(*, limit: int = 8) -> int:
                         await index_trial_upload(
                             storage, trial=trial, only_if_pending=True
                         )
+                    elif (
+                        task is not None
+                        and task.current_version_id is None
+                        and task.deleted_at is None
+                        and key == legacy_task_index_key(task.id, task.task_s3_key)
+                    ):
+                        listing = await storage.list_task_files(
+                            task_id=task.id,
+                            task_s3_prefix=task.task_s3_key,
+                            version=None,
+                            prefix=None,
+                            cursor=None,
+                            recursive=True,
+                            limit=1000,
+                            presign=False,
+                            inline=False,
+                        )
+                        # Archive members have virtual keys; their content still
+                        # goes through the existing authorized archive reader.
+                        root = (
+                            listing["archive_key"] + "#"
+                            if listing.get("archive_key")
+                            else listing["prefix"]
+                        )
+                        async with get_session() as session:
+                            await publish_file_index(
+                                session,
+                                source_key=key,
+                                root_prefix=root,
+                                files=listing["files"],
+                                only_if_pending=True,
+                            )
+                            await session.commit()
                     else:
                         async with get_session() as session:
                             await session.execute(

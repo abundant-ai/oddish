@@ -808,7 +808,8 @@ metadata with one explicit multi-row INSERT per 500 entries, including NULL
 directory sizes; ORM bulk insertion can split mixed directory/file rows into
 individual database round trips. `indexed=true`
 listings return bounded metadata without storage reads; artifacts use their
-partial index. Missing indexes return retryable 503. Trial previews use explicit
+partial index. Pending index jobs return retryable 503; an absent index returns
+404 instead of claiming preparation is running. Trial previews use explicit
 attempt/revision identity and a byte bound; full download is separate. Keep
 legacy CLI listing behavior behind the existing default options.
 
@@ -817,8 +818,24 @@ the raw HTTP response returned by its async context manager. Only missing-object
 storage errors become task-file 404 responses; unexpected read failures must
 reach the server error handler rather than claiming historical files were deleted.
 
+Core migration `legacy_file_index_001` adds task-owned index jobs for sources
+without a current version row. Their identity is `task:<id>:<storage pointer>`;
+an absent pointer retains the canonical `tasks/<id>/` storage fallback. The
+migration and task-pointer trigger enqueue those sources without modifying
+task versions or trial version links. Background indexing uses the existing
+archive/directory reader; browser requests never scan storage. Archive-member
+keys retain the `<archive>#<member>` form. `TaskFileSource.index_key` selects
+that legacy job, an `expand:<version id>` job, or the published manifest index.
+
 `file-resources.ts` owns shared browser preview identity and fetching, while
-`useTaskFileTree` owns directory pages. Org/Mine uses the existing dashboard JSON
+`useTaskFileTree` owns Files and Artifacts inventory pages, activation refresh,
+and HTTP 409 recovery. Retained trial panes pass their active state; re-entry
+shows cached data immediately and revalidates even empty inventories. A matching
+revision preserves loaded pages; a changed revision replaces them. Trial bodies
+wait for a known revision and share account/trial/attempt/revision/path keys.
+Full-file contents use those same keys, so replacement also drops old full
+contents. Preview or continuation-page 409 responses refresh the inventory;
+the new revision selects a fresh preview request. Org/Mine uses the existing dashboard JSON
 endpoint with account/filter-scoped SWR and browser history. Apply the React
 ownership rules: URL filters and selected paths should not be duplicated as
 separate derived state. See `docs/prepared-webapp-reads.md` for maintenance,

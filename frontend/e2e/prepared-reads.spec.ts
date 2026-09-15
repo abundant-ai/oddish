@@ -63,7 +63,7 @@ test("Org → Mine → Org reuses the completed list without a blocking request"
   await expect(search).toHaveValue("alpha");
 });
 
-test("Files and Artifacts share one bounded preview across unmounts", async ({
+test("Files and Artifacts refresh inventories and share one bounded preview across unmounts", async ({
   page,
 }) => {
   const listings: URL[] = [];
@@ -113,6 +113,7 @@ test("Files and Artifacts share one bounded preview across unmounts", async ({
     page.getByText("Shared prepared preview", { exact: true })
   ).toBeVisible();
   const initialBodies = bodies.length;
+  expect(initialBodies).toBe(1);
   await page.getByRole("button", { name: "Show artifacts" }).click();
   await expect(
     page.getByText("Shared prepared preview", { exact: true })
@@ -122,7 +123,7 @@ test("Files and Artifacts share one bounded preview across unmounts", async ({
     page.getByText("Shared prepared preview", { exact: true })
   ).toBeVisible();
   expect(bodies.length).toBe(initialBodies);
-  expect(listings).toHaveLength(2);
+  await expect.poll(() => listings.length).toBe(3);
 });
 
 test("nested trial binary URLs preserve separators and escape filename characters", async ({
@@ -202,4 +203,260 @@ test("nested trial full-file loads use the same encoded path as previews", async
   expect(
     requests.filter((url) => !url.searchParams.has("max_bytes"))
   ).toHaveLength(1);
+});
+
+function trialListing(
+  files: Array<{ path: string; size: number }>,
+  revision: string,
+  artifacts: boolean
+) {
+  return artifacts
+    ? { files, source_hash: revision, cursor: null }
+    : {
+        source_hash: revision,
+        directories: {
+          "": { files: [], dirs: [{ path: "artifacts" }] },
+          artifacts: { files, dirs: [], cursor: null },
+        },
+      };
+}
+
+for (const retain of [false, true]) {
+  test(`reopening artifacts discovers files after an empty inventory (retain=${retain})`, async ({
+    page,
+  }) => {
+    let published = false;
+    let artifactListings = 0;
+    await page.route("**/api/trials/prepared-1/files?**", (route) => {
+      const artifacts =
+        new URL(route.request().url()).searchParams.get("artifacts") === "true";
+      if (artifacts) artifactListings++;
+      return route.fulfill({
+        json: trialListing(
+          published ? [{ path: "artifacts/readme.txt", size: 18 }] : [],
+          published ? "complete" : "early",
+          artifacts
+        ),
+      });
+    });
+    await page.route("**/api/trials/prepared-1/files/**", (route) =>
+      route.fulfill({ contentType: "text/plain", body: "Published artifact" })
+    );
+    await page.goto(`/prepared-files?tab=artifacts&retain=${retain}`);
+    await expect(page.getByText("No artifacts", { exact: true })).toBeVisible();
+    published = true;
+    await page.getByRole("button", { name: "Show files" }).click();
+    await page.getByRole("button", { name: "Show artifacts" }).click();
+    await expect(
+      page
+        .getByText("Published artifact", { exact: true })
+        .filter({ visible: true })
+    ).toBeVisible();
+    expect(artifactListings).toBe(2);
+  });
+}
+
+for (const tab of ["files", "artifacts"]) {
+  test(`${tab} refreshes its inventory and retries a conflicting preview`, async ({
+    page,
+  }) => {
+    let revision = "first";
+    let listings = 0;
+    const reads: string[] = [];
+    const files = [
+      { path: "artifacts/readme.txt", size: 4 },
+      { path: "artifacts/other.txt", size: 4 },
+    ];
+    await page.route("**/api/trials/prepared-1/files?**", (route) => {
+      listings++;
+      return route.fulfill({
+        json: trialListing(
+          files,
+          revision,
+          new URL(route.request().url()).searchParams.has("artifacts")
+        ),
+      });
+    });
+    await page.route("**/api/trials/prepared-1/files/**", (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith("other.txt"))
+        reads.push(url.searchParams.get("revision")!);
+      return url.searchParams.get("revision") !== revision
+        ? route.fulfill({
+            status: 409,
+            json: { detail: "File directory changed; reload its contents" },
+          })
+        : route.fulfill({
+            contentType: "text/plain",
+            body: url.pathname.endsWith("other.txt")
+              ? "Current other contents"
+              : "Initial contents",
+          });
+    });
+    await page.goto(`/prepared-files?tab=${tab}&retain=true`);
+    await expect(
+      page.getByText("Initial contents", { exact: true })
+    ).toBeVisible();
+    revision = "replacement";
+    await page
+      .getByRole(tab === "artifacts" ? "treeitem" : "button", {
+        name: tab === "artifacts" ? "other.txt" : /other.txt/,
+      })
+      .click();
+    await expect(
+      page.getByText("Current other contents", { exact: true })
+    ).toBeVisible();
+    expect(reads).toEqual(["first", "replacement"]);
+    expect(listings).toBe(2);
+  });
+
+  test(`${tab} drops loaded full contents when the inventory revision changes`, async ({
+    page,
+  }) => {
+    let revision = "first";
+    const files = [{ path: "artifacts/readme.txt", size: 200000 }];
+    const reads: URL[] = [];
+    await page.route("**/api/trials/prepared-1/files?**", (route) =>
+      route.fulfill({
+        json: trialListing(
+          files,
+          revision,
+          new URL(route.request().url()).searchParams.has("artifacts")
+        ),
+      })
+    );
+    await page.route("**/api/trials/prepared-1/files/**", (route) => {
+      const url = new URL(route.request().url());
+      reads.push(url);
+      expect(url.searchParams.get("revision")).toBe(revision);
+      return route.fulfill({
+        contentType: "text/plain",
+        body:
+          revision === "replacement"
+            ? "Current preview contents"
+            : url.searchParams.has("max_bytes")
+              ? "x".repeat(102400)
+              : "Initial full contents",
+      });
+    });
+    await page.goto(`/prepared-files?tab=${tab}&retain=true`);
+    await page
+      .getByRole("button", { name: "Load full file", exact: true })
+      .click();
+    await expect(
+      page.getByText("Initial full contents", { exact: true })
+    ).toBeVisible();
+    revision = "replacement";
+    await page
+      .getByRole("button", {
+        name: tab === "files" ? "Show artifacts" : "Show files",
+      })
+      .click();
+    await expect(
+      page
+        .getByText("Current preview contents", { exact: true })
+        .filter({ visible: true })
+    ).toBeVisible();
+    await page.getByRole("button", { name: `Show ${tab}` }).click();
+    await expect(
+      page
+        .getByText("Current preview contents", { exact: true })
+        .filter({ visible: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("Initial full contents", { exact: true })
+    ).not.toBeVisible();
+    expect(
+      reads.filter((url) => url.searchParams.get("revision") === "replacement")
+    ).toHaveLength(1);
+  });
+}
+
+test("a cold trial deep link waits for its revision and downloads one preview", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let listings = 0;
+  const bodies: URL[] = [];
+  await page.route("**/api/trials/prepared-1/files?**", async (route) => {
+    listings++;
+    await gate;
+    return route.fulfill({
+      json: trialListing(
+        [{ path: "artifacts/readme.txt", size: 12 }],
+        "settled-index",
+        false
+      ),
+    });
+  });
+  await page.route("**/api/trials/prepared-1/files/**", (route) => {
+    bodies.push(new URL(route.request().url()));
+    return route.fulfill({
+      contentType: "text/plain",
+      body: "Single preview body",
+    });
+  });
+  try {
+    await page.goto("/prepared-files");
+    await expect.poll(() => listings).toBe(1);
+    expect(bodies).toHaveLength(0);
+    release();
+    await expect(
+      page.getByText("Single preview body", { exact: true })
+    ).toBeVisible();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].searchParams.get("revision")).toBe("settled-index");
+  } finally {
+    release();
+  }
+});
+
+test("an artifact pagination conflict discards all pages from the old revision", async ({
+  page,
+}) => {
+  let replaced = false;
+  const cursors: Array<string | null> = [];
+  await page.route("**/api/trials/prepared-1/files?**", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const cursor = params.get("cursor");
+    cursors.push(cursor);
+    if (cursor) expect(params.get("revision")).toBe("first");
+    if (replaced && cursor)
+      return route.fulfill({
+        status: 409,
+        json: { detail: "File directory changed; reload its contents" },
+      });
+    const name = replaced
+      ? "current.txt"
+      : cursor
+        ? "old-page.txt"
+        : "readme.txt";
+    return route.fulfill({
+      json: {
+        source_hash: replaced ? "replacement" : "first",
+        files: [{ path: `artifacts/${name}`, size: 5 }],
+        cursor: replaced ? null : cursor ? "page-3" : "page-2",
+      },
+    });
+  });
+  await page.route("**/api/trials/prepared-1/files/**", (route) =>
+    route.fulfill({ contentType: "text/plain", body: "File body" })
+  );
+  await page.goto("/prepared-files?tab=artifacts");
+  await page.getByRole("button", { name: "Load more artifacts" }).click();
+  await expect(
+    page.getByRole("treeitem", { name: "old-page.txt", exact: true })
+  ).toBeVisible();
+  replaced = true;
+  await page.getByRole("button", { name: "Load more artifacts" }).click();
+  await expect(
+    page.getByRole("treeitem", { name: "current.txt", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("treeitem", { name: "old-page.txt", exact: true })
+  ).toHaveCount(0);
+  expect(cursors).toEqual([null, "page-2", "page-3", null]);
 });

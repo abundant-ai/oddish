@@ -39,7 +39,13 @@ upload, resolve Harbor's authoritative attempt/child with the existing resolver,
 and publish only after uploads finish. A failed metadata publication leaves the
 uploaded bytes intact; the durable indexing queue retries it. Source-pointer
 triggers enqueue historical/new task versions and trial attempts. Historical
-archive-only tasks enter the existing expansion queue. The indexing worker drains
+archive-only versions enter the existing expansion queue. Versionless tasks have
+task-owned indexes keyed by task ID and their existing storage pointer. Migration
+`legacy_file_index_001` queues existing sources and installs a task-pointer
+trigger for later changes; a null pointer retains the canonical `tasks/<id>/`
+fallback. Background indexing uses the existing archive/directory reader and
+keeps archive-member keys as `<archive>#<path>`. It never creates version rows or
+changes historical task/trial version links. The indexing worker drains
 at most eight records per cycle, backs off failures for five minutes, and stops
 starting work after 30 seconds. It never repeatedly scans the complete trial table
 to discover missing indexes. Index publication and replacement are transactional;
@@ -47,8 +53,9 @@ published old task sources and attempts remain available to authorized readers.
 
 The web app requests `indexed=true`, metadata-only options and 100 entries per
 folder. Artifact requests use `artifacts=true`; they do not enumerate logs or
-other directories. Missing indexes return HTTP 503 with `Retry-After: 2`, and the
-browser retries preparation. Trial preview requests include the displayed attempt,
+other directories. Pending index jobs return HTTP 503 with `Retry-After: 2`, and
+the browser retries preparation. An absent index returns HTTP 404; preparation
+is reported only when a durable job exists. Trial preview requests include the displayed attempt,
 index revision, and `max_bytes=102400`. Stale attempt/revision requests return
 HTTP 409. The storage reader sends an S3 byte range and also bounds the body read.
 Full-file loading is a separate explicit action. The authenticated and public
@@ -58,13 +65,22 @@ SWR, the browser's shared request cache, owns experiment lists, folder pages and
 previews. Keys include the signed-in user/organization (or the public-token URL),
 filters, task version/content hash or trial attempt/index revision. Org/Mine uses
 browser history and the existing dashboard JSON endpoint. The Files and Artifacts
-views share one trial-preview fetcher and key. Visited file panes retain selection
-while hidden. Hover/focus starts loading drawer modules. Search input remains an
+views use `useTaskFileTree` for inventory freshness and pagination, with separate
+bounded requests for directory pages and artifact-only pages. Trial panes refresh
+on activation, including when a retained pane reopens after an empty listing.
+Cached data stays visible during that request. A matching revision preserves
+loaded pages; a replacement discards every old page. A preview or continuation
+request returning HTTP 409 refreshes the inventory, and the new revision selects
+the next preview request. File bodies start only after that revision is known.
+Both views share one trial-preview fetcher and key; full-file contents also live
+under that key, so a new revision cannot retain an old full download. Binary and
+full-file URLs carry the same attempt and revision. Visited file panes retain
+selection while hidden and pass their active state to the hook. Hover/focus starts loading drawer modules. Search input remains an
 editable draft; applied filters belong to the URL.
 
 ## Deployment and alerts
 
-Apply core migrations `prepared_reads_001` and `file_index_001` before deploying
+Apply core migrations through `legacy_file_index_001` before deploying
 the backend and frontend; `prepared_reads_001` follows `merge_finding_tiers_001`. Hosted workers run every five seconds in `API_REGION`,
 the API's configured region. Each worker has `max_containers=1`; advisory locks
 also protect standalone deployments. The standalone worker pool starts and
@@ -92,7 +108,13 @@ is a deployment operation, not performed by this draft PR.
 scale tests, and Chromium tests of real React components with controlled API
 responses. Checks enforce transaction rollback, revision races, durable retries,
 daily reconciliation, bounded folder/artifact pages, zero storage operations on
-prepared listings, attempt/revision isolation, and browser cache reuse.
+prepared listings, attempt/revision isolation, and browser cache reuse. Migration
+tests cover both an existing schema and the current-model bootstrap, legacy
+archive/directory indexing, preserved historical links, and task-pointer changes.
+Browser tests cover late publication after an empty inventory, retained-tab
+activation, 409 recovery, revision changes after full downloads, and exactly one
+preview body request on a cold trial deep link. The original task-file tests also
+preserve direct early body reads, URL line selection, and version/account isolation.
 
 The local PostgreSQL 17 scale fixture uses 1 and 10,000 trials and updates planner
 statistics after bulk seeding. Both use exactly two SQL statements per dashboard

@@ -1824,6 +1824,7 @@ export function TrialDetailPanel({
             ) : (
               <TaskFilesPanel
                 isOpen={isOpen}
+                isActive={effectiveTab === "files"}
                 onClose={() => {}}
                 activePane="file"
                 taskId={null}
@@ -1849,6 +1850,7 @@ export function TrialDetailPanel({
               trialDetailErrorContent
             ) : (
               <ArtifactsViewer
+                isActive={isOpen && effectiveTab === "artifacts"}
                 filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
                 trialAttempt={trial.attempts}
                 trialId={trial.id}

@@ -445,6 +445,9 @@ class FileIndexModel(Base):
     """Published storage source and retry timing for historical indexing."""
 
     __tablename__ = "file_indexes"
+    task_id: Mapped[str | None] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True
+    )
     task_version_id: Mapped[str | None] = mapped_column(
         Text, ForeignKey("task_versions.id", ondelete="CASCADE"), nullable=True
     )

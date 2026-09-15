@@ -138,6 +138,7 @@ async def test_prepared_task_listing_cannot_read_storage(source, monkeypatch):
         inline=False,
         task_s3_prefix=None,
         expanded_manifest_key=source,
+        index_key=source,
         directories=[""],
         indexed=True,
     )
@@ -145,11 +146,22 @@ async def test_prepared_task_listing_cannot_read_storage(source, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_index_is_retryable_not_a_false_empty_listing(source):
+async def test_pending_index_is_retryable_not_a_false_empty_listing(source):
+    async with get_session() as session:
+        session.add(FileIndexModel(source_key=source))
+        await session.commit()
     with pytest.raises(HTTPException) as exc:
         await read_file_index(source_key=source)
     assert exc.value.status_code == 503
     assert exc.value.headers["Retry-After"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_absent_index_does_not_claim_preparation_is_running(source):
+    with pytest.raises(HTTPException) as exc:
+        await read_file_index(source_key=source)
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "No file directory is available for this source"
 
 
 def test_artifact_classification_happens_at_publication():
@@ -408,3 +420,267 @@ async def test_writer_replaces_early_inventory_and_late_backfill_cannot_restore_
         )
         await session.commit()
     assert await read_file_index(source_key=source) == complete
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layout", ["archive", "directory", "canonical"])
+async def test_versionless_sources_are_queued_and_indexed_without_version_changes(
+    monkeypatch, layout
+):
+    import io
+    import tarfile
+    from datetime import datetime, UTC
+    import oddish.db
+    from oddish.core.file_index import backfill_file_indexes
+    from oddish.core.task_files import resolve_task_file_source
+    from oddish.core.sharing import helpers
+    from oddish.db import TaskModel, TrialModel, TaskVersionModel, ExperimentModel
+    from oddish.db.storage import StorageClient
+    from sqlalchemy import select, text
+
+    task_id = "legacy-" + uuid4().hex[:16]
+    pointer = None if layout == "canonical" else f"legacy-imports/{task_id}/"
+    root = pointer or f"tasks/{task_id}/"
+    content = b"legacy instruction\n"
+    files = [{"path": "instruction.md", "size": len(content)}]
+    storage = StorageClient.__new__(StorageClient)
+    archive_key = root + ".oddish-task.tar.gz"
+    if layout == "archive":
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            member = tarfile.TarInfo("instruction.md")
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+        storage.head_object = AsyncMock(return_value={"ETag": task_id})
+        storage.download_bytes = AsyncMock(return_value=buffer.getvalue())
+    else:
+        storage.head_object = AsyncMock(return_value=None)
+        storage.download_bytes = AsyncMock(return_value=content)
+    storage.list_objects_all = AsyncMock(
+        return_value=[{"key": root + f["path"], "size": f["size"]} for f in files]
+    )
+    monkeypatch.setattr(oddish.db, "get_storage_client", lambda: storage)
+    async with get_session() as session:
+        task = TaskModel(
+            id=task_id,
+            name=task_id,
+            user="tester",
+            task_path="legacy",
+            task_s3_key=pointer,
+        )
+        session.add_all([task, ExperimentModel(id=task_id, name=task_id)])
+        await session.flush()
+        # A historical version may exist without being the task's current
+        # source. Neither it nor the trial's null version link may be rewritten.
+        session.add(
+            TaskVersionModel(
+                id=task_id + "-v7",
+                task_id=task_id,
+                version=7,
+                task_path="historical",
+            )
+        )
+        session.add(
+            TrialModel(
+                id=task_id + "-trial",
+                name=task_id + "-trial",
+                task_id=task_id,
+                experiment_id=task_id,
+                agent="codex",
+                provider="openai",
+                model="test",
+                queue_key="test",
+            )
+        )
+        await session.commit()
+    try:
+        async with get_session() as session:
+            source = await resolve_task_file_source(
+                session, task_id=task_id, version=None
+            )
+            assert source.version is None
+            index = await session.get(FileIndexModel, source.index_key)
+            assert index.task_id == task_id
+            assert index.task_version_id is None
+            # Only this test's job should be selected, even when other tests
+            # have left unrelated durable work pending in this database.
+            index.next_attempt_at = datetime(1970, 1, 1, tzinfo=UTC)
+            await session.commit()
+        with pytest.raises(HTTPException) as pending:
+            await read_file_index(source_key=source.index_key)
+        assert pending.value.status_code == 503
+        assert await backfill_file_indexes(limit=1) == 1
+        monkeypatch.setattr(
+            helpers,
+            "get_storage_client",
+            lambda: pytest.fail("GET must not scan storage"),
+        )
+        result = await helpers.list_task_files_s3(
+            task_id=task_id,
+            task_s3_prefix=pointer,
+            version=None,
+            expanded_manifest_key=None,
+            index_key=source.index_key,
+            prefix=None,
+            cursor=None,
+            recursive=False,
+            inline=False,
+            presign=False,
+            indexed=True,
+            limit=100,
+        )
+        assert [(f["path"], f["size"]) for f in result["files"]] == [
+            ("instruction.md", len(content))
+        ]
+        assert result["files"][0]["key"] == (
+            archive_key + "#instruction.md"
+            if layout == "archive"
+            else root + "instruction.md"
+        )
+        if layout == "archive":
+            storage.list_objects_all.assert_not_awaited()
+        else:
+            storage.list_objects_all.assert_awaited_once_with(root)
+        async with get_session() as session:
+            task = await session.get(TaskModel, task_id)
+            trial = await session.get(TrialModel, task_id + "-trial")
+            assert task.current_version_id is None
+            assert task.task_s3_key == pointer
+            assert trial.task_version_id is None
+            assert (
+                await session.scalars(
+                    select(TaskVersionModel.version).where(
+                        TaskVersionModel.task_id == task_id
+                    )
+                )
+            ).all() == [7]
+            task.task_s3_key = root + "replacement/"
+            await session.commit()
+        async with get_session() as session:
+            replacement = await resolve_task_file_source(
+                session, task_id=task_id, version=None
+            )
+            assert replacement.index_key != source.index_key
+            assert (
+                await session.get(FileIndexModel, replacement.index_key)
+            ).revision is None
+        assert (await read_file_index(source_key=source.index_key))["files"][0][
+            "path"
+        ] == "instruction.md"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                text("DELETE FROM trials WHERE task_id=:id"), {"id": task_id}
+            )
+            await session.execute(
+                text("DELETE FROM task_versions WHERE task_id=:id"), {"id": task_id}
+            )
+            await session.execute(
+                text("DELETE FROM tasks WHERE id=:id"), {"id": task_id}
+            )
+            await session.execute(
+                text("DELETE FROM experiments WHERE id=:id"), {"id": task_id}
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column_exists", [False, True])
+async def test_legacy_migration_backfills_existing_sources_and_preserves_links(
+    session, column_exists
+):
+    import importlib.util
+    from pathlib import Path
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import text
+
+    spec = importlib.util.spec_from_file_location(
+        "legacy_file_index_migration",
+        Path(__file__).parents[1] / "alembic/versions/legacy_file_index_001.py",
+    )
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    connection = await session.connection()
+    # Isolate the migration from other tests' domain tables. The surrounding
+    # test transaction rolls back this entire schema, including its triggers.
+    schema = "legacy_migration_" + uuid4().hex
+    await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    await connection.execute(text(f'SET LOCAL search_path TO "{schema}"'))
+    await connection.execute(
+        text("""
+        CREATE TABLE tasks (
+            id varchar(128) PRIMARY KEY, current_version_id text,
+            task_s3_key text, deleted_at timestamptz
+        )
+    """)
+    )
+    await connection.execute(
+        text("""
+        CREATE TABLE file_indexes (
+            source_key text PRIMARY KEY, task_version_id text, revision text
+        )
+    """)
+    )
+    if column_exists:
+        await connection.execute(
+            text(
+                "ALTER TABLE file_indexes ADD COLUMN task_id varchar(128) REFERENCES tasks(id) ON DELETE CASCADE"
+            )
+        )
+    await connection.execute(
+        text("CREATE TABLE trials (id text PRIMARY KEY, task_version_id text)")
+    )
+    await connection.execute(
+        text("""
+        INSERT INTO tasks VALUES
+            ('legacy', NULL, 'imports/original/', NULL),
+            ('canonical', NULL, NULL, NULL),
+            ('versioned', 'version-7', 'imports/versioned/', NULL),
+            ('deleted', NULL, 'imports/deleted/', now())
+    """)
+    )
+    await connection.execute(
+        text(
+            "INSERT INTO trials VALUES ('legacy-trial', NULL), ('historical-trial', 'version-7')"
+        )
+    )
+
+    def upgrade(sync_connection):
+        with Operations.context(MigrationContext.configure(sync_connection)):
+            migration.upgrade()
+
+    await connection.run_sync(upgrade)
+    queued = (
+        await connection.execute(
+            text("SELECT source_key, task_id FROM file_indexes ORDER BY task_id")
+        )
+    ).all()
+    assert queued == [
+        ("task:canonical:", "canonical"),
+        ("task:legacy:imports/original/", "legacy"),
+    ]
+    assert (
+        await connection.execute(
+            text("SELECT current_version_id FROM tasks WHERE id='versioned'")
+        )
+    ).scalar_one() == "version-7"
+    assert (
+        await connection.execute(
+            text("SELECT id, task_version_id FROM trials ORDER BY id")
+        )
+    ).all() == [("historical-trial", "version-7"), ("legacy-trial", None)]
+    await connection.execute(
+        text("UPDATE tasks SET task_s3_key='imports/replaced/' WHERE id='legacy'")
+    )
+    assert (
+        await connection.execute(
+            text("SELECT count(*) FROM file_indexes WHERE task_id='legacy'")
+        )
+    ).scalar_one() == 2
+    await connection.execute(text("DELETE FROM tasks WHERE id='legacy'"))
+    assert (
+        await connection.execute(
+            text("SELECT count(*) FROM file_indexes WHERE task_id='legacy'")
+        )
+    ).scalar_one() == 0

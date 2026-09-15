@@ -20,9 +20,9 @@ export function trialFilePreviewKey(
   url: string,
   path: string,
   attempt: number,
-  revision: string | null = null
+  revision: string | null
 ) {
-  return scope
+  return scope && revision
     ? (["trial-file-preview", scope, url, path, attempt, revision] as const)
     : null;
 }
@@ -30,10 +30,15 @@ export function trialFilePreviewKey(
 export async function fetchTrialFilePreview(
   key: NonNullable<ReturnType<typeof trialFilePreviewKey>>
 ) {
-  const url = `${key[2]}/${encodeFilePath(key[3])}?indexed=true&attempt=${key[4]}&revision=${encodeURIComponent(key[5] ?? "")}&max_bytes=${FILE_PREVIEW_BYTES}`;
+  const url = `${key[2]}/${encodeFilePath(key[3])}?indexed=true&attempt=${key[4]}&revision=${encodeURIComponent(key[5])}&max_bytes=${FILE_PREVIEW_BYTES}`;
   const response = await apiFetch(url, { signal: AbortSignal.timeout(15_000) });
   if (!response.ok)
-    throw new Error(`Could not read file (HTTP ${response.status})`);
+    throw Object.assign(
+      new Error(`Could not read file (HTTP ${response.status})`),
+      {
+        status: response.status,
+      }
+    );
   const bytes = await response.arrayBuffer();
   return {
     kind: "text" as const,

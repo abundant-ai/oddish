@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useFileCacheScope } from "@/lib/file-resources";
 import useSWR, { preload, unstable_serialize, useSWRConfig } from "swr";
 import { fetcher } from "@/lib/api";
@@ -35,6 +42,7 @@ type TreeKey = readonly [
   number | null,
   string | null,
   number,
+  boolean,
 ];
 
 function treeKey(
@@ -42,12 +50,18 @@ function treeKey(
   url: string,
   version: number | null,
   hash: string | null,
-  attempt = 0
+  attempt = 0,
+  artifacts = false
 ): TreeKey {
-  return ["task-file-tree", scope, url, version, hash, attempt];
+  return ["task-file-tree", scope, url, version, hash, attempt, artifacts];
 }
 
-function listingUrl(key: TreeKey, path?: string, cursor?: string | null) {
+function listingUrl(
+  key: TreeKey,
+  path?: string,
+  cursor?: string | null,
+  revision?: string | null
+) {
   const params = new URLSearchParams({
     recursive: "0",
     inline: "0",
@@ -58,7 +72,10 @@ function listingUrl(key: TreeKey, path?: string, cursor?: string | null) {
   if (key[2].includes("/trials/")) params.set("attempt", String(key[5]));
   if (key[3] !== null) params.set("version", String(key[3]));
   if (key[4]) params.set("source_hash", key[4]);
-  if (path === undefined) {
+  if (revision && key[2].includes("/trials/")) params.set("revision", revision);
+  if (key[6]) {
+    params.set("artifacts", "true");
+  } else if (path === undefined) {
     INITIAL_DIRECTORIES.forEach((dir) => params.append("directories", dir));
   } else if (path) params.set("prefix", path);
   if (cursor) params.set("cursor", cursor);
@@ -115,69 +132,115 @@ export function usePrefetchTaskFiles() {
 /** Own directory data and pagination; file selection and browser history belong to the page. */
 export function useTaskFileTree({
   enabled,
+  active = enabled,
   url,
   version,
   hash,
   attempt = 0,
+  artifacts = false,
 }: {
   enabled: boolean;
+  active?: boolean;
   url: string;
   version: number | null;
   hash: string | null;
   attempt?: number;
+  artifacts?: boolean;
 }) {
   const scope = useFileCacheScope(url);
   const { cache, mutate: mutateCache } = useSWRConfig();
   const key = useMemo(
     () =>
-      enabled && scope ? treeKey(scope, url, version, hash, attempt) : null,
-    [enabled, scope, url, version, hash, attempt]
+      enabled && scope
+        ? treeKey(scope, url, version, hash, attempt, artifacts)
+        : null,
+    [enabled, scope, url, version, hash, attempt, artifacts]
   );
   const identity = unstable_serialize(key);
   const cached = cache.get(identity)?.data as TaskFileTree | undefined;
-  const { data, error, isLoading, mutate } = useSWR(key, fetchTree, {
-    revalidateOnMount: !cached || Date.now() - cached.fetchedAt >= FRESH_MS,
-    revalidateOnFocus: false,
-    shouldRetryOnError: (error: { status?: number }) => error.status === 503,
-    errorRetryInterval: 2_000,
-    errorRetryCount: 30,
-  });
+  const { data, error, isLoading, isValidating, mutate } = useSWR(
+    key,
+    async (key) => {
+      const fresh = await fetchTree(key);
+      const previous = cache.get(unstable_serialize(key))?.data as
+        | TaskFileTree
+        | undefined;
+      // A revision identifies immutable inventory metadata. Preserve already
+      // loaded continuation pages only when the server confirms that revision.
+      return fresh.source_hash && fresh.source_hash === previous?.source_hash
+        ? {
+            ...fresh,
+            directories: { ...fresh.directories, ...previous.directories },
+          }
+        : fresh;
+    },
+    {
+      revalidateOnMount: !cached || Date.now() - cached.fetchedAt >= FRESH_MS,
+      revalidateOnFocus: false,
+      revalidateIfStale: false,
+      shouldRetryOnError: (error: { status?: number }) => error.status === 503,
+      errorRetryInterval: 2_000,
+      errorRetryCount: 30,
+    }
+  );
+  const requestScope = JSON.stringify([identity, data?.source_hash]);
   const activeRequests = useRef(new Set<string>());
   const [requests, setRequests] = useState<Record<string, "loading" | "error">>(
     {}
   );
 
-  // A long-unconsumed hover prefetch may predate this mount. Refresh its data
-  // while retaining the tree, just as for an expired ordinary cache entry.
+  // Trial uploads can replace even a successful empty inventory. Retained
+  // panes must refresh on activation, not just on their first mount. Task
+  // prefetches keep their existing 30-second freshness window.
+  const refreshOnEntry = useEffectEvent(() => {
+    if (
+      error ||
+      (data &&
+        (url.includes("/trials/") || Date.now() - data.fetchedAt >= FRESH_MS))
+    )
+      void mutate();
+  });
   useEffect(() => {
-    if (data && Date.now() - data.fetchedAt >= FRESH_MS) void mutate();
-  }, [data, mutate]);
+    if (active) refreshOnEntry();
+  }, [active, identity]);
+
+  const onFileError = useCallback(
+    async (error: { status?: number }) => {
+      if (error.status === 409) await mutate();
+    },
+    [mutate]
+  );
 
   // A listing may start before panel metadata supplies the content hash. Give
   // that same response its exact revision key, so remounting with known metadata
   // reuses the inventory and any loaded continuation pages.
   useEffect(() => {
-    if (key && data?.source_hash && key[4] !== data.source_hash) {
+    if (
+      key &&
+      !url.includes("/trials/") &&
+      data?.source_hash &&
+      key[4] !== data.source_hash
+    ) {
       void mutateCache(
-        treeKey(key[1], key[2], key[3], data.source_hash, key[5]),
+        treeKey(key[1], key[2], key[3], data.source_hash, key[5], key[6]),
         data,
         { revalidate: false }
       );
     }
-  }, [key, data, mutateCache]);
+  }, [key, data, mutateCache, url]);
 
   const loadDirectory = useCallback(
     async (path: string | null, cursor?: string | null) => {
       if (!key || !data) return;
       const directory = path ?? "";
-      const requestId = `${identity}:${directory}`;
+      const requestId = `${requestScope}:${directory}`;
       if (activeRequests.current.has(requestId)) return;
       activeRequests.current.add(requestId);
       setRequests((previous) => ({ ...previous, [requestId]: "loading" }));
       let failed = false;
       try {
         const page = await fetcher<FilesListingResponse>(
-          listingUrl(key, directory, cursor),
+          listingUrl(key, directory, cursor, data.source_hash),
           {
             cache: "no-store",
             signal: AbortSignal.timeout(15_000),
@@ -223,9 +286,13 @@ export function useTaskFileTree({
           },
           { revalidate: false }
         );
-      } catch {
-        failed = true;
-        setRequests((previous) => ({ ...previous, [requestId]: "error" }));
+      } catch (error) {
+        if ((error as { status?: number }).status === 409) {
+          await mutateCache(key);
+        } else {
+          failed = true;
+          setRequests((previous) => ({ ...previous, [requestId]: "error" }));
+        }
       } finally {
         activeRequests.current.delete(requestId);
         if (!failed)
@@ -236,17 +303,27 @@ export function useTaskFileTree({
           });
       }
     },
-    [key, identity, data, mutateCache]
+    [key, requestScope, data, mutateCache]
   );
 
   const statusByDirectory = useMemo(
     () =>
       Object.fromEntries(
         Object.entries(requests)
-          .filter(([id]) => id.startsWith(`${identity}:`))
-          .map(([id, status]) => [id.slice(identity.length + 1), status])
+          .filter(([id]) => id.startsWith(`${requestScope}:`))
+          .map(([id, status]) => [id.slice(requestScope.length + 1), status])
       ),
-    [requests, identity]
+    [requests, requestScope]
   );
-  return { data, error, isLoading, loadDirectory, statusByDirectory, identity };
+  return {
+    data,
+    error,
+    isLoading,
+    isValidating,
+    loadDirectory,
+    statusByDirectory,
+    identity,
+    refresh: mutate,
+    onFileError,
+  };
 }

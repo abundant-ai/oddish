@@ -111,6 +111,7 @@ type FilePreview = { sourceHash?: string | null } & (
 );
 
 interface TaskFilesPanelProps {
+  isActive?: boolean;
   trialAttempt?: number;
   isOpen: boolean;
   onClose: () => void;
@@ -300,6 +301,7 @@ function getFileIcon(name: string) {
 // Language detection is handled by getLanguageFromFilename from code-block
 
 export function TaskFilesPanel({
+  isActive = true,
   trialAttempt = 0,
   isOpen,
   onClose,
@@ -446,6 +448,7 @@ export function TaskFilesPanel({
   );
   const treeResource = useTaskFileTree({
     enabled: isOpen,
+    active: isOpen && isActive,
     url: resolvedFilesUrl,
     version: shouldScopeFilesToVersion ? currentVersion : null,
     hash: listingContentHash,
@@ -576,8 +579,10 @@ export function TaskFilesPanel({
     const params = new URLSearchParams();
     if (presign) params.set("presign", "1");
     if (fileRouteServesBytes) {
+      if (!treeSourceHash) return null;
       params.set("indexed", "true");
       params.set("attempt", String(trialAttempt));
+      params.set("revision", treeSourceHash);
     }
     if (maxBytes) params.set("max_bytes", String(maxBytes));
     if (shouldScopeFilesToVersion && currentVersion != null) {
@@ -595,7 +600,8 @@ export function TaskFilesPanel({
   const immediatePreview =
     selectedFile &&
     isBinaryRendererFile(selectedFile.name) &&
-    fileRouteServesBytes
+    fileRouteServesBytes &&
+    treeSourceHash
       ? {
           kind: "binary" as const,
           url: buildSelectedFileUrl()!,
@@ -684,6 +690,7 @@ export function TaskFilesPanel({
       revalidateOnFocus: false,
       revalidateIfStale: false,
       shouldRetryOnError: false,
+      onError: treeResource.onFileError,
     }
   );
   useEffect(() => {
@@ -1050,6 +1057,7 @@ export function TaskFilesPanel({
       if (!url) return;
       const res = await fetch(url);
       if (!res.ok) {
+        await treeResource.onFileError({ status: res.status });
         return;
       }
       let content: string;
@@ -1137,9 +1145,11 @@ export function TaskFilesPanel({
 
   // Directory responses can expand the deep link without reselecting it.
   useEffect(() => {
-    if (!isOpen || activePane !== "file" || !initialFilePath) return;
+    if (!isOpen || activePane !== "file") return;
 
-    const ancestorPaths = getAncestorPaths(initialFilePath);
+    const ancestorPaths = getAncestorPaths(
+      selectedFilePath ?? initialFilePath ?? ""
+    );
     if (ancestorPaths.length > 0) {
       setExpandedDirs((prev) => {
         if (ancestorPaths.every((path) => prev.has(path))) return prev;
@@ -1160,6 +1170,7 @@ export function TaskFilesPanel({
     activePane,
     directoryListings,
     initialFilePath,
+    selectedFilePath,
     isOpen,
     loadDirectoryPage,
   ]);
