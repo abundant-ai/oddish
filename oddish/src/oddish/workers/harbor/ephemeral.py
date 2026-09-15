@@ -175,11 +175,15 @@ def _child_agent_config(
         # differs from the routed id by construction. Drop only that one, so the
         # child can re-pin it from the model it actually runs while an
         # endpoint-pinned value (an ``anthropic-hdo/`` alias, say) still crosses.
+        # A trial that names no model has neither a pin nor a routed id, so the
+        # comparison runs only on a pin that is actually present.
+        pinned = env.get(_SUBAGENT_MODEL_KEY)
         if (
-            _child_probe_subagent_model(routed, is_probe=is_probe)
-            and env.get(_SUBAGENT_MODEL_KEY) == routed.model_name
+            pinned
+            and pinned == routed.model_name
+            and _child_probe_subagent_model(routed, is_probe=is_probe)
         ):
-            env.pop(_SUBAGENT_MODEL_KEY)
+            env.pop(_SUBAGENT_MODEL_KEY, None)
         payload["env"] = env
     if routed.kwargs:
         payload["kwargs"] = dict(routed.kwargs)

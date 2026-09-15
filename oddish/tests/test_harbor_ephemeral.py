@@ -540,6 +540,30 @@ def test_ephemeral_probe_subagent_model_follows_the_child_model(tmp_path):
     assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == agent_config.model_name
 
 
+def test_ephemeral_probe_without_a_model_builds_a_payload(monkeypatch):
+    """A probe that names no model must still build a payload.
+
+    `_build_routed_agent_config` leaves `model_name` as None when neither the
+    caller nor the submitted config names a model, and the probe pin is skipped
+    for the same reason. The subagent strip must not read those two absences as
+    a match and remove a key that was never set.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "platform-key")
+
+    payload = _compat_payload(
+        None,
+        is_probe=True,
+        raw_harbor_config={
+            **_EPHEMERAL_HC,
+            "agent_config": {"env": {"UV_HTTP_RETRIES": "8"}},
+        },
+    )
+
+    assert payload["model"] is None
+    assert payload["agent_config"]["env"]["UV_HTTP_RETRIES"] == "8"
+    assert "CLAUDE_CODE_SUBAGENT_MODEL" not in payload["agent_config"]["env"]
+
+
 def test_ephemeral_probe_keeps_an_endpoint_pinned_subagent_model(monkeypatch):
     """Only the probe's own pin moves to the child.
 
