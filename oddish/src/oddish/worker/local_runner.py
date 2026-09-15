@@ -44,7 +44,10 @@ from oddish.db import (
     is_worker_owned_trial_status,
     get_session,
 )
-from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.harbor_artifacts import (
+    cache_write_tokens_from_trajectory,
+    is_infrastructure_exception,
+)
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -258,6 +261,32 @@ def _trajectory_total_steps(trajectory: object) -> int | None:
     if isinstance(steps, list):
         return len(steps)
     return None
+
+
+def _verifier_reward_for_result(result: object) -> float | None:
+    """Return the verifier reward this trial may be scored on.
+
+    Harbor records a provider failure on its own result rather than raising, so
+    this runner sees a reward for an environment the agent never worked in.
+    Dropping it leaves the trial exactly where this path already sits when the
+    verifier reports nothing: no reward on the row, and no separate failure
+    state, which this runner does not have. That is enough to keep the trial out
+    of the reward rollups, which count a settled zero and skip a null.
+    """
+    exception_info = getattr(result, "exception_info", None) if result else None
+    if is_infrastructure_exception(getattr(exception_info, "exception_type", None)):
+        return None
+    verifier_result = getattr(result, "verifier_result", None) if result else None
+    rewards = getattr(verifier_result, "rewards", None) if verifier_result else None
+    if not rewards:
+        return None
+    raw_reward = rewards.get("reward")
+    if raw_reward is None:
+        return None
+    try:
+        return float(raw_reward)
+    except (TypeError, ValueError):
+        return None
 
 
 def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
@@ -868,16 +897,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
     result_payload["_artifacts"] = artifacts
 
     # Compute reward up-front (we need it both for the analyzer and to persist).
-    verifier_result = getattr(result, "verifier_result", None) if result else None
-    rewards = getattr(verifier_result, "rewards", None) if verifier_result else None
-    reward_value: float | None = None
-    if rewards:
-        raw_reward = rewards.get("reward")
-        if raw_reward is not None:
-            try:
-                reward_value = float(raw_reward)
-            except (TypeError, ValueError):
-                reward_value = None
+    # The analyzer reads the same value, so a reward the provider's rejection
+    # produced cannot be narrated to an operator as a score either.
+    reward_value = _verifier_reward_for_result(result)
 
     # Run the LLM analyzer.
     extra_instructions = harbor_config.get("extra_instructions") or ""

@@ -197,6 +197,55 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
     return None
 
 
+# Harbor raises these when the model provider -- not the agent -- ended the
+# trial: the request was refused, or the connection carrying it failed. No model
+# output reached the environment, yet Harbor still runs the verifier afterwards,
+# and a verifier grading an untouched environment reports a real number (usually
+# 0.0). That number measures the provider failure, not the agent, so no caller
+# may settle it as the trial's score.
+#
+# Membership is an explicit list of names rather than a subclass check against
+# Harbor's ``ApiError``. ``exception_type`` is a name persisted in Harbor's
+# ``result.json``, so the class may not exist locally for an imported run; and a
+# subclass check would silently absorb every ``ApiError`` Harbor adds later,
+# including ones that are genuine agent outcomes -- as ``AgentSafetyRefusalError``
+# already is. An unrecognized name keeps today's behavior, so the failure
+# direction of this list is a reward that survives, never a reward invented.
+#
+# Deliberately absent, because the agent's own run ended the trial and the
+# environment it leaves behind is a real result worth grading:
+#   AgentTimeoutError          -- spent the wall clock every agent is given
+#   AgentSafetyRefusalError    -- the model refused; Harbor documents this as a
+#                                 real reward-0 outcome
+#   ContextWindowExceededError -- spent its own context budget
+#   OutputTokenExceededError   -- spent its own output budget
+INFRASTRUCTURE_EXCEPTION_TYPES: frozenset[str] = frozenset(
+    {
+        # The provider refused the request outright: credential, model id, or
+        # account quota. Another attempt cannot repair any of them.
+        "AgentAuthenticationError",
+        "ApiClientError",
+        "ApiProviderResourceNotFoundError",
+        "ApiUsageLimitError",
+        "ModelNotFoundError",
+        # The provider accepted the account but never served the request.
+        "ApiConnectionClosedError",
+        "ApiInternalServerError",
+        "ApiOverloadedError",
+        "ApiRateLimitError",
+        "ApiRequestTimeoutError",
+        "ApiResponseStalledError",
+        "NetworkConnectionError",
+        "UnknownApiError",
+    }
+)
+
+
+def is_infrastructure_exception(exception_type: str | None) -> bool:
+    """Whether the provider, not the agent, ended a trial with this exception."""
+    return exception_type in INFRASTRUCTURE_EXCEPTION_TYPES
+
+
 def build_trial_result(
     metrics: dict[str, Any] | None,
     verifier_summary: dict[str, Any] | None,
