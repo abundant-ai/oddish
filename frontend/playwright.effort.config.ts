@@ -6,12 +6,16 @@ export default defineConfig({
     "experiment-agent-grouping.spec.ts",
     "ec2-rerun-command.spec.ts",
   ],
+  // The fixture serves development bundles and lazy-loaded charts on CI.
+  // Leave time for navigation and hydration before exercising the controls.
+  timeout: 90_000,
   workers: 1,
   reporter: "list",
   use: {
     baseURL: "http://localhost:3117",
     ...devices["Desktop Chrome"],
     trace: "retain-on-failure",
+    navigationTimeout: 60_000,
   },
   webServer: {
     command:
