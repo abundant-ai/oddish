@@ -541,15 +541,13 @@ export function TaskOverviewPanel({
                 )}
               >
                 <Icon className="h-3 w-3" aria-hidden="true" />
-                {classification === "GOOD_FAILURE"
-                  ? `${count} good failure${count === 1 ? "" : "s"}`
-                  : classification === "GOOD_SUCCESS"
-                    ? `${count} agent${count === 1 ? "" : "s"} succeeded`
-                    : classification === "HARNESS_ERROR"
-                      ? `${count} invalid run${count === 1 ? "" : "s"}`
-                      : classification === "BAD_SUCCESS"
-                        ? `${count} invalid success${count === 1 ? "" : "es"}`
-                        : `${count} task-caused failure${count === 1 ? "" : "s"}`}
+                {count} {EXECUTION_LABELS[classification].toLowerCase()}
+                {count === 1
+                  ? ""
+                  : classification === "GOOD_SUCCESS" ||
+                      classification === "BAD_SUCCESS"
+                    ? "es"
+                    : "s"}
               </span>
             );
           })}
