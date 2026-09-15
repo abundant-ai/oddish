@@ -837,6 +837,24 @@ async def refresh_dashboard_summaries():
 
 @app.function(
     image=image,
+    secrets=runtime_secrets,
+    timeout=55,
+    max_containers=1,
+    schedule=modal.Period(seconds=5),
+    region=API_REGION,
+)
+async def prepare_file_directories():
+    from oddish.core.file_index import backfill_file_indexes
+
+    try:
+        count = await backfill_file_indexes()
+        console.print(f"metric=file_directories prepared={count}")
+    finally:
+        await close_database_connections()
+
+
+@app.function(
+    image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,

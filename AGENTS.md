@@ -838,6 +838,49 @@ Org/Mine uses the existing dashboard JSON endpoint with account/filter-scoped
 SWR and browser history. Applied filters belong to the URL; search input remains
 an editable draft. See `docs/prepared-webapp-reads.md` for maintenance and tests.
 
+Core migration `file_index_001` installs `file_indexes`, `file_entries`, and
+source-pointer triggers for the durable indexing queue. Task publication writes
+its index with the version-pointer transaction; trial upload indexes only
+successfully uploaded files under the authoritative attempt/child. Publish entry
+metadata with one explicit multi-row INSERT per 500 entries, including NULL
+directory sizes; ORM bulk insertion can split mixed directory/file rows into
+individual database round trips. `indexed=true`
+listings return bounded metadata without storage reads; artifacts use their
+partial index. Pending index jobs return retryable 503; an absent index returns
+404 instead of claiming preparation is running. Trial previews use explicit
+attempt/revision identity and a byte bound; full download is separate. Keep
+legacy CLI listing behavior behind the existing default options.
+
+Archives above `tasks_expand_max_bytes` keep the same extraction limit. Their
+existing `TASK_EXPAND` worker streams the archive to temporary disk, reads member
+metadata off the event loop, and publishes an `expand:<version id>` index. It
+reuses the worker's heartbeat and retry lifecycle; directory maintenance stops
+enqueuing once that index is ready. Opening a member uses the existing archive
+reader. `archive_index_001` merges the summary-status upgrade and invalidates
+archive indexes when an in-place upload changes the version's hash or pointer.
+Publication checks the version under lock after scanning to reject stale work.
+Task file signing responses include `expires_at` (Unix seconds), calculated
+using the same lifetime passed to storage signing; text responses omit it.
+
+Bounded storage reads must call `read(size)` on the SDK's `StreamingBody`, not
+the raw HTTP response returned by its async context manager. Only missing-object
+storage errors become task-file 404 responses; unexpected read failures must
+reach the server error handler rather than claiming historical files were deleted.
+
+Core migration `legacy_file_index_001` adds task-owned index jobs for sources
+without a current version row. Their identity is `task:<id>:<storage pointer>`;
+an absent pointer retains the canonical `tasks/<id>/` storage fallback. The
+migration and task-pointer trigger enqueue those sources without modifying
+task versions or trial version links. Background indexing uses the existing
+archive/directory reader; explicit indexed requests never scan storage. Archive-member
+keys retain the `<archive>#<member>` form. `TaskFileSource.index_key` selects
+that legacy job, an `expand:<version id>` job, or the published manifest index.
+
+Until the browser adoption change, prepared reads require `indexed=true`.
+Existing directory batches, optional previews, and streaming retain their
+existing storage implementation. Do not switch implicit directory batches until
+the browser implements preparation retries and indexed continuation pages.
+
 ### Task-file publication and read latency
 
 Task-file publication writes complete, immutable directories under
@@ -846,8 +889,7 @@ Task-file publication writes complete, immutable directories under
 key under the version-row lock. Publication does not delete or copy the previous
 directory. Retain published directories for in-flight readers and presigned URLs;
 also retain a candidate when commit acknowledgement is uncertain. Failed uploads
-and positively identified stale candidates can be cleaned up separately. There is
-no new schema migration or automatic backfill in this change.
+and positively identified stale candidates can be cleaned up separately. The prepared-read migrations above add directory indexing and automatic backfill.
 
 `resolve_task_file_source` returns a `TaskFileSource` snapshot containing version,
 archive prefix, published manifest key, and content hash from one authorized query.

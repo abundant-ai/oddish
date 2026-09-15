@@ -708,6 +708,7 @@ class StorageClient:
         *,
         authorized_prefix: str | None = None,
         subprefix: str | None = None,
+        index_attempt: int | None = None,
     ) -> str:
         """
         Upload Harbor trial results to S3.
@@ -738,13 +739,30 @@ class StorageClient:
         # Agents name artifact files freely (e.g. grok's URL-encoded
         # ``sessions/%2Fapp/`` session dir), so trial keys must be sanitized to
         # the backend's allowed charset or one bad name aborts the whole upload.
-        await self._upload_directory(
+        files = await self._upload_directory(
             harbor_job_dir,
             s3_prefix,
             authorized_prefix=authorized_prefix,
             sanitize_keys=True,
         )
 
+        if index_attempt is not None:
+            from types import SimpleNamespace
+            from oddish.core.file_index import index_trial_upload
+
+            try:
+                await index_trial_upload(
+                    self,
+                    trial=SimpleNamespace(
+                        id=trial_id, attempts=index_attempt, trial_s3_key=s3_prefix
+                    ),
+                    files=files,
+                )
+            except Exception:
+                # Bytes are committed; the source-table backfill retries metadata.
+                logger.exception(
+                    "trial directory publication failed trial_id=%s", trial_id
+                )
         return s3_prefix
 
     @classmethod
@@ -825,7 +843,7 @@ class StorageClient:
         *,
         authorized_prefix: str | None = None,
         sanitize_keys: bool = False,
-    ) -> None:
+    ) -> list[dict]:
         """Upload a directory tree to S3 with bounded concurrency.
 
         When ``authorized_prefix`` is set (a job-scoped credential is active),
@@ -840,11 +858,11 @@ class StorageClient:
         """
         file_paths = [path for path in local_path.rglob("*") if path.is_file()]
         if not file_paths:
-            return
+            return []
 
         semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
 
-        async def upload_one(file_path: Path) -> str | None:
+        async def upload_one(file_path: Path) -> str | dict:
             relative_path = str(file_path.relative_to(local_path))
             if sanitize_keys:
                 relative_path = sanitize_s3_key_chars(relative_path)
@@ -862,12 +880,12 @@ class StorageClient:
                     return s3_key
             async with semaphore:
                 await self.upload_file(file_path, s3_key)
-            return None
+            return {"path": relative_path, "size": file_path.stat().st_size}
 
         results = await asyncio.gather(
             *(upload_one(file_path) for file_path in file_paths)
         )
-        refused = [key for key in results if key is not None]
+        refused = [key for key in results if isinstance(key, str)]
         if refused:
             # A refused write must not read back as a complete upload: surface it
             # so a mis-scoped job-token prefix (one that doesn't cover the trial's
@@ -878,6 +896,8 @@ class StorageClient:
                 f"(first: {refused[0]}). The job token's prefix likely does not "
                 "cover the trial's artifacts."
             )
+
+        return [item for item in results if isinstance(item, dict)]
 
     async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -1767,8 +1787,14 @@ class StorageClient:
         max_bytes: int | None,
     ) -> dict:
         if presign:
+            expires_at = datetime.now(timezone.utc).timestamp() + presign_expiration
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
-            return {"path": file_path, "key": s3_key, "url": url}
+            return {
+                "path": file_path,
+                "key": s3_key,
+                "url": url,
+                "expires_at": expires_at,
+            }
         if max_bytes is None:
             content = await self.download_text(s3_key)
             is_truncated = False
@@ -1831,16 +1857,43 @@ class StorageClient:
         )
 
     async def download_file(self, s3_key: str, local_path: Path) -> None:
-        """Download a file from S3."""
+        """Download to disk with bounded memory, including multi-GiB archives."""
         await self._ensure_client()
-        response = await self._s3.get_object(
-            Bucket=settings.s3_bucket,
-            Key=s3_key,
-        )
-        async with response["Body"] as stream:
-            content = await stream.read()
-            with open(local_path, "wb") as f:
-                f.write(content)
+        with storage_operation("get", s3_key):
+            response = await self._s3.get_object(
+                Bucket=settings.s3_bucket,
+                Key=s3_key,
+            )
+        stream = response["Body"]
+        async with stream:
+            # A failed read previously left an existing destination untouched.
+            # Keep that behavior while streaming by replacing it only on success.
+            with tempfile.TemporaryDirectory(dir=local_path.parent) as directory:
+                staged = Path(directory) / local_path.name
+                with staged.open("wb") as f:
+                    while chunk := await stream.read(1024 * 1024):
+                        f.write(chunk)
+                staged.replace(local_path)
+
+    async def list_task_archive_members(self, archive_key: str) -> list[dict]:
+        """Read member names and sizes without retaining archive bodies in RAM."""
+
+        def read_members(path: Path) -> list[dict]:
+            files = {}
+            # Sequential decompression bounds memory independently of archive
+            # size. Run off the event loop so worker heartbeats can continue.
+            with tarfile.open(path, mode="r|gz", stream=True) as archive:
+                for member in archive:
+                    if member.isfile():
+                        name = normalize_s3_relative_path(member.name)
+                        if name:
+                            files[name] = {"path": name, "size": member.size}
+            return list(files.values())
+
+        with tempfile.TemporaryDirectory(prefix="oddish-archive-index-") as directory:
+            path = Path(directory) / "archive.tar.gz"
+            await self.download_file(archive_key, path)
+            return await asyncio.to_thread(read_members, path)
 
     async def download_bytes(self, s3_key: str, max_bytes: int | None = None) -> bytes:
         """Download binary content from S3."""
@@ -1851,8 +1904,22 @@ class StorageClient:
                 Bucket=settings.s3_bucket, Key=s3_key, **options
             )
         with timed_phase("storage_read"):
-            async with response["Body"] as stream:
-                content: bytes = await stream.read()
+            # StreamingBody.__aenter__ returns the raw aiohttp response, whose
+            # read() cannot accept a byte limit. Keep using the SDK wrapper.
+            stream = response["Body"]
+            async with stream:
+                if max_bytes is None:
+                    content: bytes = await stream.read()
+                else:
+                    chunks = []
+                    remaining = max_bytes
+                    while remaining:
+                        chunk = await stream.read(remaining)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    content = b"".join(chunks)
         timing = current_request_timing()
         if timing is not None:
             timing.storage_bytes += len(content)

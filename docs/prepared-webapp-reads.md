@@ -38,6 +38,48 @@ other variants fetch once on their next visit. Request deduplication lasts two
 seconds so five-second polls for pending summaries and active trials can run.
 Completed lists retain their thirty-second polling interval.
 
+## Prepared file APIs
+
+`file_indexes` identifies a published storage source and its revision.
+`file_entries` stores file and directory paths, parents, sizes, and artifact
+classification. Partial indexes support pending jobs and artifact-only reads;
+a directory index supports `(source, parent, path)` pagination. One SQL statement
+reads the source revision and up to `limit + 1` entries per requested directory
+from the same database snapshot. No storage operation runs on this path.
+
+Task expansion publishes its index in the same transaction that selects the
+completed immutable expanded directory. Trial workers capture metadata during
+upload, resolve Harbor's authoritative attempt/child with the existing resolver,
+and publish only after uploads finish. A failed metadata publication leaves the
+uploaded bytes intact; the durable indexing queue retries it. Source-pointer
+triggers enqueue historical/new task versions and trial attempts. Historical
+archive-only versions enter the existing expansion queue. Versionless tasks have
+task-owned indexes keyed by task ID and their existing storage pointer. Migration
+`legacy_file_index_001` queues existing sources and installs a task-pointer
+trigger for later changes; a null pointer retains the canonical `tasks/<id>/`
+fallback. Background indexing uses the existing archive/directory reader and
+keeps archive-member keys as `<archive>#<path>`. It never creates version rows or
+changes historical task/trial version links. The indexing worker drains
+at most eight records per cycle, backs off failures for five minutes, and stops
+starting work after 30 seconds. It never repeatedly scans the complete trial table
+to discover missing indexes. Index publication and replacement are transactional;
+published old task sources and attempts remain available to authorized readers.
+
+Prepared file routes require `indexed=true` and metadata-only options. They
+return bounded directory pages without storage reads. Pending jobs return HTTP
+503 with `Retry-After: 2`; absent jobs return 404. Trial previews accept attempt,
+revision, and a byte bound. Stale attempts/revisions return 409, and storage reads
+enforce their byte bound even across partial network reads. Existing directory
+batches, previews, and streaming remain available to the current browser.
+
+Apply `file_index_001` and `legacy_file_index_001` after `prepared_reads_001`.
+The hosted file maintainer runs every five seconds in the API region; standalone
+polling workers start and cancel the same loop. Independent health sampling also
+reports pending file indexes. Inspect backfill progress before browser adoption.
+File tests cover bounded reads/inserts, rollback, source-pointer publication,
+stale attempts/revisions, upload/backfill races, versionless sources, migrations,
+and the existing batch/preview/streaming API during this intermediate release.
+
 ## Deployment and alerts
 
 Apply migrations through `prepared_status_001` before deployment. Its task trigger
@@ -63,3 +105,22 @@ Tests cover transactional invalidation and rollback, changes during a rebuild,
 coalescing, retries, daily reconciliation, collection membership and runner rules,
 ownerless Mine results, and two SQL statements with 1 versus 10,000 trials.
 The browser test covers Org/Mine request reuse, search, and browser Back behavior.
+
+## Archive directories and temporary URLs
+
+Apply migrations through `archive_index_001`. It merges the existing file-index
+chain with `prepared_status_001`, including for databases already on
+`legacy_file_index_001`, and invalidates unexpanded archive indexes on overwrite.
+
+When extraction exceeds `tasks_expand_max_bytes`, the existing `TASK_EXPAND` job
+downloads to temporary disk in 1 MiB chunks and scans the compressed tar stream
+for member names and sizes. It publishes through `publish_file_index` using the
+same 500-entry batches. The job retains the existing heartbeat and retry policy;
+no additional scheduler or foreground storage scan is introduced. The version
+lock and captured hash reject publication after an in-place upload. A completed
+index ends automatic re-enqueueing; `expanded_at` stays unset so an operator can
+still request extraction after changing the size limit. Individual file reads
+retain the archive reader.
+
+Signed task-file responses include `expires_at` in Unix seconds so browser
+preview caches can retain text while renewing temporary storage access.

@@ -120,6 +120,14 @@ def _install_completion_fakes(
         assert what == "trial_import_complete"
         return await operation()
 
+    from oddish.core import file_index
+
+    async def publish_index(_storage, *, trial):
+        assert _storage is storage
+        assert trial.id == trial_id
+        events.append("publish_index")
+
+    monkeypatch.setattr(file_index, "index_trial_upload", publish_index)
     monkeypatch.setattr(trial_imports, "get_session", _session_context(session))
     monkeypatch.setattr(trial_imports, "get_storage_client", lambda: storage)
     monkeypatch.setattr(trial_imports, "resolve_trial_artifact_layout", resolve_layout)
@@ -172,6 +180,7 @@ async def test_complete_trial_import_deletes_staging_after_finalization(monkeypa
         "check_archive",
         "extract",
         "validate",
+        "publish_index",
         "finalize",
         "commit",
         "delete_archive",
@@ -209,7 +218,13 @@ async def test_complete_trial_import_keeps_staging_when_finalization_fails(
     with pytest.raises(RuntimeError, match="database unavailable"):
         await trial_imports.complete_trial_import(trial_id=trial_id, org_id="org-1")
 
-    assert events == ["check_archive", "extract", "validate", "finalize"]
+    assert events == [
+        "check_archive",
+        "extract",
+        "validate",
+        "publish_index",
+        "finalize",
+    ]
 
 
 @pytest.mark.asyncio
@@ -232,6 +247,7 @@ async def test_complete_trial_import_replays_after_staging_cleanup(monkeypatch):
         "check_archive",
         "list_extracted",
         "validate",
+        "publish_index",
         "finalize",
         "commit",
         "delete_archive",
@@ -251,3 +267,20 @@ async def test_complete_trial_import_rejects_missing_archive_and_prefix(monkeypa
     assert exc.value.status_code == 400
     assert exc.value.detail == "Uploaded trial archive not found in S3"
     assert events == ["check_archive", "list_extracted"]
+
+
+@pytest.mark.asyncio
+async def test_complete_trial_import_keeps_archive_when_index_publication_fails(
+    monkeypatch,
+):
+    from oddish.core import file_index
+
+    trial_id, _, events = _install_completion_fakes(monkeypatch)
+
+    async def unavailable_index(*args, **kwargs):
+        raise RuntimeError("index database unavailable")
+
+    monkeypatch.setattr(file_index, "index_trial_upload", unavailable_index)
+    with pytest.raises(RuntimeError, match="index database unavailable"):
+        await trial_imports.complete_trial_import(trial_id=trial_id, org_id="org-1")
+    assert events == ["check_archive", "extract", "validate"]

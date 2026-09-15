@@ -162,6 +162,14 @@ async def _promote_expansion_if_current(
             )
         ):
             return False
+        from oddish.core.file_index import publish_file_index
+
+        await publish_file_index(
+            session,
+            source_key=manifest_key,
+            root_prefix=manifest_key.rsplit("/", 1)[0] + "/",
+            files=json.loads(manifest_bytes)["files"],
+        )
         row.expanded_at = utcnow()
         row.expanded_manifest_key = manifest_key
         await session.commit()
@@ -484,11 +492,22 @@ async def run_task_expand_job(
 
         max_bytes = int(settings.tasks_expand_max_bytes)
         if max_bytes and archive_size > max_bytes:
+            from oddish.core.file_index import index_task_archive
+
+            if not await index_task_archive(
+                storage,
+                task_id=task_id,
+                version=version,
+                archive_key=archive_key,
+                expected_content_hash=expected_content_hash,
+            ):
+                return {"status": "stale_source"}
             summary = {
                 "status": "skipped",
                 "reason": "archive_too_large",
                 "archive_size": archive_size,
                 "limit": max_bytes,
+                "directory_indexed": True,
             }
             console.print(
                 f"[yellow]TASK_EXPAND skip: archive_size={archive_size} "

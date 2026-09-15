@@ -54,6 +54,9 @@ async def run_polling_worker(
 
     from oddish.core.experiment_summaries import run_experiment_summary_maintenance
 
+    from oddish.core.file_index import run_file_index_maintenance
+
+    directories = asyncio.create_task(run_file_index_maintenance())
     summaries = asyncio.create_task(run_experiment_summary_maintenance())
     dispatcher = InProcessDispatcher(worker_id_prefix="oss")
     try:
@@ -66,6 +69,9 @@ async def run_polling_worker(
             fallback_interval=poll_interval,
         )
     finally:
+        directories.cancel()
+        with suppress(asyncio.CancelledError):
+            await directories
         summaries.cancel()
         with suppress(asyncio.CancelledError):
             await summaries

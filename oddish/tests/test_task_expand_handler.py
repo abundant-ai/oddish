@@ -26,6 +26,15 @@ from oddish.db.storage import StorageClient  # noqa: E402
 from oddish.workers.queue import task_expand_handler  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _capture_directory_publication(monkeypatch):
+    from oddish.core import file_index
+
+    publisher = AsyncMock()
+    monkeypatch.setattr(file_index, "publish_file_index", publisher)
+    return publisher
+
+
 def _make_archive(files: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -627,6 +636,10 @@ async def test_expand_is_idempotent_on_matching_etag(monkeypatch, _patched_get_s
 
 @pytest.mark.asyncio
 async def test_expand_skips_oversize_archive(monkeypatch, _patched_get_session):
+    from oddish.core import file_index
+
+    index_archive = AsyncMock(return_value=True)
+    monkeypatch.setattr(file_index, "index_task_archive", index_archive)
     archive_bytes = _make_archive({"task.toml": b"x" * 1024})
     storage = _FakeStorage(
         archive_key="tasks/task-abc/v1/.oddish-task.tar.gz",
@@ -653,6 +666,8 @@ async def test_expand_skips_oversize_archive(monkeypatch, _patched_get_session):
 
     assert summary["status"] == "skipped"
     assert summary["reason"] == "archive_too_large"
+    assert summary["directory_indexed"] is True
+    index_archive.assert_awaited_once()
     # Nothing written beyond the archive itself.
     assert storage.upload_calls == []
     # expanded_at must remain NULL so a future cap raise can re-pick
