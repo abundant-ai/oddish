@@ -1764,6 +1764,14 @@ export function ExperimentDetailView({
     });
   };
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawerState((current) =>
+      current?.mode === "trial" && current.trial?.id === previousTrialId
+        ? { ...current, trial: replacement, trialIndex: null }
+        : current
+    );
+  };
+
   // A trial link from the task overview's aggregated QA. Always opens in
   // this drawer: the overview hands over the full trial row, so even a
   // trial the grid hasn't streamed in yet (or one gathered from another
@@ -2096,6 +2104,7 @@ export function ExperimentDetailView({
                 onNavigate={handleNavigateToTrial}
                 onNavigateToTask={handleNavigateToTask}
                 onRetry={onRerun}
+                onRetried={handleTrialRetried}
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}

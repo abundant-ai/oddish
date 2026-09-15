@@ -828,6 +828,14 @@ export function TaskDetailClient({
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawer((current) =>
+      current?.mode === "trial" && current.fallbackTrial.id === previousTrialId
+        ? { ...current, fallbackTrial: replacement }
+        : current
+    );
+  };
+
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
@@ -1465,6 +1473,7 @@ export function TaskDetailClient({
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={revalidateReaderResources}
+                  onRetried={handleTrialRetried}
                   allowRetry={true}
                   apiBaseUrl="/api"
                   contentOnly={true}
