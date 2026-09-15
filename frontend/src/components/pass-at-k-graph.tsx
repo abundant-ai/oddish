@@ -35,6 +35,7 @@ export const AGENT_COLORS = [
 interface PassAtKGraphProps {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
   hiddenAgents: Set<string>;
   onToggleAgent: (agent: string) => void;
   hoverAgent?: string | null;
@@ -50,7 +51,8 @@ const PASS_AT_K_CAP = 10;
 
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[]
+  agentSummaries: AgentSummary[],
+  groupEfforts: boolean
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
   let maxN = 1;
   const taskAgentTrials: Record<string, Record<string, Trial[]>> = {};
@@ -60,7 +62,7 @@ function buildAgentStats(
 
     taskAgentTrials[task.id] = {};
     for (const trial of task.trials) {
-      const key = getExperimentAgentKey(trial);
+      const key = getExperimentAgentKey(trial, groupEfforts);
       if (!taskAgentTrials[task.id][key]) {
         taskAgentTrials[task.id][key] = [];
       }
@@ -92,6 +94,7 @@ function buildAgentStats(
 export const PassAtKGraph = memo(function PassAtKGraph({
   tasks,
   agentSummaries,
+  groupEfforts = false,
   hiddenAgents,
   onToggleAgent,
   hoverAgent,
@@ -124,7 +127,11 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {
-      const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+      const { agentStats, maxN } = buildAgentStats(
+        tasks,
+        agentSummaries,
+        groupEfforts
+      );
       const curveMaxK = Math.min(maxN, PASS_AT_K_CAP);
       const curveData =
         maxN > 1 ? calculatePassAtKCurve(agentStats, curveMaxK) : [];
@@ -143,7 +150,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         agentColorByKey: colorMap,
         agentLabelByKey: labelMap,
       };
-    }, [tasks, agentSummaries]);
+    }, [tasks, agentSummaries, groupEfforts]);
 
   const renderTooltip = useCallback(
     (props: TooltipContentProps<TooltipValue, TooltipName>) => {

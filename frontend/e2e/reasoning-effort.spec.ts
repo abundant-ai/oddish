@@ -241,3 +241,77 @@ for (const effort of ["default", "high"]) {
     else expect(requests[0].agent_config?.kwargs.reasoning_effort).toBe("high");
   });
 }
+
+test("grouping efforts combines cells and charts, survives reload, and restores columns", async ({
+  page,
+}) => {
+  const toggle = page.getByRole("checkbox", { name: "Group effort levels" });
+  const firstRow = page.getByRole("row").filter({ hasText: "repair-queue" });
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(page).toHaveURL(/groupEfforts=1/);
+  await expect(firstRow.locator("td")).toHaveCount(2);
+  await expect(firstRow.locator("td").nth(1).getByRole("button")).toHaveCount(
+    20
+  );
+  await expect(
+    page.getByText("n = 20 · 3 tasks · 1 configurations")
+  ).toBeVisible();
+  await expect(page.getByText("65.0%", { exact: true })).toBeVisible();
+  await firstRow.locator("td").nth(1).getByRole("button").nth(10).click();
+  await expect(page.getByLabel("Selected effort")).toHaveText(
+    "high: 20 trials"
+  );
+  await page.reload();
+  await expect(toggle).toBeChecked();
+  await expect(firstRow.locator("td")).toHaveCount(2);
+  await toggle.uncheck();
+  await expect(page).not.toHaveURL(/groupEfforts=1/);
+  await expect(firstRow.locator("td")).toHaveCount(5);
+  await page.goBack();
+  await expect(toggle).toBeChecked();
+  await expect(firstRow.locator("td")).toHaveCount(2);
+});
+
+test("mixed unspecified and high trials share totals and row filtering", async ({
+  page,
+}) => {
+  await page.goto("/effort?sample=mixed");
+  await expect(page.getByRole("application")).toBeVisible();
+  const row = page.getByRole("row").filter({ hasText: "repair-queue" });
+  const filter = page.getByRole("group", { name: "Row filter" });
+  await filter.getByRole("button", { name: "Any failed", exact: true }).click();
+  await expect(row).toBeVisible();
+  await page.getByRole("checkbox", { name: "Group effort levels" }).check();
+  await expect(row).toHaveCount(0);
+  await filter.getByRole("button", { name: "All", exact: true }).click();
+  await expect(row.locator("td")).toHaveCount(2);
+  await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
+  await expect(page.getByText("20.0%", { exact: true })).toBeVisible();
+  await row.locator("td").nth(1).getByRole("button").nth(2).click();
+  await expect(page.getByLabel("Selected effort")).toHaveText("high: 5 trials");
+  await expect(page).toHaveURL(/sample=mixed/);
+});
+
+test("experiment view refreshes open drawer groups when the URL grouping changes", async ({
+  page,
+}) => {
+  await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
+  await page.goto(
+    "/effort?sample=mixed&detail=1&task=repair-queue&trial=repair-queue-low-2"
+  );
+  await expect(
+    page.getByRole("button", { name: "Next trial", exact: true })
+  ).toBeVisible();
+  const trials = page.getByRole("button", { name: /^Trial \d+ / });
+  await expect(trials).toHaveCount(8); // Five in the table, three high-effort in the drawer.
+  await page.evaluate(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("groupEfforts", "1");
+    window.history.pushState(null, "", url);
+  });
+  await expect(trials).toHaveCount(10); // Five in each view.
+  await expect(page).toHaveURL(/trial=repair-queue-low-2/);
+  await page.goBack();
+  await expect(trials).toHaveCount(8);
+});

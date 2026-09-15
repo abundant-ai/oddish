@@ -80,7 +80,8 @@ export function getExperimentAgentKey(
   trial: Pick<
     Trial,
     "agent" | "model" | "is_probe" | "kind" | "reasoning_effort"
-  >
+  >,
+  groupEfforts = false
 ): string {
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
@@ -95,17 +96,21 @@ export function getExperimentAgentKey(
   if (isBaselineAgentName(display.agent)) {
     return display.agent;
   }
-  return `${display.agent}/${getModelKey(display.model)}/${trial.reasoning_effort ?? "unspecified"}`;
+  const key = `${display.agent}/${getModelKey(display.model)}`;
+  return groupEfforts
+    ? key
+    : `${key}/${trial.reasoning_effort ?? "unspecified"}`;
 }
 
 export function buildExperimentAgentSummaries(
-  tasks: Task[]
+  tasks: Task[],
+  groupEfforts = false
 ): ExperimentAgentSummary[] {
   const summaries = new Map<string, ExperimentAgentSummary>();
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
-      const key = getExperimentAgentKey(trial);
+      const key = getExperimentAgentKey(trial, groupEfforts);
       if (summaries.has(key)) continue;
 
       if (trial.is_probe) {
@@ -131,14 +136,15 @@ export function buildExperimentAgentSummaries(
       }
 
       const display = getExperimentAgentDisplay(trial);
+      const effort = groupEfforts ? null : trial.reasoning_effort;
       summaries.set(key, {
         key,
         label: isBaselineAgentName(display.agent)
           ? key
-          : `${display.agent}/${experimentModelLabel(display.model, trial.reasoning_effort)}`,
+          : `${display.agent}/${experimentModelLabel(display.model, effort)}`,
         agent: display.agent,
         model: display.model,
-        reasoningEffort: trial.reasoning_effort ?? null,
+        reasoningEffort: effort ?? null,
         queueKey: trial.provider ?? null,
       });
     }

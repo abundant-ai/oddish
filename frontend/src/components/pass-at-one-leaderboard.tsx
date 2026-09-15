@@ -10,6 +10,7 @@ import { QueueKeyIcon } from "./queue-key-icon";
 interface PassAtOneLeaderboardProps {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
   hiddenAgents: Set<string>;
   onToggleAgent?: (agent: string) => void;
   hoverAgent?: string | null;
@@ -35,7 +36,8 @@ function getPassAtOneValue(trials: Trial[]): number | null {
 
 function calculateRows(
   tasks: Task[],
-  agentSummaries: AgentSummary[]
+  agentSummaries: AgentSummary[],
+  groupEfforts: boolean
 ): LeaderboardRow[] {
   const rows: LeaderboardRow[] = [];
 
@@ -43,7 +45,7 @@ function calculateRows(
     const taskValues: number[] = [];
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
-        (trial) => getExperimentAgentKey(trial) === summary.key
+        (trial) => getExperimentAgentKey(trial, groupEfforts) === summary.key
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -71,13 +73,14 @@ function calculateRows(
 export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   tasks,
   agentSummaries,
+  groupEfforts = false,
   hiddenAgents,
   hoverAgent,
   onHoverAgent,
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
-    () => calculateRows(tasks, agentSummaries),
-    [tasks, agentSummaries]
+    () => calculateRows(tasks, agentSummaries, groupEfforts),
+    [tasks, agentSummaries, groupEfforts]
   );
   const visibleRows = useMemo(
     () => rows.filter((row) => !hiddenAgents.has(row.key)),
