@@ -284,7 +284,7 @@ async def test_must_fix_defects_block(session):
     version.pre_trial = {
         "items": [
             {"tier": "must_fix", "title": "leak"},
-            {"tier": "should_fix", "title": "The verifier misses invalid input"},
+            {"tier": "must_fix", "title": "The verifier misses invalid input"},
         ]
     }
     cheat_trial = _trial(
@@ -317,9 +317,11 @@ async def test_must_fix_defects_block(session):
     assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
     assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
-    assert "1 historically lower-severity findings still require" in check.detail
+    assert "historically lower-severity" not in check.detail
 
-    historical_defect = next(d for d in row.defects if d.recorded_tier == "should_fix")
+    historical_defect = next(
+        d for d in row.defects if d.title == "The verifier misses invalid input"
+    )
     await set_manual_check_core(
         session,
         delivery_id=delivery.id,
@@ -601,7 +603,7 @@ async def test_qa_history(session):
     assert [run.kind for run in history.unversioned_runs] == ["qa"]
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
-    assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert broken.must_fix == 0
     assert broken.findings == []
     assert broken.pre_trial_error == "docker died"
     assert [run.error for run in broken.qa_runs] == ["container OOM"]
@@ -640,7 +642,7 @@ async def test_qa_history(session):
     [
         ({"tier": None, "severity": "must_fix"}, "must_fix"),
         ({"severity": "must_fix"}, "must_fix"),
-        ({"tier": "should_fix", "severity": "must_fix"}, "should_fix"),
+        ({"tier": "optional", "severity": "must_fix"}, "optional"),
     ],
 )
 async def test_qa_history_legacy_severity(session, source, tiers, expected):
@@ -879,7 +881,7 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+@pytest.mark.parametrize("tier", ["must_fix", "optional"])
 async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {

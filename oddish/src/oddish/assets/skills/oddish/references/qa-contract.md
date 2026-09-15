@@ -74,7 +74,7 @@ classification entry: `classification`, `subtype`, `evidence`, `root_cause`,
 Each action item carries a server-computed `id` (the target of other items'
 `links_to`) and can carry `source` (`pre_trial` or `post_trial`),
 `problem_type`, `dimension`, `file`, one-based `line_start` and `line_end`,
-`title`, `detail`, `recommendation`, `tier` (`must_fix`, `should_fix`, or
+`title`, `detail`, `recommendation`, `tier` (`must_fix` or
 `optional`), and exploitation linkage fields (`links_to`, `exploited`,
 `exploit_evidence`, `causal`). Task status can trim embedded trial analysis;
 use `oddish status <trial_id> --json` for the full record.
@@ -97,7 +97,7 @@ text and file/line anchors are preserved. Separate runs reporting the same
 finding remain separate rows; version-audit findings are emitted once.
 Blank `group`, `assignee`, and `resolution` columns support manual triage.
 
-Defaults: current version, `must_fix` and `should_fix`, four concurrent reads.
+Defaults: current version, `must_fix`, four concurrent reads.
 Use repeatable `--tier` to change severity selection (including `optional`),
 `--all-versions` to include older versions, `--concurrency` (1–16) to bound
 requests, and `--api` to select an API. Existing output files are overwritten.
