@@ -365,7 +365,15 @@ directory uploads successfully and the freshly uploaded attempt's root
 `result.json` selects an existing child containing the required analysis result.
 Pinned Harbor 0.20 omits its former `trial_results` array from that root job
 summary, so the Oddish runner writes `oddish_trial_name` there after `Job.run()`
-returns and before upload. That field contains the sole in-memory Harbor
+returns and before upload. The same omission costs any caller that rebuilds a
+`JobResult` from that file its per-trial exception and phase timing: the
+ephemeral parent reads the file, while the in-process runner passes the
+populated object `Job.run()` returns. `_extract_outcome_from_job_result`
+therefore falls back to `_trial_results_from_job_dir`, which reads each trial's
+own `result.json` through Harbor's `JobScanner`. It reads every trial directory
+rather than the `oddish_trial_name` selector, because the recovered list stands
+in for `trial_results` and the caller applies its own first-error rule across
+the whole list. That field contains the sole in-memory Harbor
 `TrialResult.trial_name`; older stored roots with exactly one `trial_results`
 entry remain readable. Pre-attempt shared prefixes whose Harbor 0.20 root
 summary has neither selector retain the historical recursive readers; only new
