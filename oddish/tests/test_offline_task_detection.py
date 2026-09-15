@@ -1,4 +1,4 @@
-"""Offline-task detection, and the cloud default that deliberately ignores it.
+"""Offline-task detection and required hosted capability routing.
 
 ``task_is_offline`` must recognize both spellings of "this task has no egress":
 the modern ``environment.network_mode`` and the legacy
@@ -25,8 +25,8 @@ installed anything) and ``environments/modal_network.py``. The vestigial PATH
 export at ``agents/installed/codex.py:30`` is the leftover consumer of a layer
 nothing produces anymore.
 
-So offline tasks keep the plain cheap-first default. The tests below pin that,
-so a future reroute has to argue its case against the falsified one.
+Offline CPU tasks therefore leave their provider unset, just like online CPU
+tasks. The hosted backend selects their default after submission.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
 
-from oddish.cli.run import _default_cloud_environment_for_task
+from oddish.cli.run import _required_cloud_environment_for_task
 from oddish.worker.local_offline_policy import task_is_offline
 
 
@@ -120,9 +120,7 @@ def test_task_is_offline_false_for_public_task(tmp_path) -> None:
 # --- the cloud default does NOT branch on offline-ness ----------------------
 
 
-def test_offline_cpu_task_keeps_the_cheap_default(tmp_path) -> None:
-    # Being offline is not on its own a reason to move a task off Daytona --
-    # see the module docstring for the experiment that falsified that theory.
+def test_offline_cpu_task_leaves_hosted_default_unset(tmp_path) -> None:
     task_dir = _write_task(
         tmp_path,
         """
@@ -133,12 +131,11 @@ def test_offline_cpu_task_keeps_the_cheap_default(tmp_path) -> None:
         """,
     )
     assert (
-        _default_cloud_environment_for_task(task_dir, override_gpus=None)
-        == EnvironmentType.DAYTONA
+        _required_cloud_environment_for_task(task_dir, override_gpus=None) is None
     )
 
 
-def test_online_cpu_task_keeps_the_cheap_default(tmp_path) -> None:
+def test_online_cpu_task_leaves_hosted_default_unset(tmp_path) -> None:
     task_dir = _write_task(
         tmp_path,
         """
@@ -148,8 +145,7 @@ def test_online_cpu_task_keeps_the_cheap_default(tmp_path) -> None:
         """,
     )
     assert (
-        _default_cloud_environment_for_task(task_dir, override_gpus=None)
-        == EnvironmentType.DAYTONA
+        _required_cloud_environment_for_task(task_dir, override_gpus=None) is None
     )
 
 
@@ -165,6 +161,6 @@ def test_gpu_task_still_routes_to_modal(tmp_path) -> None:
         """,
     )
     assert (
-        _default_cloud_environment_for_task(task_dir, override_gpus=None)
+        _required_cloud_environment_for_task(task_dir, override_gpus=None)
         == EnvironmentType.MODAL
     )

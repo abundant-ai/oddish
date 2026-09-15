@@ -37,7 +37,7 @@ def _cloud_policy_values(*, ec2_enabled: bool) -> tuple[set[str], str, str]:
         "from oddish.schemas import TaskSweepSubmission;"
         "print(','.join(sorted(e.value for e in "
         "cloud_policy.ALLOWED_CLOUD_ENVIRONMENTS)));"
-        "print(cloud_policy.get_default_cloud_environment().value);"
+        "print(cloud_policy.get_default_cloud_environment(request_hash='0'*64).value);"
         "submission=TaskSweepSubmission.model_validate({"
         "'task_id':'t','configs':[{'agent':'nop','n_trials':1}],"
         "'environment':'ec2'});"

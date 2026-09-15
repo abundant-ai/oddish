@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from harbor.models.environment_type import EnvironmentType
 
+from oddish.config import settings
 from oddish.runtime.routing import (
     allowed_cloud_environments,
     default_cloud_environment,
@@ -13,6 +14,8 @@ ALLOWED_CLOUD_ENVIRONMENTS = allowed_cloud_environments()
 
 def get_default_cloud_environment(
     submission: TaskSweepSubmission | None = None,
+    *,
+    request_hash: str,
 ) -> EnvironmentType:
     # TPU is only servable by GKE, so a submission that requests one via
     # override_tpu defaults there -- mirroring the CLI's TPU auto-routing for
@@ -31,4 +34,10 @@ def get_default_cloud_environment(
         submission is not None
         and (submission.harbor.environment.override_gpus or 0) > 0
     )
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    current_default = default_cloud_environment(requires_gpu=requires_gpu)
+    if (
+        current_default == EnvironmentType.DAYTONA
+        and int(request_hash, 16) % 100 < settings.archil_traffic_percent
+    ):
+        return EnvironmentType.ARCHIL
+    return current_default
