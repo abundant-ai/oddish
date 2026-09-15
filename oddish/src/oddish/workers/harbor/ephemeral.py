@@ -33,8 +33,10 @@ from .agent_config import (
     _claude_code_forces_direct_api,
     _gateway_env,
     _is_claude_code_agent,
+    _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
+    surfaced_anthropic_env,
 )
 from .outcome import (
     HarborOutcome,
@@ -134,8 +136,22 @@ def _runtime_env_overrides(
     return env
 
 
+_SUBAGENT_MODEL_KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+
+def _child_probe_subagent_model(routed: AgentConfig, *, is_probe: bool) -> bool:
+    """Whether the child must pin the probe's subagent model itself.
+
+    ``_apply_claude_code_probe_subagent_model`` pins a probe's subagent to the
+    agent's own model id. For claude-code that id is the child's decision, so
+    the pin has to follow it there -- pinning from the parent's canonical id
+    leaves a probe whose main agent and subagent run different models.
+    """
+    return is_probe and _is_claude_code_agent(routed)
+
+
 def _child_agent_config(
-    routed: AgentConfig, *, raw_harbor_config: dict[str, Any]
+    routed: AgentConfig, *, raw_harbor_config: dict[str, Any], is_probe: bool
 ) -> dict[str, Any]:
     """Serialize the child's ``AgentConfig`` with in-process provider routing applied.
 
@@ -153,7 +169,18 @@ def _child_agent_config(
     """
     payload = dict(raw_harbor_config.get("agent_config") or {})
     if routed.env:
-        payload["env"] = dict(routed.env)
+        env = dict(routed.env)
+        # The probe pin is the one writer that sets this key to the agent's own
+        # model id; every other writer pins the id its endpoint serves, which
+        # differs from the routed id by construction. Drop only that one, so the
+        # child can re-pin it from the model it actually runs while an
+        # endpoint-pinned value (an ``anthropic-hdo/`` alias, say) still crosses.
+        if (
+            _child_probe_subagent_model(routed, is_probe=is_probe)
+            and env.get(_SUBAGENT_MODEL_KEY) == routed.model_name
+        ):
+            env.pop(_SUBAGENT_MODEL_KEY)
+        payload["env"] = env
     if routed.kwargs:
         payload["kwargs"] = dict(routed.kwargs)
     return payload
@@ -219,13 +246,27 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
-    routed = _build_routed_agent_config(
-        agent=agent,
-        model=model,
-        raw_harbor_config=raw_harbor_config,
-        is_probe=is_probe,
-        probe_oddish_env=extra_agent_env,
-    )
+    # Both the routed build and the runtime env ask
+    # ``_claude_code_forces_direct_api``, which reads ``os.environ``. The
+    # in-process runner surfaces the trial's own Anthropic credential there
+    # first; without it a worker holding only Bedrock credentials answers the
+    # routing question for an HDO trial as if the key did not exist.
+    with _temporary_env(
+        surfaced_anthropic_env(agent=agent, model=model, agent_env=extra_agent_env)
+    ):
+        routed = _build_routed_agent_config(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+            probe_oddish_env=extra_agent_env,
+        )
+        runtime_env = _runtime_env_overrides(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+        )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
@@ -237,8 +278,9 @@ def _build_payload(
         ),
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": _child_agent_config(
-            routed, raw_harbor_config=raw_harbor_config
+            routed, raw_harbor_config=raw_harbor_config, is_probe=is_probe
         ),
+        "probe_subagent_model": _child_probe_subagent_model(routed, is_probe=is_probe),
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
         "timeout_multiplier": raw_harbor_config.get("timeout_multiplier"),
@@ -258,12 +300,7 @@ def _build_payload(
             else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
-        "runtime_env": _runtime_env_overrides(
-            agent=agent,
-            model=model,
-            raw_harbor_config=raw_harbor_config,
-            is_probe=is_probe,
-        ),
+        "runtime_env": runtime_env,
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
         "extra_agent_env": _child_extra_agent_env(

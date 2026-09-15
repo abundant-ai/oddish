@@ -488,6 +488,73 @@ async def test_ephemeral_builder_failure_still_removes_the_patched_task_copy(
     assert "Geometric serves only" in (outcome.error or "")
 
 
+def test_ephemeral_hdo_trial_blanks_bedrock_without_an_ambient_platform_key(
+    monkeypatch,
+):
+    """The routing question must be asked under the credential the trial supplies.
+
+    `_claude_code_forces_direct_api` reads `os.environ`, and the in-process runner
+    surfaces the HDO key there before asking. Without that, a worker holding only
+    Bedrock credentials answers "no" and the child keeps its Bedrock route while
+    authenticating with the HDO key.
+    """
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_HDO_API_KEY", "hdo-secret")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
+
+    payload = _compat_payload("anthropic-hdo/claude-opus-4-5")
+
+    assert payload["runtime_env"]["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert payload["runtime_env"]["AWS_BEARER_TOKEN_BEDROCK"] == ""
+
+
+def test_ephemeral_probe_subagent_model_follows_the_child_model(tmp_path):
+    """A probe's subagent must run the same model as the probe itself.
+
+    claude-code's model id is the child's decision, so anything derived from it
+    is too. Pinning the subagent from the parent's canonical id leaves a probe
+    whose main agent and subagent are on different ids.
+    """
+    monkeypatch_task = tmp_path / "task"
+    monkeypatch_task.mkdir()
+    payload = _compat_payload("global.anthropic.claude-opus-5", is_probe=True)
+    config = _build_job_config(
+        {
+            "task_path": str(monkeypatch_task),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": payload["model"],
+            "environment_config": {},
+            "agent_config": payload["agent_config"],
+            "verifier": {},
+            "artifacts": [],
+            "runtime_env": payload["runtime_env"],
+            "extra_agent_env": payload["extra_agent_env"],
+            "probe_subagent_model": payload["probe_subagent_model"],
+        }
+    )
+
+    agent_config = config.agents[0]
+    assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == agent_config.model_name
+
+
+def test_ephemeral_probe_keeps_an_endpoint_pinned_subagent_model(monkeypatch):
+    """Only the probe's own pin moves to the child.
+
+    An `anthropic-hdo/` trial pins every alias to the id that endpoint serves.
+    That is a routing decision, not a probe decision, and it still crosses.
+    """
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", None)
+    monkeypatch.setenv("ANTHROPIC_HDO_API_KEY", "hdo-secret")
+
+    payload = _compat_payload("anthropic-hdo/claude-opus-4-5", is_probe=True)
+
+    env = payload["agent_config"]["env"]
+    assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "claude-opus-4-5"
+
+
 def test_child_merges_worker_env_over_shaped_compat_env(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
