@@ -168,7 +168,10 @@ def format_task_comment(
     )
 
     label = verdict_label(
-        task.verdict_status, task.verdict, version_matches=task.review_version_matches
+        task.verdict_status,
+        task.verdict,
+        version_matches=task.review_version_matches,
+        standalone=False,
     )
     lines.append(f"### Verdict: **{label}**")
     if (
@@ -367,6 +370,7 @@ def format_experiment_comment(
                 task.verdict_status,
                 task.verdict,
                 version_matches=task.review_version_matches,
+                standalone=False,
             )
             if (
                 verdict_str == "Rejected"

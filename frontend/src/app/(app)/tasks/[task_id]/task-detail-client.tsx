@@ -1176,7 +1176,7 @@ export function TaskDetailClient({
               <QaCostSuffix
                 costUsd={totals?.qa_cost_usd}
                 size="tile"
-                title="Audit and verdict generation spend for this task's trials. Not included in the cost figure."
+                title="Verdict cost for this task's trials. Not included in the cost figure."
               />
             </span>
             {(totals?.token_trial_count ?? 0) > 0 ? (

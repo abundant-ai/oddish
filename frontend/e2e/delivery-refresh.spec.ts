@@ -1935,8 +1935,8 @@ for (const [status, verdict, expected] of [
   ["success", { verdict: "reject", is_good: true }, "Rejected"],
   ["failed", { is_good: true, reasoning: "Cached acceptance" }, "No verdict"],
   ["success", { is_good: null }, "No verdict"],
-  ["queued", { is_good: true }, "Verdict queued"],
-  ["running", null, "Verdict running"],
+  ["queued", { is_good: true }, "Queued"],
+  ["running", null, "Running"],
 ] as const) {
   test(`task history displays ${expected} for ${status} generation`, async ({
     page,
@@ -1977,7 +1977,11 @@ for (const status of ["queued", "running", "failed"] as const) {
       await current(page).click();
       const currentDetails = current(page).locator("..");
       const currentLabel =
-        status === "failed" ? "No verdict" : `Verdict ${status}`;
+        status === "failed"
+          ? "No verdict"
+          : status === "queued"
+            ? "Queued"
+            : "Running";
       await expect(
         currentDetails.getByText(`Verdict: ${currentLabel}`, { exact: true })
       ).toBeVisible();

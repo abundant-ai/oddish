@@ -1474,7 +1474,7 @@ export function TrialDetailPanel({
                         })()}
                       <QaCostSuffix
                         costUsd={trial.qa_cost_usd}
-                        title="Audit and verdict generation spend for this trial. Not included in the cost figure."
+                        title="Verdict cost for this trial. Not included in the cost figure."
                       />
                     </div>
                     {(trial.input_tokens != null ||

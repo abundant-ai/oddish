@@ -482,6 +482,7 @@ def status(
             result.get("verdict_status"),
             verdict,
             version_matches=result.get("review_version_matches"),
+            standalone=False,
         )
         console.print(f"[bold]Verdict:[/bold] {label}")
         if label in {"Accepted", "Rejected"} and verdict:

@@ -33,6 +33,13 @@ from oddish.verdict import verdict_label
 )
 def test_verdict_labels_in_cli_and_github(status, verdict, matches, expected):
     assert verdict_label(status, verdict, version_matches=matches) == expected
+    contextual = {"Verdict queued": "Queued", "Verdict running": "Running"}.get(
+        expected, expected
+    )
+    assert (
+        verdict_label(status, verdict, version_matches=matches, standalone=False)
+        == contextual
+    )
     output = StringIO()
     Console(file=output, width=150, color_system=None).print(
         _build_experiment_table(
@@ -52,7 +59,9 @@ def test_verdict_labels_in_cli_and_github(status, verdict, matches, expected):
             ],
         )
     )
-    assert expected in output.getvalue()
+    assert contextual in output.getvalue()
+    assert "Verdict queued" not in output.getvalue()
+    assert "Verdict running" not in output.getvalue()
     task = TaskSummary(
         "task-1", "Task", "https://example.test/task", [], status, verdict, matches
     )
@@ -60,7 +69,8 @@ def test_verdict_labels_in_cli_and_github(status, verdict, matches, expected):
         format_task_comment(task, "exp", "https://example.test/exp"),
         format_experiment_comment([task], "exp", "https://example.test/exp"),
     ]:
-        assert expected in text
+        assert contextual in text
+        assert "Verdict: **Verdict" not in text
         assert "Computing" not in text
         if expected == "No verdict":
             assert "Accepted" not in text

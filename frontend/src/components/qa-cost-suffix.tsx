@@ -28,7 +28,7 @@ export function QaCostSuffix({
       className={`font-mono font-normal text-[color:var(--paper-ink-3)] ${SIZES[size]}`}
       title={title}
     >
-      +{formatCostUsd(costUsd)} audit + verdict
+      +{formatCostUsd(costUsd)} Verdict cost
     </span>
   );
 }

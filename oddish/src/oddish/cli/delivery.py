@@ -594,6 +594,7 @@ def history(
             if data.get("verdict_version_id")
             else None
         ),
+        standalone=False,
     )
     console.print(f"Verdict: {label}")
     for version in data["versions"]:

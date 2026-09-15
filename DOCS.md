@@ -22,6 +22,11 @@ above; JSON exports retain their diagnostic status fields. Advanced filters
 explicitly labeled **Verdict generation** describe the job's completion, not
 acceptance or rejection of the task.
 
+The dashboard calls the existing audit and analysis spend **Verdict cost**. This
+includes attempts without a published verdict. Under a Verdict heading, the
+progress values are **Queued** and **Running**. Standalone badges keep the
+full **Verdict queued** and **Verdict running** labels.
+
 ## Installation
 
 ```bash

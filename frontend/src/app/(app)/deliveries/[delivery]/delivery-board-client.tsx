@@ -469,9 +469,9 @@ function QAHistoryVersionRow({
       ? null
       : verdictOutcome(verdict);
   const verdictText = queued
-    ? VERDICT_LABELS.queued
+    ? "Queued"
     : running
-      ? VERDICT_LABELS.running
+      ? "Running"
       : VERDICT_LABELS[outcome ?? "never"];
   return (
     <DeliveryDisclosure

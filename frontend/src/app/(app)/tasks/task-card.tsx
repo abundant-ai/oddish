@@ -426,7 +426,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                 </span>
                 <QaCostSuffix
                   costUsd={task.qa_cost_usd}
-                  title="Audit and verdict generation spend for this task's trials. Not included in the cost figure."
+                  title="Verdict cost for this task's trials. Not included in the cost figure."
                 />
               </div>
               {task.cost_trial_count > 0 ? (

@@ -9,12 +9,13 @@ def verdict_label(
     verdict: Mapping[str, Any] | None,
     *,
     version_matches: bool | None = None,
+    standalone: bool = True,
 ) -> str:
-    """Never present a failed, replaced, or inconclusive judgment as acceptance."""
+    """Use short progress values when the surrounding heading already says Verdict."""
     if status in {"pending", "queued"}:
-        return "Verdict queued"
+        return "Verdict queued" if standalone else "Queued"
     if status == "running":
-        return "Verdict running"
+        return "Verdict running" if standalone else "Running"
     if status == "failed" or version_matches is False:
         return "No verdict"
     if verdict is not None:

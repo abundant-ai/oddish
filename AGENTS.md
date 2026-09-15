@@ -2545,3 +2545,8 @@ query and read it alongside the verdict payload. Mismatched verdicts must not
 appear in headings, counts, rows, or recommendations. Notification candidate
 queries prefer explicit accept/reject values over exact legacy JSON booleans,
 and pass the selected outcome to message formatting.
+
+Use Verdict cost for the existing analysis-spend total, including audits and run
+analysis. Keep its accounting scope unchanged. Under a Verdict heading, display
+Queued or Running; standalone badges retain Verdict queued and Verdict running.
+Keep the Edit task work label and existing run classifications.

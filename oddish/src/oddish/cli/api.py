@@ -2394,6 +2394,7 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
             task.get("verdict_status"),
             task.get("verdict"),
             version_matches=task.get("review_version_matches"),
+            standalone=False,
         )
 
         table.add_row(
@@ -2756,6 +2757,7 @@ def watch_task(
                         result.get("verdict_status"),
                         result.get("verdict"),
                         version_matches=result.get("review_version_matches"),
+                        standalone=False,
                     )
                     table.add_row("", f"Verdict: {verdict_display}", "", "", "", "")
 

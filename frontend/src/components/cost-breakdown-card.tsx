@@ -702,9 +702,7 @@ export function CostBreakdownCard() {
 
             {data.qa_by_model && data.qa_by_model.length > 0 && (
               <section className="space-y-2">
-                <h3 className="text-sm font-medium">
-                  Audit and verdict generation cost by model
-                </h3>
+                <h3 className="text-sm font-medium">Verdict cost by model</h3>
                 <QaModelTable models={data.qa_by_model} />
               </section>
             )}
@@ -783,9 +781,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
               <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
             </TooltipTrigger>
             <TooltipContent className="max-w-[280px]">
-              Model inference plus audit and verdict generation plus compute,
-              each broken out alongside. Compute is a sandbox-runtime estimate,
-              not a provider invoice.
+              Model inference plus verdict cost plus compute, each broken out
+              alongside. Compute is a sandbox-runtime estimate, not a provider
+              invoice.
             </TooltipContent>
           </Tooltip>
         </div>
@@ -793,7 +791,7 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
       <div className="bg-background/70 flex items-center rounded-md border border-[#6f88b4]/18 p-2 lg:col-span-2">
         <ComponentStat label="Model inference" cost={totals.cost_usd} />
         <span className="bg-border h-8 w-px shrink-0" />
-        <ComponentStat label="Audit and verdict generation" cost={qaCost} />
+        <ComponentStat label="Verdict cost" cost={qaCost} />
         <span className="bg-border h-8 w-px shrink-0" />
         <ComponentStat label="Compute est." cost={computeCost} />
       </div>
