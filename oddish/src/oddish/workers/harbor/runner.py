@@ -1705,15 +1705,16 @@ async def run_harbor_trial_async(
         )
 
 
-def trial_is_probe(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
-    """Whether a trial runs on the probe transport.
+def uses_probe_routing(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
+    """Whether a trial uses the routing rules shared with operator probes.
 
-    An operator probe (``harbor_config.mode == "probe"``) or a non-summarize
-    analysis trial. This decides the agent's route -- probes are forced to the
-    direct Anthropic API by ``_claude_code_forces_direct_api`` -- so anything
-    that has to agree with that route must call this rather than restate it.
-    Callers outside this module: job-scoped credential scoping in the trial
-    handler, which would otherwise scope a credential for the wrong transport.
+    Operator probes (``harbor_config.mode == "probe"``) and analysis kinds
+    ``qa``, ``qa_eval``, and ``audit`` share these rules; ``summarize`` does not
+    unless explicitly configured as an operator probe. Sharing routing does
+    not change a trial's kind or its stored ``is_probe`` flag. Claude Code's
+    direct-API choice also requires an available Anthropic key, as checked by
+    ``_claude_code_forces_direct_api``. Execution and job credential selection
+    use this helper so they agree on that routing input.
     """
     # Imported here for the same reason the caller below does: the analysis
     # module imports back into the worker package.
@@ -1774,7 +1775,7 @@ async def _run_harbor_trial_async_impl(
 
     is_operator_probe = raw.get("mode") == "probe"
     is_analysis_trial = is_analysis_kind(trial_kind)
-    is_probe = trial_is_probe(harbor_config=raw, trial_kind=trial_kind)
+    probe_routing = uses_probe_routing(harbor_config=raw, trial_kind=trial_kind)
     skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
@@ -1801,7 +1802,7 @@ async def _run_harbor_trial_async_impl(
         hc=hc,
         environment=environment,
         backend=backend,
-        is_probe=is_probe,
+        is_probe=probe_routing,
         trial_id=trial_id,
         worker_job_id=worker_job_id,
         sandbox_launch=sandbox_launch,
@@ -1839,7 +1840,7 @@ async def _run_harbor_trial_async_impl(
             harbor_config=harbor_config,
             extra_agent_env=extra_agent_env,
             environment_build_timeout_multiplier=env_build_multiplier,
-            is_probe=is_probe,
+            is_probe=probe_routing,
             skip_task_validation=skip_task_validation,
         )
 
@@ -1936,7 +1937,7 @@ async def _run_harbor_trial_async_impl(
                 agent=agent,
                 model=model,
                 raw_harbor_config=raw,
-                is_probe=is_probe,
+                is_probe=probe_routing,
                 probe_oddish_env=extra_agent_env,
             )
             # Early no-serialized-routes checkpoint, symmetric with the
@@ -2184,7 +2185,7 @@ async def _run_harbor_trial_async_impl(
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+            byok_anthropic_env or _claude_code_forces_direct_api(probe_routing)
         ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
             # bakes in Bedrock credentials. Blank them when claude-code runs

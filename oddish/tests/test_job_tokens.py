@@ -5,6 +5,8 @@ import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers.queue import job_tokens
@@ -440,7 +442,7 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert not hasattr(bundle, "metadata")
 
 
-def test_prepared_trial_probe_defers_to_the_runner_predicate() -> None:
+def test_prepared_trial_routing_defers_to_the_runner_predicate() -> None:
     """Credential scoping must ask the runner's question, not a copy of it.
 
     The transport predicate is an operator probe (``harbor_config.mode ==
@@ -448,10 +450,10 @@ def test_prepared_trial_probe_defers_to_the_runner_predicate() -> None:
     helper keyed on ``extra_instructions`` instead, which disagreed with the
     runner in both directions.
     """
-    from oddish.workers.harbor.runner import trial_is_probe
+    from oddish.workers.harbor.runner import uses_probe_routing
     from oddish.workers.queue.trial_handler import (
         PreparedTrialRun,
-        _prepared_trial_is_probe,
+        _prepared_trial_uses_probe_routing,
     )
 
     def _run(**kw) -> PreparedTrialRun:
@@ -470,16 +472,61 @@ def test_prepared_trial_probe_defers_to_the_runner_predicate() -> None:
     cases = [
         # (harbor_config, trial_kind, expected)
         ({}, "agent", False),
-        ({"mode": "probe"}, "agent", True),
         # Operator probe with no extra_instructions: the old helper said False.
         ({"mode": "probe"}, "agent", True),
         ({}, "audit", True),
         ({}, "qa", True),
+        ({}, "qa_eval", True),
         ({}, "summarize", False),
+        ({"mode": "probe"}, "summarize", True),
         # Extra instructions alone are not the marker: the old helper said True.
         ({"extra_instructions": ["x"]}, "agent", False),
     ]
     for hc, kind, expected in cases:
         run = _run(trial_harbor_config=hc, trial_kind=kind)
-        assert _prepared_trial_is_probe(run) is expected, (hc, kind)
-        assert trial_is_probe(harbor_config=hc, trial_kind=kind) is expected
+        assert _prepared_trial_uses_probe_routing(run) is expected, (hc, kind)
+        assert uses_probe_routing(harbor_config=hc, trial_kind=kind) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["qa", "audit", "qa_eval", "summarize"])
+async def test_analysis_dispatch_preserves_kind_when_sharing_probe_routing(
+    monkeypatch, tmp_path, kind
+):
+    from oddish.workers.queue import trial_handler
+
+    captured = {}
+
+    async def capture_run(**kwargs):
+        captured.update(kwargs)
+
+    async def shutdown(_trial_id):
+        return None
+
+    monkeypatch.setattr(trial_handler, "run_harbor_trial_async", capture_run)
+    monkeypatch.setattr(trial_handler.live_tail, "shutdown", shutdown)
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=None,
+        task_s3_key=None,
+        task_id="task-1",
+        trial_agent="claude-code",
+        trial_model="global.anthropic.claude-opus-5",
+        trial_environment="docker",
+        trial_harbor_config={},
+        trial_kind=kind,
+    )
+
+    result = await trial_handler._execute_trial(
+        trial_id="trial-1",
+        task_path_to_run=tmp_path,
+        temp_task_dir=None,
+        prepared_trial=prepared,
+        worker_id=None,
+    )
+
+    assert result.execution_error is None
+    assert captured["trial_kind"] == kind
+    assert captured["harbor_config"] == {}
+    assert captured["hook_callback"].keywords["probe_task_dir"] == (
+        None if kind == "summarize" else tmp_path
+    )

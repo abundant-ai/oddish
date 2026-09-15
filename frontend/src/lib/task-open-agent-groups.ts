@@ -1,4 +1,6 @@
 import {
+  experimentModelLabel,
+  isBaselineAgentName,
   getExperimentAgentDisplay,
   getExperimentAgentKey,
 } from "@/lib/experiment-agent-grouping";
@@ -107,7 +109,16 @@ export function buildTaskOpenAgentGroups(
     const key = getExperimentAgentKey(source);
     let card = cards.get(key);
     if (!card) {
-      card = { key, label: key, summary: emptySummary(source), trials: [] };
+      const summary = emptySummary(source);
+      card = {
+        key,
+        label:
+          source.is_probe || isBaselineAgentName(summary.agent)
+            ? key
+            : `${summary.agent}/${experimentModelLabel(summary.model, summary.reasoning_effort)}`,
+        summary,
+        trials: [],
+      };
       cards.set(key, card);
     }
     mergeSummary(card.summary, source);
