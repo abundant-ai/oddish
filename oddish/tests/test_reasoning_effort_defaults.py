@@ -6,10 +6,7 @@ from harbor.models.trial.config import AgentConfig
 from oddish.core.idempotency import compute_request_hash
 from oddish.core.sweeps import build_trial_specs_from_sweep
 from oddish.queue import _build_harbor_config_for_trial
-from oddish.reasoning_effort import (
-    configured_reasoning_effort,
-    with_default_reasoning_effort,
-)
+from oddish.reasoning_effort import configured_reasoning_effort
 from oddish.schemas import (
     AgentModelPair,
     TaskSubmission,
@@ -37,59 +34,49 @@ from oddish.workers.harbor.agent_config import _build_agent_config
         ("tbh", "meta/test-model"),
     ],
 )
-def test_new_supported_submissions_persist_high(agent, model):
+def test_new_submissions_leave_effort_unset(agent, model):
     spec = TrialSpec(agent=agent, model=model)
     request = TaskSubmission(task_path="test", trials=[spec])
-    persisted = _build_harbor_config_for_trial(request, spec, model=model)
-    assert configured_reasoning_effort(persisted) == "high"
+    persisted = _build_harbor_config_for_trial(request, spec)
+    assert configured_reasoning_effort(persisted) is None
+    assert "reasoning_effort" not in (persisted or {}).get("agent_config", {}).get(
+        "kwargs", {}
+    )
     assert spec.agent_config is None  # Do not mutate the original request/hash.
 
 
 @pytest.mark.parametrize(
-    "agent,model",
+    "kwargs",
     [
-        ("nop", "nop_oracle"),
-        ("oracle", "nop_oracle"),
-        ("gemini-cli", "google/gemini-2.5-flash"),
-        ("antigravity-cli", "google/gemini-2.5-pro"),
-        ("cursor-cli", "openai/gpt-5.6[effort=max]"),
-        ("codex", "openai/gpt-4o"),
-        ("custom-agent", "custom/model"),
+        {},
+        {"reasoning_effort": "high"},
+        {"reasoning_effort": "low"},
+        {"reasoning_effort": None},
     ],
 )
-def test_unsupported_or_inline_effort_does_not_acquire_a_default(agent, model):
-    assert with_default_reasoning_effort(agent, model, None) is None
-
-
-@pytest.mark.parametrize("effort", ["low", "max", None])
-def test_explicit_values_including_null_are_preserved(effort):
-    config = AgentConfig(kwargs={"reasoning_effort": effort, "version": "test"})
-    assert (
-        with_default_reasoning_effort(
-            "claude-code", "global.anthropic.claude-opus-4-8", config
-        )
-        is config
+def test_explicit_configuration_survives_sweep_and_persistence(kwargs):
+    config = AgentConfig(
+        kwargs={"version": "test", **kwargs}, env={"CLAUDE_CODE_EFFORT_LEVEL": "low"}
     )
-
-
-def test_defaults_preserve_other_kwargs_and_explicit_environment():
-    config = AgentConfig(kwargs={"version": "test"}, env={"EXAMPLE": "kept"})
-    resolved = with_default_reasoning_effort(
-        "claude-code", "global.anthropic.claude-opus-4-8", config
+    request = TaskSweepSubmission(
+        task_id="task",
+        configs=[
+            AgentModelPair(
+                agent="claude-code",
+                model="global.anthropic.claude-opus-4-8",
+                agent_config=config,
+            )
+        ],
     )
-    assert resolved.kwargs == {"version": "test", "reasoning_effort": "high"}
-    assert resolved.env == config.env
-    assert config.kwargs == {"version": "test"}
-    explicit_env = AgentConfig(env={"CLAUDE_CODE_EFFORT_LEVEL": "low"})
-    assert (
-        with_default_reasoning_effort(
-            "claude-code", "global.anthropic.claude-opus-4-8", explicit_env
-        )
-        is explicit_env
+    spec = build_trial_specs_from_sweep(request)[0]
+    saved = _build_harbor_config_for_trial(
+        TaskSubmission(task_path="test", trials=[spec]), spec
     )
+    assert saved["agent_config"]["kwargs"] == config.kwargs
+    assert saved["agent_config"]["env"] == config.env
 
 
-def test_cli_sweep_defaults_before_reconciliation_without_changing_request_hash():
+def test_default_sweep_counts_unset_runs_without_changing_request_hash():
     model = "global.anthropic.claude-opus-4-8"
     request = TaskSweepSubmission(
         task_id="task",
@@ -99,41 +86,32 @@ def test_cli_sweep_defaults_before_reconciliation_without_changing_request_hash(
     specs = build_trial_specs_from_sweep(
         request, existing_counts={("claude-code", model, None): 5}
     )
-    assert len(specs) == 5  # Unknown historical efforts are not counted as high.
-    assert all(spec.agent_config.kwargs["reasoning_effort"] == "high" for spec in specs)
-    assert not build_trial_specs_from_sweep(
+    assert specs == []
+    specs = build_trial_specs_from_sweep(
         request, existing_counts={("claude-code", model, "high"): 5}
     )
+    assert len(specs) == 5
+    assert all(spec.agent_config is None for spec in specs)
     assert compute_request_hash(request) == original_hash
     assert request.configs[0].agent_config is None
 
 
-def test_worker_receives_persisted_default_without_rewriting_model_or_history():
+def test_worker_receives_no_effort_override():
     model = "global.anthropic.claude-opus-4-8"
     spec = TrialSpec(agent="claude-code", model=model)
     saved = _build_harbor_config_for_trial(
-        TaskSubmission(task_path="test", trials=[spec]), spec, model=model
+        TaskSubmission(task_path="test", trials=[spec]), spec
     )
     runtime = _build_agent_config(
-        agent=spec.agent, model=model, raw_harbor_config=saved
+        agent=spec.agent, model=model, raw_harbor_config=saved or {}
     )
-    assert runtime.kwargs["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in runtime.kwargs
     assert spec.model == model
     assert configured_reasoning_effort({}) is None
 
 
-def test_custom_runner_does_not_acquire_unrecognized_kwargs():
-    config = AgentConfig(import_path="custom.agent:Agent")
-    assert (
-        with_default_reasoning_effort(
-            "claude-code", "global.anthropic.claude-opus-4-8", config
-        )
-        is config
-    )
-
-
 @pytest.mark.asyncio
-async def test_create_persists_high_without_mutating_historical_rows(session):
+async def test_create_persists_unset_effort(session):
     from uuid import uuid4
     from sqlalchemy import select
     from oddish.db.models import TrialModel
@@ -143,7 +121,7 @@ async def test_create_persists_high_without_mutating_historical_rows(session):
     task = await create_task(
         session,
         TaskSubmission(
-            name=f"default-high-{uuid4().hex[:8]}",
+            name=f"agent-default-{uuid4().hex[:8]}",
             task_path="test",
             trials=[TrialSpec(agent="claude-code", model=model)],
         ),
@@ -160,6 +138,8 @@ async def test_create_persists_high_without_mutating_historical_rows(session):
         .all()
     )
     assert len(rows) == 1
-    assert rows[0].reasoning_effort == "high"
+    assert rows[0].reasoning_effort is None
     assert rows[0].model == model
-    assert rows[0].harbor_config["agent_config"]["kwargs"]["reasoning_effort"] == "high"
+    assert "reasoning_effort" not in (rows[0].harbor_config or {}).get(
+        "agent_config", {}
+    ).get("kwargs", {})

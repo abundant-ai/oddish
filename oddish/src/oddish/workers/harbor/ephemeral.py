@@ -11,12 +11,13 @@ import site
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.trial.config import EnvironmentConfig
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 from thunder_sandbox import CapacityError
 
@@ -36,7 +37,11 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
+    _anthropic_hdo_credential_env,
+    _build_routed_agent_config,
     _claude_code_forces_direct_api,
+    _gateway_env,
+    _is_claude_code_agent,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -49,6 +54,7 @@ from .outcome import (
 from .runner import (
     HookCallback,
     _check_local_storage_preflight,
+    _format_exception_message,
     _patch_task_toml,
     _supports_auto_restricted_agent_network,
 )
@@ -157,6 +163,102 @@ def _runtime_env_overrides(
     return env
 
 
+_SUBAGENT_MODEL_KEY = "CLAUDE_CODE_SUBAGENT_MODEL"
+
+
+def _child_probe_subagent_model(routed: AgentConfig, *, is_probe: bool) -> bool:
+    """Whether the child must pin the probe's subagent model itself.
+
+    ``_apply_claude_code_probe_subagent_model`` pins a probe's subagent to the
+    agent's own model id. For claude-code that id is the child's decision, so
+    the pin has to follow it there -- pinning from the parent's canonical id
+    leaves a probe whose main agent and subagent run different models.
+    """
+    return is_probe and _is_claude_code_agent(routed)
+
+
+def _child_agent_config(
+    routed: AgentConfig, *, raw_harbor_config: dict[str, Any], is_probe: bool
+) -> dict[str, Any]:
+    """Serialize the child's ``AgentConfig`` with in-process provider routing applied.
+
+    The routing an Anthropic-compatible provider needs -- ``ANTHROPIC_BASE_URL``,
+    its auth token, the model id its endpoint serves, and blanked ambient
+    platform credentials -- lives in ``agent_config.env``, which *routed* already
+    carries from the same builder the in-process path uses. Only ``env`` and
+    ``kwargs`` are projected onto the submitted dict: the child resolves ``name``
+    and ``import_path`` against its own Harbor, which has none of Oddish's
+    wrapper agent classes, and every other submitted field crosses unchanged.
+
+    The shaped env stays the *base* layer of the child's merge, which keeps the
+    in-process precedence intact -- a submitted agent env and the worker's
+    runtime/extra env still win over these defaults.
+    """
+    payload = dict(raw_harbor_config.get("agent_config") or {})
+    if routed.env:
+        env = dict(routed.env)
+        # The probe pin is the one writer that sets this key to the agent's own
+        # model id; every other writer pins the id its endpoint serves, which
+        # differs from the routed id by construction. Drop only that one, so the
+        # child can re-pin it from the model it actually runs while an
+        # endpoint-pinned value (an ``anthropic-hdo/`` alias, say) still crosses.
+        # A trial that names no model has neither a pin nor a routed id, so the
+        # comparison runs only on a pin that is actually present.
+        pinned = env.get(_SUBAGENT_MODEL_KEY)
+        if (
+            pinned
+            and pinned == routed.model_name
+            and _child_probe_subagent_model(routed, is_probe=is_probe)
+        ):
+            env.pop(_SUBAGENT_MODEL_KEY, None)
+        payload["env"] = env
+    if routed.kwargs:
+        payload["kwargs"] = dict(routed.kwargs)
+    return payload
+
+
+def _child_model_id(routed: AgentConfig, *, model: str | None) -> str | None:
+    """The model id the child should run.
+
+    The routed builder resolves the spelling each transport needs: a LiteLLM
+    harness on an ``anthropic-hdo/`` model becomes ``anthropic/<api-id>``, the
+    only form LiteLLM parses, and Gemini flips between the ``gemini/`` and
+    ``google/`` prefixes with the harness. Taking the builder's own answer keeps
+    that decision in one place.
+
+    claude-code is excluded. Its Bedrock and direct-Anthropic ids are a separate
+    decision owned by the child's model normalization, so this returns the
+    submitted id and lets that own the field.
+    """
+    if _is_claude_code_agent(routed):
+        return model
+    return routed.model_name or model
+
+
+def _child_extra_agent_env(
+    *,
+    model: str | None,
+    extra_agent_env: dict[str, str] | None,
+    anthropic_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """The env layer the child merges last.
+
+    The trial's own Anthropic credential (a BYOK key, or the HDO key for an
+    ``anthropic-hdo/`` model) is layered over the submitted env so the child
+    authenticates with it. In process the HDO credential is then re-applied
+    after the probe/BYOK merge so it wins outright; the child's last layer is
+    this one, so the same overlay rides here. A gateway-routed analysis trial
+    supplies its own Anthropic route, and neither path injects a credential
+    over it.
+    """
+    env = dict(extra_agent_env or {})
+    if _gateway_env(extra_agent_env):
+        return env
+    env.update(anthropic_env or {})
+    env.update(_anthropic_hdo_credential_env(model))
+    return env
+
+
 def _build_payload(
     *,
     task_path: Path,
@@ -181,21 +283,45 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
-    # Match execution and credential scoping: the routing check must see the
-    # trial's key, including HDO precedence over a user-supplied key. Restore
-    # the worker environment before starting any asynchronous child work.
+    # Both the routed build and the runtime env ask
+    # ``_claude_code_forces_direct_api``, which reads ``os.environ``. The
+    # in-process runner surfaces the trial's own Anthropic credential there
+    # first; without it a worker holding only Bedrock credentials answers the
+    # routing question for an HDO trial as if the key did not exist. The same
+    # credential is then shipped to the child, so its own routing checks and its
+    # agent see the trial's key, with HDO precedence over a user-supplied key.
+    # ``_temporary_env`` restores the worker environment before any child work.
     anthropic_env = surfaced_anthropic_env(
         agent=agent, model=model, agent_env=extra_agent_env
     )
     with _temporary_env(anthropic_env):
-        child_model = _child_model_name(agent=agent, model=model, is_probe=is_probe)
+        routed = _build_routed_agent_config(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+            probe_oddish_env=extra_agent_env,
+        )
         runtime_env = _runtime_env_overrides(
             agent=agent,
             model=model,
             raw_harbor_config=raw_harbor_config,
             is_probe=is_probe,
         )
-    agent_config = dict(raw_harbor_config.get("agent_config") or {})
+        # Both halves of the model decision read the same surfaced view: the
+        # child's Bedrock/direct choice for claude-code, and the routed
+        # builder's spelling for every other agent. Evaluate here, inside the
+        # wrapper, so neither is asked under the bare worker environment.
+        child_model = _child_model_id(
+            routed,
+            model=_child_model_name(agent=agent, model=model, is_probe=is_probe),
+        )
+    agent_config = _child_agent_config(
+        routed, raw_harbor_config=raw_harbor_config, is_probe=is_probe
+    )
+    child_extra_env = _child_extra_agent_env(
+        model=model, extra_agent_env=extra_agent_env, anthropic_env=anthropic_env
+    )
     if _supports_auto_restricted_agent_network(
         task_path=task_path,
         environment_config=environment_config,
@@ -208,8 +334,7 @@ def _build_payload(
         resolved_agent_env = {
             **dict(agent_config.get("env") or {}),
             **runtime_env,
-            **dict(extra_agent_env or {}),
-            **anthropic_env,
+            **child_extra_env,
         }
         agent_kwargs = dict(agent_config.get("kwargs") or {})
         if resolved_agent_env:
@@ -244,6 +369,7 @@ def _build_payload(
         "model": child_model,
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": agent_config,
+        "probe_subagent_model": _child_probe_subagent_model(routed, is_probe=is_probe),
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
         "timeout_multiplier": raw_harbor_config.get("timeout_multiplier"),
@@ -266,7 +392,7 @@ def _build_payload(
         "runtime_env": {**anthropic_env, **runtime_env},
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
-        "extra_agent_env": {**(extra_agent_env or {}), **anthropic_env},
+        "extra_agent_env": child_extra_env,
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,
             is_probe=is_probe,
@@ -445,23 +571,41 @@ async def run_ephemeral_harbor_trial(
         effective_task_path = patched_task
 
     outcome_path = unique_parent / "outcome.json"
-    payload = _build_payload(
-        task_path=effective_task_path,
-        jobs_dir=unique_parent,
-        outcome_path=outcome_path,
-        agent=agent,
-        model=model,
-        environment_config=environment_config,
-        raw_harbor_config=raw,
-        is_probe=is_probe,
-        extra_agent_env=extra_agent_env,
-        environment_build_timeout_multiplier=environment_build_timeout_multiplier,
-    )
     start = time.time()
     tail: list[str] = []
     process: asyncio.subprocess.Process | None = None
     payload_path: Path | None = None
     try:
+        try:
+            payload = _build_payload(
+                task_path=effective_task_path,
+                jobs_dir=unique_parent,
+                outcome_path=outcome_path,
+                agent=agent,
+                model=model,
+                environment_config=environment_config,
+                raw_harbor_config=raw,
+                is_probe=is_probe,
+                extra_agent_env=extra_agent_env,
+                environment_build_timeout_multiplier=environment_build_timeout_multiplier,
+            )
+        except Exception as exc:  # noqa: BLE001 - any build failure is a trial error
+            # Same contract as the in-process runner, which builds its Harbor
+            # configs inside the try that owns its cleanup: model canonicalization
+            # and AgentConfig validation can both fail, and an unroutable model
+            # has to settle as a terminal trial error rather than escape this
+            # coroutine as a worker-level execution failure. Returning from
+            # inside the try still runs the ``finally`` below, so a failure here
+            # cannot strand the patched copy of the task tree.
+            return HarborOutcome(
+                reward=None,
+                error=f"Harbor job execution failed: {_format_exception_message(exc)}",
+                exit_code=-1,
+                duration_sec=0.0,
+                job_result_path=None,
+                job_dir=None,
+                exception_type=type(exc).__name__,
+            )
         payload_path = _write_private_payload(payload)
         child_env = _child_process_env()
         for secret_name in (

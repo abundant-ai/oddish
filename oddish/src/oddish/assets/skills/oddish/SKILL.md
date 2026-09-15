@@ -63,9 +63,9 @@ not authorize a later mutation.
    already runs; pass `--use-default-version` to pin new trials to the
    task's current default version instead.
 
-   New supported reasoning runs default to `high`, saved in each trial's
-   configuration. Use `--agent-kwarg reasoning_effort=low` (or another supported
-   value) to override it. Missing effort on historical runs remains unknown.
+   Omitted reasoning effort uses the agent’s own default. Set it explicitly
+   with `--agent-kwarg reasoning_effort=high` (or another supported value).
+   Explicit choices are saved; missing historical effort remains unknown.
 
    Include nop, oracle, and paid model trials in the same sweep. `run --json`
    implies background mode. Preserve `tasks[].id` and `experiment_url` from

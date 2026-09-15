@@ -102,7 +102,7 @@ export function ProbeSubmitForm({
   onSubmitted?: () => void;
 }) {
   const router = useRouter();
-  const [effort, setEffort] = useState("high");
+  const [effort, setEffort] = useState("default");
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -261,14 +261,7 @@ export function ProbeSubmitForm({
                 value={agent}
                 onValueChange={(a) => {
                   setAgent(a);
-                  setEffort(
-                    reasoningEffortOptions(
-                      a,
-                      MODELS_BY_AGENT[a][0].value
-                    ).includes("high")
-                      ? "high"
-                      : "default"
-                  );
+                  setEffort("default");
                   setModel(MODELS_BY_AGENT[a][0].value);
                 }}
               >
@@ -290,11 +283,7 @@ export function ProbeSubmitForm({
                 value={model}
                 onValueChange={(value) => {
                   setModel(value);
-                  setEffort(
-                    reasoningEffortOptions(agent, value).includes("high")
-                      ? "high"
-                      : "default"
-                  );
+                  setEffort("default");
                 }}
               >
                 <SelectTrigger className="mt-1 w-full">
@@ -318,11 +307,13 @@ export function ProbeSubmitForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {reasoningEffortOptions(agent, model).map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
+                  {["default", ...reasoningEffortOptions(agent, model)].map(
+                    (value) => (
+                      <SelectItem key={value} value={value}>
+                        {value === "default" ? "Agent default" : value}
+                      </SelectItem>
+                    )
+                  )}
                 </SelectContent>
               </Select>
             </label>

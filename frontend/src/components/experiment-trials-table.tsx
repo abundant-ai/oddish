@@ -154,6 +154,7 @@ export type AgentSummary = ExperimentAgentSummary;
 type ExperimentTrialsTableProps = {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
 
   isLoading: boolean;
   isLoadingTrials?: boolean;
@@ -548,11 +549,14 @@ function getAnalysisIndicator(trial: Trial): {
   return null;
 }
 
-function groupTrialsByAgent(trials: Trial[] | null | undefined) {
+function groupTrialsByAgent(
+  trials: Trial[] | null | undefined,
+  groupEfforts: boolean
+) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
   for (const trial of trials) {
-    const key = getExperimentAgentKey(trial);
+    const key = getExperimentAgentKey(trial, groupEfforts);
     const existing = grouped.get(key) ?? [];
     existing.push(trial);
     grouped.set(key, existing);
@@ -590,6 +594,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
+  groupEfforts = false,
 
   isLoading,
   isLoadingTrials = false,
@@ -994,7 +999,7 @@ export function ExperimentTrialsTable({
       rowFilterMode === "none" || rowFilterAgentKeys.length === 0
         ? searchFiltered
         : searchFiltered.filter((task) => {
-            const trialsByAgent = groupTrialsByAgent(task.trials);
+            const trialsByAgent = groupTrialsByAgent(task.trials, groupEfforts);
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
@@ -1030,6 +1035,7 @@ export function ExperimentTrialsTable({
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
+    groupEfforts,
   ]);
 
   const getTaskContext = useMemo(() => {
@@ -1051,7 +1057,10 @@ export function ExperimentTrialsTable({
       const cached = contextCache.get(task);
       if (cached) return cached;
 
-      const groupedTrialsByAgent = groupTrialsByAgent(task.trials);
+      const groupedTrialsByAgent = groupTrialsByAgent(
+        task.trials,
+        groupEfforts
+      );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
       const trialGroups: Array<{
@@ -1084,7 +1093,7 @@ export function ExperimentTrialsTable({
       contextCache.set(task, context);
       return context;
     };
-  }, [visibleAgents]);
+  }, [visibleAgents, groupEfforts]);
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
@@ -2059,6 +2068,7 @@ export function ExperimentTrialsTable({
               <PassAtKGraph
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2069,6 +2079,7 @@ export function ExperimentTrialsTable({
               <PassAtOneLeaderboard
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2231,6 +2242,24 @@ export function ExperimentTrialsTable({
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <Label className="flex cursor-pointer items-center gap-2 px-2 text-xs font-normal">
+                  <Checkbox
+                    checked={groupEfforts}
+                    onCheckedChange={(checked) => {
+                      const params = new URLSearchParams(
+                        window.location.search
+                      );
+                      if (checked === true) params.set("groupEfforts", "1");
+                      else params.delete("groupEfforts");
+                      window.history.pushState(
+                        null,
+                        "",
+                        urlWithSearch(params.toString())
+                      );
+                    }}
+                  />
+                  Group effort levels
+                </Label>
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Button

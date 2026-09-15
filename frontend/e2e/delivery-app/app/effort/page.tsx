@@ -1,7 +1,10 @@
 "use client";
 
 import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { ExperimentDetailView } from "../../../../src/components/experiment-detail-view";
 import { ExperimentTrialsTable } from "../../../../src/components/experiment-trials-table";
+import { ProbeSubmitForm } from "../../../../src/components/probe-submit-form";
 import { ExperimentRunDialog } from "../../../../src/components/experiment-run-dialog";
 import { buildExperimentAgentSummaries } from "../../../../src/lib/experiment-agent-grouping";
 import type { Task, Trial } from "../../../../src/lib/types";
@@ -48,8 +51,38 @@ const tasks: Task[] = ["repair-queue", "repair-writes", "repair-timeout"].map(
   }
 );
 
-export default function Page() {
+function EffortComparison() {
+  const params = useSearchParams();
+  const groupEfforts = params.get("groupEfforts") === "1";
+  const displayedTasks =
+    params.get("sample") === "mixed"
+      ? [
+          {
+            ...tasks[0],
+            total: 5,
+            completed: 5,
+            trials: tasks[0].trials!.slice(0, 5).map((trial, i) => ({
+              ...trial,
+              reasoning_effort: i < 2 ? null : "high",
+              reward: i === 4 ? 1 : 0,
+            })),
+          },
+        ]
+      : tasks;
   const [selected, setSelected] = useState("");
+  if (params.has("detail"))
+    return (
+      <ExperimentDetailView
+        tasksForExperiment={displayedTasks}
+        costTotals={{ status: "idle" }}
+        onRetryCostTotals={() => {}}
+        isLoading={false}
+        headerLeft={<h1>Effort comparison</h1>}
+        readOnly
+        allowRetry={false}
+        showAnalysis={false}
+      />
+    );
   return (
     <Suspense>
       <div className="space-y-5">
@@ -57,14 +90,18 @@ export default function Page() {
           <h1 className="font-mono text-xl">Reasoning effort comparison</h1>
           <ExperimentRunDialog
             experimentId="effort-preview"
-            tasks={tasks}
+            tasks={displayedTasks}
             disabled={false}
           />
         </div>
         <ExperimentTrialsTable
           experimentId="effort-preview"
-          tasks={tasks}
-          agentSummaries={buildExperimentAgentSummaries(tasks)}
+          tasks={displayedTasks}
+          agentSummaries={buildExperimentAgentSummaries(
+            displayedTasks,
+            groupEfforts
+          )}
+          groupEfforts={groupEfforts}
           isLoading={false}
           pagesComplete
           showPassAtK
@@ -75,8 +112,19 @@ export default function Page() {
             )
           }
         />
+        <section aria-label="Probe launch">
+          <ProbeSubmitForm taskId="repair-queue" />
+        </section>
         <output aria-label="Selected effort">{selected}</output>
       </div>
+    </Suspense>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense>
+      <EffortComparison />
     </Suspense>
   );
 }

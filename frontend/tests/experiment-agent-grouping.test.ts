@@ -121,3 +121,41 @@ test("new runner efforts sort with the existing effort levels", () => {
     ]
   );
 });
+
+test("grouping efforts combines five trials and keeps their original settings", () => {
+  const trials = [null, null, "high", "high", "high"].map(trial);
+  const task = { trials } as Task;
+  const summaries = buildExperimentAgentSummaries([task], true);
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0].label, `claude-code/${model}`);
+  assert.equal(summaries[0].reasoningEffort, null);
+  assert.equal(
+    trials.filter((t) => getExperimentAgentKey(t, true) === summaries[0].key)
+      .length,
+    5
+  );
+  assert.deepEqual(
+    trials.map((t) => t.reasoning_effort),
+    [null, null, "high", "high", "high"]
+  );
+  assert.equal(buildExperimentAgentSummaries([task], false).length, 2);
+});
+
+test("grouping efforts keeps different agents, models, and internal groups separate", () => {
+  const trials = [
+    trial("low"),
+    trial("high"),
+    { ...trial("high"), agent: "mini-swe-agent" },
+    { ...trial("high"), model: "another-model" },
+    { ...trial("high"), agent: "nop" },
+    { ...trial("high"), agent: "oracle" },
+    { ...trial("high"), kind: "qa" as const },
+    { ...trial("high"), is_probe: true },
+  ];
+  const summaries = buildExperimentAgentSummaries([{ trials } as Task], true);
+  assert.equal(summaries.length, 7);
+  assert.equal(getExperimentAgentKey(trials[4], true), "nop");
+  assert.equal(getExperimentAgentKey(trials[5], true), "oracle");
+  assert.equal(getExperimentAgentKey(trials[6], true), "qa");
+  assert.equal(getExperimentAgentKey(trials[7], true), "probe");
+});

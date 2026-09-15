@@ -226,6 +226,16 @@ def _build_job_config(payload: dict[str, Any]):
             **dict(payload.get("extra_agent_env") or {}),
         }
 
+    # A probe's Task-tool subagents need an explicit model, and Harbor only
+    # forwards one on its custom-base-url branch. The parent pins it for every
+    # other agent, but claude-code's model id is resolved here, so the pin has
+    # to be taken from the model this child actually runs -- otherwise the probe
+    # and its subagents end up on different ids.
+    if payload.get("probe_subagent_model") and agent_kwargs.get("model_name"):
+        env = dict(agent_kwargs.get("env") or {})
+        env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_kwargs["model_name"])
+        agent_kwargs["env"] = env
+
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:
         agent_kwargs["name"] = None

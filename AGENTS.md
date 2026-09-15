@@ -156,12 +156,24 @@ High-level flow:
    `AgentSafetyRefusalError`, and the context/output budget errors — keep their
    reward, because a real 0 must stay a real 0. Add a name to that set only when
    the provider, not the agent, ended the run.
+   That rule needs the exception to reach settlement. Pinned Harbor omits
+   `trial_results` from the job summary it writes, so a caller that rebuilds a
+   `JobResult` from that file loses the per-trial exception and phase timing.
+   The in-process runner passes the populated object `Job.run()` returns and is
+   unaffected; the ephemeral parent reads the file, so
+   `_extract_outcome_from_job_result` falls back to
+   `_trial_results_from_job_dir`, which reads each trial's own `result.json`
+   through Harbor's `JobScanner`. It reads every trial directory rather than the
+   `oddish_trial_name` selector, because the recovered list stands in for
+   `trial_results` and the caller applies its own first-error rule across the
+   whole list. The reward itself always survived the omission: it resolves from
+   the job-level `stats.evals` block, which that summary keeps.
    `oddish.workers.harbor.runner.uses_probe_routing` identifies shared routing rules for
    operator probes and `qa`, `qa_eval`, and `audit` analysis trials. It does not
    change their trial kinds or stored `is_probe` flags. `summarize` uses these
    rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
-   agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
+   agent trial of a task is terminal and `run_analysis` is enabled, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
@@ -173,6 +185,8 @@ High-level flow:
    baseline rejects the task even with zero eligible solver trials. With zero
    eligible trials and no established rejection, the task completes with no
    verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+   With `run_analysis=False`, automatic settlement completes the task without
+   writing a verdict or review error; explicit QA requests still run.
    Delivery requirements remain independently configurable (defaults: five
    trials and three agents); a verdict alone does not qualify a task for delivery. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
@@ -2542,19 +2556,18 @@ these bounded reads must not return full Harbor configuration. Explicit JSON
 null overrides the legacy value. Missing effort is unspecified, never inferred
 from today's agent defaults. This derived field requires no database migration.
 
-New submissions for reasoning-capable agent/model pairs explicitly default to
-`high` before sweep reconciliation and trial persistence. The resolver lives in
-`oddish.reasoning_effort.with_default_reasoning_effort`; sweep matching and queue
-insertion must use the same value. It copies AgentConfig when adding the default
-so the original request and its idempotency hash do not change. Explicit kwargs
-(including null) and known effort environment overrides win. Unsupported models,
-Gemini 2.5, baselines, and Cursor IDs with embedded effort keep their configuration.
-The worker receives the saved value. Reads/imports do not assign defaults to old
-runs, and retries retain their source configuration. Both launch forms preselect
-high for supported models and omit the ambiguous Agent default option there.
+New submissions leave reasoning effort unset unless the caller supplies it.
+Sweep matching and queue insertion preserve explicit kwargs, including null,
+and environment overrides. Both launch forms start on Agent default and omit
+reasoning effort for that choice. Explicit effort still separates experiment
+columns and sweep counts. Historical configurations and retries keep their
+saved settings; missing effort is never inferred from the agent's runtime default.
 
-The shared frontend column identity includes agent, model, and effort even when
-only one configuration has arrived. Table cells, navigation, column visibility,
+By default the shared frontend column identity includes agent, model, and effort
+even when only one configuration has arrived. The experiment table’s Group effort
+levels toggle sets `groupEfforts=1` in the URL and groups solver trials by agent
+and model across efforts. The table, row filters, charts, and drawer navigation
+use this grouping; trial settings and launch requests remain unchanged. Table cells, navigation, column visibility,
 exports, and Pass/k share that identity. The model/effort label is display-only;
 model-copy and submission keep the actual model identifier. Effort suffixes
 inherit the model text's typography. Deterministic baselines and internal
