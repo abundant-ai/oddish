@@ -2316,6 +2316,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 WHERE org_id = :org_id
                   AND deleted_at IS NULL
                   AND kind = 'agent'
+                  AND superseded_by_trial_id IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             ),
@@ -2329,6 +2330,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 FROM trials
                 WHERE deleted_at IS NULL
                   AND kind = 'agent'
+                  AND superseded_by_trial_id IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             )
@@ -2392,6 +2394,7 @@ async def get_queue_stats_by_org(
             WHERE deleted_at IS NULL
               AND org_id IS NOT NULL
               AND kind = 'agent'
+                  AND superseded_by_trial_id IS NULL
             GROUP BY org_id, COALESCE(queue_key, provider), status
             """
         )

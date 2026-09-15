@@ -522,6 +522,8 @@ function QueueHealthCard() {
 
 function formatIssueLabel(issue: string) {
   switch (issue) {
+    case "retrying_without_worker":
+      return "Retrying trial with no scheduled worker job";
     case "running_stale_heartbeat":
       return "Running trial with stale heartbeat";
     case "active_task_without_active_trials":
@@ -542,7 +544,9 @@ function OrphanedStateCard() {
 
   const counts = data?.counts;
   const totalIssues = counts
-    ? counts.running_stale_heartbeat + counts.active_tasks_without_active_trials
+    ? counts.running_stale_heartbeat +
+      counts.active_tasks_without_active_trials +
+      (counts.retrying_without_worker ?? 0)
     : 0;
 
   return (
@@ -589,6 +593,9 @@ function OrphanedStateCard() {
               </Badge>
               <Badge variant="outline">
                 stuck-tasks {counts.active_tasks_without_active_trials}
+              </Badge>
+              <Badge variant="outline">
+                retries without jobs {counts.retrying_without_worker ?? 0}
               </Badge>
             </div>
 
