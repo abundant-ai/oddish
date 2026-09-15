@@ -59,6 +59,37 @@ async def test_directory_and_artifact_pages_are_bounded(source, unrelated_count)
 
 
 @pytest.mark.asyncio
+async def test_nested_inventory_publication_uses_bounded_insert_batches(source):
+    from sqlalchemy import event
+    from oddish.db.connection import engine
+
+    # Directory sizes are NULL; file sizes are integers. Alternating them must
+    # not turn one inventory batch into a database round trip for every entry.
+    files = [dict(path=f"folder-{i:03}/file.txt", size=i) for i in range(300)]
+    inserts = []
+
+    def record_insert(_conn, _cursor, statement, _params, _context, _many):
+        if statement.startswith("INSERT INTO file_entries"):
+            inserts.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_insert)
+    try:
+        async with get_session() as session:
+            await publish_file_index(
+                session, source_key=source, root_prefix="test/", files=files
+            )
+            await session.commit()
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record_insert)
+
+    assert len(inserts) == 2  # 600 entries, published in batches of 500.
+    page = await read_file_index(source_key=source, prefix="folder-000")
+    assert page["files"][0]["size"] == 0
+    root = await read_file_index(source_key=source, limit=1000)
+    assert len(root["dirs"]) == 300
+
+
+@pytest.mark.asyncio
 async def test_publication_rollback_preserves_complete_inventory(source):
     async with get_session() as session:
         await publish_file_index(

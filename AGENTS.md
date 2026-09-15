@@ -803,7 +803,10 @@ first builds report `summary_pending`; status predicates apply before pagination
 Core migration `file_index_001` installs `file_indexes`, `file_entries`, and
 source-pointer triggers for the durable indexing queue. Task publication writes
 its index with the version-pointer transaction; trial upload indexes only
-successfully uploaded files under the authoritative attempt/child. `indexed=true`
+successfully uploaded files under the authoritative attempt/child. Publish entry
+metadata with one explicit multi-row INSERT per 500 entries, including NULL
+directory sizes; ORM bulk insertion can split mixed directory/file rows into
+individual database round trips. `indexed=true`
 listings return bounded metadata without storage reads; artifacts use their
 partial index. Missing indexes return retryable 503. Trial previews use explicit
 attempt/revision identity and a byte bound; full download is separate. Keep
@@ -1958,6 +1961,12 @@ Preview deployment parses the unique `-api.modal.run` URL from Modal's output
 with `.github/scripts/preview/extract_modal_api_url.py`. The QA-model gateway's
 `-api-qa-model.modal.run` URL is a separate endpoint and must never become the
 frontend's backend URL. Missing or ambiguous API URLs fail deployment validation.
+
+Preview database preparation rotates the branch password on every run. Every
+previously deployed preview backend must therefore redeploy, including after
+frontend-only or no-code pushes; replacing the Modal secret alone leaves running
+API and scheduled-worker containers with the previous password. PRs that have
+never deployed a backend retain the frontend-only path.
 
 PR preview deploys and manual preview resets set
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=400`, allowing each worker function up to

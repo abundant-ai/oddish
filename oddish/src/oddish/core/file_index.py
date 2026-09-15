@@ -73,12 +73,16 @@ async def publish_file_index(
     )
     entries = directory_entries(files)
     for offset in range(0, len(entries), 500):
+        # Bind NULL directory sizes explicitly in one multi-row INSERT. ORM
+        # bulk execution otherwise splits alternating directory/file shapes
+        # into individual statements because it omits None-valued columns.
         await session.execute(
-            insert(FileEntryModel),
-            [
-                dict(source_key=source_key, **entry)
-                for entry in entries[offset : offset + 500]
-            ],
+            insert(FileEntryModel).values(
+                [
+                    dict(source_key=source_key, **entry)
+                    for entry in entries[offset : offset + 500]
+                ]
+            )
         )
     from sqlalchemy import update
 
