@@ -43,10 +43,12 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
 
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=None
-    ) == TaskFileSource(1, current.task_s3_key, None, None)
+    ) == TaskFileSource(1, current.task_s3_key, None, None, f"expand:{current.id}")
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=2
-    ) == TaskFileSource(2, historical.task_s3_key, None, None)
+    ) == TaskFileSource(
+        2, historical.task_s3_key, None, None, f"expand:{historical.id}"
+    )
 
     # The expand worker's stamp is the reader's answer to "is the per-file
     # tree in sync with this archive?"; an overwrite clears it again.
@@ -55,7 +57,11 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
     assert await resolve_task_file_source(
         session, task_id=task.id, org_id="org-1", version=2
     ) == TaskFileSource(
-        2, historical.task_s3_key, historical.expanded_manifest_key, None
+        2,
+        historical.task_s3_key,
+        historical.expanded_manifest_key,
+        None,
+        historical.expanded_manifest_key,
     )
 
     for org_id, version in [("org-2", None), ("org-1", 3)]:

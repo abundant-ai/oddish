@@ -708,6 +708,7 @@ class StorageClient:
         *,
         authorized_prefix: str | None = None,
         subprefix: str | None = None,
+        index_attempt: int | None = None,
     ) -> str:
         """
         Upload Harbor trial results to S3.
@@ -738,13 +739,30 @@ class StorageClient:
         # Agents name artifact files freely (e.g. grok's URL-encoded
         # ``sessions/%2Fapp/`` session dir), so trial keys must be sanitized to
         # the backend's allowed charset or one bad name aborts the whole upload.
-        await self._upload_directory(
+        files = await self._upload_directory(
             harbor_job_dir,
             s3_prefix,
             authorized_prefix=authorized_prefix,
             sanitize_keys=True,
         )
 
+        if index_attempt is not None:
+            from types import SimpleNamespace
+            from oddish.core.file_index import index_trial_upload
+
+            try:
+                await index_trial_upload(
+                    self,
+                    trial=SimpleNamespace(
+                        id=trial_id, attempts=index_attempt, trial_s3_key=s3_prefix
+                    ),
+                    files=files,
+                )
+            except Exception:
+                # Bytes are committed; the source-table backfill retries metadata.
+                logger.exception(
+                    "trial directory publication failed trial_id=%s", trial_id
+                )
         return s3_prefix
 
     @classmethod
@@ -825,7 +843,7 @@ class StorageClient:
         *,
         authorized_prefix: str | None = None,
         sanitize_keys: bool = False,
-    ) -> None:
+    ) -> list[dict]:
         """Upload a directory tree to S3 with bounded concurrency.
 
         When ``authorized_prefix`` is set (a job-scoped credential is active),
@@ -840,11 +858,11 @@ class StorageClient:
         """
         file_paths = [path for path in local_path.rglob("*") if path.is_file()]
         if not file_paths:
-            return
+            return []
 
         semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
 
-        async def upload_one(file_path: Path) -> str | None:
+        async def upload_one(file_path: Path) -> str | dict:
             relative_path = str(file_path.relative_to(local_path))
             if sanitize_keys:
                 relative_path = sanitize_s3_key_chars(relative_path)
@@ -862,12 +880,12 @@ class StorageClient:
                     return s3_key
             async with semaphore:
                 await self.upload_file(file_path, s3_key)
-            return None
+            return {"path": relative_path, "size": file_path.stat().st_size}
 
         results = await asyncio.gather(
             *(upload_one(file_path) for file_path in file_paths)
         )
-        refused = [key for key in results if key is not None]
+        refused = [key for key in results if isinstance(key, str)]
         if refused:
             # A refused write must not read back as a complete upload: surface it
             # so a mis-scoped job-token prefix (one that doesn't cover the trial's
@@ -878,6 +896,8 @@ class StorageClient:
                 f"(first: {refused[0]}). The job token's prefix likely does not "
                 "cover the trial's artifacts."
             )
+
+        return [item for item in results if isinstance(item, dict)]
 
     async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -1851,8 +1871,22 @@ class StorageClient:
                 Bucket=settings.s3_bucket, Key=s3_key, **options
             )
         with timed_phase("storage_read"):
-            async with response["Body"] as stream:
-                content: bytes = await stream.read()
+            # StreamingBody.__aenter__ returns the raw aiohttp response, whose
+            # read() cannot accept a byte limit. Keep using the SDK wrapper.
+            stream = response["Body"]
+            async with stream:
+                if max_bytes is None:
+                    content: bytes = await stream.read()
+                else:
+                    chunks = []
+                    remaining = max_bytes
+                    while remaining:
+                        chunk = await stream.read(remaining)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    content = b"".join(chunks)
         timing = current_request_timing()
         if timing is not None:
             timing.storage_bytes += len(content)

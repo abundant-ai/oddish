@@ -162,6 +162,14 @@ async def _promote_expansion_if_current(
             )
         ):
             return False
+        from oddish.core.file_index import publish_file_index
+
+        await publish_file_index(
+            session,
+            source_key=manifest_key,
+            root_prefix=manifest_key.rsplit("/", 1)[0] + "/",
+            files=json.loads(manifest_bytes)["files"],
+        )
         row.expanded_at = utcnow()
         row.expanded_manifest_key = manifest_key
         await session.commit()

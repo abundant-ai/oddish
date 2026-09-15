@@ -1238,6 +1238,51 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_bytes", "chunks", "requested_sizes"),
+    [
+        (3, [b"a", b"bc"], [3, 2]),
+        (10, [b"abc", b""], [10, 7]),
+        (None, [b"abc"], [-1]),
+    ],
+)
+async def test_download_bytes_keeps_sdk_stream_after_entering_context(
+    max_bytes, chunks, requested_sizes
+):
+    from types import SimpleNamespace
+    from aiobotocore.response import StreamingBody
+
+    class Response:
+        content = SimpleNamespace(read=AsyncMock(side_effect=chunks))
+        closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            self.closed = True
+
+        async def read(self):
+            # aiohttp's response.read() accepts no byte limit. StreamingBody's
+            # context manager returns this response, not the SDK wrapper.
+            return await self.content.read(-1)
+
+    response = Response()
+    stream = StreamingBody(response, "3")
+    storage = storage_mod.StorageClient()
+    storage._client = SimpleNamespace(
+        get_object=AsyncMock(return_value={"Body": stream})
+    )
+
+    assert await storage.download_bytes("file.txt", max_bytes=max_bytes) == b"abc"
+    assert [
+        call.args[0] for call in response.content.read.call_args_list
+    ] == requested_sizes
+    assert response.closed
+
+
+
+@pytest.mark.asyncio
 async def test_download_text_prefix_uses_range_and_reports_truncation():
     class Body:
         async def __aenter__(self):
@@ -1246,8 +1291,8 @@ async def test_download_text_prefix_uses_range_and_reports_truncation():
         async def __aexit__(self, *_args):
             return None
 
-        async def read(self):
-            return "ééé".encode()
+        async def read(self, amt=None):
+            return "ééé".encode()[:amt]
 
     class Client:
         def __init__(self):

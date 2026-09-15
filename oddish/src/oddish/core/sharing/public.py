@@ -38,9 +38,9 @@ from .helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_public_experiment,
     list_task_files_s3,
-    list_trial_files_s3,
     make_task_files_ndjson_response,
     stream_task_files_s3,
+    list_trial_files_s3,
 )
 from oddish.db import (
     ExperimentModel,
@@ -428,6 +428,11 @@ async def list_public_trial_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
+    artifacts: bool = Query(False),
+    directories: list[str] | None = Query(None),
 ) -> dict:
     """List all files in a public trial's S3 directory."""
     trial = await _get_detached_public_trial(public_token, trial_id)
@@ -438,6 +443,11 @@ async def list_public_trial_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        indexed=indexed,
+        attempt=attempt,
+        revision=revision,
+        artifacts=artifacts,
+        directories=directories,
     )
 
 
@@ -445,14 +455,29 @@ async def list_public_trial_files(
     "/public/experiments/{public_token}/trials/{trial_id}/files/{file_path:path}"
 )
 async def get_public_trial_file(
-    public_token: str, trial_id: str, file_path: str
+    public_token: str,
+    trial_id: str,
+    file_path: str,
+    max_bytes: Annotated[int | None, Query(ge=1, le=1048576)] = None,
+    indexed: bool = False,
+    attempt: int | None = None,
+    revision: str | None = None,
 ) -> Response:
     """Get a file from a public trial's S3 directory."""
     trial = await _get_detached_public_trial(public_token, trial_id)
     try:
-        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        content, media_type = await get_trial_file_content_s3(
+            trial,
+            file_path,
+            max_bytes=max_bytes,
+            indexed=indexed,
+            attempt=attempt,
+            revision=revision,
+        )
         return Response(content=content, media_type=media_type)
     except HTTPException:
+        if indexed or max_bytes is not None:
+            raise
         pass
     content, media_type = await read_trial_agent_file(trial, file_path)
     return Response(content=content, media_type=media_type)
@@ -483,6 +508,9 @@ async def list_public_task_files(
             description="Repeat for 1–8 directory pages; empty means root",
         ),
     ] = None,
+    indexed: bool = Query(
+        False, description="Read prepared metadata without file-body downloads"
+    ),
     previews: bool = Query(
         False, description="Include bounded small text previews in directory batches"
     ),
@@ -500,7 +528,7 @@ async def list_public_task_files(
             session, task_id=task_id, version=version
         )
 
-    if (directories is not None or previews) and stream:
+    if (directories is not None or previews or indexed) and stream:
         raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
@@ -521,6 +549,8 @@ async def list_public_task_files(
         )
 
     return await list_task_files_s3(
+        index_key=source.index_key,
+        **({"indexed": True} if indexed else {}),
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
         **({"previews": True} if previews else {}),

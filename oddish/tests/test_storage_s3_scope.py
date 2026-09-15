@@ -137,3 +137,39 @@ def test_task_upload_keeps_exact_names(tmp_path) -> None:
     client._ensure_client = _noop  # type: ignore[assignment]
     asyncio.run(client.upload_task_directory("task_a", tmp_path))
     assert uploaded == ["tasks/task_a/oracle%bin"]
+
+
+def test_trial_upload_publishes_uploaded_inventory_after_bytes_complete(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from oddish.core import file_index
+
+    client, uploaded = _client_with_recorder()
+    client._ensure_client = AsyncMock()
+    (tmp_path / "result.json").write_text("{}")
+    prefix = StorageClient._trial_prefix("task_a-0") + "attempt-2/"
+    publications = []
+
+    async def publish(storage, *, trial, files):
+        assert storage is client
+        assert uploaded == [prefix + "result.json"]
+        assert trial.id == "task_a-0"
+        assert trial.attempts == 2
+        assert trial.trial_s3_key == prefix
+        assert [(f["path"], f["size"]) for f in files] == [("result.json", 2)]
+        publications.append(trial.id)
+
+    monkeypatch.setattr(file_index, "index_trial_upload", publish)
+    assert (
+        asyncio.run(
+            client.upload_trial_results(
+                "task_a-0",
+                tmp_path,
+                subprefix="attempt-2",
+                index_attempt=2,
+            )
+        )
+        == prefix
+    )
+    assert publications == ["task_a-0"]

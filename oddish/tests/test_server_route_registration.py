@@ -30,7 +30,9 @@ async def test_task_tree_forwards_inline_flag() -> None:
     list_files = AsyncMock(return_value={"files": []})
     manifest_key = "tasks/task-1/v3-expanded/published/.oddish-manifest.json"
     resolve_source = AsyncMock(
-        return_value=TaskFileSource(3, "tasks/task-1/v3/", manifest_key, "hash-3")
+        return_value=TaskFileSource(
+            3, "tasks/task-1/v3/", manifest_key, "hash-3", manifest_key
+        )
     )
     with (
         patch("oddish.server.get_read_session", new=fake_get_session),
@@ -46,10 +48,14 @@ async def test_task_tree_forwards_inline_flag() -> None:
             presign=False,
             inline=False,
             version=3,
+            directories=None,
+            indexed=False,
+            previews=False,
             stream=False,
         )
 
     list_files.assert_awaited_once_with(
+        index_key=manifest_key,
         task_id="task-1",
         prefix=None,
         recursive=True,

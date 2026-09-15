@@ -171,6 +171,7 @@ async def prepared_read_health() -> dict[str, int | float]:
     """Independent scheduled health sampling also detects a stopped maintainer."""
     from sqlalchemy import func
     from oddish.db import get_read_session
+    from oddish.db.models import FileIndexModel
 
     async with get_read_session() as session:
         summary_count, oldest = (
@@ -187,9 +188,15 @@ async def prepared_read_health() -> dict[str, int | float]:
                 )
             )
         ).one()
+        files = await session.scalar(
+            select(func.count())
+            .select_from(FileIndexModel)
+            .where(FileIndexModel.revision.is_(None))
+        )
     return {
         "summary_pending": summary_count,
         "summary_lag_seconds": max(0.0, (utcnow() - oldest).total_seconds())
         if oldest
         else 0.0,
+        "file_index_pending": files or 0,
     }

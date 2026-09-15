@@ -1817,6 +1817,9 @@ async def list_task_files(
             description="Repeat for 1–8 directory pages; empty means root",
         ),
     ] = None,
+    indexed: bool = Query(
+        False, description="Read prepared metadata without file-body downloads"
+    ),
     previews: bool = Query(
         False, description="Include bounded small text previews in directory batches"
     ),
@@ -1836,7 +1839,7 @@ async def list_task_files(
         request, auth, task_id=task_id, version=version
     )
 
-    if (directories is not None or previews) and stream:
+    if (directories is not None or previews or indexed) and stream:
         raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
@@ -1857,6 +1860,8 @@ async def list_task_files(
         )
 
     return await list_task_files_s3(
+        index_key=source.index_key,
+        **({"indexed": True} if indexed else {}),
         task_id=task_id,
         **({"directories": directories} if directories is not None else {}),
         **({"previews": True} if previews else {}),

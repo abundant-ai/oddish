@@ -178,8 +178,8 @@ WHERE deployment_environment = 'staging'
   AND kind = 'span'
 HAVING min((attributes->>'summary_lag_seconds')::double precision) > 60;
 
--- Prepared dashboard request latency: every 5 minutes over 10 minutes.
--- Exclude usage-only dashboards.
+-- Prepared dashboard/directory request latency: every 5 minutes over 10 minutes.
+-- Exclude usage-only dashboards and legacy recursive CLI file downloads.
 SELECT span_name, count(*) AS requests,
        percentile_cont(0.95) WITHIN GROUP (ORDER BY duration) AS p95_seconds
 FROM records
@@ -187,8 +187,9 @@ WHERE deployment_environment = 'staging'
   AND service_name = 'oddish-backend'
   AND kind = 'span'
   AND http_response_status_code = 200
-  AND span_name = 'GET /dashboard'
-  AND attributes->>'http.url' NOT LIKE '%include_experiments=false%'
+  AND ((span_name = 'GET /dashboard' AND attributes->>'http.url' NOT LIKE '%include_experiments=false%')
+    OR (span_name IN ('GET /tasks/{task_id}/files', 'GET /trials/{trial_id}/files')
+        AND attributes->>'http.url' LIKE '%indexed=true%'))
 GROUP BY span_name
 HAVING count(*) >= 20
    AND percentile_cont(0.95) WITHIN GROUP (ORDER BY duration) > 0.75;
