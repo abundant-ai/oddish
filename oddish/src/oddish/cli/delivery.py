@@ -591,12 +591,13 @@ def history(
         data.get("verdict"),
         version_matches=(
             data.get("verdict_version_id") == data.get("current_version_id")
-            if data.get("verdict_version_id")
+            if data.get("current_version_id")
             else None
         ),
         standalone=False,
     )
     console.print(f"Verdict: {label}")
+    run_labels = {"qa": "Verdict generation", "audit": "Pre-trial audit"}
     for version in data["versions"]:
         marker = " [cyan](current)[/cyan]" if version["is_current"] else ""
         message = f" — {version['message']}" if version.get("message") else ""
@@ -609,12 +610,12 @@ def history(
         )
         for run in version["qa_runs"]:
             console.print(
-                f"  {'Verdict generation' if run['kind'] == 'qa' else 'Pre-trial audit'}: {run.get('status') or 'pending'}"
+                f"  {run_labels.get(run['kind'], run['kind'])}: {run.get('status') or 'pending'}"
             )
     unversioned = data.get("unversioned_runs") or []
     if unversioned:
         console.print("\n[bold]Runs not tied to a version[/bold]")
         for run in unversioned:
             console.print(
-                f"  {'Verdict generation' if run['kind'] == 'qa' else 'Pre-trial audit'}: {run.get('status') or 'pending'}"
+                f"  {run_labels.get(run['kind'], run['kind'])}: {run.get('status') or 'pending'}"
             )

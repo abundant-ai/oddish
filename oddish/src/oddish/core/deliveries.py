@@ -13,12 +13,13 @@ from oddish.verdict import verdict_label
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, or_, select, true
+from sqlalchemy import and_, case, delete, func, literal_column, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, load_only
 
 from oddish.core.delivery_qa import delivery_qa_statuses
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.core.delivery_progress import (
     delivery_progress_history,
     record_delivery_progress,
@@ -1546,18 +1547,22 @@ async def get_task_qa_history_core(
     # what counts as a must-fix (pre-trial items plus trial analyses).
     must_fix = await task_defect_items(session, {v.id: v for v in versions})
 
-    # Which version the stored verdict covers: the one graded by the
-    # newest verdict-producing QA run (same rule as the board).
-    verdict_version_id = await session.scalar(
-        select(TrialModel.task_version_id)
-        .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
-        .order_by(
-            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
-            TrialModel.created_at.desc(),
-            TrialModel.id.desc(),
+    # Keep the payload and its grader's version in the same snapshot. A newer
+    # successful QA run must not claim a verdict explicitly owned by another.
+    verdict_row = (
+        await session.execute(
+            select(
+                TaskModel.current_version_id,
+                TaskModel.verdict_status,
+                TaskModel.verdict,
+                literal_column(
+                    VERDICT_VERSION_SQL.format(
+                        task_id="tasks.id", verdict="tasks.verdict"
+                    )
+                ).label("verdict_version_id"),
+            ).where(TaskModel.id == task_id)
         )
-        .limit(1)
-    )
+    ).one()
 
     decisions_by_version: dict[str, list[TaskQAHistoryDecision]] = {}
     decisions = await session.scalars(
@@ -1590,7 +1595,7 @@ async def get_task_qa_history_core(
                 version=version.version,
                 created_at=version.created_at,
                 message=version.message,
-                is_current=version.id == task.current_version_id,
+                is_current=version.id == verdict_row.current_version_id,
                 pre_trial_status=(
                     version.pre_trial_status.value if version.pre_trial_status else None
                 ),
@@ -1608,10 +1613,12 @@ async def get_task_qa_history_core(
     return TaskQAHistoryResponse(
         task_id=task.id,
         task_name=task.name,
-        current_version_id=task.current_version_id,
-        verdict=task.verdict if isinstance(task.verdict, dict) else None,
-        verdict_status=task.verdict_status.value if task.verdict_status else None,
-        verdict_version_id=verdict_version_id,
+        current_version_id=verdict_row.current_version_id,
+        verdict=verdict_row.verdict if isinstance(verdict_row.verdict, dict) else None,
+        verdict_status=(
+            verdict_row.verdict_status.value if verdict_row.verdict_status else None
+        ),
+        verdict_version_id=verdict_row.verdict_version_id,
         versions=out,
         # Runs whose trial carries no version id (legacy data). They belong
         # to no version row, but hiding them would understate the QA record.

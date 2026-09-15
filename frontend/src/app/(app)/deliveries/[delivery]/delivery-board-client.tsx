@@ -343,6 +343,10 @@ function ManualCheckRow({
 
 // Versions listed before "Show all" expands the history.
 const QA_HISTORY_PAGE = 5;
+const HISTORY_RUN_LABELS: Record<string, string> = {
+  qa: "Verdict generation",
+  audit: "Pre-trial audit",
+};
 function QAHistoryPanel({
   taskId,
   versionId,
@@ -442,7 +446,7 @@ function QAHistoryPanel({
           {unversioned
             .map(
               (run) =>
-                `${run.kind === "qa" ? "Verdict generation" : "Pre-trial audit"} (${run.status ?? "pending"})`
+                `${HISTORY_RUN_LABELS[run.kind] ?? run.kind} (${run.status ?? "pending"})`
             )
             .join(", ")}
         </p>
@@ -509,7 +513,7 @@ function QAHistoryVersionRow({
               ? version.qa_runs
                   .map(
                     (run) =>
-                      `${run.kind === "qa" ? "Verdict generation" : "Pre-trial audit"} (${run.status ?? "pending"})`
+                      `${HISTORY_RUN_LABELS[run.kind] ?? run.kind} (${run.status ?? "pending"})`
                   )
                   .join(", ")
               : "none"}
@@ -534,9 +538,7 @@ function QAHistoryVersionRow({
               .map((run) => (
                 <li key={run.trial_id}>
                   <span className="font-medium text-red-600 dark:text-red-400">
-                    {run.kind === "qa"
-                      ? "Verdict generation"
-                      : "Pre-trial audit"}{" "}
+                    {HISTORY_RUN_LABELS[run.kind] ?? run.kind}{" "}
                     {run.status?.toLowerCase() ?? ""}:
                   </span>{" "}
                   <span className="text-muted-foreground break-words">
@@ -1111,7 +1113,7 @@ function TaskRow({
                                   ? "View runs"
                                   : check.key === "pre_trial_passed"
                                     ? "Open pre-trial audit"
-                                    : "Open run analysis"}
+                                    : "Open verdict"}
                               </Link>
                             )}
                           {acknowledged ? (

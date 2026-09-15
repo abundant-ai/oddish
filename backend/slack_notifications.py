@@ -12,7 +12,7 @@ from decimal import Decimal
 from urllib.parse import quote
 
 import modal
-from sqlalchemy import and_, case, func, literal, or_, select, update
+from sqlalchemy import and_, case, func, literal, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 
 from auth.provisioning import fetch_slack_user_id_from_clerk
@@ -25,6 +25,7 @@ from oddish.core.cost_basis import (
     settled_cost_from_row,
 )
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     ExperimentModel,
@@ -947,10 +948,20 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             (TaskModel.verdict["is_good"] == literal(False, JSONB), "reject"),
             else_=None,
         )
+        # Versionless legacy tasks have no version link to contradict. For a
+        # versioned task, only its stored grader can establish a current result.
+        verdict_version_matches = or_(
+            TaskModel.current_version_id.is_(None),
+            literal_column(
+                VERDICT_VERSION_SQL.format(task_id="tasks.id", verdict="tasks.verdict")
+            )
+            == TaskModel.current_version_id,
+        )
         qa_failed = or_(
             and_(
                 TaskModel.verdict_status == VerdictStatus.SUCCESS,
                 verdict_outcome == "reject",
+                verdict_version_matches,
             ),
             and_(
                 TaskModel.verdict_status == VerdictStatus.FAILED,
@@ -993,6 +1004,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         task_finished = and_(
             TaskModel.verdict_status == VerdictStatus.SUCCESS,
             verdict_outcome == "accept",
+            verdict_version_matches,
         )
         task_finished_rows = (
             await session.execute(

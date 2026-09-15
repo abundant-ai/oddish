@@ -1756,7 +1756,7 @@ for (const group of ["none", "state"]) {
       page.getByRole("link", { name: "View runs", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Open run analysis", exact: true })
+      page.getByRole("link", { name: "Open verdict", exact: true })
     ).toBeVisible();
     await expect(page.getByText(/Old verbose/)).toHaveCount(0);
     expect(state.writes).toEqual([]);

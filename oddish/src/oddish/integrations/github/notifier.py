@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
+from oddish.core.helpers import experiment_effective_versions_selectable
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -96,6 +97,9 @@ async def _build_task_summary(
 
     # Read the verdict and its provenance together so a concurrent update
     # cannot pair an older payload with a newer version-match flag.
+    effective_versions = experiment_effective_versions_selectable(
+        experiment_id=experiment_id, task_ids=[task.id], org_id=task.org_id
+    )
     verdict_row = (
         await session.execute(
             select(
@@ -107,10 +111,15 @@ async def _build_task_summary(
                             task_id="tasks.id", verdict="tasks.verdict"
                         )
                     )
-                    == TaskModel.current_version_id,
+                    == func.coalesce(
+                        effective_versions.c.task_version_id,
+                        TaskModel.current_version_id,
+                    ),
                     False,
                 ).label("review_version_matches"),
-            ).where(TaskModel.id == task.id)
+            )
+            .outerjoin(effective_versions, effective_versions.c.task_id == TaskModel.id)
+            .where(TaskModel.id == task.id)
         )
     ).one()
 

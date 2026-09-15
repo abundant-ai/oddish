@@ -5,7 +5,7 @@ import type {
   Trial,
 } from "@/lib/types";
 import { formatLineRange } from "@/lib/line-range";
-import { taskHasActiveVerdict, taskHasActiveAnalysis } from "@/lib/job-status";
+import { taskVerdictProgress, taskAnalysisProgress } from "@/lib/job-status";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 
 export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
@@ -94,17 +94,13 @@ export function verdictOutcome(
 /** Review progress and task quality; solver failure never determines this. */
 export function taskReviewStatus(task: Task): keyof typeof VERDICT_LABELS {
   const verdict = verdictOutcome(task.verdict);
-  if (
-    taskHasActiveVerdict(task) ||
-    (task.verdict_status !== "failed" &&
-      verdict == null &&
-      taskHasActiveAnalysis(task))
-  ) {
-    return task.verdict_status === "queued" || task.verdict_status === "pending"
-      ? "queued"
-      : "running";
-  }
+  const progress = taskVerdictProgress(task);
+  if (progress) return progress;
   if (task.verdict_status === "failed") return "error";
+  if (verdict == null) {
+    const analysisProgress = taskAnalysisProgress(task);
+    if (analysisProgress) return analysisProgress;
+  }
   if (task.verdict && task.review_version_matches === false) return "outdated";
   if (verdict) return verdict;
   return "never";

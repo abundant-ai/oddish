@@ -53,12 +53,12 @@ async def get_task_panel_core(
             AND (tr.idempotency_key IS NULL OR tr.idempotency_key NOT LIKE 'combine:%')
             AND (CAST(:org_id AS text) IS NULL OR tr.org_id = :org_id OR tr.org_id IS NULL)
         ), live_jobs AS (
-          SELECT j.kind, NULL::text AS trial_kind FROM worker_jobs j
+          SELECT j.kind, j.status, NULL::text AS trial_kind FROM worker_jobs j
           WHERE j.subject_table = 'tasks' AND j.subject_id = :task_id
             AND j.deleted_at IS NULL
             AND j.status IN ('QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED')
           UNION ALL
-          SELECT j.kind, tr.kind AS trial_kind FROM trials_for_task tr JOIN worker_jobs j
+          SELECT j.kind, j.status, tr.kind AS trial_kind FROM trials_for_task tr JOIN worker_jobs j
             ON j.subject_table = 'trials' AND j.subject_id = tr.id
           WHERE j.deleted_at IS NULL
             AND j.status IN ('QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED')
@@ -72,6 +72,14 @@ async def get_task_panel_core(
           count(*) FILTER (WHERE kind = 'agent' AND status IN ('SUCCESS', 'FAILED')) > 0 AS can_retry,
           COALESCE(bool_or(kind = 'qa' AND status IN
             ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')), false) AS qa_active,
+          CASE
+            WHEN EXISTS (SELECT 1 FROM live_jobs WHERE kind = 'QA' OR (kind = 'TRIAL' AND trial_kind = 'qa'))
+              THEN CASE WHEN EXISTS (SELECT 1 FROM live_jobs WHERE status = 'RUNNING'
+                AND (kind = 'QA' OR (kind = 'TRIAL' AND trial_kind = 'qa')))
+                THEN 'running' ELSE 'queued' END
+            WHEN COALESCE(bool_or(kind = 'qa' AND status IN ('RUNNING', 'PAUSED')), false) THEN 'running'
+            WHEN COALESCE(bool_or(kind = 'qa' AND status IN ('PENDING', 'QUEUED', 'RETRYING')), false) THEN 'queued'
+          END AS qa_progress,
           COALESCE(bool_or(kind IN ('qa', 'audit') AND status IN
             ('PENDING', 'QUEUED', 'RUNNING', 'PAUSED', 'RETRYING')), false) AS analysis_trial_active,
           COALESCE(bool_or(analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')), false) AS analysis_active,
@@ -88,7 +96,8 @@ async def get_task_panel_core(
     )
     counts = result.mappings().one()
     qa_active = (
-        counts["qa_active"]
+        counts["qa_progress"] is not None
+        or counts["qa_active"]
         or counts["qa_jobs_active"]
         or row["status"] == "verdict_pending"
         or row["verdict_status"] in ("pending", "queued", "running")
@@ -103,14 +112,17 @@ async def get_task_panel_core(
     cancel = (
         "task"
         if active_trials
-        else "qa"
-        if qa_active or analysis_active
-        else "task"
-        if counts["jobs_active"]
-        else None
+        else (
+            "qa"
+            if qa_active or analysis_active
+            else "task" if counts["jobs_active"] else None
+        )
     )
+    task_fields = dict(row)
+    if counts["qa_progress"]:
+        task_fields["verdict_status"] = counts["qa_progress"]
     task = TaskStatusResponse(
-        **row,
+        **task_fields,
         **counts,
         experiment_id="",
         experiment_name="",

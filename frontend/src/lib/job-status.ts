@@ -55,14 +55,6 @@ function isActiveVisibleJobKind(
   return job.kind === kind && isActiveVisibleJob(job);
 }
 
-function trialHasActiveAnalysis(trial: Trial | null | undefined): boolean {
-  if (!trial) return false;
-  return (
-    isActivePipelineStatus(trial.analysis_status) ||
-    trial.jobs?.some((job) => isActiveVisibleJobKind(job, "analysis")) === true
-  );
-}
-
 export function taskHasActiveTrials(task: Task | null | undefined): boolean {
   // Agent trials only. A live qa/audit trial counts as active QA (see
   // taskHasLiveAnalysisTrial), so the cancel path picks the QA cancel
@@ -78,11 +70,34 @@ export function taskHasActiveTrials(task: Task | null | undefined): boolean {
 }
 
 export function taskHasActiveAnalysis(task: Task | null | undefined): boolean {
-  if (!task) return false;
-  return (
-    task.status === "analyzing" ||
-    task.trials?.some((trial) => trialHasActiveAnalysis(trial)) === true
-  );
+  return taskAnalysisProgress(task) !== null;
+}
+
+/** Active job/trial records take precedence over aggregate task flags. */
+export function taskAnalysisProgress(
+  task: Task | null | undefined
+): "queued" | "running" | null {
+  if (!task) return null;
+  const jobs =
+    task.jobs?.filter((job) => isActiveVisibleJobKind(job, "analysis")) ?? [];
+  if (jobs.some((job) => job.status === "running")) return "running";
+  let queued = jobs.length > 0;
+  for (const trial of task.trials ?? []) {
+    if (trial.superseded_by_trial_id) continue;
+    const trialJobs =
+      trial.jobs?.filter((job) => isActiveVisibleJobKind(job, "analysis")) ??
+      [];
+    if (trialJobs.length > 0) {
+      if (trialJobs.some((job) => job.status === "running")) return "running";
+      queued = true;
+    } else if (trial.analysis_status === "running") {
+      return "running";
+    } else if (isActivePipelineStatus(trial.analysis_status)) {
+      queued = true;
+    }
+  }
+  if (queued) return "queued";
+  return task.status === "analyzing" ? "running" : null;
 }
 
 // QA and the source audit run as qa/audit-kind trials now. A live one means
@@ -119,21 +134,46 @@ export function isLiveQaTrial(trial: Trial): boolean {
   );
 }
 
-export function taskHasLiveQaTrial(task: Task | null | undefined): boolean {
-  return (
-    (task?.active_qa_trial != null && isLiveQaTrial(task.active_qa_trial)) ||
-    task?.trials?.some(isLiveQaTrial) === true
-  );
+export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
+  return taskVerdictProgress(task) !== null;
 }
 
-export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
-  if (!task) return false;
-  return (
-    task.status === "verdict_pending" ||
-    isActivePipelineStatus(task.verdict_status) ||
-    taskHasLiveQaTrial(task) ||
-    task.jobs?.some((job) => isActiveVisibleJobKind(job, "qa")) === true
-  );
+export function taskVerdictProgress(
+  task: Task | null | undefined
+): "queued" | "running" | null {
+  if (!task) return null;
+  const qaTrials = [
+    ...(task.active_qa_trial ? [task.active_qa_trial] : []),
+    ...(task.trials ?? []),
+  ].filter((trial) => trial.kind === "qa" && !trial.superseded_by_trial_id);
+  const jobs = [
+    ...(task.jobs?.filter((job) => isActiveVisibleJobKind(job, "qa")) ?? []),
+    ...qaTrials.flatMap(
+      (trial) =>
+        trial.jobs?.filter(
+          (job) =>
+            (job.kind === "qa" || job.kind === "trial") &&
+            isActiveVisibleJob(job)
+        ) ?? []
+    ),
+  ];
+  if (jobs.length > 0)
+    return jobs.some((job) => job.status === "running") ? "running" : "queued";
+  if (task.active_qa_trial && isLiveQaTrial(task.active_qa_trial))
+    return isWorkerOwnedTrialStatus(task.active_qa_trial.status)
+      ? "running"
+      : "queued";
+  const trials = qaTrials.filter(isLiveQaTrial);
+  if (trials.length > 0)
+    return trials.some((trial) => isWorkerOwnedTrialStatus(trial.status))
+      ? "running"
+      : "queued";
+  if (isActivePipelineStatus(task.verdict_status))
+    return task.verdict_status === "running" ? "running" : "queued";
+  // This stage is entered as the job is queued; it does not prove execution.
+  return task.status === "verdict_pending" && task.verdict_status == null
+    ? "queued"
+    : null;
 }
 
 /** Short experiment-row copy for a rejected task. */
@@ -169,8 +209,16 @@ function getActiveTrialCount(task: Task | null | undefined): number {
 export function getCancelActionLabel(task: Task | null | undefined): string {
   const activeTrials = getActiveTrialCount(task);
   if (activeTrials > 0) return `Cancel (${activeTrials})`;
-  // Trajectory analysis + verdict are one task-level QA job now.
-  return taskHasActiveVerdict(task) || taskHasActiveAnalysis(task)
-    ? "Cancel verdict generation"
-    : "Cancel pre-trial audit";
+  const verdictActive =
+    taskHasActiveVerdict(task) || taskHasActiveAnalysis(task);
+  const auditActive =
+    isActivePipelineStatus(task?.pre_trial_status) ||
+    (task?.active_qa_trial?.kind === "audit" &&
+      isLiveAnalysisTrial(task.active_qa_trial)) ||
+    task?.trials?.some(
+      (trial) => trial.kind === "audit" && isLiveAnalysisTrial(trial)
+    );
+  if (verdictActive && auditActive)
+    return "Cancel audits and verdict generation";
+  return verdictActive ? "Cancel verdict generation" : "Cancel pre-trial audit";
 }

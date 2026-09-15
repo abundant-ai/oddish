@@ -96,8 +96,9 @@ import {
   isActiveTrialStatus,
   isLiveQaTrial,
   isWorkerOwnedTrialStatus,
-  taskHasActiveVerdict,
+  taskVerdictProgress,
 } from "@/lib/job-status";
+import { VERDICT_LABELS } from "@/lib/review";
 import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 import { fetcher } from "@/lib/api";
@@ -217,7 +218,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
 // reopening the drawer.
 function TrialAnalysisCard({
   trial: trialProp,
-  taskQaInProgress,
+  verdictProgress,
   apiBaseUrl,
   actionsReady,
   onQueued,
@@ -226,7 +227,7 @@ function TrialAnalysisCard({
   onFeedback,
 }: {
   trial: Trial;
-  taskQaInProgress: boolean;
+  verdictProgress: "queued" | "running" | null;
   apiBaseUrl: string;
   actionsReady: boolean;
   onQueued?: () => void | Promise<void>;
@@ -235,6 +236,7 @@ function TrialAnalysisCard({
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
 }) {
   const trial = trialProp;
+  const taskQaInProgress = verdictProgress !== null;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -271,7 +273,7 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "Verdict generation is already running";
+    queueBlockedReason = `Verdict generation is already ${verdictProgress}`;
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
@@ -445,11 +447,11 @@ function TrialAnalysisCard({
               {inProgress ? (
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
-                    {trial.analysis_status === "running"
-                      ? "Analyzing"
-                      : trial.analysis_status
-                        ? "Analysis queued"
-                        : "Verdict running"}
+                    {verdictProgress
+                      ? VERDICT_LABELS[verdictProgress]
+                      : trial.analysis_status === "running"
+                        ? "Analyzing"
+                        : "Analysis queued"}
                   </span>
                   {progressLine && (
                     <span className="text-muted-foreground text-xs">
@@ -727,7 +729,8 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const taskQaInProgress = taskHasActiveVerdict(task);
+  const verdictProgress = taskVerdictProgress(task);
+  const taskQaInProgress = verdictProgress !== null;
   const {
     data: refreshedTrial,
     error: trialDetailError,
@@ -1093,7 +1096,9 @@ export function TrialDetailPanel({
     [orderedTrials, task?.trials]
   );
   const activeQaTrial =
-    task?.active_qa_trial ?? task?.trials?.find(isLiveQaTrial) ?? null;
+    task?.active_qa_trial && isLiveQaTrial(task.active_qa_trial)
+      ? task.active_qa_trial
+      : (task?.trials?.find(isLiveQaTrial) ?? null);
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
       ? trialIndex
@@ -1655,7 +1660,7 @@ export function TrialDetailPanel({
                 <TrialAnalysisCard
                   key={trial.id}
                   trial={trial}
-                  taskQaInProgress={taskQaInProgress}
+                  verdictProgress={verdictProgress}
                   apiBaseUrl={apiBaseUrl}
                   actionsReady={actionsReady}
                   activeQaTrial={activeQaTrial}

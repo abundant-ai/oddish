@@ -2557,3 +2557,15 @@ Use Verdict cost for the existing analysis-spend total, including audits and run
 analysis. Keep its accounting scope unchanged. Under a Verdict heading, display
 Queued or Running; standalone badges retain Verdict queued and Verdict running.
 Keep the Edit task work label and existing run classifications.
+
+### Verdict audit follow-up
+
+GitHub verdict provenance uses the experiment's effective version, matching the
+experiment page. Task history reads the stored verdict and pinned grader version
+together. Accepted/Rejected notifications for versioned tasks require matching
+grader provenance, and CLI history treats missing provenance as No verdict.
+
+Progress uses live job/trial records before task aggregates; queued and retrying
+work must not be called running. Audit-only work is not verdict progress. Mixed
+audit/verdict cancellation names both. History maps only qa and audit to known
+labels and preserves unknown kinds. The verdict requirement link says Open verdict.
