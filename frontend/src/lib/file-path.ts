@@ -1,3 +1,8 @@
+/** Encode a decoded relative file path for a catch-all URL, retaining directory separators. */
+export function encodeFilePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 /**
  * Whether two paths address the same file. Deep links may carry a bare
  * file name or partial path (the file trees resolve those by suffix

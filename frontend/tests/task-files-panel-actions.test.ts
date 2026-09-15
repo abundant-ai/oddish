@@ -51,6 +51,7 @@ function renderPanel({
   const cache: Record<string, unknown> = {
     react: { ...React, useEffectEvent: (fn: unknown) => fn },
     "react/jsx-runtime": jsx,
+    "@clerk/nextjs": { useAuth: () => ({ userId: "user-1", orgId: "org-1" }) },
     swr: {
       __esModule: true,
       useSWRConfig: () => ({ mutate: () => {} }),

@@ -27,7 +27,7 @@ for (const order of ["body-first", "metadata-first"] as const) {
         await route.fulfill({ json: data });
       });
       await page.route(
-        "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+        "**/api/tasks/task-a/files/tests/test.sh?**",
         async (route) => {
           reads.push(new URL(route.request().url()));
           const first = reads.length === 1;
@@ -88,7 +88,9 @@ for (const order of ["body-first", "metadata-first"] as const) {
 }
 
 function batch(version = 7) {
-  const files: TaskFile[] = [{ path: `tests/v${version}.sh`, key: "test", size: 7 }];
+  const files: TaskFile[] = [
+    { path: `tests/v${version}.sh`, key: "test", size: 7 },
+  ];
   return {
     version,
     source_hash: `fixture-v${version}`,
@@ -327,7 +329,7 @@ for (const partialContent of [
   }) => {
     const reads: string[] = [];
     await page.route(
-      "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+      "**/api/tasks/task-a/files/tests/test.sh?**",
       async (route) => {
         const params = new URL(route.request().url()).searchParams;
         reads.push(params.get("max_bytes") ?? "full");
@@ -362,7 +364,7 @@ test("a delayed full file stays attached to its original version", async ({
   });
   let fullReadStarted = false;
   await page.route(
-    "**/api/tasks/task-a/files/tests%2Ftest.sh?**",
+    "**/api/tasks/task-a/files/tests/test.sh?**",
     async (route) => {
       const params = new URL(route.request().url()).searchParams;
       const version = params.get("version");
@@ -396,7 +398,7 @@ test("a delayed full file stays attached to its original version", async ({
     const finished = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
-        url.pathname.endsWith("files/tests%2Ftest.sh") &&
+        url.pathname.endsWith("files/tests/test.sh") &&
         url.searchParams.get("version") === "7" &&
         !url.searchParams.has("max_bytes")
       );
@@ -419,28 +421,41 @@ test("a delayed full file stays attached to its original version", async ({
   }
 });
 
-test("definition bundle previews switch files without individual reads", async ({ page }) => {
+test("prepared directories read selected previews once and reuse them", async ({
+  page,
+}) => {
   const reads: string[] = [];
   await page.route(fileList, async (route) => {
     const url = new URL(route.request().url());
-    expect(url.searchParams.get("previews")).toBe("true");
+    expect(url.searchParams.get("previews")).toBeNull();
+    expect(url.searchParams.get("indexed")).toBe("true");
     const data = batch();
     data.directories.tests.files = [
-      { path: "tests/first.sh", key: "first", size: 5, content: "FIRST" },
-      { path: "tests/second.sh", key: "second", size: 6, content: "SECOND" },
+      { path: "tests/first.sh", key: "first", size: 5 },
+      { path: "tests/second.sh", key: "second", size: 6 },
     ];
     await route.fulfill({ json: data });
   });
-  await page.route("**/api/tasks/task-a/files/*?**", async (route) => {
+  await page.route("**/api/tasks/task-a/files/**?**", async (route) => {
     reads.push(route.request().url());
-    await route.fulfill({ json: { content: "UNEXPECTED READ" } });
+    const first = route.request().url().includes("first.sh");
+    await route.fulfill({
+      json: {
+        content: first ? "FIRST" : "SECOND",
+        source_hash: "fixture-v7",
+        is_truncated: false,
+      },
+    });
   });
   await page.goto("/experiments/review-demo?task=task-a");
   await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
   await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "second.sh 6 B", exact: true }).click();
+  await page
+    .getByRole("button", { name: "second.sh 6 B", exact: true })
+    .click();
   await expect(page.getByText("SECOND", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "first.sh 5 B", exact: true }).click();
   await expect(page.getByText("FIRST", { exact: true })).toBeVisible();
-  expect(reads).toEqual([]);
+  expect(reads.filter((url) => url.includes("first.sh"))).toHaveLength(1);
+  expect(reads.filter((url) => url.includes("second.sh"))).toHaveLength(1);
 });
