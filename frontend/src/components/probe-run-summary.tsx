@@ -140,7 +140,7 @@ export function ProbeRunSummary({
             <ul className="space-y-2">
               {recs.map((r, i) => {
                 const meta =
-                  PRIORITY_META[r.priority] ?? PRIORITY_META.should_fix;
+                  PRIORITY_META[r.priority] ?? PRIORITY_META.must_fix;
                 return (
                   <li key={i} className="flex items-start gap-2 text-sm">
                     <span

@@ -381,7 +381,7 @@ The command writes two UTF-8 CSV files (existing files are overwritten):
   agent-run analysis statuses, counts of exported findings by tier, and
   `fetch_error`. Structured detail is stored as JSON inside CSV cells.
 
-Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+The default tier is `must_fix`. Repeat `--tier` to select tiers;
 `optional` is also supported. Counts reflect exported occurrences, not unique
 defects. A finding reported by two runs keeps two rows with distinct trial IDs;
 version-audit findings appear once per version. CSV quoting preserves commas,
@@ -1122,7 +1122,7 @@ oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
 
 Delivery sign-off requires resolving or individually acknowledging every
-reported defect, including historical `should_fix` and `optional` findings.
+reported defect, including historical `optional` findings.
 `oddish delivery check`, `ack`, and `signoff` send the task version shown by the
 board; a version change requires reviewing the board again. `oddish delivery
 history` retains original severity labels and shows the current shipment

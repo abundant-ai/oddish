@@ -67,7 +67,7 @@ def detail():
                         "classification": "BAD_FAILURE",
                         "subtype": "hidden_requirement",
                         "action_items": [
-                            item("post", "should_fix", "post_trial"),
+                            item("post", "must_fix", "post_trial"),
                             item("optional", "optional", "post_trial"),
                         ],
                     },
@@ -169,7 +169,8 @@ def test_export_combines_sources_preserves_text_and_reports_status(invoke, detai
     assert rows[1]["line_start"] == "12"
     assert rows[1]["assignee"] == ""
     (summary,) = summaries
-    assert summary["must_fix_count"] == summary["should_fix_count"] == "1"
+    assert summary["must_fix_count"] == "2"
+    assert "should_fix_count" not in summary
     assert summary["optional_count"] == "0"
     assert summary["fetch_error"] == ""
     assert json.loads(summary["qa_runs"])[0]["error"] == "Provider timeout"
@@ -193,11 +194,17 @@ def test_all_versions_and_repeated_tiers(invoke, detail):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert {row["id"] for row in rows} == {"old-audit", "old-run", "audit", "optional"}
+    assert {row["id"] for row in rows} == {
+        "old-audit",
+        "old-run",
+        "audit",
+        "post",
+        "optional",
+    }
     assert {row["task_version"] for row in rows} == {"1", "2"}
     assert all(row["current_version"] == "2" for row in rows)
-    assert summaries[0]["must_fix_count"] == "3"
-    assert summaries[0]["should_fix_count"] == "0"
+    assert summaries[0]["must_fix_count"] == "4"
+    assert "should_fix_count" not in summaries[0]
 
 
 def test_keeps_distinct_trial_observations_of_same_finding(invoke, detail):

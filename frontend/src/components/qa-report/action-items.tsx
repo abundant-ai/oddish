@@ -21,8 +21,10 @@ function ActionItemDetail({
   onFeedback,
   renderItemFooter,
   findingLink,
+  onOpenSource,
 }: {
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
@@ -53,7 +55,22 @@ function ActionItemDetail({
       {where ? (
         <p className="text-muted-foreground font-mono text-[10.5px] break-all">
           {findingLink ? (
-            <a className="underline" href={findingLink(item, true)}>
+            <a
+              className="underline"
+              href={findingLink(item, true)}
+              onClick={(event) => {
+                if (
+                  !onOpenSource ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                onOpenSource(item);
+              }}
+            >
               Open {where}
             </a>
           ) : (
@@ -108,9 +125,11 @@ export function FindingList({
   renderItemFooter,
   selectedFinding,
   findingLink,
+  onOpenSource,
 }: {
   selectedFinding?: string | null;
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
@@ -179,6 +198,7 @@ export function FindingList({
               <ActionItemDetail
                 item={item}
                 findingLink={findingLink}
+                onOpenSource={onOpenSource}
                 itemKey={key}
                 onFeedback={onFeedback}
                 renderItemFooter={renderItemFooter}
