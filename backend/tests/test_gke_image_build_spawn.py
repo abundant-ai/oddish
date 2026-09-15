@@ -64,3 +64,19 @@ async def test_missing_builder_short_circuits_batch(monkeypatch):
     await _spawn_gke_image_builds(session, ["t-a", "t-b"])
 
     assert attempted == [("t-a", 1)]
+
+
+async def test_disabled_cloud_control_plane_never_resolves_modal(monkeypatch):
+    from api.routers import tasks
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "cloud_control_plane_enabled", False)
+    monkeypatch.setattr(
+        modal.Function,
+        "from_name",
+        staticmethod(lambda *_a, **_kw: pytest.fail("Modal must remain disabled")),
+    )
+
+    await tasks._spawn_gke_image_builds(_FakeSession([("t-a", 1)]), ["t-a"])
+
+    assert await tasks._cancel_modal_function_calls(["fc-a"]) == 0
