@@ -25,6 +25,7 @@ from oddish.core.deliveries import (
     delete_delivery_core,
     finalize_delivery_core,
     get_delivery_board_core,
+    get_delivery_task_core,
     get_task_qa_history_core,
     list_customers_core,
     list_deliveries_core,
@@ -46,6 +47,7 @@ from oddish.schemas import (
     DeliveryResponse,
     DeliverySelectionItem,
     DeliveryTasksAdd,
+    DeliveryTaskBoardRow,
     DeliveryViewQuery,
     ManualCheckSet,
     QAWorkClaim,
@@ -104,7 +106,9 @@ async def create_customer(
 
 
 async def _fill_user_names(
-    session: AsyncSession, org_id: str, board: DeliveryBoardResponse
+    session: AsyncSession,
+    org_id: str,
+    board: DeliveryBoardResponse | DeliveryTaskBoardRow,
 ) -> None:
     """Replace bare user ids with display names for the reader.
 
@@ -112,8 +116,10 @@ async def _fill_user_names(
     directory, so it resolves them at read time. An id without a user row
     stays as it is and the UI falls back to the id.
     """
+    tasks = board.tasks if isinstance(board, DeliveryBoardResponse) else [board]
+    checks = board.delivery_checks if isinstance(board, DeliveryBoardResponse) else []
     ids: set[str] = set()
-    for row in board.tasks:
+    for row in tasks:
         if row.qa_work.owner_user_id:
             ids.add(row.qa_work.owner_user_id)
         for check in row.checks:
@@ -122,7 +128,7 @@ async def _fill_user_names(
         for defect in row.defects:
             if defect.acknowledged_by_user_id:
                 ids.add(defect.acknowledged_by_user_id)
-    for check in board.delivery_checks:
+    for check in checks:
         if check.checked_by_user_id:
             ids.add(check.checked_by_user_id)
     if not ids:
@@ -147,7 +153,7 @@ async def _fill_user_names(
             display = (email or "").split("@", 1)[0].strip()
         if display:
             names[user_id] = display
-    for row in board.tasks:
+    for row in tasks:
         row.qa_owner_name = names.get(row.qa_work.owner_user_id or "")
         for check in row.checks:
             check.checked_by_name = names.get(check.checked_by_user_id or "")
@@ -155,7 +161,7 @@ async def _fill_user_names(
             defect.acknowledged_by_name = names.get(
                 defect.acknowledged_by_user_id or ""
             )
-    for check in board.delivery_checks:
+    for check in checks:
         check.checked_by_name = names.get(check.checked_by_user_id or "")
 
 
@@ -209,6 +215,24 @@ async def get_delivery_selection(
         board.qa_viewer_user_id = auth.user_id
         await _fill_user_names(session, auth.org_id, board)
         return delivery_selection(board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/tasks/{task_id}", response_model=DeliveryTaskBoardRow
+)
+async def get_delivery_task(
+    request: Request,
+    delivery_id: str,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> DeliveryTaskBoardRow:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
+        row = await get_delivery_task_core(
+            session, delivery_id=delivery_id, org_id=auth.org_id, task_id=task_id
+        )
+        await _fill_user_names(session, auth.org_id, row)
+        return row
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)

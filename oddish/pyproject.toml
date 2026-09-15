@@ -94,7 +94,6 @@ worker = [
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
-    "google-generativeai==0.8.6",
     "modal>=1.5.0",
     "dockerfile-parse>=2.0.1",
 ]
@@ -120,7 +119,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ce896ccd3b5305c5043aca6ed7a882a410c68054" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "2f4076d1aa0122a88b71801ad44866098cdd4e54" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
@@ -149,7 +148,6 @@ module = [
     "harbor.*",
     "asyncpg.*",
     "aioboto3.*",
-    "google.generativeai.*",
 ]
 ignore_missing_imports = true
 

@@ -150,6 +150,7 @@ export interface Trial {
   provider: string;
   queue_key?: string;
   model: string | null;
+  reasoning_effort?: string | null;
   environment?: string | null;
   status: TrialStatus;
   attempts: number;
@@ -521,6 +522,7 @@ export interface TaskOpenVerdict {
 export interface TaskOpenAgentModelSummary {
   agent: string;
   model: string | null;
+  reasoning_effort?: string | null;
   providers: string[];
   is_probe: boolean;
   trial_count: number;
@@ -590,6 +592,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  reasoning_effort?: string | null;
   kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
@@ -624,6 +627,8 @@ export interface PreTrialFinding {
   source?: "pre_trial" | "post_trial";
   id?: string | null;
   tier?: string | null;
+  /** Historical findings stored their tier under this field. */
+  severity?: string | null;
   dimension?: string | null;
   problem_type?: string | null;
   file?: string | null;
@@ -1564,7 +1569,6 @@ interface TaskQAHistoryVersion {
   pre_trial_finished_at?: string | null;
   pre_trial_error?: string | null;
   must_fix: number;
-  pre_trial_should_fix: number;
   rollout_count: number;
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];

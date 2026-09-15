@@ -166,15 +166,6 @@ def _patch_restricted_network_runtime_fields() -> None:
         AgentFactory._oddish_runtime_fields_wrapped = True
 
 
-def _ec2_enabled() -> bool:
-    return os.environ.get("ODDISH_EC2_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
     """Read dockerd logs."""
     try:

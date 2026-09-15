@@ -251,7 +251,7 @@ test("verdict failure copy does not rename execution-review failure", () => {
   assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
 });
 
-test("post-trial outcomes preserve passed, failed, incomplete, and remaining review counts", () => {
+test("analysis progress separates completed classifications from failed and pending analysis", () => {
   const trial = (props: Partial<Trial>) =>
     ({
       agent: "codex",
@@ -306,7 +306,7 @@ test("post-trial outcomes preserve passed, failed, incomplete, and remaining rev
         (trial) => trial.task_version_id === reviewed.trial_version_id
       )
     ),
-    "4/9 evaluated · 2 with task issues · 2 couldn’t be evaluated · 1 reviewing · 1 queued"
+    "5/9 analyzed · 1 analysis failed · 1 analyzing · 1 queued"
   );
 });
 
@@ -422,7 +422,7 @@ test("verdict summary hides empty categories and keeps clearing an active filter
   assert.match(html, /Show all tasks/);
 });
 
-test("completed review records do not imply that every run was evaluated", () => {
+test("completed analysis counts runs with infrastructure errors as analyzed", () => {
   const trials = Array.from(
     { length: 15 },
     (_, index) =>
@@ -439,12 +439,9 @@ test("completed review records do not imply that every run was evaluated", () =>
         },
       }) as Trial
   );
-  assert.equal(review.runReviewCounts(trials).evaluated, 7);
-  assert.equal(review.runReviewCounts(trials).incomplete, 8);
-  assert.equal(
-    review.runReviewSummary(trials),
-    "7/15 evaluated · 8 couldn’t be evaluated"
-  );
+  assert.equal(review.runReviewCounts(trials).analyzed, 15);
+  assert.equal(review.runReviewCounts(trials).failed, 0);
+  assert.equal(review.runReviewSummary(trials), "15/15 analyzed");
   assert.equal(review.EXECUTION_LABELS.GOOD_FAILURE, "Good failure");
   assert.equal(review.runReviewSummary([]), "No runs");
 });

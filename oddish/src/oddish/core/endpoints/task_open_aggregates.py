@@ -75,13 +75,13 @@ def _add_counts(target: Any, row: Mapping[str, Any]) -> None:
         target.last_run_at = candidate
 
 
-def _agent_key(row: Mapping[str, Any]) -> tuple[bool, str, str | None]:
+def _agent_key(row: Mapping[str, Any]) -> tuple[bool, str, str | None, str | None]:
     is_probe = bool(row["is_probe"])
     if is_probe:
-        return True, "probe", None
+        return True, "probe", None, None
     agent = str(row["agent"])
     model = settings.normalize_trial_model(agent, row.get("model"), strict=False)
-    return False, agent, model
+    return False, agent, model, row.get("reasoning_effort")
 
 
 def _finalize(target: Any) -> None:
@@ -113,7 +113,9 @@ def fold_task_open_groups(
         )
 
     current_total = current_terminal = 0
-    agents: dict[tuple[bool, str, str | None], TaskOpenAgentModelSummary] = {}
+    agents: dict[
+        tuple[bool, str, str | None, str | None], TaskOpenAgentModelSummary
+    ] = {}
     for row in rows:
         count = int(row["total"] or 0)
         totals.total_trials += count
@@ -138,7 +140,9 @@ def fold_task_open_groups(
         key = _agent_key(row)
         group = agents.setdefault(
             key,
-            TaskOpenAgentModelSummary(agent=key[1], model=key[2], is_probe=key[0]),
+            TaskOpenAgentModelSummary(
+                agent=key[1], model=key[2], reasoning_effort=key[3], is_probe=key[0]
+            ),
         )
         provider = row.get("provider")
         if provider and provider not in group.providers:

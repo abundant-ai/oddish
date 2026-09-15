@@ -586,26 +586,6 @@ def _first_live_task_id_for_experiment():
     )
 
 
-def _latest_live_task_id_for_experiment():
-    """Correlated subquery: newest live task id linked to the experiment row."""
-    return (
-        select(TaskModel.id)
-        .select_from(
-            task_experiments.join(
-                TaskModel,  # type: ignore[arg-type]
-                TaskModel.id == task_experiments.c.task_id,
-            )
-        )
-        .where(task_experiments.c.experiment_id == ExperimentModel.id)
-        .where(task_experiments.c.deleted_at.is_(None))
-        .where(TaskModel.deleted_at.is_(None))
-        .order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
-        .limit(1)
-        .correlate(ExperimentModel)
-        .scalar_subquery()
-    )
-
-
 def _normalize_github_handle(value: str | None) -> str | None:
     normalized = (value or "").strip().lstrip("@")
     return normalized or None

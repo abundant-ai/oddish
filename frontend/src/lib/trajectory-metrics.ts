@@ -128,14 +128,6 @@ export function fmtDurationMs(ms: number): string {
   return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
 }
 
-/** Token volume for a step (prompt + completion). Null when no token data. */
-export function stepTokens(step: TrajectoryStep): number | null {
-  const m = step.metrics;
-  if (!m) return null;
-  if (m.prompt_tokens == null && m.completion_tokens == null) return null;
-  return (m.prompt_tokens ?? 0) + (m.completion_tokens ?? 0);
-}
-
 const PHASE_SLOTS = 8;
 
 /**

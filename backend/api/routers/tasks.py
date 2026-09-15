@@ -368,8 +368,11 @@ async def create_task_sweep(
                 now=utcnow(),
             )
             if replay_json is not None:
-                if await replay_has_retryable_failed_trials(
-                    session, replay_json, org_id=auth.org_id
+                if (
+                    not submission.add_trials
+                    and await replay_has_retryable_failed_trials(
+                        session, replay_json, org_id=auth.org_id
+                    )
                 ):
                     # The stable CLI key normally identifies a transport replay.
                     # Once its current retry-chain leaf has failed, the same

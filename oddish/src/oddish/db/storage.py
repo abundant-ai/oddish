@@ -245,10 +245,6 @@ def _parse_task_archive(
     return members, texts
 
 
-def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, object]]:
-    return _parse_task_archive(archive_bytes)[0]
-
-
 def _merge_inline_contents(
     files: list[dict[str, object]], texts: dict[str, str]
 ) -> list[dict[str, object]]:

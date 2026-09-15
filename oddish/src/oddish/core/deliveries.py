@@ -21,7 +21,7 @@ from oddish.core.delivery_progress import (
     delivery_progress_history,
     record_delivery_progress,
 )
-from oddish.core.task_findings import pre_trial_items, task_defect_items
+from oddish.core.task_findings import task_defect_items
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -1321,6 +1321,33 @@ async def get_delivery_board_core(
     return board
 
 
+async def get_delivery_task_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    task_id: str,
+) -> DeliveryTaskBoardRow:
+    """Read one member's full evidence without computing its siblings or history."""
+    delivery = await _get_delivery(session, delivery_id, org_id)
+    if delivery.status == "finalized":
+        snapshot = await session.scalar(
+            select(DeliverySnapshotModel)
+            .where(DeliverySnapshotModel.delivery_id == delivery.id)
+            .order_by(DeliverySnapshotModel.created_at.desc())
+            .limit(1)
+        )
+        if snapshot is None:
+            raise HTTPException(409, "Finalized delivery snapshot is missing")
+        board = DeliveryBoardResponse.model_validate(snapshot.snapshot["board"])
+    else:
+        board = await _compute_board(session, delivery, task_ids=[task_id])
+    row = next((row for row in board.tasks if row.task_id == task_id), None)
+    if row is None:
+        raise HTTPException(404, "Task is not in this delivery")
+    return row
+
+
 # =============================================================================
 # Finalize
 # =============================================================================
@@ -1553,9 +1580,6 @@ async def get_task_qa_history_core(
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
-                pre_trial_should_fix=sum(
-                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
-                ),
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),

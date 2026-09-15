@@ -35,21 +35,15 @@ function getPassAtOneValue(trials: Trial[]): number | null {
 
 function calculateRows(
   tasks: Task[],
-  agentSummaries: AgentSummary[],
+  agentSummaries: AgentSummary[]
 ): LeaderboardRow[] {
-  const modelScopedAgents = new Set(
-    agentSummaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
-  );
   const rows: LeaderboardRow[] = [];
 
   for (const summary of agentSummaries) {
     const taskValues: number[] = [];
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
-        (trial) =>
-          getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
+        (trial) => getExperimentAgentKey(trial) === summary.key
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -83,11 +77,11 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
     () => calculateRows(tasks, agentSummaries),
-    [tasks, agentSummaries],
+    [tasks, agentSummaries]
   );
   const visibleRows = useMemo(
     () => rows.filter((row) => !hiddenAgents.has(row.key)),
-    [rows, hiddenAgents],
+    [rows, hiddenAgents]
   );
   const colorByAgent = useMemo(() => {
     const colors = new Map<string, string>();
@@ -115,7 +109,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
         </span>
       </div>
 
-      <div className="grid grid-cols-[1fr_60px] border-b border-[color:var(--paper-line-2)] pb-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+      <div className="grid grid-cols-[1fr_60px] border-b border-[color:var(--paper-line-2)] pb-1.5 font-mono text-[9.5px] font-semibold tracking-[0.12em] text-[color:var(--paper-ink-3)] uppercase">
         <span>Agent</span>
         <span className="text-right">Score</span>
       </div>
@@ -130,7 +124,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
           return (
             <div
               key={row.key}
-              className={`grid grid-cols-[1fr_60px] items-center pb-1.5 pt-2 transition-opacity ${
+              className={`grid grid-cols-[1fr_60px] items-center pt-2 pb-1.5 transition-opacity ${
                 isLast
                   ? ""
                   : "border-b border-dashed border-[color:var(--paper-line-2)]"

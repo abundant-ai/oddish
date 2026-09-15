@@ -305,44 +305,136 @@ test.describe("real components with local fixture API", () => {
     ).toHaveCount(0);
   });
 
-  test("review coverage separates unusable evaluations and runs from other experiments", async ({
+  test("analysis completion includes runs with infrastructure errors without mixing experiment scope", async ({
     page,
+    context,
   }) => {
     const original = tasks[0].trials![0];
+    const foreign = {
+      ...original,
+      id: "foreign",
+      experiment_id: "other-experiment",
+      analysis: { classification: "HARNESS_ERROR" },
+    };
     await page.route("**/api/tasks/task-a/trials?**", (route) =>
-      route.fulfill({
-        json: [
-          original,
-          {
-            ...original,
-            id: "foreign",
-            experiment_id: "other-experiment",
-            analysis: { classification: "HARNESS_ERROR" },
-          },
-        ],
-      })
+      route.fulfill({ json: [original, foreign] })
+    );
+    await page.route("**/api/trials/foreign", (route) =>
+      route.fulfill({ json: foreign })
     );
     await page.goto("/experiments/review-demo?task=task-a");
     await expect(
-      page.getByText("This experiment: 1/1 evaluated · v7", { exact: true })
+      page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
     ).toBeVisible();
+    await expect(page.getByText("1/1 analyzed", { exact: true })).toBeVisible();
+    const otherExperiments = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Other experiments", exact: true }),
+    });
     await expect(
-      page.getByText("0/1 evaluated · 1 couldn’t be evaluated", { exact: true })
-    ).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "Experiment other-ex" })
-    ).toHaveAttribute("href", "/experiments/other-experiment");
+      otherExperiments.getByText("Other experiment · other-ex", { exact: true })
+    ).toHaveAttribute("title", "other-experiment");
+    await expect(otherExperiments.getByRole("link")).toHaveCount(0);
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
     await expect(
-      page.getByText("1 run couldn’t be evaluated", { exact: true })
+      page.getByText("1 harness error", { exact: true })
     ).toHaveCount(0);
     await expect(
       page.getByText(
         /Missing access:|Inspects task instructions|fair agent failure does not/
       )
     ).toHaveCount(0);
+    await otherExperiments.getByRole("button", { name: "View trial" }).click();
+    await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
+    await expect(page).toHaveURL(/trial=foreign/);
+    expect(context.pages()).toHaveLength(1);
+  });
+
+  test("verifier timeout retains completed trajectory analysis and its evidence", async ({
+    page,
+  }) => {
+    const original = tasks[0].trials![0];
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            ...original,
+            status: "failed",
+            reward: null,
+            analysis_status: "success",
+            analysis: {
+              classification: "HARNESS_ERROR",
+              subtype: "misgrade",
+              root_cause:
+                "The verifier timed out after 5400 seconds without producing a grade.",
+              evidence:
+                "The partial trajectory records the agent building and testing through step 1200.",
+            },
+          },
+        ],
+      })
+    );
+    await page.goto("/experiments/review-demo?task=task-a");
+    await expect(
+      page.getByText("This experiment: 1/1 analyzed · v7", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText("1 harness error", { exact: true })
+    ).toHaveCount(1);
+    await page.getByText("GRADING ERROR", { exact: true }).click();
+    await expect(
+      page.getByText(
+        "The verifier timed out after 5400 seconds without producing a grade.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "The partial trajectory records the agent building and testing through step 1200.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /couldn’t be evaluated|COULD NOT EVALUATE RUN|ANALYSIS FAILED|^misgrade$/
+      )
+    ).toHaveCount(0);
+  });
+
+  test("analysis failure stays incomplete even when a previous classification exists", async ({
+    page,
+  }) => {
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({
+        json: [
+          {
+            ...tasks[0].trials![0],
+            analysis_status: "failed",
+            analysis_error:
+              "Trajectory analysis worker stopped before saving its report.",
+          },
+        ],
+      })
+    );
+    await page.goto("/experiments/review-demo?task=task-a");
+    await expect(
+      page.getByText("This experiment: 0/1 analyzed · 1 analysis failed · v7", {
+        exact: true,
+      })
+    ).toBeVisible();
+    await expect(
+      page.getByText("ANALYSIS FAILED", { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Trajectory analysis worker stopped before saving its report.",
+        { exact: true }
+      )
+    ).toBeVisible();
+    await expect(page.getByText("1 good failure", { exact: true })).toHaveCount(
+      0
+    );
   });
 
   for (const sourceStatus of [null, "queued", "running", "failed", "success"]) {
@@ -405,14 +497,14 @@ test.describe("real components with local fixture API", () => {
         ).toBeVisible();
         if (origin === "another experiment")
           await expect(
-            page.getByRole("link", { name: "Experiment another-", exact: true })
+            page.getByText("Other experiment · another-", { exact: true })
           ).toBeVisible();
       });
     }
   }
 
   for (const includeMustFix of [false, true]) {
-    test(`historical findings preserve severity in the header, must-fix ${includeMustFix}`, async ({
+    test(`converted findings count as required fixes, additional must-fix ${includeMustFix}`, async ({
       page,
     }) => {
       const findings = [
@@ -424,9 +516,9 @@ test.describe("real components with local fixture API", () => {
         },
         {
           ...records[0].finding!,
-          id: "should-fix",
-          tier: "should_fix",
-          title: "Should-fix historical finding",
+          id: "converted-fix",
+          tier: "must_fix",
+          title: "Converted historical finding",
         },
         {
           ...records[0].finding!,
@@ -458,16 +550,17 @@ test.describe("real components with local fixture API", () => {
         .getByRole("heading", { name: "Findings", exact: true })
         .locator("..");
       await expect(
-        checks.getByText(includeMustFix ? "1 Must fix" : "3 findings", {
+        checks.getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
           exact: true,
         })
       ).toBeVisible();
       await expect(
         page.getByText("RECORDED OPTIONAL", { exact: true })
       ).toHaveCount(2);
-      await expect(
-        page.getByText("RECORDED SHOULD FIX", { exact: true })
-      ).toBeVisible();
+      await expect(page.getByText("Must fix", { exact: true })).toHaveCount(
+        includeMustFix ? 2 : 1
+      );
+      await expect(page.getByText(/RECORDED SHOULD FIX/)).toHaveCount(0);
       await expect(
         checks.getByText("No required fixes", { exact: true })
       ).toHaveCount(0);
@@ -475,7 +568,7 @@ test.describe("real components with local fixture API", () => {
   }
 
   for (const count of [1, 2]) {
-    test(`invalid-success review count uses the correct plural for ${count}`, async ({
+    test(`bad-success review count uses the correct plural for ${count}`, async ({
       page,
     }) => {
       const original = tasks[0].trials![0];
@@ -490,10 +583,9 @@ test.describe("real components with local fixture API", () => {
       );
       await page.goto("/tasks/task-a?version=7&drawer=task&taskPane=overview");
       await expect(
-        page.getByText(
-          count === 1 ? "1 invalid success" : "2 invalid successes",
-          { exact: true }
-        )
+        page.getByText(count === 1 ? "1 bad success" : "2 bad successes", {
+          exact: true,
+        })
       ).toBeVisible();
     });
   }
@@ -507,7 +599,7 @@ test.describe("real components with local fixture API", () => {
       if (request.url().includes("/api/") && request.method() !== "GET")
         writes.push(request.url());
     });
-    await page.goto("/deliveries/review-demo");
+    await page.goto("/deliveries/review-demo?filter=outstanding&task=task-a");
     const blocker = page.getByRole("link", {
       name: "The verifier accepts an empty answer.",
       exact: true,
@@ -1128,7 +1220,7 @@ test("a first run-review finding is counted without detailed findings in open", 
 });
 
 for (const address of ["retained-fix", "historical-audit"]) {
-  test(`finding link ${address} opens the retained required fix`, async ({
+  test(`finding link ${address} opens and highlights the retained required fix`, async ({
     page,
   }) => {
     test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
@@ -1161,7 +1253,73 @@ for (const address of ["retained-fix", "historical-audit"]) {
       page.locator('details[data-finding="retained-fix"]')
     ).toHaveAttribute("open", "");
     await expect(
+      page.locator('details[data-finding="retained-fix"]')
+    ).toHaveClass(/ring-amber-500\/40/);
+    await expect(
       page.getByText("Required fix evidence", { exact: true })
     ).toBeVisible();
   });
 }
+
+for (const origin of ["this experiment", "another experiment"]) {
+  test(`finding trial attribution opens ${origin} in the current drawer`, async ({
+    page,
+    context,
+  }) => {
+    test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+    const original = tasks[0].trials![0];
+    const trial = {
+      ...original,
+      id: origin === "this experiment" ? original.id : "external-source-trial",
+      name: "attributed-trial",
+      experiment_id:
+        origin === "this experiment" ? "review-demo" : "another-experiment",
+      analysis: {
+        ...original.analysis,
+        root_cause: "Attribution drawer evidence",
+        action_items: [
+          {
+            ...records[0].finding!,
+            id: "attributed-finding",
+            tier: "must_fix",
+          },
+        ],
+      },
+    };
+    await page.route("**/api/tasks/task-a/trials?**", (route) =>
+      route.fulfill({ json: [trial] })
+    );
+    await page.route(`**/api/trials/${trial.id}`, (route) =>
+      route.fulfill({ json: trial })
+    );
+    await page.goto("/experiments/review-demo?task=task-a&taskPane=overview");
+    const finding = page.locator('details[data-finding="attributed-finding"]');
+    await expect(finding).toBeVisible();
+    await finding.locator("summary").click();
+    await finding
+      .locator('button[title^="Open trial attributed-trial"]')
+      .click();
+    await expect(page).toHaveURL(new RegExp(`trial=${trial.id}`));
+    await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
+    expect(context.pages()).toHaveLength(1);
+  });
+}
+
+test("finding source opens the file and line inside the experiment pane", async ({
+  page,
+  context,
+}) => {
+  test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
+  await page.goto("/experiments/review-demo?task=task-a&taskPane=overview");
+  const finding = page.locator('details[data-finding="empty-answer"]');
+  await expect(finding).toBeVisible();
+  await finding.locator("summary").click();
+  await finding
+    .getByRole("link", { name: "Open tests/test.sh:7", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/experiments\/review-demo\?/);
+  await expect(page).toHaveURL(/taskFile=tests%2Ftest.sh/);
+  await expect(page).toHaveURL(/taskLines=L?7/);
+  await expect(page.getByText("exit 0", { exact: true })).toBeVisible();
+  expect(context.pages()).toHaveLength(1);
+});

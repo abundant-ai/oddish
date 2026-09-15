@@ -2122,6 +2122,27 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  onOpenSource={(item) => {
+                    if (!item.file) return;
+                    const node =
+                      findNodeByPath(fileTree, item.file) ??
+                      findNodeBySuffix(fileTree, item.file);
+                    const path = node?.path ?? item.file;
+                    selectFilePath(path);
+                    onSelectLinesChange?.(
+                      item.line_start
+                        ? {
+                            start: item.line_start,
+                            end: item.line_end ?? item.line_start,
+                          }
+                        : null
+                    );
+                    setExpandedDirs(
+                      (previous) =>
+                        new Set([...previous, ...getAncestorPaths(path)])
+                    );
+                    onActivePaneChange?.("file");
+                  }}
                   executionReviewAction={
                     showAnalysis &&
                     task && (

@@ -9,7 +9,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Query, Response, statu
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from typing import Annotated, cast
+from typing import Annotated
 import uvicorn
 from rich.console import Console
 
@@ -131,15 +131,6 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 _CONCURRENCY_OVERRIDES: dict[str, int] = {}
-
-
-def get_queue_concurrency(queue_key: str) -> int:
-    """Get concurrency limit for a queue key (with runtime overrides)."""
-    overrides = _get_concurrency_overrides()
-    normalized = settings.normalize_queue_key(queue_key)
-    if normalized in overrides:
-        return overrides[normalized]
-    return cast(int, settings.get_model_concurrency(normalized))
 
 
 def _get_concurrency_overrides() -> dict[str, int]:

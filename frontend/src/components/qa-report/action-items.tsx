@@ -21,8 +21,10 @@ function ActionItemDetail({
   onFeedback,
   renderItemFooter,
   findingLink,
+  onOpenSource,
 }: {
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
@@ -53,7 +55,22 @@ function ActionItemDetail({
       {where ? (
         <p className="text-muted-foreground font-mono text-[10.5px] break-all">
           {findingLink ? (
-            <a className="underline" href={findingLink(item, true)}>
+            <a
+              className="underline"
+              href={findingLink(item, true)}
+              onClick={(event) => {
+                if (
+                  !onOpenSource ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                onOpenSource(item);
+              }}
+            >
               Open {where}
             </a>
           ) : (
@@ -108,9 +125,11 @@ export function FindingList({
   renderItemFooter,
   selectedFinding,
   findingLink,
+  onOpenSource,
 }: {
   selectedFinding?: string | null;
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
   className?: string;
@@ -134,14 +153,14 @@ export function FindingList({
     matches[0]?.scrollIntoView({ block: "center" });
   }, [selectedFinding, items]);
   const ordered = TIER_ORDER.flatMap((tier) =>
-    items.filter((item) => (item.tier ?? "optional") === tier)
+    items.filter((item) => (item.tier ?? item.severity ?? "optional") === tier)
   );
   if (!ordered.length) return null;
 
   return (
     <div ref={root} className={cn("flex flex-col gap-2", className)}>
       {ordered.map((item, index) => {
-        const tier = item.tier ?? "optional";
+        const tier = item.tier ?? item.severity ?? "optional";
         const key = item.id ?? `${tier}-${item.title ?? index}`;
         return (
           <details
@@ -150,7 +169,10 @@ export function FindingList({
             data-finding-link={item.links_to}
             className={cn(
               "group border-border bg-background/40 rounded-lg border",
-              item.id === selectedFinding && "ring-1 ring-amber-500/40"
+              selectedFinding &&
+                (item.id === selectedFinding ||
+                  item.links_to === selectedFinding) &&
+                "ring-1 ring-amber-500/40"
             )}
           >
             <summary className="hover:bg-foreground/5 flex cursor-pointer list-none items-start gap-3 px-4 py-3 select-none">
@@ -176,6 +198,7 @@ export function FindingList({
               <ActionItemDetail
                 item={item}
                 findingLink={findingLink}
+                onOpenSource={onOpenSource}
                 itemKey={key}
                 onFeedback={onFeedback}
                 renderItemFooter={renderItemFooter}
