@@ -120,6 +120,7 @@ type DrawerState = {
   trial: Trial | null;
   trialIndex: number | null;
   orderedTrials: Trial[];
+  groupEfforts: boolean;
   trialGroups: Array<{
     agent: string;
     model: string | null;
@@ -1023,6 +1024,7 @@ export function ExperimentDetailView({
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
+  const groupEfforts = searchParams.get("groupEfforts") === "1";
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
   const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
@@ -1189,11 +1191,14 @@ export function ExperimentDetailView({
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
   const agentSummaries = useMemo(
-    () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+    () =>
+      buildExperimentAgentSummaries(deferredTasksForDerivedData, groupEfforts),
+    [deferredTasksForDerivedData, groupEfforts]
   );
   const displayAgentSummaries =
-    agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
+    agentSummaries.length > 0 || groupEfforts
+      ? agentSummaries
+      : cachedAgentSummaries;
 
   useEffect(() => {
     if (!agentSummaryStorageKey) {
@@ -1217,7 +1222,8 @@ export function ExperimentDetailView({
   }, [agentSummaryStorageKey]);
 
   useEffect(() => {
-    if (!agentSummaryStorageKey || agentSummaries.length === 0) return;
+    if (groupEfforts || !agentSummaryStorageKey || agentSummaries.length === 0)
+      return;
     setCachedAgentSummaries(agentSummaries);
     try {
       window.sessionStorage.setItem(
@@ -1227,35 +1233,38 @@ export function ExperimentDetailView({
     } catch {
       // Ignore storage failures; the live data still drives the table.
     }
-  }, [agentSummaryStorageKey, agentSummaries]);
+  }, [agentSummaryStorageKey, agentSummaries, groupEfforts]);
 
-  const buildTrialGroups = useCallback((task: Task) => {
-    const trialGroups: Array<{
-      agent: string;
-      model: string | null;
-      trials: Trial[];
-    }> = [];
-    const trialsByAgent = new Map<string, Trial[]>();
-    for (const trial of task.trials ?? []) {
-      const key = getExperimentAgentKey(trial);
-      const existing = trialsByAgent.get(key) ?? [];
-      existing.push(trial);
-      trialsByAgent.set(key, existing);
-    }
-    for (const [key, trials] of trialsByAgent) {
-      const model = trials.find((t) => t.model)?.model ?? null;
-      trialGroups.push({
-        agent: key,
-        model,
-        trials,
-      });
-    }
-    const orderedTrials: Trial[] = [];
-    for (const group of trialGroups) {
-      orderedTrials.push(...group.trials);
-    }
-    return { trialGroups, orderedTrials };
-  }, []);
+  const buildTrialGroups = useCallback(
+    (task: Task) => {
+      const trialGroups: Array<{
+        agent: string;
+        model: string | null;
+        trials: Trial[];
+      }> = [];
+      const trialsByAgent = new Map<string, Trial[]>();
+      for (const trial of task.trials ?? []) {
+        const key = getExperimentAgentKey(trial, groupEfforts);
+        const existing = trialsByAgent.get(key) ?? [];
+        existing.push(trial);
+        trialsByAgent.set(key, existing);
+      }
+      for (const [key, trials] of trialsByAgent) {
+        const model = trials.find((t) => t.model)?.model ?? null;
+        trialGroups.push({
+          agent: key,
+          model,
+          trials,
+        });
+      }
+      const orderedTrials: Trial[] = [];
+      for (const group of trialGroups) {
+        orderedTrials.push(...group.trials);
+      }
+      return { trialGroups, orderedTrials };
+    },
+    [groupEfforts]
+  );
 
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
@@ -1345,6 +1354,7 @@ export function ExperimentDetailView({
             trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
             orderedTrials,
             trialGroups,
+            groupEfforts,
           });
           return;
         }
@@ -1374,8 +1384,9 @@ export function ExperimentDetailView({
       trialIndex: null,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
-  }, [tasksForExperiment, searchParams, buildTrialGroups]);
+  }, [tasksForExperiment, searchParams, buildTrialGroups, groupEfforts]);
 
   // Re-sync the open drawer with freshly-loaded trial data. On direct URL
   // loads the drawer opens as soon as the lightweight task shells arrive,
@@ -1456,7 +1467,8 @@ export function ExperimentDetailView({
       liveTask === drawerState.task &&
       nextTask.id === drawerState.task.id &&
       liveTrialCount === snapshotTrialCount &&
-      !orderedChanged
+      !orderedChanged &&
+      drawerState.groupEfforts === groupEfforts
     ) {
       return;
     }
@@ -1486,11 +1498,13 @@ export function ExperimentDetailView({
       trialIndex: resolvedTrialIndex,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
   }, [
     tasksForExperiment,
     drawerState,
     buildTrialGroups,
+    groupEfforts,
     reviewFilter,
     setReviewFilter,
   ]);
@@ -1552,6 +1566,7 @@ export function ExperimentDetailView({
         trialIndex: index >= 0 ? index : null,
         orderedTrials,
         trialGroups,
+        groupEfforts,
       });
       const next = new URLSearchParams(window.location.search);
       next.set("task", host.id);
@@ -1561,7 +1576,13 @@ export function ExperimentDetailView({
       window.history.replaceState(null, "", urlWithSearch(next.toString()));
       clearPendingDeepLink();
     },
-    [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
+    [
+      drawerState,
+      tasksForExperiment,
+      buildTrialGroups,
+      clearPendingDeepLink,
+      groupEfforts,
+    ]
   );
 
   // The trial page can satisfy a pending URL before the focused read returns.
@@ -1635,6 +1656,7 @@ export function ExperimentDetailView({
       trialIndex: null,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
     clearPendingDeepLink();
   }, [
@@ -1645,6 +1667,7 @@ export function ExperimentDetailView({
     tasksForExperiment,
     openDeepLinkTrial,
     buildTrialGroups,
+    groupEfforts,
     cancelPendingDeepLink,
     clearPendingDeepLink,
   ]);
@@ -1782,10 +1805,11 @@ export function ExperimentDetailView({
         trialIndex: trialIndex >= 0 ? trialIndex : null,
         orderedTrials,
         trialGroups,
+        groupEfforts,
       });
       return true;
     },
-    [drawerState, buildTrialGroups, cancelPendingDeepLink]
+    [drawerState, buildTrialGroups, cancelPendingDeepLink, groupEfforts]
   );
 
   return (
@@ -1905,6 +1929,7 @@ export function ExperimentDetailView({
               <ExperimentTrialsTable
                 tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
+                groupEfforts={groupEfforts}
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials && !pagesComplete}
                 pagesComplete={pagesComplete}
@@ -1933,6 +1958,7 @@ export function ExperimentDetailView({
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
                     trialGroups: context.trialGroups,
+                    groupEfforts,
                   });
                 }}
                 onProbeSelect={(trial, task) => {
@@ -1960,6 +1986,7 @@ export function ExperimentDetailView({
                     trialIndex: null,
                     orderedTrials,
                     trialGroups,
+                    groupEfforts,
                   });
                 }}
                 onTaskNavChange={({ orderedTasks, taskNavScope }) => {
@@ -2066,6 +2093,7 @@ export function ExperimentDetailView({
                   taskIndex: nextIndex,
                   orderedTrials,
                   trialGroups,
+                  groupEfforts,
                 });
               }}
               onNavigateToFirstTrial={
