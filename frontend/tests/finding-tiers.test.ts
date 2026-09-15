@@ -68,7 +68,7 @@ const { TaskOverviewPanel } = load(
 test("legacy findings render in priority order with their recorded badges", () => {
   const items: PreTrialFinding[] = [
     { id: "optional", title: "No priority" },
-    { id: "should", title: "Legacy suggestion", severity: "should_fix" },
+    { id: "converted", title: "Converted finding", severity: "must_fix" },
     {
       id: "required",
       title: "Legacy defect",
@@ -83,8 +83,9 @@ test("legacy findings render in priority order with their recorded badges", () =
     (match) => match[1].replace(/<[^>]*>/g, "")
   );
   assert.equal(rows.length, 3);
-  assert.match(rows[0], /Must fixLegacy defect$/);
-  assert.match(rows[1], /RECORDED SHOULD FIXLegacy suggestion$/);
+  assert.match(rows[0], /Must fixConverted finding$/);
+  assert.match(rows[1], /Must fixLegacy defect$/);
+  assert.doesNotMatch(html, /SHOULD FIX|should_fix/);
   assert.match(rows[2], /RECORDED OPTIONALNo priority$/);
 });
 

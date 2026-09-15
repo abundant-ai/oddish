@@ -293,7 +293,7 @@ async def test_compact_findings_preserve_identity_and_retained_evidence(session)
     }
     version.reported_findings = [
         {
-            "finding": {"id": "retained", "title": "Retained", "tier": "should_fix"},
+            "finding": {"id": "retained", "title": "Retained", "tier": "must_fix"},
             "source": "analysis",
             "reporting_trial_id": "old-trial",
         }
@@ -310,7 +310,7 @@ async def test_compact_findings_preserve_identity_and_retained_evidence(session)
                     "title": "Numeric ID",
                     "file": "a.py",
                     "line_start": 3,
-                    "severity": "should_fix",
+                    "severity": "must_fix",
                     "description": "Original body",
                 },
                 {"title": "No ID", "file": "b.py", "line_start": 1, "tier": "must_fix"},

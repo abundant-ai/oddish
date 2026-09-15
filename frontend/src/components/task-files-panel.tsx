@@ -1757,6 +1757,41 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  onOpenSource={(item) => {
+                    if (!item.file) return;
+                    // Directory pages are the only listing; a finding's file
+                    // may sit in a page that has not loaded yet, so fall back
+                    // to its task-relative path under the section root and
+                    // let the ancestor pages load like a deep link.
+                    const listedNodes = Object.values(
+                      directoryListings
+                    ).flatMap((listing) => listing.nodes);
+                    const path =
+                      findNodeBySuffix(listedNodes, item.file)?.path ??
+                      (taskSectionRootPath &&
+                      !item.file.startsWith(`${taskSectionRootPath}/`)
+                        ? `${taskSectionRootPath}/${item.file}`
+                        : item.file);
+                    selectFilePath(path);
+                    onSelectLinesChange?.(
+                      item.line_start
+                        ? {
+                            start: item.line_start,
+                            end: item.line_end ?? item.line_start,
+                          }
+                        : null
+                    );
+                    const ancestorPaths = getAncestorPaths(path);
+                    setExpandedDirs(
+                      (previous) => new Set([...previous, ...ancestorPaths])
+                    );
+                    for (const ancestorPath of ancestorPaths) {
+                      if (!directoryListings[ancestorPath]) {
+                        void loadDirectoryPage(ancestorPath);
+                      }
+                    }
+                    onActivePaneChange?.("file");
+                  }}
                   executionReviewAction={
                     showAnalysis &&
                     task && (

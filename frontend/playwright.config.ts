@@ -12,6 +12,7 @@ export default defineConfig({
     "delivery-refresh.spec.ts",
     "file-loading.spec.ts",
     "prepared-reads.spec.ts",
+    "reasoning-effort.spec.ts",
     "user-ui-layout.spec.ts",
   ],
   fullyParallel: true,

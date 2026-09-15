@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "prepared_reads_001"
-down_revision = "worker_resources_001"
+down_revision = "merge_finding_tiers_001"
 branch_labels = None
 depends_on = None
 

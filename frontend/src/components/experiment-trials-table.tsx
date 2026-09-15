@@ -77,6 +77,8 @@ import {
 } from "@/lib/format";
 import {
   getExperimentAgentKey,
+  experimentModelLabel,
+  compareReasoningEffort,
   isBaselineAgentName,
   PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
@@ -158,7 +160,7 @@ export type AgentSummary = ExperimentAgentSummary;
 type ExperimentTrialsTableProps = {
   tasks: Task[];
   agentSummaries: AgentSummary[];
-  modelScopedAgents: ReadonlySet<string>;
+
   isLoading: boolean;
   isLoadingTrials?: boolean;
   pagesComplete?: boolean;
@@ -225,7 +227,6 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
     agent: "Loading",
     model: null,
     queueKey: null,
-    isModelScoped: false,
   })
 );
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
@@ -553,14 +554,11 @@ function getAnalysisIndicator(trial: Trial): {
   return null;
 }
 
-function groupTrialsByAgent(
-  trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>
-) {
+function groupTrialsByAgent(trials: Trial[] | null | undefined) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
   for (const trial of trials) {
-    const key = getExperimentAgentKey(trial, modelScopedAgents);
+    const key = getExperimentAgentKey(trial);
     const existing = grouped.get(key) ?? [];
     existing.push(trial);
     grouped.set(key, existing);
@@ -598,7 +596,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
-  modelScopedAgents,
+
   isLoading,
   isLoadingTrials = false,
   pagesComplete = true,
@@ -914,7 +912,10 @@ export function ExperimentTrialsTable({
       if (a.agent !== b.agent) {
         return a.agent.localeCompare(b.agent);
       }
-      return a.label.localeCompare(b.label);
+      return (
+        (a.model ?? "").localeCompare(b.model ?? "") ||
+        compareReasoningEffort(a.reasoningEffort, b.reasoningEffort)
+      );
     });
   }, [agentSummaries]);
 
@@ -999,10 +1000,7 @@ export function ExperimentTrialsTable({
       rowFilterMode === "none" || rowFilterAgentKeys.length === 0
         ? searchFiltered
         : searchFiltered.filter((task) => {
-            const trialsByAgent = groupTrialsByAgent(
-              task.trials,
-              modelScopedAgents
-            );
+            const trialsByAgent = groupTrialsByAgent(task.trials);
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
@@ -1038,7 +1036,6 @@ export function ExperimentTrialsTable({
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
-    modelScopedAgents,
   ]);
 
   const getTaskContext = useMemo(() => {
@@ -1060,10 +1057,7 @@ export function ExperimentTrialsTable({
       const cached = contextCache.get(task);
       if (cached) return cached;
 
-      const groupedTrialsByAgent = groupTrialsByAgent(
-        task.trials,
-        modelScopedAgents
-      );
+      const groupedTrialsByAgent = groupTrialsByAgent(task.trials);
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
       const trialGroups: Array<{
@@ -1096,7 +1090,7 @@ export function ExperimentTrialsTable({
       contextCache.set(task, context);
       return context;
     };
-  }, [visibleAgents, modelScopedAgents]);
+  }, [visibleAgents]);
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
@@ -1888,7 +1882,7 @@ export function ExperimentTrialsTable({
           variant="ghost"
           className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
-          Agents
+          Columns
           <InlineCount>
             {visibleAgents.length}/{sortedAgentSummaries.length}
           </InlineCount>
@@ -1935,7 +1929,7 @@ export function ExperimentTrialsTable({
                     size={10}
                     className="shrink-0"
                   />
-                  {agent.model ?? "—"}
+                  {experimentModelLabel(agent.model, agent.reasoningEffort)}
                 </span>
               </Label>
             );
@@ -2401,7 +2395,7 @@ export function ExperimentTrialsTable({
                                   handleCopyAgentModel(agent.key, agent.model!)
                                 }
                                 className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
-                                aria-label={`Copy model id ${agent.model}`}
+                                aria-label={`Copy model id ${agent.model}; reasoning effort: ${agent.reasoningEffort ?? "unspecified"}`}
                               >
                                 {copiedAgentModelKey === agent.key ? (
                                   <Check className="h-3 w-3 shrink-0 text-emerald-500" />
@@ -2415,6 +2409,9 @@ export function ExperimentTrialsTable({
                                 )}
                                 <span className="min-w-0 break-all whitespace-normal">
                                   {agent.model}
+                                  <span className="whitespace-nowrap">
+                                    /{agent.reasoningEffort ?? "unspecified"}
+                                  </span>
                                 </span>
                               </Button>
                             ) : (

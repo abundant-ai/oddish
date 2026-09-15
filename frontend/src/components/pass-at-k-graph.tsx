@@ -50,14 +50,8 @@ const PASS_AT_K_CAP = 10;
 
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[],
+  agentSummaries: AgentSummary[]
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
-  const modelScopedAgents = new Set(
-    agentSummaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
-  );
-
   let maxN = 1;
   const taskAgentTrials: Record<string, Record<string, Trial[]>> = {};
 
@@ -66,7 +60,7 @@ function buildAgentStats(
 
     taskAgentTrials[task.id] = {};
     for (const trial of task.trials) {
-      const key = getExperimentAgentKey(trial, modelScopedAgents);
+      const key = getExperimentAgentKey(trial);
       if (!taskAgentTrials[task.id][key]) {
         taskAgentTrials[task.id][key] = [];
       }
@@ -107,7 +101,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents],
+    [agentSummaries, hiddenAgents]
   );
 
   useEffect(() => {
@@ -231,7 +225,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </div>
       );
     },
-    [agentColorByKey, agentLabelByKey, hoverAgent],
+    [agentColorByKey, agentLabelByKey, hoverAgent]
   );
 
   if (!hasMultipleAttempts) {
@@ -245,7 +239,8 @@ export const PassAtKGraph = memo(function PassAtKGraph({
           Pass/k
         </h3>
         <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-          n = {maxK} · {tasks.length} tasks · {agentSummaries.length} agents
+          n = {maxK} · {tasks.length} tasks · {agentSummaries.length}{" "}
+          configurations
         </span>
       </div>
 

@@ -63,3 +63,17 @@ test("does not prepend Bedrock to a canonical inference-profile model", () => {
   );
   expect(command).not.toContain("-m bedrock/");
 });
+
+test("copied command keeps reasoning effort separate from the model ID", () => {
+  const command = buildOddishRunCommand(
+    {
+      agent: "claude-code",
+      model: "global.anthropic.claude-opus-5",
+      reasoning_effort: "high",
+    } as Trial,
+    { id: "task-1", experiment_id: "experiment-1" } as Task
+  );
+  expect(command).toContain(
+    "-m global.anthropic.claude-opus-5 --agent-kwarg 'reasoning_effort=high'"
+  );
+});

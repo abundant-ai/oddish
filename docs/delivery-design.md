@@ -47,7 +47,7 @@ delivery stores `customer_id`; display names come from the join.
 | Pre-trial audit result | `task_versions.pre_trial` / `pre_trial_status` | task version |
 | Rollouts | `trials` (`kind='agent'`, non-probe, non-superseded — `EligibleTrialScope`) | `trials.task_version_id` |
 | Verdict | `tasks.verdict` (+ `verdict_status`), produced by the `qa`-kind trial | current version |
-| Defects (action items) | trial `analysis` / verdict action items (`tier` must_fix / should_fix / optional) | trial → version |
+| Defects (action items) | trial `analysis` / verdict action items (`tier` must_fix / optional) | trial → version |
 | QA disagreement votes | `feedback` table | verdict / action item |
 | Past QA runs | old `qa` / `audit`-kind trials + their stored artifacts | `trials.task_version_id` |
 
@@ -116,8 +116,8 @@ Built-in automated checks (each toggleable / parameterized in `check_config`):
    generation, which needs only one eligible trial).
 3. **verdict_ok** — verdict exists for the current version, status not FAILED,
    classification acceptable (no oracle/nop-style violations).
-4. **no_must_fix** — no open `must_fix` action items against the current
-   version. (`should_fix` shows as a warning, not a blocker, by default.)
+4. **no_must_fix** — every reported defect on the current version is resolved
+   or individually acknowledged.
 5. **no_open_disagreements** *(optional, off by default)* — no unresolved
    "disagree" feedback votes on the verdict/items.
 6. **delivery_qa_ok** *(only when `qa_config` is set)* — a QA run using the
@@ -288,9 +288,11 @@ defect caused every execution failure. Both prompts still require inspected
 source or recorded execution evidence and real file/line anchors. Suggestions,
 speculative concerns, and review execution errors are not task findings. The
 shared sandbox/submission/import validator rejects new lower-tier findings;
-historical parsers still accept all recorded tiers without rewriting them.
+historical `optional` findings remain readable. The severity migration converts
+the retired category to `must_fix` in stored reports and delivery snapshots,
+preserving finding IDs, evidence, and acknowledgments.
 
-Active deliveries collect every recorded `must_fix`, `should_fix`, and `optional`
+Active deliveries collect every recorded `must_fix` and `optional`
 defect on the current default version, including deleted or superseded execution
 rows. `no_must_fix` remains the API key, but its meaning is now “every defect
 resolved or individually acknowledged.” It cannot be disabled or waived as a

@@ -1,5 +1,7 @@
 "use client";
 
+import { experimentModelLabel } from "@/lib/experiment-agent-grouping";
+
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -49,10 +51,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import {
-  normalizedAgentModel,
-  useTaskOpenReader,
-} from "@/lib/use-task-open-reader";
+import { useTaskOpenReader } from "@/lib/use-task-open-reader";
 import { markOpenIntent } from "@/lib/open-intent";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
@@ -576,7 +575,7 @@ function AgentCard({
           </span>
           {summary.model ? (
             <Badge variant="outline" className="font-mono text-[11px]">
-              {summary.model}
+              {experimentModelLabel(summary.model, summary.reasoning_effort)}
             </Badge>
           ) : null}
           {agentLabel !== summary.agent ? (
@@ -680,7 +679,6 @@ export function TaskDetailClient({
     isBrowseSnapshot,
     isLoading,
     isSettingDefaultVersion,
-    modelScopedAgents,
     open,
     realAgentCount,
     realTrialCount,
@@ -750,14 +748,10 @@ export function TaskDetailClient({
         agent: card.key,
         model: card.summary.model,
         trials: trialsForVersion.filter(
-          (trial) =>
-            getExperimentAgentKey(
-              normalizedAgentModel(trial),
-              modelScopedAgents
-            ) === card.key
+          (trial) => getExperimentAgentKey(trial) === card.key
         ),
       })),
-    [agentCards, modelScopedAgents, trialsForVersion]
+    [agentCards, trialsForVersion]
   );
   const drawerOrderedTrials = useMemo(
     () => drawerTrialGroups.flatMap((group) => group.trials),

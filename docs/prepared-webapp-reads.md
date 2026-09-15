@@ -65,7 +65,7 @@ editable draft; applied filters belong to the URL.
 ## Deployment and alerts
 
 Apply core migrations `prepared_reads_001` and `file_index_001` before deploying
-the backend and frontend. Hosted workers run every five seconds in `API_REGION`,
+the backend and frontend; `prepared_reads_001` follows `merge_finding_tiers_001`. Hosted workers run every five seconds in `API_REGION`,
 the API's configured region. Each worker has `max_containers=1`; advisory locks
 also protect standalone deployments. The standalone worker pool starts and
 cancels both maintenance loops with its existing lifecycle.

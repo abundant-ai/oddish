@@ -1703,6 +1703,13 @@ startup policies and Claude retry-session preservation. Change
 regenerate both package lockfiles together. Validate the network fix on copied
 staging tasks before production promotion; changing the pin affects worker images.
 
+`OddishClaudeCode` records session IDs from successful command output because
+the pinned Harbor records them only on errors. Multi-step Claude tasks with
+`resume_trajectory=true` need that ID to continue after a successful step.
+Keep the missing/conflicting-session rejection and provider-error retry behavior;
+the same runner is inherited by probes. Cover successful continuation with
+`oddish/tests/test_claude_code_agent.py` when updating Harbor or this runner.
+
 ### Worker resource comparison
 
 The production workflow sets `ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS=20`;
@@ -2395,8 +2402,17 @@ protocol scope, operator metrics, tests, and staging rollout prerequisites.
 
 New source and execution findings use only `must_fix`; the shared
 `analysis_check_payload`/`check_analysis_result` contract enforces this at
-submission, verification, and import. `ActionTier` retains historical enum
-values for reading existing reports. Severity does not establish execution
+submission, verification, and import. `ActionTier` retains `optional` for historical reports. Apply core migration
+`merge_finding_tiers_001` before deployment: it converts retired severity fields
+to `must_fix` in audits, retained findings, analyses, and delivery snapshots.
+Database triggers normalize older-worker writes to the same columns, so retired
+severities cannot reappear. The migration commits each trigger before converting
+history in 500-row primary-key batches, releasing table locks before the scans.
+Lock waits are capped at five seconds; interrupted upgrades can be rerun. This
+updates the existing revision for databases that have not applied it; databases
+already at `merge_finding_tiers_001` need no further conversion.
+The API no longer returns `pre_trial_should_fix`;
+QA exports include converted findings in `must_fix_count`. Severity does not establish execution
 causation: unrelated findings leave `GOOD_FAILURE` unchanged.
 
 `oddish.core.task_findings` owns collection and retention. All recorded tiers
@@ -2413,7 +2429,8 @@ The `no_must_fix` check cannot be disabled or globally waived. Positive sign-off
 and exception requests require the reviewed `expected_version_id` and the actor
 from authentication. Delivery manual-check uniqueness includes version, and
 history exposes each retained version decision. New versions inherit neither
-findings nor decisions. Finalized delivery snapshots are never recomputed.
+findings nor decisions. Finalized delivery snapshots are never recomputed. The severity migration only
+renames the retired category inside them; it preserves decisions and evidence.
 Apply `task_defects_001` before deploying this code. See
 `docs/delivery-design.md` for compatibility and forward-only migration policy.
 
@@ -2466,3 +2483,61 @@ creation time and trial ID descending to resolve ties consistently.
 Delivery check responses include `failure_labels`, a list of concise unmet requirements derived from the configured check thresholds and the reviewed version. Passing, waived, and disabled checks contribute no row badges. The frontend uses these labels without parsing `detail`; older snapshots without the field use check-specific labels without invented counts. Delivery state keys and readiness rules are unchanged; the `qa_incomplete` grouping is displayed as "Checks needed", while task rows show the individual requirements even when grouped by state.
 
 The task `/open` selected-version rollup includes `must_fix_count` and `pre_trial_must_fix_count`, computed in its identity query from retained, pre-trial, and eligible completed run-review findings. It does not include finding arrays or evidence bodies. Counts use each stored finding's own ID; live findings linked to an existing stored finding do not add another count. The frontend must read these scalar fields rather than assume `/panel` fields exist on `/open`.
+
+### Reasoning effort in experiment comparisons
+
+`TrialModel.reasoning_effort` reads the explicit value from
+`harbor_config.agent_config.kwargs.reasoning_effort`, falling back to the older
+`agent_overrides.kwargs` shape. The hybrid SQL expression projects only that
+scalar into experiment results, pages, focus reads, and task summaries/previews;
+these bounded reads must not return full Harbor configuration. Explicit JSON
+null overrides the legacy value. Missing effort is unspecified, never inferred
+from today's agent defaults. This derived field requires no database migration.
+
+New submissions for reasoning-capable agent/model pairs explicitly default to
+`high` before sweep reconciliation and trial persistence. The resolver lives in
+`oddish.reasoning_effort.with_default_reasoning_effort`; sweep matching and queue
+insertion must use the same value. It copies AgentConfig when adding the default
+so the original request and its idempotency hash do not change. Explicit kwargs
+(including null) and known effort environment overrides win. Unsupported models,
+Gemini 2.5, baselines, and Cursor IDs with embedded effort keep their configuration.
+The worker receives the saved value. Reads/imports do not assign defaults to old
+runs, and retries retain their source configuration. Both launch forms preselect
+high for supported models and omit the ambiguous Agent default option there.
+
+The shared frontend column identity includes agent, model, and effort even when
+only one configuration has arrived. Table cells, navigation, column visibility,
+exports, and Pass/k share that identity. The model/effort label is display-only;
+model-copy and submission keep the actual model identifier. Effort suffixes
+inherit the model text's typography. Deterministic baselines and internal
+QA/probe groups retain their separate grouping rules.
+
+Sweep top-ups and failed-trial replacements match effort as well as agent/model.
+The experiment Run trials dialog submits `add_trials: true` to create the
+requested number of additional runs per task/configuration. It sends at most
+four task requests concurrently, with one Idempotency-Key per task and user
+submission. Failed requests retain their exact body/key for transport retries;
+the hosted route always replays a completed add-trials key, even if those trials
+subsequently failed. Existing declarative CLI top-ups retain their retry behavior.
+The authenticated sweep proxy forwards Idempotency-Key. Reads and public pages
+never launch runs; Run trials is available only after experiment results load.
+
+The effort selector offers the bundled runners' choices for Codex (including
+`max` on GPT-5), Gemini/Antigravity CLI, Cursor, Grok Build, mini-swe-agent,
+Aider, OpenHands, Copilot CLI, DSH, and TBH. Gemini 3 Flash exposes
+minimal/low/medium/high; Pro exposes low/high; Gemini 2.5 keeps effort unset.
+Cursor model IDs that already contain `effort=...` keep the separate control
+unset to avoid contradictory overrides. These are runner presets, not a live
+provider capability catalog; a provider still validates its selected model.
+
+Run effort UI regression tests with `pnpm exec playwright test -c
+playwright.effort.config.ts` from `frontend/`. They use the production components
+inside the isolated local test app and intercept submission requests. The
+Dashboard CI workflow runs this config in a separate step and stores its
+artifacts in `frontend/effort-test-results/`; the default dashboard config
+excludes the local-only effort spec. Effort cases wait for the client-rendered
+chart before interacting with server-rendered controls.
+
+Finding attribution in a task overview opens trials through the host drawer,
+including trials from other experiments. Source-file clicks select the file and
+line range in the current task pane; they preserve the experiment route.
