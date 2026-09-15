@@ -1569,7 +1569,6 @@ interface TaskQAHistoryVersion {
   pre_trial_finished_at?: string | null;
   pre_trial_error?: string | null;
   must_fix: number;
-  pre_trial_should_fix: number;
   rollout_count: number;
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];

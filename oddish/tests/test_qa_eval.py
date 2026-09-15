@@ -196,7 +196,7 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(
     session.version.pre_trial = {
         "items": [
             {"id": "audit-1", "tier": "must_fix"},
-            {"id": "audit-2", "tier": "should_fix"},
+            {"id": "audit-2", "tier": "must_fix"},
         ]
     }
     captured = {}
@@ -249,7 +249,7 @@ async def test_create_accepts_a_failed_source_without_a_trajectory(
         }
     ]
     assert captured["payload"]["pre_trial_item_ids"] == ["audit-1", "audit-2"]
-    assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1"]
+    assert captured["payload"]["pre_trial_must_fix_ids"] == ["audit-1", "audit-2"]
     assert captured["payload"]["baseline_evidence"] == []
     assert "source_trial_id" not in captured["payload"]
     assert admitted == [("org-1", "user-1", 1)]
