@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.trial.config import EnvironmentConfig
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 
 from oddish.config import BEDROCK_ENV_VARS, settings, to_anthropic_api_model_id
@@ -28,8 +28,11 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
+    _anthropic_hdo_credential_env,
     _build_routed_agent_config,
     _claude_code_forces_direct_api,
+    _gateway_env,
+    _is_claude_code_agent,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
@@ -40,6 +43,7 @@ from .outcome import (
 from .runner import (
     HookCallback,
     _check_local_storage_preflight,
+    _format_exception_message,
     _patch_task_toml,
 )
 
@@ -131,41 +135,64 @@ def _runtime_env_overrides(
 
 
 def _child_agent_config(
-    *,
-    agent: str,
-    model: str | None,
-    raw_harbor_config: dict[str, Any],
-    is_probe: bool,
-    extra_agent_env: dict[str, str] | None,
+    routed: AgentConfig, *, raw_harbor_config: dict[str, Any]
 ) -> dict[str, Any]:
     """Serialize the child's ``AgentConfig`` with in-process provider routing applied.
 
     The routing an Anthropic-compatible provider needs -- ``ANTHROPIC_BASE_URL``,
     its auth token, the model id its endpoint serves, and blanked ambient
-    platform credentials -- lives in ``agent_config.env``, so it is resolved here
-    by the same builder the in-process path uses rather than restated for the
-    child. Only what that builder shapes -- ``env`` and ``kwargs`` -- is
-    projected onto the submitted dict: the child resolves ``name`` and
-    ``import_path`` against its own Harbor, which has none of Oddish's wrapper
-    agent classes, and every other submitted field crosses unchanged.
+    platform credentials -- lives in ``agent_config.env``, which *routed* already
+    carries from the same builder the in-process path uses. Only ``env`` and
+    ``kwargs`` are projected onto the submitted dict: the child resolves ``name``
+    and ``import_path`` against its own Harbor, which has none of Oddish's
+    wrapper agent classes, and every other submitted field crosses unchanged.
 
     The shaped env stays the *base* layer of the child's merge, which keeps the
     in-process precedence intact -- a submitted agent env and the worker's
     runtime/extra env still win over these defaults.
     """
     payload = dict(raw_harbor_config.get("agent_config") or {})
-    routed = _build_routed_agent_config(
-        agent=agent,
-        model=model,
-        raw_harbor_config=raw_harbor_config,
-        is_probe=is_probe,
-        probe_oddish_env=extra_agent_env,
-    )
     if routed.env:
         payload["env"] = dict(routed.env)
     if routed.kwargs:
         payload["kwargs"] = dict(routed.kwargs)
     return payload
+
+
+def _child_model_id(routed: AgentConfig, *, model: str | None) -> str | None:
+    """The model id the child should run.
+
+    The routed builder resolves the spelling each transport needs: a LiteLLM
+    harness on an ``anthropic-hdo/`` model becomes ``anthropic/<api-id>``, the
+    only form LiteLLM parses, and Gemini flips between the ``gemini/`` and
+    ``google/`` prefixes with the harness. Taking the builder's own answer keeps
+    that decision in one place.
+
+    claude-code is excluded. Its Bedrock and direct-Anthropic ids are a separate
+    decision owned by the child's model normalization, so this returns the
+    submitted id and lets that own the field.
+    """
+    if _is_claude_code_agent(routed):
+        return model
+    return routed.model_name or model
+
+
+def _child_extra_agent_env(
+    *, model: str | None, extra_agent_env: dict[str, str] | None
+) -> dict[str, str]:
+    """The env layer the child merges last.
+
+    In process the HDO credential is re-applied after the probe/BYOK merge so it
+    wins outright. The child's last layer is this one, so the same credential
+    rides here; otherwise a probe or BYOK ``ANTHROPIC_API_KEY`` would overwrite
+    it and the trial would authenticate with the wrong key. A gateway-routed
+    analysis trial supplies its own Anthropic route, and neither path injects
+    the HDO credential over it.
+    """
+    env = dict(extra_agent_env or {})
+    if not _gateway_env(extra_agent_env):
+        env.update(_anthropic_hdo_credential_env(model))
+    return env
 
 
 def _build_payload(
@@ -192,19 +219,25 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
+    routed = _build_routed_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+        is_probe=is_probe,
+        probe_oddish_env=extra_agent_env,
+    )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
-        "model": _child_model_name(agent=agent, model=model, is_probe=is_probe),
+        "model": _child_model_id(
+            routed,
+            model=_child_model_name(agent=agent, model=model, is_probe=is_probe),
+        ),
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": _child_agent_config(
-            agent=agent,
-            model=model,
-            raw_harbor_config=raw_harbor_config,
-            is_probe=is_probe,
-            extra_agent_env=extra_agent_env,
+            routed, raw_harbor_config=raw_harbor_config
         ),
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
@@ -233,7 +266,9 @@ def _build_payload(
         ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
-        "extra_agent_env": extra_agent_env or {},
+        "extra_agent_env": _child_extra_agent_env(
+            model=model, extra_agent_env=extra_agent_env
+        ),
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,
             is_probe=is_probe,
@@ -412,18 +447,34 @@ async def run_ephemeral_harbor_trial(
         effective_task_path = patched_task
 
     outcome_path = unique_parent / "outcome.json"
-    payload = _build_payload(
-        task_path=effective_task_path,
-        jobs_dir=unique_parent,
-        outcome_path=outcome_path,
-        agent=agent,
-        model=model,
-        environment_config=environment_config,
-        raw_harbor_config=raw,
-        is_probe=is_probe,
-        extra_agent_env=extra_agent_env,
-        environment_build_timeout_multiplier=environment_build_timeout_multiplier,
-    )
+    try:
+        payload = _build_payload(
+            task_path=effective_task_path,
+            jobs_dir=unique_parent,
+            outcome_path=outcome_path,
+            agent=agent,
+            model=model,
+            environment_config=environment_config,
+            raw_harbor_config=raw,
+            is_probe=is_probe,
+            extra_agent_env=extra_agent_env,
+            environment_build_timeout_multiplier=environment_build_timeout_multiplier,
+        )
+    except Exception as exc:  # noqa: BLE001 - any build failure is a trial error
+        # Same contract as the in-process runner, which builds its Harbor
+        # configs inside its try for this reason: model canonicalization and
+        # AgentConfig validation can both fail, and an unroutable model has to
+        # settle as a terminal trial error rather than escape this coroutine as
+        # a worker-level execution failure.
+        return HarborOutcome(
+            reward=None,
+            error=f"Harbor job execution failed: {_format_exception_message(exc)}",
+            exit_code=-1,
+            duration_sec=0.0,
+            job_result_path=None,
+            job_dir=None,
+            exception_type=type(exc).__name__,
+        )
     start = time.time()
     tail: list[str] = []
     process: asyncio.subprocess.Process | None = None

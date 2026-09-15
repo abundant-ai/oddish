@@ -337,6 +337,107 @@ def test_ephemeral_non_claude_agent_keeps_its_submitted_import_path():
     assert "name" not in payload["agent_config"]
 
 
+def test_ephemeral_hdo_credential_outranks_a_conflicting_extra_agent_env(
+    tmp_path, monkeypatch
+):
+    """The HDO key is the last word, as it is in process.
+
+    In process the HDO credential is re-applied after probe/BYOK creds
+    (`agent_config.py`, `_build_agent_config`'s tail). The child's last layer is
+    `extra_agent_env`, so the same credential has to ride there or a probe or
+    BYOK `ANTHROPIC_API_KEY` silently authenticates the trial with the wrong key.
+    """
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", None)
+    monkeypatch.setenv("ANTHROPIC_HDO_API_KEY", "hdo-secret")
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    payload = _compat_payload(
+        "anthropic-hdo/claude-opus-4-5",
+        extra_agent_env={"ANTHROPIC_API_KEY": "byok-key", "ODDISH_API_KEY": "mint"},
+    )
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": payload["model"],
+            "environment_config": {},
+            "agent_config": payload["agent_config"],
+            "verifier": {},
+            "artifacts": [],
+            "runtime_env": payload["runtime_env"],
+            "extra_agent_env": payload["extra_agent_env"],
+        }
+    )
+
+    env = config.agents[0].env
+    assert env["ANTHROPIC_API_KEY"] == "hdo-secret"
+    assert env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # The unrelated probe credential still crosses untouched.
+    assert env["ODDISH_API_KEY"] == "mint"
+
+
+def test_ephemeral_hdo_credential_does_not_clobber_a_supplied_model(monkeypatch):
+    """Only the credential is re-applied last, not the model id.
+
+    In process the final HDO write happens after the wrapper has nulled
+    `agent_config.name`, so it sets the credential keys alone. Widening the last
+    layer to the model would trade one ordering asymmetry for another.
+    """
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", None)
+    monkeypatch.setenv("ANTHROPIC_HDO_API_KEY", "hdo-secret")
+    payload = _compat_payload(
+        "anthropic-hdo/claude-opus-4-5",
+        extra_agent_env={"ANTHROPIC_MODEL": "probe-pinned-model"},
+    )
+
+    assert payload["extra_agent_env"]["ANTHROPIC_MODEL"] == "probe-pinned-model"
+    assert payload["extra_agent_env"]["ANTHROPIC_API_KEY"] == "hdo-secret"
+
+
+def test_ephemeral_litellm_agent_gets_the_routed_hdo_model():
+    """A LiteLLM harness cannot parse the internal `anthropic-hdo/` prefix."""
+    payload = _compat_payload("anthropic-hdo/claude-opus-4-5", agent="mini-swe-agent")
+
+    assert payload["model"] == "anthropic/claude-opus-4-5"
+
+
+def test_ephemeral_claude_code_model_id_stays_as_submitted():
+    """claude-code's Bedrock/direct id is the child normalization's decision."""
+    payload = _compat_payload("anthropic-hdo/claude-opus-4-5")
+
+    assert payload["model"] == "anthropic-hdo/claude-opus-4-5"
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_unroutable_model_settles_as_a_trial_error(tmp_path):
+    """A builder failure is a terminal trial error, not an escaped exception.
+
+    The in-process runner builds its configs inside the try that turns failures
+    into a `HarborOutcome`; an unserved model must not escape this path as a
+    worker-level execution failure instead.
+    """
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+
+    outcome = await run_ephemeral_harbor_trial(
+        task_path=task_path,
+        agent="claude-code",
+        jobs_dir=tmp_path / "jobs",
+        model="geometric/glm-0.0-unserved",
+        environment_config=EnvironmentConfig(type=EnvironmentType.DOCKER),
+        harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+        skip_task_validation=True,
+    )
+
+    assert outcome.reward is None
+    assert outcome.exit_code == -1
+    assert outcome.exception_type == "ValueError"
+    assert "Geometric serves only" in (outcome.error or "")
+
+
 def test_child_merges_worker_env_over_shaped_compat_env(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()

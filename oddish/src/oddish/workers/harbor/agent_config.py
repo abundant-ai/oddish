@@ -411,6 +411,24 @@ def _resolve_anthropic_hdo_api_key() -> str:
     return (os.environ.get("ANTHROPIC_HDO_API_KEY") or "").strip()
 
 
+def _anthropic_hdo_credential_env(model_name: str | None) -> dict[str, str]:
+    """The HDO credentials that must outrank any probe/BYOK Anthropic key.
+
+    Returned as an overlay rather than written, because the two dispatch paths
+    apply the last word in different places. In process it is the final write
+    onto ``agent_config.env``; the ephemeral child merges its own layers, so the
+    same credentials have to ride the layer it merges last. Only credentials
+    belong here -- the model id is a routing decision, settled earlier.
+    """
+    if not is_anthropic_hdo_model(model_name):
+        return {}
+    return {
+        "ANTHROPIC_API_KEY": _resolve_anthropic_hdo_api_key(),
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+    }
+
+
 def _inject_anthropic_hdo_api_key(
     agent_config: AgentConfig, *, model_name: str | None
 ) -> None:
@@ -420,14 +438,12 @@ def _inject_anthropic_hdo_api_key(
     that original id as *model_name*). Always overwrites: an empty HDO key must
     not fall through to the platform Anthropic / Bedrock credentials.
     """
-    if not is_anthropic_hdo_model(model_name):
+    credentials = _anthropic_hdo_credential_env(model_name)
+    if not credentials:
         return
     bare_model = anthropic_hdo_bare_model_id(model_name or "")
     api_model = to_anthropic_api_model_id(bare_model) or bare_model
-    env = dict(agent_config.env or {})
-    env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    env = {**(agent_config.env or {}), **credentials}
     if _is_claude_code_agent(agent_config) and api_model:
         env["ANTHROPIC_MODEL"] = api_model
         for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
