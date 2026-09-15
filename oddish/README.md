@@ -38,6 +38,9 @@ oddish status <task_id> --watch
 oddish pull <task_id> --watch
 ```
 
+New submissions for supported reasoning models default to `high` effort.
+Use `--agent-kwarg reasoning_effort=low` (or another supported value) to override it.
+
 The CLI targets Oddish Cloud by default. All API-backed commands require
 `ODDISH_API_KEY`. For self-deployed instances, also set `ODDISH_API_URL`.
 
@@ -64,7 +67,7 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
-- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
 
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
@@ -92,6 +95,8 @@ reference. The main commands are:
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 - `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
+- `oddish version` — print the installed CLI version (`--check` compares with the latest PyPI release). No API key.
+- `oddish update` — upgrade a `uv pip install oddish` install from PyPI. No API key.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,
 `oddish link`, `oddish skill`, and the `oddish probe` helpers do not.

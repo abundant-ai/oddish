@@ -100,12 +100,3 @@ export function formatDurationSec(seconds: number): string {
   const rem = m - h * 60;
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
-
-export function trialDurationSec(trial: Trial): number | null {
-  if (!trial.started_at || !trial.finished_at) return null;
-  const start = new Date(trial.started_at).getTime();
-  const end = new Date(trial.finished_at).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
-    return null;
-  return (end - start) / 1000;
-}

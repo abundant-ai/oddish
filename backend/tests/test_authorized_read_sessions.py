@@ -182,9 +182,10 @@ async def test_revocation_and_scope_still_block_before_resource_read(api, monkey
 async def test_file_reads_release_connection_before_waiting_on_storage(
     api, monkeypatch, path, storage
 ):
-    async def source(session, **kwargs):
-        assert kwargs == {"task_id": "task-1", "org_id": api.org_id, "version": 7}
-        assert await session.scalar(select(1)) == 1
+    async def source(request, auth_context, **kwargs):
+        assert kwargs == {"task_id": "task-1", "version": 7}
+        async with auth.authorized_read_session(request, auth_context) as session:
+            assert await session.scalar(select(1)) == 1
         return TaskFileSource(
             7,
             "tasks/task-1/v7/",
@@ -205,7 +206,7 @@ async def test_file_reads_release_connection_before_waiting_on_storage(
         await release.wait()
         return {"content": "historical file", "cursor": "page-3"}
 
-    monkeypatch.setattr(tasks, "resolve_task_file_source", source)
+    monkeypatch.setattr(tasks, "resolve_authorized_task_file_source", source)
     monkeypatch.setattr(tasks, storage, read_storage)
     pending = asyncio.create_task(api.client.get(path))
     try:
@@ -328,4 +329,187 @@ async def test_versioned_trial_detail_cold_and_warm_query_counts(api, by_index):
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(ExperimentModel.id == task_id)
+            )
+
+
+@pytest.mark.parametrize(
+    "suffix,reader,result",
+    [
+        (
+            "files?recursive=0&prefix=agent&limit=100&cursor=next",
+            "list_trial_files_s3",
+            {"files": [], "cursor": "later"},
+        ),
+        (
+            "files/agent/log.txt",
+            "get_trial_file_content_s3",
+            (b"trial bytes", "text/plain"),
+        ),
+        ("logs", "read_trial_logs", {"logs": "trial log"}),
+        (
+            "logs/structured?verifier_only=true",
+            "read_trial_logs_structured",
+            {"logs": []},
+        ),
+        ("trajectory", "read_trial_trajectory", {"steps": []}),
+        ("result", "read_trial_result", {"reward": 1}),
+    ],
+)
+async def test_trial_artifact_reads_share_approval_and_release_before_io(
+    api, monkeypatch, suffix, reader, result
+):
+    from oddish.db import ExperimentModel, TaskModel, TrialModel, TrialStatus
+
+    task_id = f"files_{uuid.uuid4().hex[:8]}"
+    trial_id = task_id + "-0"
+    async with get_session() as session:
+        session.add(ExperimentModel(id=task_id, name=task_id, org_id=api.org_id))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                task_path="/tmp/task",
+                org_id=api.org_id,
+                user="test",
+            )
+        )
+        await session.flush()
+        session.add(
+            TrialModel(
+                id=trial_id,
+                name=trial_id,
+                task_id=task_id,
+                experiment_id=task_id,
+                org_id=api.org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="anthropic/test",
+                status=TrialStatus.SUCCESS,
+            )
+        )
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def storage(trial, *args, **kwargs):
+        assert trial.id == trial_id
+        assert api.counts.active == 0
+        if reader == "list_trial_files_s3":
+            assert kwargs["cursor"] == "next" and kwargs["limit"] == 100
+            assert kwargs["recursive"] is False
+        entered.set()
+        await release.wait()
+        return result
+
+    storage_mock = AsyncMock(side_effect=storage)
+    monkeypatch.setattr(trials, reader, storage_mock)
+    api.counts.checkouts = 0
+    pending = asyncio.create_task(api.client.get(f"/trials/{trial_id}/{suffix}"))
+    try:
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert api.counts.checkouts == 1
+            assert api.counts.active == 0
+        finally:
+            release.set()
+            response = await pending
+        assert response.status_code == 200, response.text
+        async with get_session() as session:
+            await session.execute(
+                OrganizationModel.__table__.update()
+                .where(OrganizationModel.id == api.org_id)
+                .values(execution_enabled=False)
+            )
+        storage_mock.reset_mock()
+        response = await api.client.get(f"/trials/{trial_id}/{suffix}")
+        assert response.status_code == 403
+        storage_mock.assert_not_awaited()
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.id == trial_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(ExperimentModel.id == task_id)
+            )
+
+
+async def test_task_definition_uses_one_query_and_checks_revocation_and_version(
+    api, monkeypatch
+):
+    from oddish.db import TaskModel, TaskVersionModel
+
+    task_id = f"definition_{uuid.uuid4().hex[:8]}"
+    async with get_session() as session:
+        task = TaskModel(
+            id=task_id,
+            name=task_id,
+            org_id=api.org_id,
+            user="tester",
+            task_path="source",
+        )
+        session.add(task)
+        await session.flush()
+        version = TaskVersionModel(
+            id=f"{task_id}-v7",
+            task_id=task_id,
+            version=7,
+            task_path="old",
+            content_hash="historical",
+            task_s3_key=f"tasks/{task_id}/v7-revisions/" + "a" * 32 + "/",
+        )
+        session.add(version)
+        await session.flush()
+        task.current_version_id = version.id
+    calls = []
+    statements = []
+
+    def query(_conn, _cursor, statement, *_):
+        statements.append(statement)
+
+    async def storage(**kwargs):
+        assert api.counts.active == 0
+        calls.append(kwargs)
+        return {"directories": {}, "source_hash": kwargs["source_hash"]}
+
+    monkeypatch.setattr(tasks, "list_task_files_s3", storage)
+    event.listen(engine.sync_engine, "before_cursor_execute", query)
+    try:
+        base = f"/tasks/{task_id}/files?directories=&recursive=0&inline=0&presign=0&previews=true"
+        response = await api.client.get(base + "&version=7")
+        assert response.status_code == 200, response.text
+        assert len(statements) == 1, statements
+        assert calls[-1]["source_hash"] == "historical"
+        assert calls[-1]["previews"] is True
+        assert calls[-1]["task_s3_prefix"].endswith("a" * 32 + "/")
+        assert (await api.client.get(base + "&version=8")).status_code == 404
+        assert len(calls) == 1
+        # A task moved outside the requesting organization becomes inaccessible.
+        async with get_session() as session:
+            task = await session.get(TaskModel, task_id)
+            task.org_id = "another-org"
+        assert (await api.client.get(base + "&version=7")).status_code == 404
+        assert len(calls) == 1
+        async with get_session() as session:
+            task = await session.get(TaskModel, task_id)
+            task.org_id = api.org_id
+            org = await session.get(OrganizationModel, api.org_id)
+            org.execution_enabled = False
+        assert (await api.client.get(base + "&version=7")).status_code == 403
+        assert len(calls) == 1
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", query)
+        async with get_session() as session:
+            task = await session.get(TaskModel, task_id)
+            task.current_version_id = None
+            await session.flush()
+            await session.execute(
+                TaskVersionModel.__table__.delete().where(
+                    TaskVersionModel.task_id == task_id
+                )
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
             )

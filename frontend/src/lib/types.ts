@@ -150,6 +150,7 @@ export interface Trial {
   provider: string;
   queue_key?: string;
   model: string | null;
+  reasoning_effort?: string | null;
   environment?: string | null;
   status: TrialStatus;
   attempts: number;
@@ -265,9 +266,11 @@ export interface Task {
   run_analysis?: boolean;
   run_probe?: boolean;
   review_version_matches?: boolean | null;
+  /** Source audit of the experiment-selected version (trial_version_id or default). */
+  pre_trial_status?: JobStatus | null;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
-  /** Must-fix findings in the completed source audit of the current version. */
+  /** Must-fix findings in the completed source audit of the experiment-selected version. */
   must_fix_count?: number | null;
   verdict_error?: string | null;
   jobs?: VisibleWorkerJob[];
@@ -297,6 +300,7 @@ export type PublicExperimentOpenTask = Omit<
   | "experiment_owner"
   | "experiment_link"
   | "must_fix_count"
+  | "pre_trial_status"
 >;
 
 export interface ExperimentPageSummary {
@@ -518,6 +522,7 @@ export interface TaskOpenVerdict {
 export interface TaskOpenAgentModelSummary {
   agent: string;
   model: string | null;
+  reasoning_effort?: string | null;
   providers: string[];
   is_probe: boolean;
   trial_count: number;
@@ -543,7 +548,16 @@ export interface TaskOpenAgentModelSummary {
   duration_trial_count: number;
 }
 
-export interface TaskOpenVersionSummary extends TaskVersionSummary {
+export interface TaskOpenVersionSummary extends Omit<
+  TaskVersionSummary,
+  | "pre_trial_findings"
+  | "retained_findings"
+  | "pre_trial_status"
+  | "pre_trial_error"
+  | "pre_trial_cost_usd"
+> {
+  must_fix_count?: number;
+  pre_trial_must_fix_count?: number;
   agent_models: TaskOpenAgentModelSummary[];
 }
 
@@ -578,6 +592,7 @@ export interface TaskOpenTrialRef {
   agent: string;
   provider: string;
   model: string | null;
+  reasoning_effort?: string | null;
   kind: TrialKind;
   status: TrialStatus;
   reward: number | null;
@@ -612,6 +627,8 @@ export interface PreTrialFinding {
   source?: "pre_trial" | "post_trial";
   id?: string | null;
   tier?: string | null;
+  /** Historical findings stored their tier under this field. */
+  severity?: string | null;
   dimension?: string | null;
   problem_type?: string | null;
   file?: string | null;
@@ -1401,6 +1418,7 @@ export interface Customer {
 }
 
 export interface DeliveryCheckResult {
+  failure_labels?: string[];
   key: string;
   kind: "automated" | "manual";
   label: string;
@@ -1504,6 +1522,34 @@ export interface DeliveryBoardResponse {
   finalized_at?: string | null;
 }
 
+export interface DeliverySelectionItem {
+  delivery_task_id: string;
+  task_id: string;
+  task_name: string;
+  version_id: string | null;
+  version: number | null;
+  state: "needs_work" | "qa_incomplete" | "awaiting_signoff" | "ready";
+  can_sign_off: boolean;
+  qa_status: DeliveryQAStatus["status"];
+}
+
+export interface DeliveryPageRow extends DeliveryTaskBoardRow {
+  state: DeliverySelectionItem["state"];
+}
+
+export interface DeliveryPageResponse extends DeliveryBoardResponse {
+  tasks: DeliveryPageRow[];
+  page: number;
+  per_page: number;
+  total: number;
+  focus_task_id: string | null;
+  focus_outside_filters: boolean;
+  owner_counts: Record<DeliverySelectionItem["state"], number>;
+  owners: Record<string, string>;
+  member_task_ids: string[];
+  matching_task_ids: string[];
+}
+
 interface TaskQAHistoryRun {
   trial_id: string;
   kind: string;
@@ -1523,7 +1569,6 @@ interface TaskQAHistoryVersion {
   pre_trial_finished_at?: string | null;
   pre_trial_error?: string | null;
   must_fix: number;
-  pre_trial_should_fix: number;
   rollout_count: number;
   rollout_agents: number;
   qa_runs: TaskQAHistoryRun[];

@@ -33,7 +33,7 @@ async def test_modal_poll_records_success_and_post_spawn_failure(monkeypatch) ->
     async def no_op(*_args, **_kwargs):
         return None
 
-    async def reserve_plan(_build_plan):
+    async def reserve_plan(_build_plan, **candidate_controls):
         return plan, [LaunchReservation(plan.unit_plan[0], 0, "launch-token")]
 
     async def spawn_aio(**kwargs):
@@ -116,7 +116,7 @@ async def test_modal_poll_records_transient_oserror_as_skipped(monkeypatch) -> N
     async def no_op(*_args, **_kwargs):
         return None
 
-    async def fail_plan(_build_plan):
+    async def fail_plan(_build_plan, **candidate_controls):
         raise OSError("temporary DNS failure")
 
     monkeypatch.setattr(worker_functions, "_otel_span", lambda *_a, **_k: nullcontext())
@@ -146,7 +146,7 @@ async def test_modal_poll_records_cancellation_and_propagates(monkeypatch) -> No
     async def no_op(*_args, **_kwargs):
         return None
 
-    async def cancel_plan(_build_plan):
+    async def cancel_plan(_build_plan, **candidate_controls):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(worker_functions, "_otel_span", lambda *_a, **_k: nullcontext())
@@ -197,7 +197,7 @@ async def test_partial_launch_failure_releases_only_failed_tokens(monkeypatch, e
     async def no_op(*args, **kwargs):
         pass
 
-    async def reserve(_build_plan):
+    async def reserve(_build_plan, **candidate_controls):
         return plan, reservations
 
     async def release(tokens):

@@ -1766,12 +1766,6 @@ class Settings(BaseSettings):
         default=None, alias="AZURE_OPENAI_API_VERSION"
     )
     azure_openai_deployments: dict[str, str] = Field(default_factory=dict)
-    # Deprecated compatibility field. Runtime routing should use
-    # ODDISH_AZURE_OPENAI_DEPLOYMENTS so each requested model maps to an
-    # explicit Azure deployment.
-    azure_openai_deployment: str | None = Field(
-        default=None, alias="AZURE_OPENAI_DEPLOYMENT"
-    )
 
     # ==========================================================================
     # Helper methods

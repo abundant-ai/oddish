@@ -61,6 +61,7 @@ function taskFromOpen(open: TaskOpenResponse): Task {
   const total = selected?.trial_count ?? 0;
   return {
     ...open.task,
+    must_fix_count: selected?.must_fix_count ?? null,
     experiment_id: "",
     experiment_name: "",
     verdict: open.task.verdict
@@ -86,16 +87,6 @@ function taskFromOpen(open: TaskOpenResponse): Task {
       ? trialFromOpenRef(open.active_qa_trial, open.task)
       : null,
     trials: open.trials.map((trial) => trialFromOpenRef(trial, open.task)),
-  };
-}
-
-export function normalizedAgentModel(
-  value: Pick<Trial, "agent" | "model" | "is_probe">
-): Pick<Trial, "agent" | "model" | "is_probe"> {
-  return {
-    agent: value.agent.trim().toLowerCase(),
-    model: value.model?.trim().toLowerCase() ?? null,
-    is_probe: value.is_probe,
   };
 }
 
@@ -276,11 +267,10 @@ export function useTaskOpenReader(
     () => selectedVersion?.agent_models ?? [],
     [selectedVersion]
   );
-  const { agentCards, modelScopedAgents, realAgentCount, realTrialCount } =
-    useMemo(
-      () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
-      [exactAgentModels, trialsForVersion]
-    );
+  const { agentCards, realAgentCount, realTrialCount } = useMemo(
+    () => buildTaskOpenAgentGroups(exactAgentModels, trialsForVersion),
+    [exactAgentModels, trialsForVersion]
+  );
   const revalidateReaderResources = useCallback(async () => {
     await Promise.all([
       mutate(),
@@ -306,7 +296,6 @@ export function useTaskOpenReader(
     isLoading,
     isSettingDefaultVersion,
     loadVersionHistory,
-    modelScopedAgents,
     open,
     openResource,
     realAgentCount,

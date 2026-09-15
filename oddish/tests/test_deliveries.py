@@ -284,7 +284,7 @@ async def test_must_fix_defects_block(session):
     version.pre_trial = {
         "items": [
             {"tier": "must_fix", "title": "leak"},
-            {"tier": "should_fix", "title": "The verifier misses invalid input"},
+            {"tier": "must_fix", "title": "The verifier misses invalid input"},
         ]
     }
     cheat_trial = _trial(
@@ -317,9 +317,11 @@ async def test_must_fix_defects_block(session):
     assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
     assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
-    assert "1 historically lower-severity findings still require" in check.detail
+    assert "historically lower-severity" not in check.detail
 
-    historical_defect = next(d for d in row.defects if d.recorded_tier == "should_fix")
+    historical_defect = next(
+        d for d in row.defects if d.title == "The verifier misses invalid input"
+    )
     await set_manual_check_core(
         session,
         delivery_id=delivery.id,
@@ -601,7 +603,7 @@ async def test_qa_history(session):
     assert [run.kind for run in history.unversioned_runs] == ["qa"]
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
-    assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert broken.must_fix == 0
     assert broken.findings == []
     assert broken.pre_trial_error == "docker died"
     assert [run.error for run in broken.qa_runs] == ["container OOM"]
@@ -640,7 +642,7 @@ async def test_qa_history(session):
     [
         ({"tier": None, "severity": "must_fix"}, "must_fix"),
         ({"severity": "must_fix"}, "must_fix"),
-        ({"tier": "should_fix", "severity": "must_fix"}, "should_fix"),
+        ({"tier": "optional", "severity": "must_fix"}, "optional"),
     ],
 )
 async def test_qa_history_legacy_severity(session, source, tiers, expected):
@@ -879,7 +881,7 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+@pytest.mark.parametrize("tier", ["must_fix", "optional"])
 async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {
@@ -1276,6 +1278,9 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
     checks = _checks(board, task.id)
     assert checks["verdict_ok"].status == "pass"
     assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    assert checks["min_rollouts"].failure_labels == (
+        [] if custom_minimum else [f"Runs: {run_count}/5", "Agents: 1/3"]
+    )
     if not custom_minimum:
         assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
         assert not board.ready
@@ -1321,7 +1326,7 @@ async def test_completed_source_review_can_block_a_fair_agent_failure(session):
     row = board.tasks[0]
     checks = {check.key: check for check in row.checks}
     assert checks["pre_trial_passed"].status == "pass"
-    assert "source review completed" in checks["pre_trial_passed"].detail
+    assert "pre-trial audit completed" in checks["pre_trial_passed"].detail
     assert "defect checks are separate" in checks["pre_trial_passed"].detail
     assert checks["no_must_fix"].status == "fail"
     assert checks["signoff"].status == "fail"
@@ -1358,3 +1363,174 @@ async def test_review_failure_is_unknown_quality_not_a_defect(session):
     assert "no reported task defects" in checks["no_must_fix"].detail
     assert board.tasks[0].defects == []
     assert not board.tasks[0].ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat", [False, True])
+async def test_acknowledgment_statement_budget(session, repeat):
+    task, version, _ = await _green_task(session, "ack-budget")
+    version.pre_trial = {
+        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+    }
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="ack-budget", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    data = ManualCheckSet(
+        check_key="ack:def-1",
+        delivery_task_id=board.tasks[0].delivery_task_id,
+        expected_version_id=version.id,
+        checked=True,
+    )
+    if repeat:
+        await set_manual_check_core(
+            session, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u1"
+        )
+    async with AsyncSession(bind=await session.connection()) as writer:
+        with count_statements() as statements:
+            await set_manual_check_core(
+                writer, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u2"
+            )
+        updated = await get_delivery_board_core(
+            writer, delivery_id=delivery.id, org_id=ORG
+        )
+        assert updated.tasks[0].defects[0].acknowledged
+        assert updated.tasks[0].defects[0].acknowledged_by_user_id == "u2"
+    print(f"ack repeat={repeat}: {len(statements)} SQL statements")
+    assert len(statements) <= 6, "\n".join(statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_creation_time", [False, True])
+async def test_verdict_timestamp_ties_agree_between_board_and_history(session, same_creation_time):
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    task, v1, experiment = await _green_task(session, "deliv-qa-tie")
+    first = await session.scalar(select(TrialModel).where(
+        TrialModel.task_id == task.id, TrialModel.kind == "qa"
+    ))
+    first.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    first.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    second = _trial(task, experiment, v2.id, kind="qa")
+    # A larger unique ID resolves even an exact timestamp tie.
+    second.id = "zz-" + second.id
+    second.created_at = first.created_at if same_creation_time else datetime(2026, 7, 2, tzinfo=timezone.utc)
+    second.finished_at = first.finished_at
+    session.add(second)
+    await session.flush()
+    delivery = await create_delivery_core(session, data=DeliveryCreate(
+        customer="acme", name="timestamp-ties", task_ids=[task.id]
+    ), org_id=ORG, user_id="u1")
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+        assert _checks(board, task.id)["verdict_ok"].status == ("pass" if version == v2 else "fail")
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == v2.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "newer_run",
+    [
+        "deleted",
+        "failed",
+        "classification",
+        "unversioned",
+        "audit",
+        "superseded",
+        "unfinished_timestamp",
+    ],
+)
+async def test_member_verdict_lookup_preserves_eligibility(session, newer_run):
+    from datetime import timedelta
+    from sqlalchemy import select
+    from oddish.db import utcnow
+
+    task, v1, experiment = await _green_task(session, "member-verdict")
+    first = await session.scalar(
+        select(TrialModel).where(TrialModel.task_id == task.id, TrialModel.kind == "qa")
+    )
+    first.created_at = utcnow() - timedelta(days=3)
+    first.finished_at = utcnow() - timedelta(days=2)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    newer = _trial(task, experiment, v2.id, kind="qa")
+    # Completion takes precedence even when creation is older than the first.
+    newer.created_at = utcnow() - timedelta(days=4)
+    newer.finished_at = utcnow() - timedelta(days=1)
+    if newer_run == "deleted":
+        newer.deleted_at = utcnow()
+    elif newer_run == "failed":
+        newer.status = TrialStatus.FAILED
+    elif newer_run == "classification":
+        newer.harbor_config = {"analysis_payload": {"with_verdict": False}}
+    elif newer_run == "unversioned":
+        newer.task_version_id = None
+    elif newer_run == "audit":
+        newer.kind = "audit"
+    elif newer_run == "superseded":
+        # Historical verdict provenance still includes superseded QA runs.
+        newer.superseded_by_trial_id = first.id
+    elif newer_run == "unfinished_timestamp":
+        newer.created_at = utcnow() - timedelta(days=1)
+        newer.finished_at = None
+    session.add(newer)
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="member-verdict", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    expected = v2 if newer_run in {"superseded", "unfinished_timestamp"} else v1
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery.id, org_id=ORG
+        )
+        assert _checks(board, task.id)["verdict_ok"].status == (
+            "pass" if version == expected else "fail"
+        )
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == expected.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audit_status, label",
+    [
+        (None, "Pre-trial audit needed"),
+        (VerdictStatus.QUEUED, "Pre-trial audit queued"),
+        (VerdictStatus.RUNNING, "Pre-trial audit running"),
+        (VerdictStatus.FAILED, "Pre-trial audit failed"),
+        (VerdictStatus.SUCCESS, None),
+    ],
+)
+async def test_delivery_failure_labels_identify_audit_state(
+    session, audit_status, label
+):
+    task, version, _ = await _green_task(session, "audit-label")
+    version.pre_trial_status = audit_status
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="audit-label", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["pre_trial_passed"]
+    assert check.failure_labels == ([] if label is None else [label])
+    assert check.status == ("pass" if label is None else "fail")

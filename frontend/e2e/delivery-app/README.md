@@ -6,6 +6,10 @@ board, SWR provider, styles, and controls. Only Clerk authentication is replaced
 with a test admin; production middleware and routes are unchanged. No credentials,
 backend service, analysis workers, or paid providers are used.
 
+The app also imports the production delivery route's loading boundary.
+`?seed=slow` delays the server snapshot by three seconds to verify that the
+placeholder streams before the board and that hydration adds no board request.
+
 Playwright intercepts the API responses and advances the browser clock by the
 production 15-second interval. The review-completion test fails on the original
 board because expanded history keeps displaying `qa (running)` after the board

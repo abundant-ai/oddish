@@ -35,7 +35,6 @@ from oddish.db import (
 from oddish.registry_auth import normalize_registry_host
 from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
-
 # =============================================================================
 # Harbor Execution Config (wraps Harbor's native types)
 # =============================================================================
@@ -393,6 +392,10 @@ class TaskSweepSubmission(BaseModel):
             "If true, append new trials to an existing task instead of creating "
             "a new task row"
         ),
+    )
+    add_trials: bool = Field(
+        False,
+        description="On append, create n_trials new trials per config instead of topping up existing counts.",
     )
     name: str | None = Field(
         None,
@@ -1100,6 +1103,7 @@ class ExperimentTaskVerdict(ExperimentPageVerdict):
 
 class ExperimentTaskRow(PublicExperimentTaskRow):
     user: str
+    pre_trial_status: VerdictStatus | None = None
     must_fix_count: int | None = None
     verdict: ExperimentTaskVerdict | None = None
 
@@ -1160,6 +1164,7 @@ class ExperimentTrialCell(BaseModel):
     name: str
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     provider: str
     queue_key: str
     status: TrialStatus
@@ -1244,6 +1249,7 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    reasoning_effort: str | None = None
     environment: str | None = Field(
         None,
         description="Execution sandbox environment recorded on the trial row.",
@@ -1885,6 +1891,7 @@ class TaskOpenAgentModelSummary(BaseModel):
 
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     providers: list[str] = Field(default_factory=list)
     is_probe: bool = False
     trial_count: int = 0
@@ -1912,6 +1919,9 @@ class TaskOpenAgentModelSummary(BaseModel):
 
 class TaskOpenVersionSummary(TaskVersionRollup):
     """Selected-version fields owned by the bounded task-open resource."""
+
+    must_fix_count: int = 0
+    pre_trial_must_fix_count: int = 0
 
     user_tags: list[UserTagRef] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
@@ -1954,6 +1964,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    reasoning_effort: str | None = None
     kind: str = "agent"
     status: TrialStatus
     reward: float | None = None
@@ -2678,6 +2689,8 @@ class DeliveryListItem(DeliveryResponse):
 
 
 class DeliveryCheckResult(BaseModel):
+    # Short unmet requirements; absent in older finalized snapshots.
+    failure_labels: list[str] = Field(default_factory=list)
     key: str
     kind: DeliveryCheckKind
     label: str
@@ -2813,6 +2826,66 @@ class DeliveryBoardResponse(BaseModel):
     finalized_at: datetime | None = None
 
 
+DeliveryTaskState = Literal["needs_work", "qa_incomplete", "awaiting_signoff", "ready"]
+
+
+class DeliveryViewQuery(BaseModel):
+    page: int = Field(default=1, ge=1, le=9007199254740991)
+    per_page: int = Field(default=25, json_schema_extra={"enum": [10, 25, 50, 100]})
+    filter: Literal[
+        "all",
+        "outstanding",
+        "blocked",
+        "needs_work",
+        "qa_incomplete",
+        "awaiting_signoff",
+        "ready",
+    ] = "all"
+    issue: Literal[
+        "all", "instructions", "verifier", "environment", "evidence", "qa_execution"
+    ] = "all"
+    owner: str = Field(default="all", max_length=512)
+    group: Literal["none", "owner", "state", "issue"] = "none"
+    task: str | None = Field(default=None, max_length=512)
+
+    @field_validator("per_page")
+    @classmethod
+    def valid_page_size(cls, value: int) -> int:
+        if value not in (10, 25, 50, 100):
+            raise ValueError("per_page must be 10, 25, 50 or 100")
+        return value
+
+
+class DeliverySelectionItem(BaseModel):
+    delivery_task_id: str
+    task_id: str
+    task_name: str
+    version_id: str | None
+    version: int | None
+    state: DeliveryTaskState
+    can_sign_off: bool
+    qa_status: str
+
+
+class DeliveryPageRow(DeliveryTaskBoardRow):
+    state: DeliveryTaskState
+
+
+class DeliveryPageResponse(DeliveryBoardResponse):
+    """Only one page carries findings; IDs retain inventory and bulk-selection scope."""
+
+    tasks: list[DeliveryPageRow]
+    page: int
+    per_page: int
+    total: int
+    focus_task_id: str | None
+    focus_outside_filters: bool
+    owner_counts: dict[DeliveryTaskState, int]
+    owners: dict[str, str]
+    member_task_ids: list[str]
+    matching_task_ids: list[str]
+
+
 class TaskQAHistoryRun(BaseModel):
     trial_id: str
     kind: str
@@ -2853,7 +2926,6 @@ class TaskQAHistoryVersion(BaseModel):
     # Reported defects from every source, including historical tiers;
     # kept under the existing API name for compatibility.
     must_fix: int
-    pre_trial_should_fix: int
     rollout_count: int
     rollout_agents: int
     qa_runs: list[TaskQAHistoryRun]

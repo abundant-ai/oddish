@@ -40,11 +40,13 @@ class WorkerBillingSpec:
     memory_mb: int
     nonpreemptible: bool
     provider: str = "modal"
+    cpu_limit: float | None = None
+    configuration: str = "base"
 
     def resources(self) -> SpanResources:
         return SpanResources(
             cpu_request=self.cpu_cores,
-            cpu_limit=None,
+            cpu_limit=self.cpu_limit,
             mem_request_mb=self.memory_mb,
             mem_limit_mb=None,
             gpu_type=None,

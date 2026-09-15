@@ -901,7 +901,9 @@ _FAKE_CHILD = textwrap.dedent(
     sentinel = "_oddish_harbor_event"
     for ev in ("start", "agent-start"):
         print(json.dumps({sentinel: True, "event": ev, "trial_id": payload.get("trial_id")}), flush=True)
-    print("harbor: some noisy log line that is not an event", flush=True)
+    # Helm setup can emit one JSON/log line larger than asyncio's 64 KiB
+    # default StreamReader limit. The parent must preserve the event stream.
+    print("harbor: " + "x" * (128 * 1024), flush=True)
     print(json.dumps({sentinel: True, "event": "end", "trial_id": payload.get("trial_id"),
                       "result": {"verifier_result": {"rewards": {"reward": 1.0}}}}), flush=True)
     open(payload["outcome_path"], "w").write(json.dumps(
@@ -1215,3 +1217,211 @@ async def test_upload_probe_assets_fails_when_qa_submission_contract_is_missing(
 
     with pytest.raises(RuntimeError, match="required QA submission contract"):
         await _upload_probe_assets(FailingEnv(), assets, "qa-1")
+
+
+def test_build_payload_normalizes_claude_model_when_bedrock_is_blanked(monkeypatch):
+    """A claude-code trial forced to the direct Anthropic API must not carry a
+    Bedrock inference-profile id.
+
+    Oddish stores every Claude trial under its Bedrock id
+    (``global.anthropic.claude-opus-5``), which exists only on Bedrock. Blanking
+    ``BEDROCK_ENV_VARS`` moves the child onto api.anthropic.com, whose ids are a
+    different namespace, so the two must change together.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert payload["runtime_env"]["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert payload["model"] == "claude-opus-5"
+
+
+@pytest.mark.parametrize(
+    "force_direct,ambient_key", [(False, "sk-ant-test"), (True, None)]
+)
+def test_build_payload_keeps_bedrock_model_when_bedrock_stays_on(
+    monkeypatch, force_direct, ambient_key
+):
+    """With Bedrock routing left in place the stored Bedrock id is correct."""
+    if ambient_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ambient_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert "CLAUDE_CODE_USE_BEDROCK" not in payload["runtime_env"]
+    assert payload["model"] == "global.anthropic.claude-opus-5"
+
+
+def test_build_payload_leaves_non_claude_agents_alone(monkeypatch):
+    """Only claude-code is rerouted, so other agents keep their submitted id."""
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="mini-swe-agent",
+        model="openrouter/tencent/hy3",
+        environment=EnvironmentType.MODAL,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+        extra_agent_env={"ANTHROPIC_API_KEY": "test-user-key"},
+    )
+
+    assert payload["runtime_env"] == {}
+    assert payload["model"] == "openrouter/tencent/hy3"
+
+
+def test_dispatch_paths_agree_on_the_claude_model_id(monkeypatch):
+    """Both dispatch paths must hand Claude Code the same model id.
+
+    The in-process path normalizes in ``_build_agent_config`` and the ephemeral
+    path in ``_build_payload``. Which one ran a trial is an Oddish scheduling
+    detail, so it must not change the model id that reaches the provider.
+    """
+    from oddish.workers.harbor.agent_config import _build_agent_config
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(harbor_ephemeral.settings, "claude_code_force_direct_api", True)
+    agent = "claude-code"
+    model = "global.anthropic.claude-opus-5"
+
+    in_process = _build_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent=agent,
+        model=model,
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+    )
+
+    assert payload["model"] == in_process.model_name == "claude-opus-5"
+
+
+@pytest.mark.parametrize(
+    "force_direct,is_probe", [(True, False), (False, True), (False, False)]
+)
+def test_payload_routes_with_trial_anthropic_key(monkeypatch, force_direct, is_probe):
+    from oddish.config import BEDROCK_ENV_VARS
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-token")
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
+    )
+    agent_env = {
+        "ANTHROPIC_API_KEY": "test-user-key",
+        "ODDISH_API_KEY": "test-read-key",
+    }
+    before = dict(os.environ)
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=is_probe,
+        extra_agent_env=agent_env,
+    )
+    child_agent = _build_job_config(payload).agents[0]
+
+    assert os.environ == before
+    assert agent_env == {
+        "ANTHROPIC_API_KEY": "test-user-key",
+        "ODDISH_API_KEY": "test-read-key",
+    }
+    assert child_agent.env["ANTHROPIC_API_KEY"] == "test-user-key"
+    assert child_agent.env["ODDISH_API_KEY"] == "test-read-key"
+    if force_direct or is_probe:
+        assert child_agent.model_name == "claude-opus-5"
+        assert all(payload["runtime_env"][name] == "" for name in BEDROCK_ENV_VARS)
+        assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)
+    else:
+        assert child_agent.model_name == "global.anthropic.claude-opus-5"
+        assert "CLAUDE_CODE_USE_BEDROCK" not in payload["runtime_env"]
+    assert payload["runtime_env"]["ANTHROPIC_API_KEY"] == "test-user-key"
+
+
+@pytest.mark.parametrize("force_direct", [True, False])
+@pytest.mark.parametrize("hdo_key", ["test-hdo-key", ""])
+@pytest.mark.parametrize("worker_key", ["test-worker-key", None])
+@pytest.mark.parametrize(
+    "environment", [EnvironmentType.DOCKER, EnvironmentType.THUNDER]
+)
+def test_payload_hdo_key_wins_over_worker_and_user_keys(
+    tmp_path, monkeypatch, force_direct, hdo_key, worker_key, environment
+):
+    from oddish.config import BEDROCK_ENV_VARS
+
+    if worker_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", worker_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bedrock-token")
+    monkeypatch.delenv("ANTHROPIC_HDO_API_KEY", raising=False)
+    monkeypatch.setattr(harbor_ephemeral.settings, "anthropic_hdo_api_key", hdo_key)
+    monkeypatch.setattr(
+        harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
+    )
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        '[environment]\nnetwork_mode = "public"\n'
+        '[agent]\nnetwork_mode = "allowlist"\n'
+        '[verifier]\nnetwork_mode = "no-network"\n'
+    )
+    before = dict(os.environ)
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="anthropic-hdo/claude-opus-5",
+        environment=environment,
+        raw_harbor_config=dict(_EPHEMERAL_HC),
+        is_probe=False,
+        extra_agent_env={"ANTHROPIC_API_KEY": "test-user-key"},
+    )
+    child_agent = _build_job_config(payload).agents[0]
+
+    assert os.environ == before
+    assert child_agent.model_name == "claude-opus-5"
+    assert payload["runtime_env"]["ANTHROPIC_API_KEY"] == hdo_key
+    assert child_agent.env["ANTHROPIC_API_KEY"] == hdo_key
+    assert all(payload["runtime_env"][name] == "" for name in BEDROCK_ENV_VARS)
+    assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)
+    if environment == EnvironmentType.THUNDER:
+        assert "api.anthropic.com" in child_agent.extra_allowed_hosts

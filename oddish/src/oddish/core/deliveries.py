@@ -11,16 +11,17 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, load_only
 
 from oddish.core.delivery_qa import delivery_qa_statuses
 from oddish.core.delivery_progress import (
     delivery_progress_history,
     record_delivery_progress,
 )
-from oddish.core.task_findings import pre_trial_items, task_defect_items
+from oddish.core.task_findings import task_defect_items
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -81,7 +82,7 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Source review completed",
+    "pre_trial_passed": "Pre-trial audit completed",
     "min_rollouts": "Enough rollouts",
     "verdict_ok": "No blocking defects in verdict",
     "no_must_fix": "Every defect resolved or acknowledged",
@@ -130,7 +131,10 @@ async def _get_delivery(
     check and its snapshot, finalizing a board that omits the new task.
     """
     delivery = await session.get(
-        DeliveryModel, delivery_id, with_for_update=bool(for_update) or None
+        DeliveryModel,
+        delivery_id,
+        options=[joinedload(DeliveryModel.customer)],
+        with_for_update={"of": DeliveryModel} if for_update else None,
     )
     if delivery is None or delivery.org_id != org_id:
         raise HTTPException(status_code=404, detail="delivery not found")
@@ -530,7 +534,7 @@ async def _validate_signoff_or_ack(
     # Sign-off: judge the same board the reader sees, so the rule cannot
     # drift from the display. Unacked defects and unwaived failing checks
     # both refuse it.
-    board = await _compute_board(session, delivery)
+    board = await _compute_board(session, delivery, task_ids=[member.task_id])
     row = next((r for r in board.tasks if r.delivery_task_id == member.id), None)
     if row is None:
         raise HTTPException(status_code=404, detail="task not in this delivery")
@@ -592,14 +596,22 @@ async def set_manual_check_core(
                 status_code=422,
                 detail="delivery_task_id is required for a task-scoped check",
             )
-        member = await session.scalar(
-            select(DeliveryTaskModel).where(
-                DeliveryTaskModel.id == data.delivery_task_id,
-                DeliveryTaskModel.delivery_id == delivery.id,
+        # Fetch membership and lock the task's default version together. The
+        # delivery lock still serializes this decision against finalization.
+        membership = (
+            await session.execute(
+                select(DeliveryTaskModel, TaskModel.current_version_id)
+                .join(TaskModel, TaskModel.id == DeliveryTaskModel.task_id)
+                .where(
+                    DeliveryTaskModel.id == data.delivery_task_id,
+                    DeliveryTaskModel.delivery_id == delivery.id,
+                )
+                .with_for_update(of=TaskModel)
             )
-        )
-        if member is None:
+        ).one_or_none()
+        if membership is None:
             raise HTTPException(status_code=404, detail="task not in this delivery")
+        member, task_version_id = membership
         if (
             data.checked
             and is_decision
@@ -611,11 +623,6 @@ async def set_manual_check_core(
             )
         # The tick attests to the content the human looked at: the task's
         # current default version. A later version change un-ticks it.
-        task_version_id = await session.scalar(
-            select(TaskModel.current_version_id)
-            .where(TaskModel.id == member.task_id)
-            .with_for_update()
-        )
         if (
             "expected_version_id" in data.model_fields_set
             and data.expected_version_id != task_version_id
@@ -767,6 +774,7 @@ def _check(
     label: str | None = None,
     checked_by: str | None = None,
     checked_at: Any = None,
+    failure_labels: list[str] | None = None,
 ) -> DeliveryCheckResult:
     return DeliveryCheckResult(
         key=key,
@@ -774,22 +782,94 @@ def _check(
         label=label or _CHECK_LABELS.get(key, key),
         status="pass" if passed else "fail",
         detail=detail,
+        failure_labels=(failure_labels or []) if not passed else [],
         checked_by_user_id=checked_by,
         checked_at=checked_at,
     )
 
 
 async def _compute_board(
-    session: AsyncSession, delivery: DeliveryModel
+    session: AsyncSession,
+    delivery: DeliveryModel,
+    *,
+    task_ids: Sequence[str] | None = None,
+    include_details: bool = True,
 ) -> DeliveryBoardResponse:
     config = _normalized_check_config(delivery.check_config)
     auto = config.automated
     # Keep missing/deleted tasks as failing members. Only live tasks supply
     # current-version evidence; joining these scalar relations cannot multiply
     # membership rows the way joining trials or findings would.
+    member_scope = (
+        select(DeliveryTaskModel.task_id)
+        .where(DeliveryTaskModel.delivery_id == delivery.id)
+        .correlate(None)
+    )
+    if task_ids is not None:
+        member_scope = member_scope.where(DeliveryTaskModel.task_id.in_(task_ids))
+    version_scope = (
+        select(TaskModel.current_version_id)
+        .where(TaskModel.id.in_(member_scope), TaskModel.deleted_at.is_(None))
+        .correlate(None)
+    )
+    # Each derived table has at most one row per task/version. Joining raw
+    # trials, versions and ticks would multiply rows and inflate the counts.
+    rollouts_query = (
+        select(
+            TrialModel.task_version_id.label("version_id"),
+            func.count().label("count"),
+            _distinct_agent_count().label("agents"),
+        )
+        .where(
+            *EligibleTrialScope(
+                membership=[TrialModel.task_version_id.in_(version_scope)]
+            ).clauses(),
+            TrialModel.status == TrialStatus.SUCCESS,
+        )
+        .group_by(TrialModel.task_version_id)
+        .subquery()
+    )
+    # Look up QA within each member's trials. A delivery-wide DISTINCT ON can
+    # make PostgreSQL scan every QA run and its JSON before filtering membership.
+    latest_verdict = (
+        select(TrialModel.task_version_id)
+        .where(
+            TrialModel.task_id == TaskModel.id,
+            TrialModel.deleted_at.is_(None),
+            *_verdict_qa_clauses(),
+        )
+        .order_by(
+            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
+            TrialModel.created_at.desc(),
+            TrialModel.id.desc(),
+        )
+        .limit(1)
+        .correlate(TaskModel)
+        .lateral()
+    )
+    highest_versions = (
+        select(
+            TaskVersionModel.task_id,
+            func.max(TaskVersionModel.version).label("highest"),
+        )
+        .where(
+            TaskVersionModel.task_id.in_(member_scope),
+            TaskVersionModel.deleted_at.is_(None),
+        )
+        .group_by(TaskVersionModel.task_id)
+        .subquery()
+    )
     member_rows = (
         await session.execute(
-            select(DeliveryTaskModel, TaskModel, TaskVersionModel)
+            select(
+                DeliveryTaskModel,
+                TaskModel,
+                TaskVersionModel,
+                rollouts_query.c.count,
+                rollouts_query.c.agents,
+                latest_verdict.c.task_version_id,
+                highest_versions.c.highest,
+            )
             .outerjoin(TaskModel, TaskModel.id == DeliveryTaskModel.task_id)
             .outerjoin(
                 TaskVersionModel,
@@ -798,87 +878,78 @@ async def _compute_board(
                     TaskModel.deleted_at.is_(None),
                 ),
             )
-            .where(DeliveryTaskModel.delivery_id == delivery.id)
-            .order_by(DeliveryTaskModel.sort_order, DeliveryTaskModel.created_at)
+            .outerjoin(
+                rollouts_query, rollouts_query.c.version_id == TaskVersionModel.id
+            )
+            .outerjoin(latest_verdict, true())
+            .outerjoin(highest_versions, highest_versions.c.task_id == TaskModel.id)
+            .where(
+                DeliveryTaskModel.delivery_id == delivery.id,
+                DeliveryTaskModel.task_id.in_(member_scope),
+            )
+            .options(
+                load_only(
+                    TaskModel.id,
+                    TaskModel.name,
+                    TaskModel.current_version_id,
+                    TaskModel.deleted_at,
+                    TaskModel.verdict,
+                    TaskModel.verdict_status,
+                ),
+                load_only(
+                    TaskVersionModel.id,
+                    TaskVersionModel.task_id,
+                    TaskVersionModel.version,
+                    TaskVersionModel.pre_trial,
+                    TaskVersionModel.reported_findings,
+                    TaskVersionModel.pre_trial_status,
+                    TaskVersionModel.content_hash,
+                    TaskVersionModel.pre_trial_started_at,
+                    TaskVersionModel.pre_trial_finished_at,
+                    TaskVersionModel.qa_work,
+                ),
+            )
+            .order_by(
+                DeliveryTaskModel.sort_order,
+                DeliveryTaskModel.created_at,
+                DeliveryTaskModel.id,
+            )
             .execution_options(include_deleted=True)
         )
     ).all()
     members = []
     tasks: dict[str, TaskModel] = {}
     versions: dict[str, TaskVersionModel] = {}
-    for member, task, version in member_rows:
+    max_versions: dict[str, int] = {}
+    rollouts: dict[str, tuple[int, int]] = {}
+    latest_qa_version: dict[str, str] = {}
+    for member, task, version, count, agents, qa_version, highest in member_rows:
         members.append(member)
         if task is not None:
             tasks[task.id] = task
+            if highest is not None:
+                max_versions[task.id] = highest
+            if qa_version is not None:
+                latest_qa_version[task.id] = qa_version
         if version is not None:
             versions[version.id] = version
-    task_ids = [m.task_id for m in members]
-    max_versions: dict[str, int] = {}
-    rollouts: dict[str, tuple[int, int]] = {}
-    must_fix_items: dict[str, list[dict]] = {}
-    latest_qa_version: dict[str, str] = {}
-
-    if task_ids:
-        version_ids = [
-            t.current_version_id
-            for t in tasks.values()
-            if t.current_version_id and t.deleted_at is None
-        ]
-        if version_ids:
-            scope = EligibleTrialScope(
-                membership=[TrialModel.task_version_id.in_(version_ids)]
-            )
-            for version_id, count, agents in (
-                await session.execute(
-                    select(
-                        TrialModel.task_version_id,
-                        func.count(),
-                        _distinct_agent_count(),
-                    )
-                    .where(*scope.clauses(), TrialModel.status == TrialStatus.SUCCESS)
-                    .group_by(TrialModel.task_version_id)
-                )
-            ).all():
-                rollouts[version_id] = (count, agents)
-
-            must_fix_items = await task_defect_items(session, versions)
-
-        # ``tasks.verdict`` is last-write-wins across versions, so the
-        # stored verdict belongs to the NEWEST successful QA run. It only
-        # covers the current default when that run graded it. Ordering falls
-        # back to created_at so a null finished_at cannot scramble recency.
-        qa_rows = (
-            await session.execute(
-                select(TrialModel.task_id, TrialModel.task_version_id)
-                .where(
-                    TrialModel.task_id.in_(task_ids),
-                    *_verdict_qa_clauses(),
-                )
-                .distinct(TrialModel.task_id)
-                .order_by(
-                    TrialModel.task_id,
-                    func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
-                )
-            )
-        ).all()
-        for qa_task_id, qa_version_id in qa_rows:
-            latest_qa_version[qa_task_id] = qa_version_id
-
-        for task_id, highest in (
-            await session.execute(
-                select(TaskVersionModel.task_id, func.max(TaskVersionModel.version))
-                .where(TaskVersionModel.task_id.in_(task_ids))
-                .group_by(TaskVersionModel.task_id)
-            )
-        ).all():
-            max_versions[task_id] = highest
+            rollouts[version.id] = (count or 0, agents or 0)
+    must_fix_items = await task_defect_items(
+        session, versions, include_details=include_details
+    )
 
     qa_statuses = await delivery_qa_statuses(session, tasks=tasks, versions=versions)
 
     ticks = (
         await session.scalars(
             select(DeliveryManualCheckModel).where(
-                DeliveryManualCheckModel.delivery_id == delivery.id
+                DeliveryManualCheckModel.delivery_id == delivery.id,
+                or_(
+                    DeliveryManualCheckModel.delivery_task_id.is_(None),
+                    DeliveryManualCheckModel.delivery_task_id.in_(
+                        [m.id for m in members]
+                    ),
+                ),
             )
         )
     ).all()
@@ -892,7 +963,7 @@ async def _compute_board(
 
     rows: list[DeliveryTaskBoardRow] = []
     for member in members:
-        task = tasks.get(member.task_id)
+        task: TaskModel | None = tasks.get(member.task_id)
         if task is None or task.deleted_at is not None:
             rows.append(
                 DeliveryTaskBoardRow(
@@ -920,10 +991,12 @@ async def _compute_board(
                 )
             )
             continue
-        version = versions.get(task.current_version_id or "")
+        version: TaskVersionModel | None = versions.get(task.current_version_id or "")
         checks: list[DeliveryCheckResult] = []
 
-        def automated(key: str, passed: bool, detail: str) -> None:
+        def automated(
+            key: str, passed: bool, detail: str, failure_labels: list[str] | None = None
+        ) -> None:
             if not auto[key].get("enabled", True):
                 checks.append(
                     DeliveryCheckResult(
@@ -953,12 +1026,16 @@ async def _compute_board(
                         )
                     )
                     return
-            checks.append(_check(key, passed=passed, detail=detail))
+            checks.append(
+                _check(key, passed=passed, detail=detail, failure_labels=failure_labels)
+            )
 
         defects: list[DeliveryDefect] = []
         if version is None:
             for key in DEFAULT_AUTOMATED_CHECKS:
-                automated(key, False, "task has no default version")
+                automated(
+                    key, False, "task has no default version", ["Task version missing"]
+                )
         else:
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
@@ -972,11 +1049,8 @@ async def _compute_board(
                         title=item["title"],
                         source=item["source"],
                         finding_id=(
-                            str(
-                                item["finding"].get("links_to") or item["finding"]["id"]
-                            )
-                            if item["finding"].get("links_to")
-                            or item["finding"].get("id") is not None
+                            str(item["finding"]["id"])
+                            if item["finding"].get("id") is not None
                             else None
                         ),
                         file=item["finding"].get("file"),
@@ -995,12 +1069,24 @@ async def _compute_board(
                 )
 
             audited = version.pre_trial_status == VerdictStatus.SUCCESS
+            audit_label = {
+                "pending": "Pre-trial audit queued",
+                "queued": "Pre-trial audit queued",
+                "running": "Pre-trial audit running",
+                "failed": "Pre-trial audit failed",
+            }.get(
+                version.pre_trial_status.value.lower()
+                if version.pre_trial_status
+                else "",
+                "Pre-trial audit needed",
+            )
             automated(
                 "pre_trial_passed",
                 audited,
-                f"source review completed on {vlabel}; defect checks are separate"
+                f"pre-trial audit completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                [audit_label],
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -1011,20 +1097,29 @@ async def _compute_board(
                 count >= min_trials and agents >= min_agents,
                 f"{count}/{min_trials} trials, {agents}/{min_agents} agents "
                 f"on {vlabel}",
+                ([f"Runs: {count}/{min_trials}"] if count < min_trials else [])
+                + ([f"Agents: {agents}/{min_agents}"] if agents < min_agents else []),
             )
 
+            verdict_label = {
+                "queued": "Verdict queued",
+                "running": "Verdict running",
+                "error": "Verdict failed",
+            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "Verdict needed")
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
                 automated(
                     "verdict_ok",
                     False,
                     f"no completed execution-review verdict on {vlabel}",
+                    [verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
                     f"verdict does not cover {vlabel}; re-run QA on it",
+                    [verdict_label],
                 )
             else:
                 accepted = bool(verdict.get("is_good"))
@@ -1034,6 +1129,7 @@ async def _compute_board(
                     "review found no blocking defects; human sign-off is separate"
                     if accepted
                     else f"blocking defect: {verdict.get('primary_issue') or ''}",
+                    ["Rejected"],
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
@@ -1202,7 +1298,11 @@ async def _compute_board(
 
 
 async def get_delivery_board_core(
-    session: AsyncSession, *, delivery_id: str, org_id: str | None
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    include_details: bool = True,
 ) -> DeliveryBoardResponse:
     delivery = await _get_delivery(session, delivery_id, org_id)
     if delivery.status == "finalized":
@@ -1216,9 +1316,36 @@ async def get_delivery_board_core(
             board = DeliveryBoardResponse.model_validate(snapshot.snapshot["board"])
             board.frozen = True
             return board
-    board = await _compute_board(session, delivery)
+    board = await _compute_board(session, delivery, include_details=include_details)
     board.progress_history = await delivery_progress_history(session, delivery.id)
     return board
+
+
+async def get_delivery_task_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    task_id: str,
+) -> DeliveryTaskBoardRow:
+    """Read one member's full evidence without computing its siblings or history."""
+    delivery = await _get_delivery(session, delivery_id, org_id)
+    if delivery.status == "finalized":
+        snapshot = await session.scalar(
+            select(DeliverySnapshotModel)
+            .where(DeliverySnapshotModel.delivery_id == delivery.id)
+            .order_by(DeliverySnapshotModel.created_at.desc())
+            .limit(1)
+        )
+        if snapshot is None:
+            raise HTTPException(409, "Finalized delivery snapshot is missing")
+        board = DeliveryBoardResponse.model_validate(snapshot.snapshot["board"])
+    else:
+        board = await _compute_board(session, delivery, task_ids=[task_id])
+    row = next((row for row in board.tasks if row.task_id == task_id), None)
+    if row is None:
+        raise HTTPException(404, "Task is not in this delivery")
+    return row
 
 
 # =============================================================================
@@ -1407,7 +1534,11 @@ async def get_task_qa_history_core(
     verdict_version_id = await session.scalar(
         select(TrialModel.task_version_id)
         .where(TrialModel.task_id == task_id, *_verdict_qa_clauses())
-        .order_by(func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc())
+        .order_by(
+            func.coalesce(TrialModel.finished_at, TrialModel.created_at).desc(),
+            TrialModel.created_at.desc(),
+            TrialModel.id.desc(),
+        )
         .limit(1)
     )
 
@@ -1449,9 +1580,6 @@ async def get_task_qa_history_core(
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
-                pre_trial_should_fix=sum(
-                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
-                ),
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),

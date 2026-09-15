@@ -62,6 +62,7 @@ from oddish.experiment import generate_experiment_name
 from oddish.filters.trial_predicates import qa_eligible_trial_clauses
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.runtime.sandbox_lifecycle import execution_lane_for_environment
+from oddish.reasoning_effort import with_default_reasoning_effort
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
@@ -591,13 +592,16 @@ async def enqueue_task_expand_worker_job(
 def _build_harbor_config_for_trial(
     submission: TaskSubmission,
     spec: TrialSpec,
+    *,
+    model: str | None,
 ) -> dict[str, Any] | None:
     """Build the harbor_config JSONB payload for a single trial row."""
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
 
+    agent_config = with_default_reasoning_effort(spec.agent, model, spec.agent_config)
     agent_config_payload: dict[str, Any] = {}
-    if spec.agent_config:
-        agent_config_payload = spec.agent_config.model_dump(
+    if agent_config:
+        agent_config_payload = agent_config.model_dump(
             mode="json", exclude_defaults=True
         )
         agent_config_payload.pop("name", None)
@@ -945,7 +949,7 @@ async def create_task(
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
-        harbor_config = _build_harbor_config_for_trial(submission, spec)
+        harbor_config = _build_harbor_config_for_trial(submission, spec, model=model)
         trial_environment = spec.environment or (
             "modal" if (harbor_config or {}).get("mode") == "probe" else None
         )
@@ -1224,7 +1228,7 @@ async def append_trials_to_task(
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task.id}-{next_index}"
-        harbor_config = _build_harbor_config_for_trial(submission, spec)
+        harbor_config = _build_harbor_config_for_trial(submission, spec, model=model)
         trial_environment = spec.environment or (
             "modal" if (harbor_config or {}).get("mode") == "probe" else None
         )

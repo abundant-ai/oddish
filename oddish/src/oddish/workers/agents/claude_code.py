@@ -31,6 +31,7 @@ from tempfile import TemporaryDirectory
 
 from harbor.agents.installed.base import BaseEnvironment
 from harbor.agents.installed.claude_code import ClaudeCode
+from harbor.environments.base import ExecResult
 
 from oddish.core.harbor_source import harbor_sandbox_requirement
 
@@ -117,35 +118,49 @@ def _pinned_harbor_requirement(
         return None
 
 
-def _pinned_oddish_requirement() -> str | None:
-    """The pip requirement that installs an ``oddish`` CLI matching this
-    orchestrator, so the sandbox's ``oddish pull`` speaks the same API/schema
-    the server expects.
-
-    Unlike harbor (a git fork with no PyPI release), oddish is published to
-    PyPI, so pinning the exact installed version is enough -- no git
-    ``direct_url`` resolution needed.
-    """
-    try:
-        return f"oddish=={version('oddish')}"
-    except PackageNotFoundError:
-        logger.warning("pre-trial: oddish not installed in orchestrator; skipping pin")
-        return None
-
-
 class OddishClaudeCode(ClaudeCode):
-    """Stock Claude Code under an Oddish-owned name.
+    """Capture successful sessions so later task steps can resume them."""
 
-    Harbor keeps the prompt off ``claude``'s argv itself: it hands the
-    instruction to the agent's stdin through a transient environment
-    variable and tees the stream-json output to
-    ``/logs/agent/claude-code.txt``. This subclass therefore adds no
-    behaviour; it exists because its import path is a routing key -- the
-    agent-config wrapper selects it by name
-    (``_ODDISH_CLAUDE_CODE_IMPORT_PATH``), the restricted-network
-    compatibility profiles are keyed on it, and
-    :class:`OddishProbeClaudeCode` derives from it.
-    """
+    _resume_session_id: str | None
+
+    async def _exec(
+        self,
+        environment: BaseEnvironment,
+        command: str,
+        user: str | int | None = None,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout_sec: int | None = None,
+    ) -> ExecResult:
+        result = await super()._exec(
+            environment, command, user=user, env=env, cwd=cwd, timeout_sec=timeout_sec
+        )
+        # Harbor captures sessions in its error classifier, but successful steps
+        # bypass it. Use the same identity checks before a later step resumes.
+        session_ids: set[str] = set()
+        for line in f"{result.stdout or ''}\n{result.stderr or ''}".splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                for key in ("session_id", "sessionId"):
+                    value = event.get(key)
+                    if isinstance(value, str) and value:
+                        session_ids.add(value)
+        if session_ids:
+            if len(session_ids) == 1 and (
+                (self._resume_session_id is None and not self._resume)
+                or self._resume_session_id in session_ids
+            ):
+                self._resume_session_id = next(iter(session_ids))
+            else:
+                self.logger.warning(
+                    "Claude Code emitted conflicting session ids after success; "
+                    "refusing to resume it again"
+                )
+                self._resume_session_id = None
+        return result
 
 
 class OddishProbeClaudeCode(OddishClaudeCode):

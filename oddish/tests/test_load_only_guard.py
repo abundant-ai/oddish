@@ -18,10 +18,12 @@ def test_registered_queries_cover_builder_reads():
     assert guard.find_stray_load_only_sites() == []
 
 
-@pytest.mark.parametrize("column", ["harbor_config", "reward"])
+@pytest.mark.parametrize("column", ["analysis_error", "reward"])
 def test_delivery_qa_missing_column_is_rejected(tmp_path, monkeypatch, column):
-    # harbor_config is read by the evaluator; reward by its imported evidence
+    # analysis_error is read by the evaluator; reward by its imported evidence
     # serializer. Both modules must participate in the column check.
+    # harbor_config is no longer loaded onto the ORM object: the query selects
+    # its analysis_payload separately and passes it directly to the evaluator.
     name, query_path, builders = next(
         unit for unit in guard._COVERAGE_UNITS if unit[0] == "delivery_qa_statuses"
     )
@@ -33,3 +35,29 @@ def test_delivery_qa_missing_column_is_rejected(tmp_path, monkeypatch, column):
     monkeypatch.setattr(guard, "_COVERAGE_UNITS", ((name, query_copy, builders),))
 
     assert guard.find_violations() == {name: {"TrialModel": [column]}}
+
+
+@pytest.mark.parametrize(
+    "query,model,column",
+    [
+        ("_compute_board", "TaskModel", "name"),
+        ("_compute_board", "TaskVersionModel", "qa_work"),
+        ("_compute_board", "TaskVersionModel", "content_hash"),
+        ("_compute_board", "TaskVersionModel", "reported_findings"),
+        ("delivery_page", "TaskVersionModel", "reported_findings"),
+        ("delivery_page", "TaskVersionModel", "pre_trial"),
+    ],
+)
+def test_delivery_page_missing_column_is_rejected(
+    tmp_path, monkeypatch, query, model, column
+):
+    name, query_path, builders = next(
+        unit for unit in guard._COVERAGE_UNITS if unit[0] == query
+    )
+    query_copy = tmp_path / query_path.name
+    original = query_path.read_text()
+    missing_column = original.replace(f"{model}.{column},", "")
+    assert missing_column != original
+    query_copy.write_text(missing_column)
+    monkeypatch.setattr(guard, "_COVERAGE_UNITS", ((name, query_copy, builders),))
+    assert guard.find_violations() == {name: {model: [column]}}

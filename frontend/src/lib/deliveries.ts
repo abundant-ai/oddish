@@ -1,5 +1,7 @@
 import type {
   DeliveryBoardResponse,
+  DeliveryPageRow,
+  DeliveryPageResponse,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -14,7 +16,7 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 };
 
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "No blocking defects found",
+  accepted: "Accepted",
   needs_fixes: "Blocking defects found",
   outdated: "Review needs refresh",
   queued: "Review queued",
@@ -30,7 +32,7 @@ export const DELIVERY_STATES = {
     background: "bg-red-500/10",
   },
   qa_incomplete: {
-    label: "QA incomplete",
+    label: "Checks needed",
     tone: "text-amber-700 dark:text-amber-400",
     background: "bg-amber-500/10",
   },
@@ -51,8 +53,9 @@ export type DeliveryTaskState = keyof typeof DELIVERY_STATES;
 /** One state per task, based on delivery requirements rather than review age.
  * Waived checks and acknowledged findings still permit readiness. */
 export function deliveryTaskState(
-  row: DeliveryTaskBoardRow
+  row: DeliveryTaskBoardRow | DeliveryPageRow
 ): DeliveryTaskState {
+  if ("state" in row) return row.state;
   if (row.defects.some((finding) => !finding.acknowledged)) return "needs_work";
   const failedChecks = row.checks.filter(
     (check) => check.kind === "automated" && check.status === "fail"
@@ -68,6 +71,31 @@ export function deliveryTaskState(
   }
   if (failedChecks.length) return "qa_incomplete";
   return row.ready ? "ready" : "awaiting_signoff";
+}
+
+/** Keep missing delivery requirements visible without parsing check prose. */
+export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
+  const defects = row.defects.filter((finding) => !finding.acknowledged).length;
+  if (defects > 0) return [`Rejected: ${defects} Must Fix`];
+  const labels = row.checks
+    .filter((check) => check.kind === "automated" && check.status === "fail")
+    .flatMap((check) =>
+      check.failure_labels?.length
+        ? check.failure_labels
+        : [
+            {
+              pre_trial_passed: "Pre-trial audit needed",
+              min_rollouts: "Run requirements unmet",
+              verdict_ok:
+                row.qa.status === "needs_fixes" ? "Rejected" : "Verdict needed",
+              task_exists: "Task missing",
+              no_must_fix: "Finding decisions needed",
+            }[check.key] ?? check.label,
+          ]
+    );
+  return labels.length
+    ? [...new Set(labels)]
+    : [DELIVERY_STATES[deliveryTaskState(row)].label];
 }
 
 /** Ownership scopes current counts and rows, including completed tasks. */
@@ -125,7 +153,11 @@ export function deliveryProgressHistory(
 }
 
 /** Shareable delivery view. Page numbers in URLs are one-based. */
-export type DeliveryTaskFilter = DeliveryTaskState | "all" | "outstanding";
+export type DeliveryTaskFilter =
+  | DeliveryTaskState
+  | "all"
+  | "outstanding"
+  | "blocked";
 
 export const DELIVERY_PAGE_SIZES = [10, 25, 50, 100];
 
@@ -144,7 +176,9 @@ export function parseDeliveryView(params: Pick<URLSearchParams, "get">) {
         ? page - 1
         : 0,
     filter: (filter &&
-    (Object.hasOwn(DELIVERY_STATES, filter) || filter === "outstanding")
+    (Object.hasOwn(DELIVERY_STATES, filter) ||
+      filter === "outstanding" ||
+      filter === "blocked")
       ? filter
       : "all") as DeliveryTaskFilter,
     issueFilter: issue && Object.hasOwn(QA_ISSUE_LABELS, issue) ? issue : "all",
@@ -189,4 +223,63 @@ export function deliveryViewQuery(
   }
   const query = params.toString();
   return query ? `?${query}` : "";
+}
+
+/** Only parameters affecting returned rows identify a page request/cache entry.
+ * Disclosure state and unrelated link parameters remain in browser history. */
+export function deliveryPageQuery(params: Pick<URLSearchParams, "get">) {
+  const view = parseDeliveryView(params);
+  return deliveryViewQuery("", {
+    page: String(view.page + 1),
+    per_page: String(view.pageSize),
+    filter: view.filter,
+    issue: view.issueFilter,
+    owner: view.ownerFilter,
+    group: view.groupBy,
+    task: view.focusTask,
+  });
+}
+
+/** IDs across the full delivery take precedence over legacy task names,
+ * including when the matching member is not on the loaded page. */
+export function focusedDeliveryTask(
+  page: DeliveryPageResponse,
+  focusTask: string | null
+) {
+  return (
+    page.tasks.find((row) => row.task_id === focusTask) ??
+    (!page.member_task_ids.includes(focusTask ?? "")
+      ? page.tasks.find((row) => row.task_name === focusTask)
+      : undefined)
+  );
+}
+
+/** Reuse a loaded table when only its expanded row changes. Off-page links and
+ * filter exceptions still use the server to locate the correct page. */
+export function deliveryPageContainsView(
+  page: DeliveryPageResponse,
+  loadedQuery: string,
+  requestedQuery: string
+): boolean {
+  const loaded = parseDeliveryView(new URLSearchParams(loadedQuery));
+  const requested = parseDeliveryView(new URLSearchParams(requestedQuery));
+  if (
+    loaded.pageSize !== requested.pageSize ||
+    loaded.filter !== requested.filter ||
+    loaded.issueFilter !== requested.issueFilter ||
+    loaded.ownerFilter !== requested.ownerFilter ||
+    loaded.groupBy !== requested.groupBy
+  )
+    return false;
+  const focus = focusedDeliveryTask(page, requested.focusTask);
+  if (page.focus_outside_filters && focus?.task_id !== page.focus_task_id)
+    return false;
+  if (requested.focusTask) return Boolean(focus);
+  return (
+    page.page ===
+    Math.min(
+      requested.page + 1,
+      Math.max(1, Math.ceil(page.total / requested.pageSize))
+    )
+  );
 }

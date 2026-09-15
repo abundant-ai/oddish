@@ -53,6 +53,8 @@ function renderPanel({
     "react/jsx-runtime": jsx,
     swr: {
       __esModule: true,
+      useSWRConfig: () => ({ mutate: () => {} }),
+      unstable_serialize: JSON.stringify,
       default: (key: string | null) => ({
         data: key?.includes("/panel") ? panel : undefined,
       }),
@@ -81,6 +83,15 @@ function renderPanel({
       fetcher: () => {
         throw new Error("Unexpected request during render");
       },
+    },
+    "@/lib/use-task-file-tree": {
+      useTaskFileTree: () => ({
+        data: undefined,
+        isLoading: false,
+        statusByDirectory: {},
+        identity: "",
+        loadDirectory: () => {},
+      }),
     },
   };
   function load(name: string): unknown {
@@ -137,7 +148,7 @@ function enabledButtons(html: string) {
 test("experiment retry and QA remain available while Overview runs load", () => {
   const buttons = enabledButtons(renderPanel());
   assert.ok(buttons.includes("Rerun trials"));
-  assert.ok(buttons.includes("Run execution review"));
+  assert.ok(buttons.some((label) => label.startsWith("Review runs")));
   assert.deepEqual(buttons, enabledButtons(renderPanel({ loading: false })));
 });
 
@@ -147,7 +158,7 @@ test("experiment cancellation uses available running rows while Overview loads",
   );
   assert.ok(buttons.includes("Cancel (1)"));
   assert.ok(buttons.includes("Rerun trials"));
-  assert.ok(!buttons.includes("Run execution review"));
+  assert.ok(!buttons.some((label) => label.startsWith("Review runs")));
 });
 
 test("unknown panel metadata still disables mutations", () => {

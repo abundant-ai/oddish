@@ -5,6 +5,14 @@
 ## Installation
 
 ```bash
+uv pip install oddish
+```
+
+`oddish update` upgrades that install. `oddish version --check` compares with PyPI.
+
+To install the development tree:
+
+```bash
 uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
@@ -40,12 +48,15 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete trials, tasks, or experiments (what's allowed depends on the deployment; see [Delete Data](#delete-data))
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish link` - print the dashboard URL for a task or trial (built locally; needs no API key)
+- `oddish version` - print the installed CLI version (`--check` compares with the latest PyPI release)
+- `oddish update` - upgrade a `uv pip install oddish` install from PyPI
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 - `oddish skill` - print or install the packaged SKILL.md agent guide
 
 Most commands accept `--json` for machine-readable output (CI / scripts /
 agents). The exceptions are `oddish logs`, `oddish link`, `oddish skill`, and
 the `oddish probe` helpers, which print human-readable output only.
+`oddish version` and `oddish update` are local and do not require an API key.
 
 ### Lifecycle
 
@@ -148,7 +159,7 @@ Options
 - `--force-build/--no-force-build` - Force a rebuild of the environment image
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
-- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
+- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times. New submissions for supported reasoning models default to `reasoning_effort=high`; override with e.g. `--agent-kwarg reasoning_effort=low`. The server saves the selected effort with the trial.
 - `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
 - `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
@@ -385,7 +396,7 @@ The command writes two UTF-8 CSV files (existing files are overwritten):
   agent-run analysis statuses, counts of exported findings by tier, and
   `fetch_error`. Structured detail is stored as JSON inside CSV cells.
 
-Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+The default tier is `must_fix`. Repeat `--tier` to select tiers;
 `optional` is also supported. Counts reflect exported occurrences, not unique
 defects. A finding reported by two runs keeps two rows with distinct trial IDs;
 version-audit findings appear once per version. CSV quoting preserves commas,
@@ -1126,7 +1137,7 @@ oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
 
 Delivery sign-off requires resolving or individually acknowledging every
-reported defect, including historical `should_fix` and `optional` findings.
+reported defect, including historical `optional` findings.
 `oddish delivery check`, `ack`, and `signoff` send the task version shown by the
 board; a version change requires reviewing the board again. `oddish delivery
 history` retains original severity labels and shows the current shipment

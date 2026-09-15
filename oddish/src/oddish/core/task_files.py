@@ -36,6 +36,18 @@ async def resolve_task_file_source(
     Storage still validates legacy manifests against the selected archive.
     """
 
+    row = (
+        await session.execute(task_file_source_query(task_id, version, org_id))
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return task_file_source_from_row(row)
+
+
+def task_file_source_query(
+    task_id: str, version: int | None, org_id: str | None = None
+):
+    """Exact task/version projection, composable with hosted approval checks."""
     version_join = (
         TaskVersionModel.id == TaskModel.current_version_id
         if version is None
@@ -45,6 +57,7 @@ async def resolve_task_file_source(
         )
     )
     query = select(
+        TaskModel.id.label("task_id"),
         TaskVersionModel.version,
         TaskVersionModel.task_s3_key.label("version_s3_key"),
         TaskVersionModel.expanded_manifest_key,
@@ -61,14 +74,16 @@ async def resolve_task_file_source(
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
 
-    row = (await session.execute(query)).one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return query
+
+
+def task_file_source_from_row(row) -> TaskFileSource:
+    """Retain historical-source fallback rules for every file route."""
     # A version without a stored archive pointer may use its canonical version
     # directory. Never let storage's legacy fallback substitute the task-wide
     # archive: it does not prove which version those bytes belong to.
     prefix = (
-        row.version_s3_key or f"tasks/{task_id}/v{row.version}/"
+        row.version_s3_key or f"tasks/{row.task_id}/v{row.version}/"
         if row.version is not None
         else row.legacy_task_s3_key
     )

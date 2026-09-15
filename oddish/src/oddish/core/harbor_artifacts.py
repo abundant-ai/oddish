@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence, cast
 
-
 ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
 
 
@@ -199,6 +198,54 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
         if summary is not None:
             return summary
     return None
+
+
+# Harbor runs the verifier after an agent-phase exception. The scoring policy
+# discards its reward for these recorded provider, authentication, and transport
+# failures, even when the agent completed work before the failure. The exception
+# name alone does not establish whether the environment was changed. This list
+# defines which provider exceptions invalidate scores; it is not a general
+# classifier for sandbox, verifier, or other infrastructure failures.
+#
+# Membership is an explicit list of names rather than a subclass check against
+# Harbor's ``ApiError``. ``exception_type`` is a name persisted in Harbor's
+# ``result.json``, so the class may not exist locally for an imported run; and a
+# subclass check would silently absorb every ``ApiError`` Harbor adds later,
+# including ones that are genuine agent outcomes -- as ``AgentSafetyRefusalError``
+# already is. An unrecognized name keeps today's behavior, so the failure
+# direction of this list is a reward that survives, never a reward invented.
+#
+# Deliberately absent, because the agent's own run ended the trial and the
+# environment it leaves behind is a real result worth grading:
+#   AgentTimeoutError          -- spent the wall clock every agent is given
+#   AgentSafetyRefusalError    -- the model refused; Harbor documents this as a
+#                                 real reward-0 outcome
+#   ContextWindowExceededError -- spent its own context budget
+#   OutputTokenExceededError   -- spent its own output budget
+SCORE_INVALIDATING_EXCEPTIONS: frozenset[str] = frozenset(
+    {
+        # Credential, request, model/resource, or account-limit failures.
+        "AgentAuthenticationError",
+        "ApiClientError",
+        "ApiProviderResourceNotFoundError",
+        "ApiUsageLimitError",
+        "ModelNotFoundError",
+        # Provider or transport failures, including interrupted responses.
+        "ApiConnectionClosedError",
+        "ApiInternalServerError",
+        "ApiOverloadedError",
+        "ApiRateLimitError",
+        "ApiRequestTimeoutError",
+        "ApiResponseStalledError",
+        "NetworkConnectionError",
+        "UnknownApiError",
+    }
+)
+
+
+def invalidates_score(exception_type: str | None) -> bool:
+    """Whether a recorded provider exception invalidates this trial's score."""
+    return exception_type in SCORE_INVALIDATING_EXCEPTIONS
 
 
 def build_trial_result(

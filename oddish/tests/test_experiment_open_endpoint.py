@@ -290,16 +290,21 @@ def test_experiment_open_includes_rejection_preview_without_full_report():
 
 
 @pytest.mark.parametrize("count", [None, 0, 1, 12])
-def test_experiment_open_includes_current_audit_count_without_findings(count):
-    session, response = _open(_task(1, must_fix_count=count))
+def test_experiment_open_includes_selected_audit_status_and_count_without_findings(count):
+    session, response = _open(
+        _task(1, must_fix_count=count, pre_trial_status="success")
+    )
     payload = response.model_dump()["tasks"][0]
     assert payload["must_fix_count"] == count
+    assert payload["pre_trial_status"] == "success"
     assert "pre_trial" not in payload
     sql = _sql(session.calls[2])
     assert "pre_trial_status = 'SUCCESS'" in sql
     assert "jsonb_array_length(jsonb_path_query_array(" in sql
     assert '$.items[*] ? (@.tier == "must_fix")' in sql
     assert "AS must_fix_count" in sql
+    assert "JOIN task_versions AS review_version" in sql
+    assert "coalesce(experiment_task_stats.trial_version_id, tasks.current_version_id)" in sql
     assert len(session.calls) == 4
 
 
@@ -455,6 +460,7 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     assert "link" not in payload
     assert "user" not in payload["tasks"][0]
     assert "must_fix_count" not in payload["tasks"][0]
+    assert "pre_trial_status" not in payload["tasks"][0]
     assert payload["tasks"][0]["github_meta"] == {
         "category": "JS",
         "world": "World_7",
@@ -467,6 +473,9 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     task_query_sql = _sql(session.calls[1])
     assert 'tasks."user"' not in task_query_sql
     assert "must_fix_count" not in task_query_sql
+    assert "pre_trial_status" not in task_query_sql
+    assert "JOIN task_versions AS review_version" not in task_query_sql
+    assert "review_version." not in task_query_sql
 
 
 def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():

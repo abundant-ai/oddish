@@ -2,16 +2,18 @@ import type {
   AnalysisClassification,
   PreTrialFinding,
   Task,
+  Trial,
 } from "@/lib/types";
 import { formatLineRange } from "@/lib/line-range";
 import { taskHasActiveVerdict, taskHasActiveAnalysis } from "@/lib/job-status";
+import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 
 export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
-  GOOD_SUCCESS: "Agent succeeded",
-  GOOD_FAILURE: "Fair agent failure",
-  BAD_SUCCESS: "Invalid success",
-  BAD_FAILURE: "Task-caused failure",
-  HARNESS_ERROR: "Execution not evaluated",
+  GOOD_SUCCESS: "Good success",
+  GOOD_FAILURE: "Good failure",
+  BAD_SUCCESS: "Bad success",
+  BAD_FAILURE: "Bad failure",
+  HARNESS_ERROR: "Harness error",
 };
 
 import { QA_STATUS_LABELS } from "@/lib/deliveries";
@@ -20,8 +22,71 @@ import { QA_STATUS_LABELS } from "@/lib/deliveries";
 // for evidence outside the selected time window or missing required evidence.
 export const REVIEW_LABELS = {
   ...QA_STATUS_LABELS,
-  outdated: "Review outdated",
+  outdated: "No result for this version",
 };
+
+export const VERDICT_LABELS = {
+  accepted: "Accepted",
+  needs_fixes: "Rejected",
+  outdated: "No result for this version",
+  queued: "Review queued",
+  running: "Review running",
+  error: "Review couldn’t finish",
+  never: "Not reviewed",
+};
+
+/** Exclude internal, superseded, and baseline runs from review coverage. */
+export function isReviewableTrial(trial: Trial): boolean {
+  return (
+    !trial.is_probe &&
+    (trial.kind ?? "agent") === "agent" &&
+    !trial.superseded_by_trial_id &&
+    !isBaselineAgentName(trial.agent)
+  );
+}
+
+/** Analysis completion is independent of whether the run produced a valid grade. */
+export function runReviewCounts(trials: Trial[]) {
+  const counts = {
+    total: 0,
+    analyzed: 0,
+    failed: 0,
+    running: 0,
+    queued: 0,
+  };
+  for (const trial of trials) {
+    if (!isReviewableTrial(trial)) continue;
+    counts.total++;
+    if (trial.analysis_status === "running") counts.running++;
+    else if (
+      trial.analysis_status === "pending" ||
+      trial.analysis_status === "queued"
+    )
+      counts.queued++;
+    else if (trial.analysis_status === "failed") counts.failed++;
+    else if (
+      trial.analysis_status === "success" &&
+      trial.analysis?.classification
+    )
+      counts.analyzed++;
+  }
+  return counts;
+}
+
+export function runReviewSummary(trials: Trial[]): string {
+  const counts = runReviewCounts(trials);
+  if (!counts.total) return "No runs";
+  return [
+    `${counts.analyzed}/${counts.total} analyzed`,
+    counts.failed
+      ? `${counts.failed} ${counts.failed === 1 ? "analysis" : "analyses"} failed`
+      : null,
+    counts.running ? `${counts.running} analyzing` : null,
+    counts.queued ? `${counts.queued} queued` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
 
 /** Review progress and task quality; solver failure never determines this. */
 export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {

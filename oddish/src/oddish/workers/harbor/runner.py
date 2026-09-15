@@ -39,7 +39,6 @@ from oddish.config import (
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
     infer_model_provider_prefix,
-    is_anthropic_hdo_model,
     settings,
 )
 from oddish.costs.modal_cost import (
@@ -67,7 +66,7 @@ from .agent_config import (
     _apply_antigravity_cli_oddish_wrapper,
     _apply_gemini_cli_oddish_wrapper,
     _apply_cursor_cli_oddish_wrapper,
-    _resolve_anthropic_hdo_api_key,
+    surfaced_anthropic_env,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -1876,6 +1875,27 @@ async def run_harbor_trial_async(
         )
 
 
+def uses_probe_routing(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
+    """Whether a trial uses the routing rules shared with operator probes.
+
+    Operator probes (``harbor_config.mode == "probe"``) and analysis kinds
+    ``qa``, ``qa_eval``, and ``audit`` share these rules; ``summarize`` does not
+    unless explicitly configured as an operator probe. Sharing routing does
+    not change a trial's kind or its stored ``is_probe`` flag. Claude Code's
+    direct-API choice also requires an available Anthropic key, as checked by
+    ``_claude_code_forces_direct_api``. Execution and job credential selection
+    use this helper so they agree on that routing input.
+    """
+    # Imported here for the same reason the caller below does: the analysis
+    # module imports back into the worker package.
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    raw = harbor_config or {}
+    if raw.get("mode") == "probe":
+        return True
+    return is_analysis_kind(trial_kind) and trial_kind != "summarize"
+
+
 async def _run_harbor_trial_async_impl(
     task_path: Path,
     agent: str,
@@ -1945,7 +1965,7 @@ async def _run_harbor_trial_async_impl(
 
     is_operator_probe = raw.get("mode") == "probe"
     is_analysis_trial = is_analysis_kind(trial_kind)
-    is_probe = is_operator_probe or (is_analysis_trial and trial_kind != "summarize")
+    probe_routing = uses_probe_routing(harbor_config=raw, trial_kind=trial_kind)
     skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
@@ -1972,7 +1992,7 @@ async def _run_harbor_trial_async_impl(
         hc=hc,
         environment=environment,
         backend=backend,
-        is_probe=is_probe,
+        is_probe=probe_routing,
         trial_id=trial_id,
         worker_job_id=worker_job_id,
         sandbox_launch=sandbox_launch,
@@ -2026,7 +2046,7 @@ async def _run_harbor_trial_async_impl(
                 harbor_config=harbor_config,
                 extra_agent_env=extra_agent_env,
                 environment_build_timeout_multiplier=env_build_multiplier,
-                is_probe=is_probe,
+                is_probe=probe_routing,
                 skip_task_validation=skip_task_validation,
             )
         finally:
@@ -2122,20 +2142,16 @@ async def _run_harbor_trial_async_impl(
         # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
         # and auth both use the HDO credential instead of Bedrock / the default
         # Anthropic key. HDO wins over BYOK when the model prefix opts in.
-        byok_anthropic_env: dict[str, str] = {}
-        if is_anthropic_hdo_model(model):
-            byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
-        elif "claude-code" in (agent or "").strip().lower():
-            _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
-            if _byok_key:
-                byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key
+        byok_anthropic_env = surfaced_anthropic_env(
+            agent=agent, model=model, agent_env=extra_agent_env
+        )
 
         with _temporary_env(byok_anthropic_env):
             agent_config = _build_agent_config(
                 agent=agent,
                 model=model,
                 raw_harbor_config=raw,
-                is_probe=is_probe,
+                is_probe=probe_routing,
                 probe_oddish_env=extra_agent_env,
             )
             # Early no-serialized-routes checkpoint, symmetric with the
@@ -2383,7 +2399,7 @@ async def _run_harbor_trial_async_impl(
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+            byok_anthropic_env or _claude_code_forces_direct_api(probe_routing)
         ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
             # bakes in Bedrock credentials. Blank them when claude-code runs

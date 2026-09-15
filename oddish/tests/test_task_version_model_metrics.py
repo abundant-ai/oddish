@@ -33,9 +33,7 @@ async def _seed(session, trials: list[dict]) -> tuple[str, str]:
     version_id = f"tv-{suffix}"
     experiment_id = f"exp-{suffix}"
 
-    session.add(
-        ExperimentModel(id=experiment_id, name=experiment_id, org_id="org-1")
-    )
+    session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id="org-1"))
     session.add(
         TaskModel(
             id=task_id,
@@ -250,7 +248,8 @@ async def test_recompute_is_idempotent(session):
 async def test_trial_moving_backwards_leaves_its_bucket(session):
     """A retried trial is reset to RUNNING with reward and steps nulled."""
     task_id, version_id = await _seed(
-        session, [{"reward": 1.0, "total_steps": 15}, {"reward": 1.0, "total_steps": 25}]
+        session,
+        [{"reward": 1.0, "total_steps": 15}, {"reward": 1.0, "total_steps": 25}],
     )
     await refresh_task_version_model_metrics(session, [version_id])
     assert (await _row(session, version_id)).n_pass == 2
@@ -320,60 +319,8 @@ async def test_group_losing_its_last_trial_is_deleted(session):
 
 
 @pytest.mark.asyncio
-async def test_backfill_covers_versions_and_skips_empty_ones(session):
-    """A version with no in-scope trials yields no row and must not stall the loop.
-
-    A "select versions missing a row" cursor would hand back the trial-less
-    version forever; this is the guard on the keyset pagination that replaced it.
-    """
-    from oddish.core.backfill_task_version_model_metrics import backfill
-
-    _, with_trials = await _seed(session, [{"reward": 1.0, "total_steps": 11}])
-    _, without_trials = await _seed(session, [])
-    await session.commit()
-
-    try:
-        processed = await backfill(batch=5)
-        assert processed > 0
-
-        assert await _row(session, with_trials) is not None
-        assert await _row(session, without_trials) is None
-    finally:
-        await session.rollback()
-
-
-@pytest.mark.asyncio
-async def test_backfill_is_idempotent(session):
-    """Re-running must not duplicate or change rows."""
-    from sqlalchemy import func as sa_func
-
-    from oddish.core.backfill_task_version_model_metrics import backfill
-
-    await _seed(session, [{"reward": 1.0, "total_steps": 21}, {"reward": 0.0}])
-    await session.commit()
-
-    async def _count() -> int:
-        return (
-            await session.execute(
-                select(sa_func.count()).select_from(TaskVersionModelMetricsModel)
-            )
-        ).scalar_one()
-
-    try:
-        await backfill(batch=5)
-        first = await _count()
-        assert first > 0
-
-        await backfill(batch=5)
-        session.expire_all()
-        assert await _count() == first
-    finally:
-        await session.rollback()
-
-
-@pytest.mark.asyncio
 async def test_recompute_takes_the_version_advisory_lock(session):
-    """The backfill calls this directly, so it cannot rely on a caller's lock.
+    """Callers may invoke this directly, so it cannot rely on a caller's lock.
 
     Without a lock, a backfill batch racing a live refresh overwrites a fresh
     row with the snapshot it aggregated moments earlier. Proven by holding the
@@ -393,8 +340,7 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         # paths contend on one lock rather than two.
         await holder.execute(
             sa_text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtextextended(CAST(:v AS text), 0))"
+                "SELECT pg_advisory_xact_lock(" "hashtextextended(CAST(:v AS text), 0))"
             ),
             {"v": version_id},
         )

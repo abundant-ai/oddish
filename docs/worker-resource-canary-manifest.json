@@ -1,0 +1,88 @@
+[
+  {
+    "id": "jackson-databind-logback-deser-071dc9a9-211",
+    "task_id": "jackson-databind-logback-deser-071dc9a9",
+    "model": "openai/gpt-daybreak-blue-latest",
+    "total_steps": 68792,
+    "largest_files": [
+      {
+        "key": "tasks/jackson-databind-logback-deser-071dc9a9/trials/jackson-databind-logback-deser-071dc9a9-211/task-jackson-databind-logback-de__RuHCAZ9/agent/trajectory.json",
+        "bytes": 86189692
+      },
+      {
+        "key": "tasks/jackson-databind-logback-deser-071dc9a9/trials/jackson-databind-logback-deser-071dc9a9-211/task-jackson-databind-logback-de__RuHCAZ9/agent/codex.txt",
+        "bytes": 35733313
+      },
+      {
+        "key": "tasks/jackson-databind-logback-deser-071dc9a9/trials/jackson-databind-logback-deser-071dc9a9-211/task-jackson-databind-logback-de__RuHCAZ9/result.json",
+        "bytes": 6586
+      }
+    ],
+    "task_s3_key": "tasks/jackson-databind-logback-deser-071dc9a9/v6/"
+  },
+  {
+    "id": "lodash-template-cmdinj-f311d7c4-101",
+    "task_id": "lodash-template-cmdinj-f311d7c4",
+    "model": "openai/gpt-5.6-sol",
+    "total_steps": 57244,
+    "largest_files": [
+      {
+        "key": "tasks/lodash-template-cmdinj-f311d7c4/trials/lodash-template-cmdinj-f311d7c4-101/task-lodash-template-cmdinj-f311__VMoCeZE/agent/trajectory.json",
+        "bytes": 49368846
+      },
+      {
+        "key": "tasks/lodash-template-cmdinj-f311d7c4/trials/lodash-template-cmdinj-f311d7c4-101/task-lodash-template-cmdinj-f311__VMoCeZE/agent/codex.txt",
+        "bytes": 19055379
+      },
+      {
+        "key": "tasks/lodash-template-cmdinj-f311d7c4/trials/lodash-template-cmdinj-f311d7c4-101/task-lodash-template-cmdinj-f311__VMoCeZE/result.json",
+        "bytes": 6509
+      }
+    ],
+    "task_s3_key": "tasks/lodash-template-cmdinj-f311d7c4/v5/"
+  },
+  {
+    "id": "implement-hashids-1da734ea-119",
+    "task_id": "implement-hashids-1da734ea",
+    "model": "anthropic-hdo/claude-opus-5",
+    "total_steps": 23,
+    "largest_files": [
+      {
+        "key": "tasks/implement-hashids-1da734ea/trials/implement-hashids-1da734ea-119/attempt-1/task-implement-hashids-1da734ea__rZXrh7o/agent/claude-code.txt",
+        "bytes": 363110
+      },
+      {
+        "key": "tasks/implement-hashids-1da734ea/trials/implement-hashids-1da734ea-119/attempt-1/task-implement-hashids-1da734ea__rZXrh7o/agent/trajectory.json",
+        "bytes": 285258
+      },
+      {
+        "key": "tasks/implement-hashids-1da734ea/trials/implement-hashids-1da734ea-119/attempt-1/task-implement-hashids-1da734ea__rZXrh7o/result.json",
+        "bytes": 4942
+      }
+    ],
+    "task_s3_key": "tasks/implement-hashids-1da734ea/v19/",
+    "normal": true
+  },
+  {
+    "id": "data-quality-profiler-71f457df-159",
+    "task_id": "data-quality-profiler-71f457df",
+    "model": "anthropic-hdo/claude-opus-5",
+    "total_steps": 41,
+    "largest_files": [
+      {
+        "key": "tasks/data-quality-profiler-71f457df/trials/data-quality-profiler-71f457df-159/attempt-1/task-data-quality-profiler-71f45__z4yv6eQ/agent/claude-code.txt",
+        "bytes": 491142
+      },
+      {
+        "key": "tasks/data-quality-profiler-71f457df/trials/data-quality-profiler-71f457df-159/attempt-1/task-data-quality-profiler-71f45__z4yv6eQ/agent/trajectory.json",
+        "bytes": 319374
+      },
+      {
+        "key": "tasks/data-quality-profiler-71f457df/trials/data-quality-profiler-71f457df-159/attempt-1/task-data-quality-profiler-71f45__z4yv6eQ/result.json",
+        "bytes": 5125
+      }
+    ],
+    "task_s3_key": "tasks/data-quality-profiler-71f457df/v18/",
+    "normal": true
+  }
+]

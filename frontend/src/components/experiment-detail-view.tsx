@@ -59,11 +59,7 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
-import {
-  taskReviewFilter,
-  REVIEW_LABELS,
-  type TaskReviewFilter,
-} from "@/lib/review";
+import { taskReviewFilter, type TaskReviewFilter } from "@/lib/review";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 import {
   formatLineRange,
@@ -75,6 +71,7 @@ import { expandTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
+import { ExperimentRunDialog } from "@/components/experiment-run-dialog";
 import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 const TrialDetailPanel = dynamic(
@@ -99,9 +96,12 @@ const TaskFilesPanel = dynamic(
 
 function DrawerContentLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm">
+    <div
+      role="status"
+      aria-label={label}
+      className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm"
+    >
       <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
     </div>
   );
 }
@@ -160,21 +160,11 @@ interface ExperimentDetailViewProps {
   loadFullTrialOnOpen?: boolean;
 }
 
-const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
+const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:v2:";
 
 function isRetryableFocusError(error: unknown): boolean {
   const status = (error as { status?: number } | null)?.status;
   return status == null || status === 408 || status === 429 || status >= 500;
-}
-
-function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
-): Set<string> {
-  return new Set(
-    summaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
-  );
 }
 
 type ExperimentSummary = {
@@ -473,10 +463,7 @@ function ExperimentPrLink({
   const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
   if (!prUrl) {
     return (
-      <span
-        title="No pull request linked to this experiment"
-        className="inline-flex h-8 items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60 select-none"
-      >
+      <span className="inline-flex h-8 items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60 select-none">
         <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
         no PR linked
       </span>
@@ -555,7 +542,6 @@ function ExperimentMetaStrip({
             onClick={handleCopyExperimentId}
             className="h-auto cursor-pointer rounded-sm bg-transparent p-0 font-mono text-[11.5px] font-normal text-[color:var(--paper-ink-2)] transition hover:bg-transparent hover:text-[color:var(--paper-ink)]"
             aria-label={`Copy experiment id ${experimentId}`}
-            title={copied ? "Copied" : "Click to copy experiment id"}
           >
             <span className="select-all">{experimentId}</span>
           </Button>
@@ -638,7 +624,6 @@ function ExperimentSummaryBar({
     return (
       <div className="flex items-center gap-2 rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 text-xs text-[color:var(--paper-ink-3)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Loading experiment summary...
       </div>
     );
   }
@@ -690,7 +675,7 @@ function ExperimentSummaryBar({
     >
       <KpiTile
         label="Avg score"
-        labelInfo="Average of per-task average reward, nop/oracle excluded"
+        labelInfo="Average task score, excluding baseline runs."
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {isLoadingTrials ? (
@@ -707,7 +692,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile
         label="Trials finished"
-        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+        labelInfo="Completed runs, including run errors and skipped runs."
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {doneTrials}
@@ -724,7 +709,7 @@ function ExperimentSummaryBar({
           )}
           {summary.failedTrials > 0 && (
             <span className="ml-1.5 text-[color:var(--paper-fail)]">
-              · {summary.failedTrials} failing
+              · {summary.failedTrials} run errors
             </span>
           )}
         </span>
@@ -738,32 +723,31 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       {qa && (
-        <KpiTile
-          label="Task review"
-          labelInfo="Automated findings and review progress for the loaded tasks. Counts update as results arrive. Execution outcomes and human delivery sign-off are separate. Select a count to filter the results."
-        >
-          <div className="flex flex-wrap gap-1.5 text-xs">
+        <KpiTile label="QA results">
+          <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-xs">
             {(
               [
-                ["accepted", qa.accepted, REVIEW_LABELS.accepted],
-                ["rejected", qa.rejected, REVIEW_LABELS.needs_fixes],
-                ["running", qa.running, "Review queued / running"],
-                ["failed", qa.failed, REVIEW_LABELS.error],
-                ["unreviewed", qa.unreviewed, "No current review"],
+                ["accepted", qa.accepted, "Accepted"],
+                ["rejected", qa.rejected, "Rejected"],
+                ["running", qa.running, "In progress"],
+                ["failed", qa.failed, "Review error"],
+                ["unreviewed", qa.unreviewed, "No current result"],
               ] as const
-            ).map(([value, count, label]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={reviewFilter === value}
-                className={`rounded border px-1.5 py-1 text-left ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
-                onClick={() =>
-                  onReviewFilter(reviewFilter === value ? "all" : value)
-                }
-              >
-                {count} {label}
-              </button>
-            ))}
+            )
+              .filter(([, count]) => count > 0)
+              .map(([value, count, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={reviewFilter === value}
+                  className={`rounded border px-1.5 py-0.5 text-left whitespace-nowrap ${reviewFilter === value ? "border-foreground bg-muted" : "hover:border-border border-transparent"}`}
+                  onClick={() =>
+                    onReviewFilter(reviewFilter === value ? "all" : value)
+                  }
+                >
+                  {count} {label}
+                </button>
+              ))}
             {reviewFilter !== "all" && (
               <button
                 className="underline"
@@ -776,8 +760,8 @@ function ExperimentSummaryBar({
         </KpiTile>
       )}
       <KpiTile
-        label="Cost"
-        labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
+        label="Run cost (all versions)"
+        labelInfo="Run cost across all versions, including runs added from other experiments. Review costs are listed separately."
       >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -785,11 +769,11 @@ function ExperimentSummaryBar({
             costUnavailable
               ? "Experiment spend is unavailable"
               : costPending
-                ? "Calculating experiment spend…"
+                ? undefined
                 : summary.costTrialCount > 0
                   ? `Summed across ${summary.costTrialCount} trial${
                       summary.costTrialCount === 1 ? "" : "s"
-                    } shown in this experiment${
+                    } across all versions in this experiment${
                       // Gathered/shared-task spend is deliberately included: it
                       // prices the work on this page. Warn that those dollars
                       // are also reported on their home experiments so nobody
@@ -844,8 +828,8 @@ function ExperimentSummaryBar({
               size="tile"
               title={
                 summary.qaHasEstimated
-                  ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
-                  : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
+                  ? "Review cost across this experiment's trials. Includes estimated review costs. Not included in the cost figure."
+                  : "Review cost across this experiment's trials. Not included in the cost figure."
               }
             />
           )}
@@ -858,8 +842,8 @@ function ExperimentSummaryBar({
       </KpiTile>
       {showNewSpend && (
         <KpiTile
-          label="New spend"
-          labelInfo="Spend from trials this experiment ran itself — excludes trials gathered from other experiments."
+          label="Launched here"
+          labelInfo="Cost of runs launched in this experiment, across all versions. Review costs are listed separately."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -867,7 +851,7 @@ function ExperimentSummaryBar({
               costUnavailable
                 ? "New spend is unavailable"
                 : costPending
-                  ? "Calculating new spend…"
+                  ? undefined
                   : summary.ownedTrialCount > 0
                     ? `Summed across ${summary.ownedTrialCount} trial${
                         summary.ownedTrialCount === 1 ? "" : "s"
@@ -933,7 +917,7 @@ function ExperimentSummaryBar({
               <QaCostSuffix
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
-                title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
+                title="Review cost on this experiment's own trials. Not included in the run cost."
               />
             )}
           </span>
@@ -1204,19 +1188,12 @@ export function ExperimentDetailView({
   const agentSummaryStorageKey = experimentId
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
-  const { agentSummaries, modelScopedAgents } = useMemo(
+  const agentSummaries = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
     [deferredTasksForDerivedData]
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
-  const displayModelScopedAgents = useMemo(
-    () =>
-      agentSummaries.length > 0
-        ? modelScopedAgents
-        : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
-  );
 
   useEffect(() => {
     if (!agentSummaryStorageKey) {
@@ -1252,36 +1229,33 @@ export function ExperimentDetailView({
     }
   }, [agentSummaryStorageKey, agentSummaries]);
 
-  const buildTrialGroups = useCallback(
-    (task: Task) => {
-      const trialGroups: Array<{
-        agent: string;
-        model: string | null;
-        trials: Trial[];
-      }> = [];
-      const trialsByAgent = new Map<string, Trial[]>();
-      for (const trial of task.trials ?? []) {
-        const key = getExperimentAgentKey(trial, displayModelScopedAgents);
-        const existing = trialsByAgent.get(key) ?? [];
-        existing.push(trial);
-        trialsByAgent.set(key, existing);
-      }
-      for (const [key, trials] of trialsByAgent) {
-        const model = trials.find((t) => t.model)?.model ?? null;
-        trialGroups.push({
-          agent: key,
-          model,
-          trials,
-        });
-      }
-      const orderedTrials: Trial[] = [];
-      for (const group of trialGroups) {
-        orderedTrials.push(...group.trials);
-      }
-      return { trialGroups, orderedTrials };
-    },
-    [displayModelScopedAgents]
-  );
+  const buildTrialGroups = useCallback((task: Task) => {
+    const trialGroups: Array<{
+      agent: string;
+      model: string | null;
+      trials: Trial[];
+    }> = [];
+    const trialsByAgent = new Map<string, Trial[]>();
+    for (const trial of task.trials ?? []) {
+      const key = getExperimentAgentKey(trial);
+      const existing = trialsByAgent.get(key) ?? [];
+      existing.push(trial);
+      trialsByAgent.set(key, existing);
+    }
+    for (const [key, trials] of trialsByAgent) {
+      const model = trials.find((t) => t.model)?.model ?? null;
+      trialGroups.push({
+        agent: key,
+        model,
+        trials,
+      });
+    }
+    const orderedTrials: Trial[] = [];
+    for (const group of trialGroups) {
+      orderedTrials.push(...group.trials);
+    }
+    return { trialGroups, orderedTrials };
+  }, []);
 
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
@@ -1853,7 +1827,19 @@ export function ExperimentDetailView({
                 headerStatus={headerStatus}
                 showPassAtK={showPassAtK}
                 onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-                headerRight={headerRight}
+                headerRight={
+                  <>
+                    {!readOnly && allowRetry && experimentId && (
+                      <ExperimentRunDialog
+                        experimentId={experimentId}
+                        tasks={tasksForExperiment}
+                        disabled={!pagesComplete || isLoading}
+                        onSubmitted={onRerun}
+                      />
+                    )}
+                    {headerRight}
+                  </>
+                }
                 prLink={
                   // The PR chip links into GitHub for the experiment's source
                   // branch — internal context that shouldn't surface on the
@@ -1875,7 +1861,7 @@ export function ExperimentDetailView({
             taskCount={pageSummary?.task_count ?? tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
-            isLoadingTrials={isLoadingTrials}
+            isLoadingTrials={isLoadingTrials && !pagesComplete}
             // The owned-vs-gathered spend split (and the billing attribution
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
@@ -1919,9 +1905,8 @@ export function ExperimentDetailView({
               <ExperimentTrialsTable
                 tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
-                modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
-                isLoadingTrials={isLoadingTrials}
+                isLoadingTrials={isLoadingTrials && !pagesComplete}
                 pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
@@ -2040,7 +2025,7 @@ export function ExperimentDetailView({
               task={drawerState.task}
               staticChecksTaskId={drawerState.task.id}
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={isLoadingTrials && !pagesComplete}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               initialFilePath={taskPaneFile}
@@ -2050,7 +2035,7 @@ export function ExperimentDetailView({
               apiBaseUrl={apiBaseUrl}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               contentOnly={true}
             />
           }
@@ -2069,7 +2054,7 @@ export function ExperimentDetailView({
               allowRetry={allowRetry}
               cancelExperimentId={experimentId}
               showAnalysis={showAnalysis}
-              loadFilesLazily={readOnly}
+              loadFilesLazily
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 cancelPendingDeepLink();
@@ -2089,7 +2074,7 @@ export function ExperimentDetailView({
                   : undefined
               }
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={isLoadingTrials && !pagesComplete}
               initialFilePath={taskPaneFile}
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}

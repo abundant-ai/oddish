@@ -5,6 +5,8 @@ import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers.queue import job_tokens
@@ -41,6 +43,27 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
     ns.get_provider_for_trial = lambda agent, model: _provider_of(model)
     ns.get_openai_agent_env = lambda model: {"OPENAI_API_KEY": base["openai_api_key"]}
     return ns
+
+
+def _force_direct(
+    monkeypatch, settings, *, enabled: bool, ambient_key: str | None
+) -> None:
+    """Drive the real direct-API predicate the bundle now defers to.
+
+    ``agent_config._claude_code_forces_direct_api`` reads the settings singleton
+    and an ambient ANTHROPIC_API_KEY. The flag is set on the injected fake too,
+    because in production ``_issue_job_credentials`` passes that same singleton
+    -- and because a fake without the attribute would let a predicate that
+    ignores the ambient-key guard pass these tests for the wrong reason.
+    """
+    from oddish.config import settings as real_settings
+
+    monkeypatch.setattr(real_settings, "claude_code_force_direct_api", enabled)
+    settings.claude_code_force_direct_api = enabled
+    if ambient_key:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ambient_key)
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def _provider_of(model: str) -> str:
@@ -184,13 +207,165 @@ def test_scoped_model_env_geometric_only_carries_geometric_key() -> None:
     }
 
 
-def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
-    # claude-code invokes Bedrock directly and keeps the routing-flag behavior.
+def test_scoped_model_env_claude_code_bedrock_uses_routing_flag(monkeypatch) -> None:
+    # With Bedrock routing left in place, claude-code invokes Bedrock directly
+    # and keeps the routing-flag behavior.
     settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
         agent="claude-code",
         model="global.anthropic.claude-opus-4-8",
+        settings=settings,
+    )
+    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+
+
+def test_scoped_model_env_claude_code_force_direct_scopes_anthropic_key(
+    monkeypatch,
+) -> None:
+    # Under the force-direct mitigation the runner blanks the Bedrock env and
+    # rewrites the model to the direct Anthropic id. A bundle carrying the
+    # routing flag would be merged into the agent env after that blanking and
+    # send the CLI to Bedrock with an id only api.anthropic.com resolves, so
+    # scope the key the trial actually authenticates with.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_scoped_model_env_probe_scopes_anthropic_key_with_flag_off(monkeypatch) -> None:
+    # A probe is routed to the direct Anthropic API even when
+    # claude_code_force_direct_api is off, so the bundle must follow it there
+    # rather than shipping the Bedrock routing flag the runner just blanked.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+        is_probe=True,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_build_bundle_forwards_is_probe_to_the_scoped_env(monkeypatch) -> None:
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=False, ambient_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    bundle, _ = job_tokens.build_bundle(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        trial_id="t-1",
+        settings=settings,
+        now=_now(),
+        is_probe=True,
+    )
+    assert bundle.model_env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_scoped_model_env_keeps_bedrock_when_no_ambient_anthropic_key(
+    monkeypatch,
+) -> None:
+    """No ambient key means the runner never leaves Bedrock, so nor does the bundle.
+
+    ``_claude_code_forces_direct_api`` returns False when ANTHROPIC_API_KEY is
+    absent from the process environment, whatever the force-direct setting says.
+    Scoping the Anthropic key here would drop CLAUDE_CODE_USE_BEDROCK while the
+    agent stayed on Bedrock.
+    """
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key=None)
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+    )
+    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+
+
+def test_scoped_model_env_byok_key_surfaces_for_the_routing_check(
+    monkeypatch,
+) -> None:
+    """A BYOK Anthropic key must reach the bundle's routing check.
+
+    The runner surfaces the user's key into the environment before it asks
+    ``_claude_code_forces_direct_api``, and blanks Bedrock whenever one is
+    present. A bundle built from the bare worker environment -- no platform
+    key -- would keep the Bedrock routing flag, and that flag is merged into
+    the agent env last, so the user's key would be ignored.
+    """
+    settings = _fake_settings(anthropic_api_key=None)
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key=None)
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        settings=settings,
+        byok_env={"ANTHROPIC_API_KEY": "sk-user"},
+    )
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env
+    assert env == {}
+
+
+def test_surfaced_anthropic_env_matches_the_runner_cases(monkeypatch) -> None:
+    """Pin the extraction so the runner and the bundle keep the same view."""
+    from oddish.workers.harbor import agent_config
+
+    monkeypatch.setattr(
+        agent_config, "_resolve_anthropic_hdo_api_key", lambda: "sk-hdo"
+    )
+    surfaced = agent_config.surfaced_anthropic_env
+    # HDO model: the platform HDO key, and it wins over a BYOK key.
+    assert surfaced(
+        agent="claude-code",
+        model="anthropic-hdo/claude-opus-5",
+        agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+    ) == {"ANTHROPIC_API_KEY": "sk-hdo"}
+    # claude-code with a BYOK key: the user's key.
+    assert surfaced(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-5",
+        agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+    ) == {"ANTHROPIC_API_KEY": "sk-user"}
+    # claude-code without one: nothing surfaced.
+    assert (
+        surfaced(
+            agent="claude-code",
+            model="global.anthropic.claude-opus-5",
+            agent_env=None,
+        )
+        == {}
+    )
+    # BYOK surfacing is claude-code only.
+    assert (
+        surfaced(
+            agent="mini-swe-agent",
+            model="global.anthropic.claude-opus-5",
+            agent_env={"ANTHROPIC_API_KEY": "sk-user"},
+        )
+        == {}
+    )
+
+
+def test_scoped_model_env_single_llm_keeps_bedrock_under_force_direct(
+    monkeypatch,
+) -> None:
+    # The mitigation is claude-code only; SingleLLMAgent still invokes Bedrock.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    _force_direct(monkeypatch, settings, enabled=True, ambient_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="single-llm",
+        model="global.anthropic.claude-opus-5",
         settings=settings,
     )
     assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
@@ -265,3 +440,93 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert isinstance(token_hash, str) and len(token_hash) == 64
     assert not hasattr(bundle, "token")
     assert not hasattr(bundle, "metadata")
+
+
+def test_prepared_trial_routing_defers_to_the_runner_predicate() -> None:
+    """Credential scoping must ask the runner's question, not a copy of it.
+
+    The transport predicate is an operator probe (``harbor_config.mode ==
+    "probe"``) or a non-summarize analysis kind. An earlier version of this
+    helper keyed on ``extra_instructions`` instead, which disagreed with the
+    runner in both directions.
+    """
+    from oddish.workers.harbor.runner import uses_probe_routing
+    from oddish.workers.queue.trial_handler import (
+        PreparedTrialRun,
+        _prepared_trial_uses_probe_routing,
+    )
+
+    def _run(**kw) -> PreparedTrialRun:
+        base = dict(
+            task_path=None,
+            task_s3_key=None,
+            task_id="t",
+            trial_agent="claude-code",
+            trial_model="global.anthropic.claude-opus-5",
+            trial_environment="docker",
+            trial_harbor_config={},
+        )
+        base.update(kw)
+        return PreparedTrialRun(**base)
+
+    cases = [
+        # (harbor_config, trial_kind, expected)
+        ({}, "agent", False),
+        # Operator probe with no extra_instructions: the old helper said False.
+        ({"mode": "probe"}, "agent", True),
+        ({}, "audit", True),
+        ({}, "qa", True),
+        ({}, "qa_eval", True),
+        ({}, "summarize", False),
+        ({"mode": "probe"}, "summarize", True),
+        # Extra instructions alone are not the marker: the old helper said True.
+        ({"extra_instructions": ["x"]}, "agent", False),
+    ]
+    for hc, kind, expected in cases:
+        run = _run(trial_harbor_config=hc, trial_kind=kind)
+        assert _prepared_trial_uses_probe_routing(run) is expected, (hc, kind)
+        assert uses_probe_routing(harbor_config=hc, trial_kind=kind) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["qa", "audit", "qa_eval", "summarize"])
+async def test_analysis_dispatch_preserves_kind_when_sharing_probe_routing(
+    monkeypatch, tmp_path, kind
+):
+    from oddish.workers.queue import trial_handler
+
+    captured = {}
+
+    async def capture_run(**kwargs):
+        captured.update(kwargs)
+
+    async def shutdown(_trial_id):
+        return None
+
+    monkeypatch.setattr(trial_handler, "run_harbor_trial_async", capture_run)
+    monkeypatch.setattr(trial_handler.live_tail, "shutdown", shutdown)
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=None,
+        task_s3_key=None,
+        task_id="task-1",
+        trial_agent="claude-code",
+        trial_model="global.anthropic.claude-opus-5",
+        trial_environment="docker",
+        trial_harbor_config={},
+        trial_kind=kind,
+    )
+
+    result = await trial_handler._execute_trial(
+        trial_id="trial-1",
+        task_path_to_run=tmp_path,
+        temp_task_dir=None,
+        prepared_trial=prepared,
+        worker_id=None,
+    )
+
+    assert result.execution_error is None
+    assert captured["trial_kind"] == kind
+    assert captured["harbor_config"] == {}
+    assert captured["hook_callback"].keywords["probe_task_dir"] == (
+        None if kind == "summarize" else tmp_path
+    )

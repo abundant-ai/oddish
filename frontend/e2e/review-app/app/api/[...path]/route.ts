@@ -1,3 +1,8 @@
+import { requirementExamples } from "../../../requirement-examples";
+import {
+  pageFixture,
+  selectionFixture,
+} from "../../../../delivery-page-fixtures";
 import { NextRequest, NextResponse } from "next/server";
 import { board, tasks, openFor, versionFor } from "../../../records";
 export async function GET(request: NextRequest) {
@@ -5,7 +10,21 @@ export async function GET(request: NextRequest) {
     .slice(5)
     .split("/")
     .map(decodeURIComponent);
-  if (parts[0] === "deliveries") return NextResponse.json(board);
+  if (parts[0] === "deliveries" && parts[1] === "requirements-demo") {
+    const examples = requirementExamples();
+    return NextResponse.json(
+      parts[2] === "selection"
+        ? selectionFixture(examples, request.nextUrl.searchParams)
+        : pageFixture(examples, request.nextUrl.searchParams)
+    );
+  }
+  if (parts[0] === "deliveries") {
+    return NextResponse.json(
+      parts[2] === "selection"
+        ? selectionFixture(board, request.nextUrl.searchParams)
+        : pageFixture(board, request.nextUrl.searchParams)
+    );
+  }
   const task = tasks.find((item) => item.id === parts[1]);
   if (parts[0] === "tasks" && task) {
     const versionId = request.nextUrl.searchParams.get("version_id");
@@ -59,13 +78,27 @@ export async function GET(request: NextRequest) {
           source_hash: `fixture-v${version}`,
         });
       }
-      return NextResponse.json({
-        files: request.nextUrl.searchParams.get("prefix")
-          ? [{ path: "tests/test.sh", type: "file", size: 140 }]
-          : [{ path: "tests", type: "directory" }],
+      const directoryPage = (prefix: string) => ({
+        files:
+          prefix === "tests"
+            ? [{ path: "tests/test.sh", key: "tests/test.sh", size: 140 }]
+            : [],
+        dirs: prefix === "" ? [{ path: "tests" }] : [],
         source_hash: `fixture-v${version}`,
-        next_cursor: null,
+        cursor: null,
       });
+      const directories = request.nextUrl.searchParams.getAll("directories");
+      return NextResponse.json(
+        directories.length
+          ? {
+              directories: Object.fromEntries(
+                directories.map((prefix) => [prefix, directoryPage(prefix)])
+              ),
+              version,
+              source_hash: `fixture-v${version}`,
+            }
+          : directoryPage(request.nextUrl.searchParams.get("prefix") ?? "")
+      );
     }
   }
   if (parts[0] === "trials") {

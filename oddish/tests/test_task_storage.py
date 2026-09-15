@@ -1442,3 +1442,239 @@ async def test_expanded_and_archive_listings_agree_on_file_set(monkeypatch):
     archive_paths = sorted(str(entry["path"]) for entry in archive_listing["files"])
     expanded_paths = sorted(str(entry["path"]) for entry in expanded_listing["files"])
     assert archive_paths == expanded_paths
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", [False, True])
+async def test_directory_batch_shares_validation_and_lists_pages_concurrently(
+    monkeypatch, published
+):
+    import asyncio
+
+    storage = storage_mod.StorageClient()
+    expanded_prefix = (
+        "tasks/task-123/v7-expanded/revision/"
+        if published
+        else "tasks/task-123/v7-files/"
+    )
+    head = AsyncMock(return_value={"ETag": "archive-v7"})
+    matches = AsyncMock(return_value=True)
+    monkeypatch.setattr(storage, "head_object", head)
+    monkeypatch.setattr(storage, "_expanded_manifest_matches_archive", matches)
+    arrived = []
+    all_started = asyncio.Event()
+
+    async def list_objects(prefix, *, delimiter, max_keys, continuation_token):
+        assert prefix.startswith(expanded_prefix)
+        assert (delimiter, max_keys, continuation_token) == ("/", 100, None)
+        arrived.append(prefix)
+        if len(arrived) == 4:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), 1)
+        return {
+            "objects": [{"key": prefix + "first.txt", "size": 12}],
+            "common_prefixes": [prefix + "nested/"],
+            "next_token": "continue:" + prefix,
+            "is_truncated": True,
+        }
+
+    monkeypatch.setattr(storage, "list_objects", list_objects)
+    batch = await storage.list_task_directories(
+        task_id="task-123",
+        directories=["", "solution", "tests", "environment"],
+        limit=100,
+        version=7,
+        task_s3_prefix="tasks/task-123/v7/",
+        expanded=True,
+        expanded_manifest_key=expanded_prefix + ".oddish-manifest.json",
+    )
+    assert head.await_count == (0 if published else 2)
+    assert matches.await_count == (0 if published else 1)
+    assert batch["version"] == 7
+    for path, page in batch["directories"].items():
+        prefix = expanded_prefix + (path + "/" if path else "")
+        assert page["cursor"] == "continue:" + prefix
+        assert page["truncated"] is True
+        assert page["recursive"] is False
+        assert page["presigned"] is False
+        assert page["files"][0]["path"] == (path + "/" if path else "") + "first.txt"
+        assert "content" not in page["files"][0]
+        assert "url" not in page["files"][0]
+
+
+@pytest.mark.asyncio
+async def test_archive_batch_loads_exact_source_once_and_preserves_each_cursor(
+    monkeypatch,
+):
+    storage = storage_mod.StorageClient()
+    archive = _make_task_archive(
+        {"a.txt": "a", "z.txt": "z", "tests/a.sh": "a", "tests/z.sh": "z"}
+    )
+    head = AsyncMock(return_value={"ETag": "v7"})
+    load = AsyncMock(return_value=(archive, *storage_mod._parse_task_archive(archive)))
+    monkeypatch.setattr(storage, "head_object", head)
+    monkeypatch.setattr(storage, "_load_task_archive", load)
+    batch = await storage.list_task_directories(
+        task_id="task-123",
+        directories=["", "tests", "tests/"],
+        limit=1,
+        version=7,
+        task_s3_prefix="tasks/task-123/v7-revisions/old/",
+        expanded=False,
+    )
+    head.assert_awaited_once_with("tasks/task-123/v7-revisions/old/.oddish-task.tar.gz")
+    load.assert_awaited_once()
+    assert set(batch["directories"]) == {"", "tests"}
+    assert batch["directories"][""]["files"][0]["path"] == "a.txt"
+    assert batch["directories"]["tests"]["files"][0]["path"] == "tests/a.sh"
+    assert all(page["cursor"] == "1" for page in batch["directories"].values())
+    assert all(
+        "content" not in page["files"][0] for page in batch["directories"].values()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "directories",
+    [["../other"], ["/absolute"], ["valid", "nested/../../other"], [""] * 9, []],
+)
+async def test_invalid_directory_batch_never_touches_storage(monkeypatch, directories):
+    storage = storage_mod.StorageClient()
+    head = AsyncMock()
+    monkeypatch.setattr(storage, "head_object", head)
+    with pytest.raises(HTTPException) as error:
+        await storage.list_task_directories(
+            task_id="task-123", directories=directories, limit=100
+        )
+    assert error.value.status_code == 400
+    head.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_definition_previews_are_bounded_and_do_not_mutate_archive_cache(
+    monkeypatch,
+):
+    storage = storage_mod.StorageClient()
+    texts = {f"tests/{i:02}.txt": "x" * 32768 for i in range(20)}
+    texts.update({"instruction.md": "hello", "tests/large.txt": "x" * 32769})
+    archive = _make_task_archive(texts)
+    parsed = (archive, *storage_mod._parse_task_archive(archive))
+    monkeypatch.setattr(storage, "head_object", AsyncMock(return_value={"ETag": "v7"}))
+    load = AsyncMock(return_value=parsed)
+    monkeypatch.setattr(storage, "_load_task_archive", load)
+    result = await storage.list_task_directories(
+        task_id="task-123",
+        directories=["", "tests"],
+        limit=100,
+        version=7,
+        task_s3_prefix="tasks/task-123/v7/",
+        expanded=False,
+        previews=True,
+    )
+    files = [file for page in result["directories"].values() for file in page["files"]]
+    included = [file for file in files if "content" in file]
+    assert (
+        next(file for file in included if file["path"] == "instruction.md")["content"]
+        == "hello"
+    )
+    assert 1 < len(included) <= 16
+    assert sum(len(file["content"].encode()) for file in included) <= 256 * 1024
+    assert all(len(file["content"].encode()) <= 32 * 1024 for file in included)
+    assert all("content" not in file for file in parsed[1])
+    load.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cached_immutable_archive_skips_head_but_legacy_still_validates(
+    monkeypatch,
+):
+    storage = storage_mod.StorageClient()
+    archive = _make_task_archive({"instruction.md": "old"})
+    head = AsyncMock(return_value={"ETag": '"old"'})
+    download = AsyncMock(return_value=archive)
+    monkeypatch.setattr(storage, "head_object", head)
+    monkeypatch.setattr(storage, "download_bytes", download)
+    monkeypatch.setattr(
+        storage_mod.StorageClient, "_archive_cache", storage_mod.OrderedDict()
+    )
+    monkeypatch.setattr(
+        storage_mod.StorageClient, "_archive_etag_hints", storage_mod.OrderedDict()
+    )
+    monkeypatch.setattr(storage_mod.StorageClient, "_archive_cache_bytes", 0)
+    prefix = "tasks/task-123/v7-revisions/" + "a" * 32 + "/"
+    kwargs = dict(
+        task_id="task-123",
+        version=7,
+        task_s3_prefix=prefix,
+        expanded=False,
+        file_path="instruction.md",
+        presign=False,
+    )
+    assert (await storage.get_task_file_content(**kwargs))["content"] == "old"
+    assert (await storage.get_task_file_content(**kwargs))["content"] == "old"
+    assert head.await_count == download.await_count == 1
+    # New publication gets a distinct key and must not reuse the old bytes.
+    download.return_value = _make_task_archive({"instruction.md": "new"})
+    kwargs["task_s3_prefix"] = prefix.replace("a" * 32, "b" * 32)
+    assert (await storage.get_task_file_content(**kwargs))["content"] == "new"
+    assert head.await_count == download.await_count == 2
+    kwargs["task_s3_prefix"] = "tasks/task-123/v7/"
+    await storage.get_task_file_content(**kwargs)
+    await storage.get_task_file_content(**kwargs)
+    assert head.await_count == 4
+    assert download.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_published_definition_preview_failure_does_not_hide_other_files(
+    monkeypatch,
+):
+    storage = storage_mod.StorageClient()
+    prefix = "tasks/task-123/v7-expanded/revision/"
+    monkeypatch.setattr(
+        storage, "head_object", AsyncMock(side_effect=AssertionError("no HEAD"))
+    )
+    monkeypatch.setattr(
+        storage,
+        "list_objects",
+        AsyncMock(
+            return_value={
+                "objects": [
+                    {"key": prefix + path, "size": size}
+                    for path, size in [
+                        ("instruction.md", 4),
+                        ("binary.dat", 4),
+                        ("slow.txt", 4),
+                        ("large.txt", 40000),
+                    ]
+                ],
+                "common_prefixes": [],
+                "next_token": None,
+                "is_truncated": False,
+            }
+        ),
+    )
+
+    async def read(key, max_bytes):
+        if key.endswith("binary.dat"):
+            raise UnicodeError("binary")
+        if key.endswith("slow.txt"):
+            await storage_mod.asyncio.sleep(10)
+        return "text", False
+
+    download = AsyncMock(side_effect=read)
+    monkeypatch.setattr(storage, "download_text_prefix", download)
+    result = await storage.list_task_directories(
+        task_id="task-123",
+        version=7,
+        directories=[""],
+        limit=100,
+        expanded_manifest_key=prefix + ".oddish-manifest.json",
+        previews=True,
+    )
+    files = {file["path"]: file for file in result["directories"][""]["files"]}
+    assert files["instruction.md"]["content"] == "text"
+    assert "content" not in files["binary.dat"]
+    assert "content" not in files["large.txt"]
+    assert "content" not in files["slow.txt"]
+    assert download.await_count == 3

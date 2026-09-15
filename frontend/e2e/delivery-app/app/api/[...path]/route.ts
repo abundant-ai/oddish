@@ -1,3 +1,7 @@
+import {
+  pageFixture,
+  selectionFixture,
+} from "../../../../delivery-page-fixtures";
 import { board, history } from "../../../../delivery-fixtures";
 let version = 7;
 let latest = 7;
@@ -13,7 +17,9 @@ export async function GET(request: Request) {
   return Response.json(
     path.endsWith("qa-history")
       ? history(version, latest, status)
-      : board(version)
+      : path.endsWith("selection")
+        ? selectionFixture(board(version), new URL(request.url).searchParams)
+        : pageFixture(board(version), new URL(request.url).searchParams)
   );
 }
 // Local-only controls also support the inline browser acceptance demonstration.

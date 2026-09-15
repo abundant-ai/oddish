@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseDeliveryView, deliveryViewQuery } from "../src/lib/deliveries.ts";
+import {
+  parseDeliveryView,
+  deliveryViewQuery,
+  deliveryPageQuery,
+  deliveryPageContainsView,
+} from "../src/lib/deliveries.ts";
 
 test("shared links restore every delivery filter and the focused task", () => {
   const query = deliveryViewQuery("?source=slack", {
@@ -143,4 +148,106 @@ test("changing one view field preserves every other URL parameter", () => {
     panels: "history,all-versions",
     source: "slack",
   });
+});
+
+test("legacy blocked links retain their filter when changing pages", () => {
+  const query = deliveryViewQuery("?filter=blocked&owner=mine", { page: "2" });
+  const view = parseDeliveryView(new URLSearchParams(query));
+  assert.equal(view.filter, "blocked");
+  assert.equal(view.ownerFilter, "mine");
+  assert.equal(view.page, 1);
+});
+
+test("page request keys retain agent filters but exclude disclosures and unrelated parameters", () => {
+  const shared = new URLSearchParams(
+    "page=2&per_page=50&filter=blocked&issue=verifier&owner=mine&group=owner&task=legacy-task&panels=history&source=agent"
+  );
+  const key = deliveryPageQuery(shared);
+  assert.equal(
+    key,
+    "?page=2&per_page=50&filter=blocked&issue=verifier&owner=mine&group=owner&task=legacy-task"
+  );
+  shared.set("panels", "history,all-versions");
+  shared.set("source", "another-agent");
+  assert.equal(deliveryPageQuery(shared), key);
+  assert.equal(
+    deliveryPageQuery(
+      new URLSearchParams("filter=all&page=1&per_page=25&group=none")
+    ),
+    ""
+  );
+});
+
+test("expansion and collapse reuse the visible page, but paging and filters do not", () => {
+  const page = {
+    tasks: [
+      { task_id: "a", task_name: "Task A" },
+      { task_id: "b", task_name: "Task B" },
+    ],
+    member_task_ids: ["a", "b", "c"],
+    page: 1,
+    per_page: 25,
+    total: 60,
+    focus_task_id: null,
+    focus_outside_filters: false,
+  } as import("../src/lib/types").DeliveryPageResponse;
+  for (const query of ["", "?task=a", "?task=b", "?task=Task+A"]) {
+    assert.equal(deliveryPageContainsView(page, "", query), true);
+  }
+  for (const query of [
+    "?task=c",
+    "?page=2",
+    "?owner=mine",
+    "?filter=ready",
+    "?group=owner",
+    "?issue=verifier",
+    "?per_page=10",
+  ]) {
+    assert.equal(deliveryPageContainsView(page, "", query), false);
+  }
+  assert.equal(deliveryPageContainsView(page, "?task=a", "?task=b"), true);
+});
+
+test("cached off-filter focus cannot leave its extra row in a different view", () => {
+  const page = {
+    tasks: [
+      { task_id: "a", task_name: "Task A" },
+      { task_id: "b", task_name: "Task B" },
+    ],
+    member_task_ids: ["a", "b"],
+    page: 1,
+    per_page: 25,
+    total: 2,
+    focus_task_id: "a",
+    focus_outside_filters: true,
+  } as import("../src/lib/types").DeliveryPageResponse;
+  assert.equal(
+    deliveryPageContainsView(
+      page,
+      "?filter=ready&task=a",
+      "?filter=ready&task=Task+A"
+    ),
+    true
+  );
+  for (const query of ["?filter=ready", "?filter=ready&task=b"]) {
+    assert.equal(
+      deliveryPageContainsView(page, "?filter=ready&task=a", query),
+      false
+    );
+  }
+});
+
+test("off-page task IDs win over visible legacy names and clamped pages are reusable", () => {
+  const page = {
+    tasks: [{ task_id: "a", task_name: "b" }],
+    member_task_ids: ["a", "b"],
+    page: 3,
+    per_page: 25,
+    total: 60,
+    focus_task_id: null,
+    focus_outside_filters: false,
+  } as import("../src/lib/types").DeliveryPageResponse;
+  assert.equal(deliveryPageContainsView(page, "?page=3", "?task=b"), false);
+  assert.equal(deliveryPageContainsView(page, "?page=3", "?page=100"), true);
+  assert.equal(deliveryPageContainsView(page, "?page=3", "?page=1"), false);
 });

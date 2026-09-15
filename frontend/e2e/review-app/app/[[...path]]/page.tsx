@@ -20,5 +20,10 @@ export default async function Page({
       />
     );
   if (path[0] === "experiments") return <FixtureExperiment />;
-  return <DeliveryBoardClient deliveryId="review-demo" initialBoard={null} />;
+  return (
+    <DeliveryBoardClient
+      deliveryId={path[1] ?? "review-demo"}
+      initialBoard={null}
+    />
+  );
 }

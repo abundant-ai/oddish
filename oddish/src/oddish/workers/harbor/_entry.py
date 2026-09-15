@@ -13,7 +13,6 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any
-from uuid import UUID
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
@@ -99,14 +98,7 @@ def _apply_sibling_harbor_patches(
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
-    def _json_default(value: Any) -> str:
-        if isinstance(value, UUID):
-            return str(value)
-        raise TypeError(
-            f"Object of type {type(value).__name__} is not JSON serializable"
-        )
-
-    sys.stdout.write(json.dumps(payload, default=_json_default) + "\n")
+    sys.stdout.write(json.dumps(payload, default=str) + "\n")
     sys.stdout.flush()
 
 

@@ -215,6 +215,8 @@ async def build_dispatch_plan(
     held_by_lane: dict[str, int] | None = None,
     fairness_cursors: dict[str, int] | None = None,
     pending_by_org_queue: dict[QueueDemandKey, int] | None = None,
+    candidate_by_org_queue: dict[QueueDemandKey, int] | None = None,
+    candidate_capacity: int = 0,
 ) -> DispatchPlan:
     """Discover queue work and compute the variant-preserving spawn plan.
 
@@ -245,6 +247,8 @@ async def build_dispatch_plan(
         capacity_limits_by_lane=capacity_limits_by_lane,
         held_by_lane=held_by_lane,
         fairness_cursors=fairness_cursors,
+        candidate_by_org_queue=candidate_by_org_queue,
+        candidate_capacity=candidate_capacity,
     )
 
     queued_by_queue: dict[str, int] = {}

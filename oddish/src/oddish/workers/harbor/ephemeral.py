@@ -20,7 +20,13 @@ from harbor.models.trial.config import EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
 from thunder_sandbox import CapacityError
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import (
+    BEDROCK_ENV_VARS,
+    anthropic_hdo_bare_model_id,
+    is_anthropic_hdo_model,
+    settings,
+    to_anthropic_api_model_id,
+)
 from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.runtime.backends.daytona import DaytonaBackend
@@ -31,8 +37,10 @@ from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
     _claude_code_forces_direct_api,
+    _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
+    surfaced_anthropic_env,
 )
 from .outcome import (
     HarborOutcome,
@@ -48,6 +56,7 @@ from .model_hosts import agent_runtime_hosts, outbound_hosts_for_model
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
+_CHILD_STREAM_LIMIT = 8 * 1024 * 1024
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
 
@@ -101,6 +110,35 @@ def _child_process_env() -> dict[str, str]:
     return env
 
 
+def _claude_code_on_direct_anthropic(
+    agent: str, model: str | None, is_probe: bool
+) -> bool:
+    """Whether this trial's claude-code agent runs against the direct Anthropic API.
+
+    Blanking ``BEDROCK_ENV_VARS`` and rewriting the model id are two halves of
+    one routing decision, so both callers below read it from here. Splitting
+    them is what let a Bedrock inference-profile id reach api.anthropic.com.
+    """
+    return "claude-code" in (agent or "").strip().lower() and (
+        is_anthropic_hdo_model(model) or _claude_code_forces_direct_api(is_probe)
+    )
+
+
+def _child_model_name(*, agent: str, model: str | None, is_probe: bool) -> str | None:
+    """Resolve the model id for the transport the child will actually use.
+
+    A direct Anthropic request needs ``claude-opus-5`` instead of the stored
+    Bedrock id ``global.anthropic.claude-opus-5`` or the account-selecting
+    prefix in ``anthropic-hdo/claude-opus-5``. Only the child request changes;
+    the trial keeps its stored model identity.
+    """
+    if not _claude_code_on_direct_anthropic(agent, model, is_probe):
+        return model
+    if is_anthropic_hdo_model(model):
+        model = anthropic_hdo_bare_model_id(model or "")
+    return to_anthropic_api_model_id(model)
+
+
 def _runtime_env_overrides(
     *, agent: str, model: str | None, raw_harbor_config: dict[str, Any], is_probe: bool
 ) -> dict[str, str]:
@@ -114,9 +152,7 @@ def _runtime_env_overrides(
     env: dict[str, str] = {}
     if uses_openai:
         env.update(settings.get_openai_agent_env(model=openai_model))
-    if "claude-code" in (
-        agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
+    if _claude_code_on_direct_anthropic(agent, model, is_probe):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
@@ -145,12 +181,20 @@ def _build_payload(
             environment_config.kwargs = DaytonaBackend().harbor_env_kwargs(
                 dict(environment_config.kwargs)
             )
-    runtime_env = _runtime_env_overrides(
-        agent=agent,
-        model=model,
-        raw_harbor_config=raw_harbor_config,
-        is_probe=is_probe,
+    # Match execution and credential scoping: the routing check must see the
+    # trial's key, including HDO precedence over a user-supplied key. Restore
+    # the worker environment before starting any asynchronous child work.
+    anthropic_env = surfaced_anthropic_env(
+        agent=agent, model=model, agent_env=extra_agent_env
     )
+    with _temporary_env(anthropic_env):
+        child_model = _child_model_name(agent=agent, model=model, is_probe=is_probe)
+        runtime_env = _runtime_env_overrides(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw_harbor_config,
+            is_probe=is_probe,
+        )
     agent_config = dict(raw_harbor_config.get("agent_config") or {})
     if _supports_auto_restricted_agent_network(
         task_path=task_path,
@@ -165,6 +209,7 @@ def _build_payload(
             **dict(agent_config.get("env") or {}),
             **runtime_env,
             **dict(extra_agent_env or {}),
+            **anthropic_env,
         }
         agent_kwargs = dict(agent_config.get("kwargs") or {})
         if resolved_agent_env:
@@ -196,7 +241,7 @@ def _build_payload(
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
-        "model": model,
+        "model": child_model,
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": agent_config,
         "verifier": raw_harbor_config.get("verifier") or {},
@@ -218,10 +263,10 @@ def _build_payload(
             else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
-        "runtime_env": runtime_env,
+        "runtime_env": {**anthropic_env, **runtime_env},
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
-        "extra_agent_env": extra_agent_env or {},
+        "extra_agent_env": {**(extra_agent_env or {}), **anthropic_env},
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,
             is_probe=is_probe,
@@ -431,6 +476,7 @@ async def run_ephemeral_harbor_trial(
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_CHILD_STREAM_LIMIT,
             start_new_session=True,
             env=child_env,
         )

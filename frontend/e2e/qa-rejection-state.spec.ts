@@ -54,13 +54,13 @@ test("rejected experiment copy uses the must-fix count", () => {
       ...rejected,
       must_fix_count: 1,
     })
-  ).toBe("1 Must Fix");
+  ).toBe("Rejected: 1 Must Fix");
   expect(
     rejectedMustFixLabel({
       ...rejected,
       must_fix_count: 3,
     })
-  ).toBe("3 Must Fix");
+  ).toBe("Rejected: 3 Must Fix");
 });
 
 test("a failing solver run alone does not reject a task", () => {

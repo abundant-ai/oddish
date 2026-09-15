@@ -65,7 +65,6 @@ _SUMMARY_COLUMNS = _TASK_COLUMNS + [
     "qa_runs",
     "analysis_status_counts",
     "must_fix_count",
-    "should_fix_count",
     "optional_count",
     "fetch_error",
 ]
@@ -200,7 +199,7 @@ def export_qa(
         list[ActionTier] | None,
         typer.Option(
             "--tier",
-            help="Include this severity (repeatable; default: must_fix and should_fix).",
+            help="Include this severity (repeatable; default: must_fix).",
         ),
     ] = None,
     all_versions: Annotated[
@@ -242,7 +241,7 @@ def export_qa(
         raise typer.BadParameter("Output paths must not overwrite --ids-file")
     api_url = (api or get_api_url()).rstrip("/")
     headers = get_auth_headers(api_url)
-    tiers = {t.value for t in (tier or [ActionTier.MUST_FIX, ActionTier.SHOULD_FIX])}
+    tiers = {t.value for t in (tier or [ActionTier.MUST_FIX])}
     failures = finding_count = 0
     try:
         # One pooled, thread-safe client; the existing endpoint owns QA selection

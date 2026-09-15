@@ -60,7 +60,7 @@ def test_tree_only_listing_forwards_inline_and_presign_flags(client, version_que
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -112,7 +112,7 @@ def test_directory_page_forwards_prefix_limit_and_cursor(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.list_task_files_s3", new=list_files),
     ):
         response = client.get(
@@ -162,7 +162,7 @@ def test_selected_file_forwards_preview_limit(client):
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get(
@@ -222,7 +222,7 @@ def test_selected_file_http_error_handling(
 
     with (
         patch("auth.get_read_session", new=fake_get_read_session),
-        patch("api.routers.tasks.resolve_task_file_source", new=resolve_source),
+        patch("api.routers.tasks.resolve_authorized_task_file_source", new=resolve_source),
         patch("api.routers.tasks.get_task_file_content_s3", new=get_file),
     ):
         response = client.get("/tasks/task-1/files/test.sh?version=3")
@@ -230,3 +230,118 @@ def test_selected_file_http_error_handling(
     assert response.status_code == storage_status
     assert response.json() == {"detail": detail}
     assert handled_statuses == expected_handled_statuses
+
+
+def test_batch_uses_one_authorized_source_and_releases_session_before_storage(
+    client, monkeypatch
+):
+    active = False
+    sessions = 0
+
+    @asynccontextmanager
+    async def session():
+        nonlocal active, sessions
+        sessions += 1
+        active = True
+        yield object()
+        active = False
+
+    async def resolve(*_, **kwargs):
+        assert kwargs == {"task_id": "task-1", "version": 7}
+        async with session():
+            return TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
+
+    async def list_directories(**kwargs):
+        assert not active
+        assert kwargs["directories"] == ["", "tests"]
+        assert kwargs["previews"] is True
+        assert kwargs["version"] == 7
+        assert kwargs["limit"] == 100
+        return {
+            "task_id": "task-1",
+            "directories": {"": {"cursor": "root-2"}, "tests": {"cursor": "tests-2"}},
+        }
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("auth.get_read_session", session)
+    monkeypatch.setattr("api.routers.tasks.resolve_authorized_task_file_source", resolve)
+    monkeypatch.setattr(
+        "oddish.core.sharing.helpers.get_storage_client",
+        lambda: SimpleNamespace(list_task_directories=list_directories),
+    )
+    response = client.get(
+        "/tasks/task-1/files?version=7&directories=&directories=tests&limit=100&recursive=0&inline=0&presign=0&previews=true"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["source_hash"] == "hash-7"
+    assert response.json()["directories"]["tests"]["cursor"] == "tests-2"
+    assert sessions == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "recursive=1",
+        "inline=1",
+        "presign=1",
+        "stream=1",
+        "cursor=page-2",
+        "prefix=tests",
+    ],
+)
+def test_batch_rejects_incompatible_listing_modes(client, monkeypatch, extra):
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    monkeypatch.setattr("auth.get_read_session", session)
+    monkeypatch.setattr(
+        "api.routers.tasks.resolve_authorized_task_file_source",
+        AsyncMock(return_value=TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")),
+    )
+    storage = AsyncMock()
+    monkeypatch.setattr("oddish.core.sharing.helpers.get_storage_client", storage)
+    response = client.get(
+        "/tasks/task-1/files?directories=&recursive=0&inline=0&presign=0&" + extra
+    )
+    assert response.status_code == 400, response.text
+    storage.assert_not_called()
+
+
+@pytest.mark.parametrize("visible", [False, True])
+def test_public_directory_batch_keeps_share_token_and_version_scope(
+    client, monkeypatch, visible
+):
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    access = AsyncMock(return_value=object() if visible else None)
+    resolve = AsyncMock(
+        return_value=TaskFileSource(7, "tasks/task-1/v7/", None, "hash-7")
+    )
+    storage = AsyncMock(
+        return_value={"directories": {"tests": {"files": [], "cursor": "page-2"}}}
+    )
+    monkeypatch.setattr("oddish.core.sharing.public.get_read_session", session)
+    monkeypatch.setattr(
+        "oddish.core.sharing.public.get_public_task_for_experiment", access
+    )
+    monkeypatch.setattr("oddish.core.sharing.public.resolve_task_file_source", resolve)
+    monkeypatch.setattr("oddish.core.sharing.public.list_task_files_s3", storage)
+    response = client.get(
+        "/public/experiments/share-token/tasks/task-1/files?version=7&directories=&directories=tests&recursive=0&inline=0&presign=0&limit=100"
+    )
+    assert access.await_args.args[1:] == ("share-token", "task-1")
+    if not visible:
+        assert response.status_code == 404
+        resolve.assert_not_awaited()
+        storage.assert_not_awaited()
+    else:
+        assert response.status_code == 200, response.text
+        assert resolve.await_args.kwargs == {"task_id": "task-1", "version": 7}
+        assert storage.await_args.kwargs["directories"] == ["", "tests"]
+        assert storage.await_args.kwargs["inline"] is False
+        assert storage.await_args.kwargs["source_hash"] == "hash-7"
+        assert response.json()["directories"]["tests"]["cursor"] == "page-2"

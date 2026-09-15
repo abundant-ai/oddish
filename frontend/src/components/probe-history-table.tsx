@@ -9,7 +9,7 @@ import { isWorkerOwnedTrialStatus } from "@/lib/job-status";
 type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
 
 type Recommendation = {
-  priority?: "must_fix" | "should_fix" | "optional";
+  priority?: "must_fix" | "optional";
 };
 
 type Analysis = {
