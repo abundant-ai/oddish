@@ -85,7 +85,11 @@ def build_trial_specs_from_sweep(
                     ),
                 ) from exc
 
-        norm_model = settings.normalize_trial_model(config.agent, config.model)
+        try:
+            norm_model = settings.normalize_trial_model(config.agent, config.model)
+        except ValueError as exc:
+            # Preserve create_task's client error when validating before creation.
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         agent_config = with_default_reasoning_effort(
             config.agent, norm_model, config.agent_config
         )
