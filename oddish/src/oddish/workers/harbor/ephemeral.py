@@ -267,15 +267,20 @@ def _build_payload(
             raw_harbor_config=raw_harbor_config,
             is_probe=is_probe,
         )
+        # Both halves of the model decision read the same surfaced view: the
+        # child's Bedrock/direct choice for claude-code, and the routed
+        # builder's spelling for every other agent. Evaluate here, inside the
+        # wrapper, so neither is asked under the bare worker environment.
+        child_model = _child_model_id(
+            routed,
+            model=_child_model_name(agent=agent, model=model, is_probe=is_probe),
+        )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
         "outcome_path": str(outcome_path),
         "agent": agent,
-        "model": _child_model_id(
-            routed,
-            model=_child_model_name(agent=agent, model=model, is_probe=is_probe),
-        ),
+        "model": child_model,
         "environment_config": environment_config.model_dump(mode="json"),
         "agent_config": _child_agent_config(
             routed, raw_harbor_config=raw_harbor_config, is_probe=is_probe
