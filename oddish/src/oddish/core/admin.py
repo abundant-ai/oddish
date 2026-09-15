@@ -37,6 +37,7 @@ from oddish.db import (
     ModalCostSpanModel,
     TaskModel,
     TrialModel,
+    VerifierCostModel,
     task_experiments,
     utcnow,
 )
@@ -1472,6 +1473,7 @@ class CostTotals(BaseModel):
     cost_estimated_usd: float
     qa_cost_usd: float = 0.0
     compute_cost_usd: float = 0.0
+    verifier_cost_usd: float = 0.0
     prev_cost_usd: float | None = None
     month_cost_usd: float = 0.0
     month_budget_usd: float | None = None
@@ -1889,23 +1891,75 @@ async def _compute_cost_time_series(
     )
 
 
-# Stack keys for the inference-vs-QA-vs-compute "type" series.
+# Stack keys for the inference-vs-QA-vs-compute-vs-verifier "type" series.
 _TYPE_INFERENCE_KEY = "inference"
 _TYPE_QA_KEY = "qa"
 _TYPE_COMPUTE_KEY = "compute"
+_TYPE_VERIFIER_KEY = "verifier"
+
+
+async def _verifier_cost_time_series(
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+    org_id: str | None = None,
+) -> CostSeries:
+    """CUA / verifier LLM spend by created_at bucket (platform-funded)."""
+    bucket_col = _utc_date_trunc(bucket, VerifierCostModel.created_at)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            func.coalesce(func.sum(VerifierCostModel.cost_usd), 0.0).label("cost_usd"),
+        )
+        .where(
+            VerifierCostModel.deleted_at.is_(None),
+            VerifierCostModel.cost_usd.isnot(None),
+        )
+        .group_by(bucket_col)
+    )
+    if since is not None:
+        query = query.where(VerifierCostModel.created_at >= since)
+    if org_id is not None:
+        query = query.where(VerifierCostModel.org_id == org_id)
+
+    per_bucket: dict[datetime, dict[str, float]] = {}
+    totals: dict[str, float] = {_TYPE_VERIFIER_KEY: 0.0}
+    for row in (await session.execute(query)).all():
+        cost = float(row.cost_usd)
+        per_bucket[row.bucket] = {_TYPE_VERIFIER_KEY: cost}
+        totals[_TYPE_VERIFIER_KEY] = totals.get(_TYPE_VERIFIER_KEY, 0.0) + cost
+
+    return _build_dimension_series(
+        "verifier",
+        bucket_starts=sorted(per_bucket),
+        per_bucket=per_bucket,
+        totals=totals,
+        trials_per_bucket={},
+        labels={_TYPE_VERIFIER_KEY: "Verifier"},
+    )
 
 
 def _build_type_series(
     trial_series: CostSeries,
     qa_series: CostSeries,
     compute_series: CostSeries,
+    verifier_series: CostSeries | None = None,
 ) -> CostSeries:
     inference_by_bucket = {b.bucket_start: b.cost_usd for b in trial_series.buckets}
     trials_by_bucket = {b.bucket_start: b.trial_count for b in trial_series.buckets}
     qa_by_bucket = {b.bucket_start: b.cost_usd for b in qa_series.buckets}
     compute_by_bucket = {b.bucket_start: b.cost_usd for b in compute_series.buckets}
+    verifier_by_bucket = (
+        {b.bucket_start: b.cost_usd for b in verifier_series.buckets}
+        if verifier_series is not None
+        else {}
+    )
     bucket_starts = sorted(
-        set(inference_by_bucket) | set(qa_by_bucket) | set(compute_by_bucket)
+        set(inference_by_bucket)
+        | set(qa_by_bucket)
+        | set(compute_by_bucket)
+        | set(verifier_by_bucket)
     )
 
     buckets: list[CostSeriesBucket] = []
@@ -1913,6 +1967,7 @@ def _build_type_series(
         inference = inference_by_bucket.get(bstart, 0.0)
         qa = qa_by_bucket.get(bstart, 0.0)
         compute = compute_by_bucket.get(bstart, 0.0)
+        verifier = verifier_by_bucket.get(bstart, 0.0)
         costs: dict[str, float] = {}
         if inference > 0:
             costs[_TYPE_INFERENCE_KEY] = round(inference, 4)
@@ -1920,10 +1975,12 @@ def _build_type_series(
             costs[_TYPE_QA_KEY] = round(qa, 4)
         if compute > 0:
             costs[_TYPE_COMPUTE_KEY] = round(compute, 4)
+        if verifier > 0:
+            costs[_TYPE_VERIFIER_KEY] = round(verifier, 4)
         buckets.append(
             CostSeriesBucket(
                 bucket_start=bstart,
-                cost_usd=round(inference + qa + compute, 4),
+                cost_usd=round(inference + qa + compute + verifier, 4),
                 trial_count=trials_by_bucket.get(bstart, 0),
                 costs=costs,
             )
@@ -1934,6 +1991,7 @@ def _build_type_series(
             CostSeriesKey(key=_TYPE_INFERENCE_KEY, label="Model inference"),
             CostSeriesKey(key=_TYPE_QA_KEY, label="QA"),
             CostSeriesKey(key=_TYPE_COMPUTE_KEY, label="Compute"),
+            CostSeriesKey(key=_TYPE_VERIFIER_KEY, label="Verifier"),
         ],
         buckets=buckets,
     )
@@ -2123,8 +2181,14 @@ async def get_cost_breakdown_core(
     series_compute_by_provider = await _compute_cost_time_series(
         session, since=since, bucket=bucket, org_id=org_id
     )
+    series_verifier = await _verifier_cost_time_series(
+        session, since=since, bucket=bucket, org_id=org_id
+    )
     series_by_type = _build_type_series(
-        series_by_agent, series_qa_by_model, series_compute_by_provider
+        series_by_agent,
+        series_qa_by_model,
+        series_compute_by_provider,
+        series_verifier,
     )
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
@@ -2552,6 +2616,20 @@ async def get_cost_breakdown_core(
         )
     ]
 
+    verifier_query = select(
+        func.coalesce(func.sum(VerifierCostModel.cost_usd), 0.0).label("cost_usd"),
+    ).where(
+        VerifierCostModel.deleted_at.is_(None),
+        VerifierCostModel.cost_usd.isnot(None),
+    )
+    if since is not None:
+        verifier_query = verifier_query.where(VerifierCostModel.created_at >= since)
+    if org_id is not None:
+        verifier_query = verifier_query.where(VerifierCostModel.org_id == org_id)
+    verifier_cost_total = round(
+        float((await session.execute(verifier_query)).scalar_one() or 0.0), 4
+    )
+
     totals = CostTotals(
         window_days=window_days,
         trial_count=total_trials,
@@ -2570,6 +2648,7 @@ async def get_cost_breakdown_core(
         cost_estimated_usd=round(total_estimated, 4),
         qa_cost_usd=qa_cost_total,
         compute_cost_usd=compute_cost_total,
+        verifier_cost_usd=verifier_cost_total,
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
         month_budget_usd=month_budget,

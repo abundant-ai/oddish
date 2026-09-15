@@ -12,7 +12,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ExperimentsList } from "@/components/experiments-list";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { TagChip } from "@/components/tag-chip";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
@@ -427,6 +430,10 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                 <QaCostSuffix
                   costUsd={task.qa_cost_usd}
                   title="QA/analysis spend for this task's trials. Not included in the cost figure."
+                />
+                <VerifierCostSuffix
+                  costUsd={task.verifier_cost_usd}
+                  title="CUA/verifier LLM spend for this task's trials. Not included in the cost figure."
                 />
               </div>
               {task.cost_trial_count > 0 ? (

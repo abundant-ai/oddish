@@ -766,8 +766,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         ? "bg-amber-500"
         : "bg-blue-500";
   const qaCost = totals.qa_cost_usd ?? 0;
+  const verifierCost = totals.verifier_cost_usd ?? 0;
   const computeCost = totals.compute_cost_usd ?? 0;
-  const grandTotal = totals.cost_usd + qaCost + computeCost;
+  const grandTotal = totals.cost_usd + qaCost + verifierCost + computeCost;
   return (
     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
@@ -781,8 +782,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
               <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
             </TooltipTrigger>
             <TooltipContent className="max-w-[280px]">
-              Model inference plus QA plus compute, each broken out alongside.
-              Compute is a sandbox-runtime estimate, not a provider invoice.
+              Model inference plus QA plus verifier plus compute, each broken
+              out alongside. Compute is a sandbox-runtime estimate, not a
+              provider invoice.
             </TooltipContent>
           </Tooltip>
         </div>
@@ -791,6 +793,8 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         <ComponentStat label="Model inference" cost={totals.cost_usd} />
         <span className="bg-border h-8 w-px shrink-0" />
         <ComponentStat label="QA" cost={qaCost} />
+        <span className="bg-border h-8 w-px shrink-0" />
+        <ComponentStat label="Verifier" cost={verifierCost} />
         <span className="bg-border h-8 w-px shrink-0" />
         <ComponentStat label="Compute est." cost={computeCost} />
       </div>

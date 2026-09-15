@@ -1713,6 +1713,17 @@ Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
 within the existing 64-character column; high-volume ledger inserts must not
 truncate UUIDs to the eight-character IDs used by some other entities.
 
+CUA / verifier LLM spend lives in `verifier_costs` (sibling of
+`analysis_costs`), one row per `(trial_id, attempt, component)` for
+`cua_loop` and `cua_judge`. It is **never** folded into `trials.cost_usd`
+(solver only), the `analysis_spend` view, user quotas, or the people
+leaderboard (`billed_user_id` stays null). Settlement reads local
+`verifier/` artifacts after Harbor; cleanup backfills from S3 with
+`cost_source=backfill`. Surfaces: trial/experiment/task tiles and the
+admin type stack (`verifier` next to inference / QA / compute). Public
+share pages omit it. Apply core migration `verifier_costs_001` before
+deploying readers.
+
 ### Default Harbor dependency
 
 The default Harbor pin includes Modal domain-filter initialization for restricted

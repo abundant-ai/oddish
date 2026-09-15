@@ -11,6 +11,7 @@ from oddish.core.endpoints._common import (
 )
 from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
+from oddish.core.endpoints.verifier_cost import get_trial_verifier_costs
 from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
@@ -125,6 +126,9 @@ async def get_trial_response_for_org_core(
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
+    verifier_costs = await get_trial_verifier_costs(
+        session, trial_ids=[trial.id], org_id=org_id
+    )
     exclusions = await load_cost_exclusions(session)
     response = build_trial_response(
         trial,
@@ -132,6 +136,7 @@ async def get_trial_response_for_org_core(
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
         qa_cost_usd=qa_costs.get(trial.id),
+        verifier_cost_usd=verifier_costs.get(trial.id),
         exclusions=exclusions,
     )
     response.pre_trial_findings = (pre_trial or {}).get("items") or []

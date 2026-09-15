@@ -16,7 +16,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { useUserUiLayout } from "@/lib/use-user-ui-layout";
@@ -194,6 +197,9 @@ type ExperimentSummary = {
   qaCostUsd: number;
   ownedQaCostUsd: number;
   qaHasEstimated: boolean;
+  verifierCostUsd: number;
+  ownedVerifierCostUsd: number;
+  verifierHasEstimated: boolean;
   ownedCostUsd: number;
   ownedTrialCount: number;
   ownedHasEstimated: boolean;
@@ -287,6 +293,9 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     qaCostUsd: 0,
     ownedQaCostUsd: 0,
     qaHasEstimated: false,
+    verifierCostUsd: 0,
+    ownedVerifierCostUsd: 0,
+    verifierHasEstimated: false,
     ownedCostUsd: 0,
     ownedTrialCount: 0,
     ownedHasEstimated: false,
@@ -597,6 +606,7 @@ function ExperimentSummaryBar({
   isInitialLoading,
   isLoadingTrials,
   showNewSpend,
+  showVerifierSpend = true,
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
@@ -612,6 +622,8 @@ function ExperimentSummaryBar({
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
   showNewSpend: boolean;
+  /** CUA/verifier spend is internal recon; omit on public share pages. */
+  showVerifierSpend?: boolean;
   costStatus: ExperimentCostTotalsResource["status"];
   qa: {
     accepted: number;
@@ -824,15 +836,28 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
           {!costPending && !costUnavailable && (
-            <QaCostSuffix
-              costUsd={summary.qaCostUsd}
-              size="tile"
-              title={
-                summary.qaHasEstimated
-                  ? "Review cost across this experiment's trials. Includes estimated review costs. Not included in the cost figure."
-                  : "Review cost across this experiment's trials. Not included in the cost figure."
-              }
-            />
+            <>
+              <QaCostSuffix
+                costUsd={summary.qaCostUsd}
+                size="tile"
+                title={
+                  summary.qaHasEstimated
+                    ? "Review cost across this experiment's trials. Includes estimated review costs. Not included in the cost figure."
+                    : "Review cost across this experiment's trials. Not included in the cost figure."
+                }
+              />
+              {showVerifierSpend && (
+                <VerifierCostSuffix
+                  costUsd={summary.verifierCostUsd}
+                  size="tile"
+                  title={
+                    summary.verifierHasEstimated
+                      ? "CUA/verifier LLM spend across this experiment's trials. Includes estimated verifier costs. Not included in the cost figure."
+                      : "CUA/verifier LLM spend across this experiment's trials. Not included in the cost figure."
+                  }
+                />
+              )}
+            </>
           )}
         </span>
         {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
@@ -915,11 +940,20 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
             {!costPending && !costUnavailable && (
-              <QaCostSuffix
-                costUsd={summary.ownedQaCostUsd}
-                size="tile"
-                title="Review cost on this experiment's own trials. Not included in the run cost."
-              />
+              <>
+                <QaCostSuffix
+                  costUsd={summary.ownedQaCostUsd}
+                  size="tile"
+                  title="Review cost on this experiment's own trials. Not included in the run cost."
+                />
+                {showVerifierSpend && (
+                  <VerifierCostSuffix
+                    costUsd={summary.ownedVerifierCostUsd}
+                    size="tile"
+                    title="CUA/verifier LLM spend on this experiment's own trials. Not included in the run cost."
+                  />
+                )}
+              </>
             )}
           </span>
           {!costPending &&
@@ -1707,6 +1741,9 @@ export function ExperimentDetailView({
       qaCostUsd: exactCostTotals.qa_cost_usd ?? 0,
       ownedQaCostUsd: exactCostTotals.owned_qa_cost_usd ?? 0,
       qaHasEstimated: exactCostTotals.qa_has_estimated ?? false,
+      verifierCostUsd: exactCostTotals.verifier_cost_usd ?? 0,
+      ownedVerifierCostUsd: exactCostTotals.owned_verifier_cost_usd ?? 0,
+      verifierHasEstimated: exactCostTotals.verifier_has_estimated ?? false,
       tokenCount: exactCostTotals.token_count,
       tokenTrialCount: exactCostTotals.token_trial_count,
       // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
@@ -1890,6 +1927,7 @@ export function ExperimentDetailView({
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
             showNewSpend={!readOnly}
+            showVerifierSpend={!readOnly}
             costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
             reviewFilter={reviewFilter}
