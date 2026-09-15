@@ -350,7 +350,7 @@ def run(
             "-e",
             help=(
                 "Execution environment (docker, daytona, ec2, e2b, modal, archil, "
-                "runloop, gke). "
+                "runloop, gke, thunder). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
