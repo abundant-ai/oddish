@@ -13,6 +13,7 @@ from oddish.core.harbor_artifacts import (
     is_infrastructure_exception,
 )
 from oddish.db import TrialStatus
+from oddish.worker.local_runner import _verifier_reward_for_result
 from oddish.workers.harbor.runner import HarborOutcome
 from oddish.workers.queue import trial_handler
 from oddish.workers.queue.trial_handler import _store_trial_results
@@ -338,3 +339,44 @@ async def test_end_hook_keeps_a_real_zero(monkeypatch):
 
     assert trial.reward == 0.0
     assert trial.status == TrialStatus.SUCCESS
+
+
+def _local_result(exception_type: str | None, reward: float | str | None = 0.0):
+    exception_info = None
+    if exception_type is not None:
+        exception_info = SimpleNamespace(
+            exception_type=exception_type,
+            exception_message=f"{exception_type}: provider rejected the request",
+        )
+    verifier_result = (
+        SimpleNamespace(rewards={"reward": reward}) if reward is not None else None
+    )
+    return SimpleNamespace(
+        exception_info=exception_info,
+        verifier_result=verifier_result,
+    )
+
+
+@pytest.mark.parametrize("reward", [0.0, 1.0])
+def test_local_runner_drops_a_reward_from_a_provider_rejection(reward):
+    assert _verifier_reward_for_result(_local_result("ApiClientError", reward)) is None
+
+
+def test_local_runner_keeps_an_agent_owned_ending_reward():
+    assert _verifier_reward_for_result(_local_result("AgentTimeoutError", 0.0)) == 0.0
+
+
+def test_local_runner_keeps_a_real_zero():
+    assert _verifier_reward_for_result(_local_result(None, 0.0)) == 0.0
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        _local_result(None, None),
+        _local_result(None, "not-a-number"),
+    ],
+)
+def test_local_runner_reports_no_reward_when_the_verifier_did_not(result):
+    assert _verifier_reward_for_result(result) is None
