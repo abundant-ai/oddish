@@ -1406,8 +1406,12 @@ request issues is its latency budget. Three rules keep that number down:
   read session **refuses to flush**: any pending ORM change raises
   `RuntimeError("get_read_session() is read-only ...")`, so a GET that grows a
   write fails in tests instead of autocommitting statement by statement. The
-  one GET that writes on purpose (`tags.py` `get_policy`, which lazily inserts
-  a default policy) stays on `get_session()`.
+  GETs that write on purpose use `get_session()` for those writes:
+  `tags.py` `get_policy` lazily inserts a default policy. The dashboard resolves
+  author filters in a write transaction because a missing attribution profile
+  saves discovered identities and reclaims unowned experiments. That transaction
+  commits before a separate `get_read_session()` loads the dashboard, so the
+  first Mine response includes newly claimed experiments.
 - **Reads that tolerate a not-yet-migrated table go through
   `read_optional_table`** (`oddish/db/optional_read.py`). It opens a
   `SAVEPOINT` on write sessions and none on read sessions (PostgreSQL rejects
