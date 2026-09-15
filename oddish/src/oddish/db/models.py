@@ -1867,7 +1867,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         String(64), nullable=False, server_default=text("'default'")
     )
 
-    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # Credential/capacity routing lane. Provider lanes receive only their own
     # control + SSH material; every other job remains on the secret-free lane.
     execution_lane: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'default'")
@@ -1951,7 +1951,7 @@ class WorkerJobModel(TimestampedMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "execution_lane IN ('default', 'ec2_trial')",
+            "execution_lane IN ('default', 'ec2_trial', 'thunder_trial')",
             name="ck_worker_jobs_execution_lane",
         ),
         Index(
@@ -2012,6 +2012,15 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+    # Durable provider-handoff provenance. A pending teardown makes the row
+    # undispatchable until cleanup confirms the source sandbox is gone.
+    reroute_from_environment: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    reroute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reroute_pending_teardown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Per-stage timing for the pre-harbor preamble (design spec §12). The
     # existing claimed_at/started_at cover claim+total-elapsed; these fill the

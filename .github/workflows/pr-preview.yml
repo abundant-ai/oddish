@@ -196,8 +196,12 @@ jobs:
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "400"
       ODDISH_MODAL_MAX_WORKERS_PER_POLL: "400"
+      # Thunder Compute Configs
+      ODDISH_THUNDER_ENABLED: "true"
+      ODDISH_THUNDER_SECRET_NAME: "oddish-thunder"
+      ODDISH_THUNDER_MAX_CAPACITY: "128"
       # Let one model fill the preview worker pool during load tests.
-      ODDISH_DEFAULT_MODEL_CONCURRENCY: "400"
+      ODDISH_DEFAULT_MODEL_CONCURRENCY: "300"
       ODDISH_MODEL_CONCURRENCY_OVERRIDES: "{}"
       ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
