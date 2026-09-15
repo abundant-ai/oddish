@@ -1,16 +1,9 @@
 "use client";
 
-import {
-  Suspense,
-  use,
-  useEffect,
-  useRef,
-  useState,
-  useTransition,
-} from "react";
-import useSWR from "swr";
+import { useEffect, useRef, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -56,10 +49,7 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { ExperimentsSkeleton } from "./experiments-skeleton";
-import type {
-  DashboardExperiment,
-  DashboardExperimentAuthor,
-} from "@/lib/types";
+import type { DashboardResponse, DashboardExperimentAuthor } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import {
   SearchSyntaxHelp,
@@ -75,8 +65,9 @@ import {
   prBadge,
 } from "@/lib/utils";
 import {
+  buildDashboardApiPath,
+  dashboardExperimentsRequest,
   DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
-  DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
 } from "@/lib/dashboard-request";
 import { badgeVariants } from "@/components/ui/badge";
 import { UsageSummaryCard } from "@/components/usage-overview";
@@ -105,7 +96,6 @@ import {
 // Experiments list — server-fetched, streamed via Suspense
 // =============================================================================
 
-const EXPERIMENTS_PAGE_SIZE = DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "active", label: "Active trials" },
@@ -115,15 +105,6 @@ const STATUS_FILTER_OPTIONS = [
   { value: "pending-verdict", label: "QA pending" },
   { value: "failed", label: "Failures" },
 ] as const;
-
-// Resolved by the server-side experiments-only fetch (see dashboard/page.tsx).
-// `ok` is false when the upstream fetch failed so the body can surface an error
-// instead of an empty state.
-export type ExperimentsResult = {
-  experiments: DashboardExperiment[];
-  hasMore: boolean;
-  ok: boolean;
-};
 
 function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
   if (!author) return "—";
@@ -374,11 +355,10 @@ function MineEmptyExperimentsState({
 }
 
 // =============================================================================
-// Experiments table body — unwraps the server promise inside Suspense
+// Experiment list — one shared cache per account and complete filter URL
 // =============================================================================
 
 function ExperimentsTableBody({
-  promise,
   authorFilter,
   statusFilter,
   searchQuery,
@@ -388,7 +368,6 @@ function ExperimentsTableBody({
   onRefreshData,
   onViewOrgExperiments,
 }: {
-  promise: Promise<ExperimentsResult>;
   authorFilter: string;
   statusFilter: string;
   searchQuery: string;
@@ -398,7 +377,32 @@ function ExperimentsTableBody({
   onRefreshData: () => void;
   onViewOrgExperiments: () => void;
 }) {
-  const { experiments, hasMore, ok } = use(promise);
+  const { userId, orgId } = useAuth();
+  const queryParams = useSearchParams();
+  const requestUrl = buildDashboardApiPath(
+    dashboardExperimentsRequest(new URLSearchParams(queryParams.toString()))
+  );
+  const { data, error, isLoading } = useSWR<DashboardResponse>(
+    userId && orgId
+      ? ["dashboard-experiments", userId, orgId, requestUrl]
+      : null,
+    ([, , , url]: string[]) =>
+      fetcher<DashboardResponse>(url, { cache: "no-store" }),
+    {
+      revalidateOnFocus: false,
+      revalidateIfStale: false,
+      dedupingInterval: 2_000,
+      refreshInterval: (current) =>
+        current?.experiments?.some(
+          (row) => row.summary_pending || row.active_trials > 0
+        )
+          ? 5_000
+          : 30_000,
+    }
+  );
+  const experiments = data?.experiments ?? [];
+  const hasMore = data?.experiments_has_more ?? false;
+  const ok = !error;
   // The qa-report experiment is a debug surface; verdicts live inline on the
   // experiment page. Only admins get a pointer to the machinery.
   const canSeeQaReport = isOrgAdminRole(useAuth().orgRole);
@@ -451,6 +455,8 @@ function ExperimentsTableBody({
       setIsDeleting(false);
     }
   };
+
+  if (isLoading || (!data && !error)) return <ExperimentsSkeleton />;
 
   return (
     <>
@@ -525,17 +531,18 @@ function ExperimentsTableBody({
                             aria-label="Published experiment"
                           />
                         )}
-                        {experiment.qa_report_experiment_id && canSeeQaReport && (
-                          <Link
-                            href={`/experiments/${encodeExperimentRouteParam(
-                              experiment.qa_report_experiment_id
-                            )}`}
-                            className="text-muted-foreground rounded border border-amber-500/30 px-1 py-px text-[10px] leading-none whitespace-nowrap hover:border-amber-500/60 hover:underline"
-                            title="Open this experiment's QA report"
-                          >
-                            qa report
-                          </Link>
-                        )}
+                        {experiment.qa_report_experiment_id &&
+                          canSeeQaReport && (
+                            <Link
+                              href={`/experiments/${encodeExperimentRouteParam(
+                                experiment.qa_report_experiment_id
+                              )}`}
+                              className="text-muted-foreground rounded border border-amber-500/30 px-1 py-px text-[10px] leading-none whitespace-nowrap hover:border-amber-500/60 hover:underline"
+                              title="Open this experiment's QA report"
+                            >
+                              qa report
+                            </Link>
+                          )}
                       </div>
                       {(experiment.user_tags?.length ?? 0) > 0 && (
                         <div className="mt-0.5 flex flex-wrap items-center gap-1">
@@ -605,15 +612,25 @@ function ExperimentsTableBody({
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell>{experiment.task_count}</TableCell>
+                    <TableCell>
+                      {experiment.summary_pending
+                        ? "Preparing…"
+                        : experiment.task_count}
+                    </TableCell>
                     <TableCell className="font-mono text-xs whitespace-nowrap">
                       {/* done = terminal (success + failed + skipped), so a
                           finished experiment reads N/N, not "2/5". The (R)/(F)/(S)
                           suffixes break down the composition. */}
-                      {experiment.completed_trials +
-                        experiment.failed_trials +
-                        experiment.skipped_trials}
-                      /{experiment.total_trials}
+                      {experiment.summary_pending ? (
+                        "—"
+                      ) : (
+                        <>
+                          {experiment.completed_trials +
+                            experiment.failed_trials +
+                            experiment.skipped_trials}
+                          /{experiment.total_trials}
+                        </>
+                      )}
                       {retryingTrials > 0 && (
                         <span className="text-amber-500 dark:text-amber-300">
                           {" "}
@@ -753,12 +770,10 @@ function ExperimentsTableBody({
 }
 
 // =============================================================================
-// Recent Experiments card — filter controls + Suspense-wrapped table
+// Recent Experiments card — filter controls and cached rows
 // =============================================================================
 
 function RecentTasksCard({
-  experimentsPromise,
-  paramsKey,
   searchQuery,
   onSearchQueryChange,
   statusFilter,
@@ -771,8 +786,6 @@ function RecentTasksCard({
   onRefreshData,
   onViewOrgExperiments,
 }: {
-  experimentsPromise: Promise<ExperimentsResult>;
-  paramsKey: string;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   statusFilter: string;
@@ -897,19 +910,16 @@ function RecentTasksCard({
         </div>
       </CardHeader>
       <CardContent>
-        <Suspense key={paramsKey} fallback={<ExperimentsSkeleton />}>
-          <ExperimentsTableBody
-            promise={experimentsPromise}
-            authorFilter={authorFilter}
-            statusFilter={statusFilter}
-            searchQuery={searchQuery}
-            currentExperimentsPage={currentExperimentsPage}
-            onPreviousExperimentsPage={onPreviousExperimentsPage}
-            onNextExperimentsPage={onNextExperimentsPage}
-            onRefreshData={onRefreshData}
-            onViewOrgExperiments={onViewOrgExperiments}
-          />
-        </Suspense>
+        <ExperimentsTableBody
+          authorFilter={authorFilter}
+          statusFilter={statusFilter}
+          searchQuery={searchQuery}
+          currentExperimentsPage={currentExperimentsPage}
+          onPreviousExperimentsPage={onPreviousExperimentsPage}
+          onNextExperimentsPage={onNextExperimentsPage}
+          onRefreshData={onRefreshData}
+          onViewOrgExperiments={onViewOrgExperiments}
+        />
       </CardContent>
     </Card>
   );
@@ -945,7 +955,6 @@ const TRIAL_FILTER_PARAM_KEYS = [
 ];
 
 function ExperimentTrialFilters() {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -974,11 +983,14 @@ function ExperimentTrialFilters() {
     }
     next.delete("page");
     const queryString = next.toString();
-    router.push(queryString ? `${pathname}?${queryString}` : pathname);
+    window.history.pushState(
+      null,
+      "",
+      queryString ? `${pathname}?${queryString}` : pathname
+    );
   };
 
-  const mode =
-    searchParams.get("trial_metric_match") === "all" ? "all" : "any";
+  const mode = searchParams.get("trial_metric_match") === "all" ? "all" : "any";
   const groupActive = (keys: readonly string[]) =>
     keys.some((key) => searchParams.get(key));
   const activeCount =
@@ -1126,43 +1138,32 @@ function ExperimentTrialFilters() {
 // Main Dashboard
 // =============================================================================
 
-type DashboardClientProps = {
-  experimentsPromise: Promise<ExperimentsResult>;
-  initialAuthor?: string;
-  initialStatus?: string;
-  initialQuery?: string;
-  initialOffset?: number;
-};
-
-export function DashboardClient({
-  experimentsPromise,
-  initialAuthor = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
-  initialStatus = "all",
-  initialQuery = "",
-  initialOffset = 0,
-}: DashboardClientProps) {
-  const router = useRouter();
+export function DashboardClient() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [, startTransition] = useTransition();
-
-  // Selection filters (Org/Mine, member, status) and the page come from the
-  // URL and are resolved on the server, so the applied values are the SSR
-  // props; changing one navigates (router.push) to re-render server-side.
-  const authorFilter = initialAuthor;
-  const statusFilter = initialStatus;
-  const experimentsOffset = initialOffset;
-  const currentExperimentsPage =
-    Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
-
-  // Local, editable search text; navigation (below) commits it to the URL.
-  const [searchQuery, setSearchQuery] = useState(initialQuery);
-  // Keying the Suspense boundary on the committed (server) params makes it
-  // re-suspend — and show the skeleton — on every content change.
-  const trialFilterKey = TRIAL_FILTER_PARAM_KEYS.map(
-    (key) => searchParams.get(key) ?? ""
-  ).join(",");
-  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}|${trialFilterKey}`;
+  const { userId, orgId } = useAuth();
+  const { mutate } = useSWRConfig();
+  const authorFilter =
+    searchParams.get("author") || DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
+  const statusFilter = searchParams.get("status") || "all";
+  const committedQuery = searchParams.get("q") || "";
+  const currentExperimentsPage = Math.max(
+    1,
+    Number.parseInt(searchParams.get("page") || "1", 10) || 1
+  );
+  const [searchDraft, setSearchDraft] = useState<{
+    value: string;
+    query: string;
+  } | null>(null);
+  const searchQuery =
+    searchDraft?.query === committedQuery ? searchDraft.value : committedQuery;
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    },
+    [userId, orgId]
+  );
 
   // Build a dashboard URL for the given selection/page, preserving the current
   // search and any params this helper doesn't manage (e.g. trial metric
@@ -1197,16 +1198,15 @@ export function DashboardClient({
     return queryString ? `${pathname}?${queryString}` : pathname;
   };
 
-  // Selection / pagination / search changes navigate so the server re-renders
-  // and the keyed Suspense streams a fresh skeleton + results.
+  // The URL owns applied filters; cached results remain usable on revisits.
   const navigateToFilters = (overrides: {
     author?: string;
     status?: string;
     page?: number;
   }) => {
-    startTransition(() =>
-      router.push(buildFilterHref(overrides), { scroll: false })
-    );
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    window.history.pushState(null, "", buildFilterHref(overrides));
+    setSearchDraft(null);
   };
 
   const handleAuthorFilterChange = (author: string) =>
@@ -1221,26 +1221,32 @@ export function DashboardClient({
     navigateToFilters({ page: currentExperimentsPage + 1 });
   };
   const handleRefreshData = () => {
-    router.refresh();
+    void mutate(
+      (key) =>
+        Array.isArray(key) &&
+        key[0] === "dashboard-experiments" &&
+        key[1] === userId &&
+        key[2] === orgId,
+      undefined,
+      { revalidate: true }
+    );
   };
-
-  // Debounce the search box, then commit it to the URL (page reset to 1).
-  // Skips the first render so a deep-linked search isn't immediately re-pushed.
-  const isInitialSearchMount = useRef(true);
-  useEffect(() => {
-    if (isInitialSearchMount.current) {
-      isInitialSearchMount.current = false;
-      return;
-    }
-    const handle = window.setTimeout(() => {
-      if (searchQuery.trim() === initialQuery.trim()) return;
-      navigateToFilters({ page: 1 });
+  const handleSearchChange = (value: string) => {
+    setSearchDraft({ value, query: committedQuery });
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("page");
+      if (value.trim()) params.set("q", value.trim());
+      else params.delete("q");
+      window.history.replaceState(
+        null,
+        "",
+        `${pathname}${params.size ? `?${params}` : ""}`
+      );
+      setSearchDraft(null);
     }, 400);
-    return () => window.clearTimeout(handle);
-    // navigateToFilters/initialQuery are intentionally excluded: they are
-    // rebuilt every render and we only want to react to search edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  };
 
   return (
     <div className="space-y-4">
@@ -1248,10 +1254,8 @@ export function DashboardClient({
       <UsageSummaryCard />
       <CostLeaderboardStrip />
       <RecentTasksCard
-        experimentsPromise={experimentsPromise}
-        paramsKey={paramsKey}
         searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
+        onSearchQueryChange={handleSearchChange}
         statusFilter={statusFilter}
         onStatusFilterChange={handleStatusFilterChange}
         authorFilter={authorFilter}

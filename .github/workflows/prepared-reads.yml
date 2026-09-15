@@ -1,0 +1,53 @@
+name: Prepared webapp reads
+on:
+  pull_request:
+    paths:
+      - 'oddish/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/prepared-reads.yml'
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oddish
+          POSTGRES_PASSWORD: oddish
+          POSTGRES_DB: oddish
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U oddish" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+    defaults:
+      run:
+        working-directory: oddish
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - run: uv sync --frozen --extra server --extra dev
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/test_prepared_dashboard.py tests/test_dashboard_collection_aggregates.py tests/test_dashboard_last_runner.py -q -s
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test -c playwright.files.config.ts prepared-reads.spec.ts file-loading.spec.ts

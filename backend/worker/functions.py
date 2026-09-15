@@ -34,6 +34,7 @@ from observability import log_exception, span as _otel_span
 
 from modal_app import (
     MODAL_APP_NAME,
+    API_REGION,
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
     DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
@@ -818,6 +819,24 @@ async def record_delivery_history():
 
 @app.function(
     image=image,
+    secrets=runtime_secrets,
+    timeout=55,
+    max_containers=1,
+    schedule=modal.Period(seconds=5),
+    region=API_REGION,
+)
+async def refresh_dashboard_summaries():
+    from oddish.core.experiment_summaries import refresh_experiment_summaries
+
+    try:
+        count = await refresh_experiment_summaries()
+        console.print(f"metric=dashboard_summaries refreshed={count}")
+    finally:
+        await close_database_connections()
+
+
+@app.function(
+    image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
@@ -845,6 +864,11 @@ async def precompute_dashboard_stats():
     try:
         from dashboard_cache import precompute_dashboard_queue_pipeline
 
+        from oddish.core.experiment_summaries import prepared_read_health
+
+        health = await prepared_read_health()
+        with _otel_span("worker.prepared_read_health", **health):
+            pass
         org_count = await precompute_dashboard_queue_pipeline()
         console.print(
             f"metric=dashboard_precompute orgs={org_count} "

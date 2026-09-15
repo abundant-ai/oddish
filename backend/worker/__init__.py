@@ -36,6 +36,7 @@ with _otel_span("worker.container_init"):
         reconcile_queue_state,
         record_delivery_history,
         refresh_trial_facets,
+        refresh_dashboard_summaries,
     )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "reconcile_queue_state",
     "record_delivery_history",
     "refresh_trial_facets",
+    "refresh_dashboard_summaries",
 ]

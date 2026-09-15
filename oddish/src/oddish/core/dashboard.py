@@ -65,6 +65,7 @@ from oddish.db import (
     experiment_trials,
     task_experiments,
 )
+from oddish.db.models import ExperimentSummaryModel
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -134,7 +135,6 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 # pressure on one doesn't churn the other.
 
 _CACHE_MAX_SIZE = 100
-_EXPERIMENTS_CACHE_TTL_SECONDS = 30
 _PRIMARY_CACHE_TTL_SECONDS = 60
 # Queue + pipeline stats are a full aggregate over the entire ``trials`` table
 # (a parallel seq scan of the whole heap). They depend only on ``org_id`` --
@@ -151,7 +151,6 @@ _PRIMARY_CACHE_TTL_SECONDS = 60
 # a genuinely dead precompute falls back to on-demand recompute after the TTL.
 _QUEUE_PIPELINE_CACHE_TTL_SECONDS = 120
 
-_dashboard_experiments_cache: dict[str, tuple[Any, float]] = {}
 _dashboard_primary_cache: dict[str, tuple[Any, float]] = {}
 # The queue/pipeline slice no longer lives in a module-level dict: it is the one
 # slice shared cross-container via ``_shared_cache_backend`` (a Modal Dict in the
@@ -268,35 +267,17 @@ def invalidate_dashboard_cache(*, org_id: str | None = None) -> None:
 
     if org_id is None:
         _dashboard_primary_cache.clear()
-        _dashboard_experiments_cache.clear()
         return
 
-    prefixes = (
-        f"dashboard.primary:{org_id}:",
-        f"dashboard.experiments:{org_id}:",
-    )
-    for bucket in (
-        _dashboard_primary_cache,
-        _dashboard_experiments_cache,
-    ):
-        for key in list(bucket):
-            if key.startswith(prefixes):
-                del bucket[key]
+    prefix = f"dashboard.primary:{org_id}:"
+    for key in list(_dashboard_primary_cache):
+        if key.startswith(prefix):
+            del _dashboard_primary_cache[key]
 
 
 # ---------------------------------------------------------------------------
 # Experiment aggregation
 # ---------------------------------------------------------------------------
-
-
-# Status filters depend on aggregated trial/verdict counts that we
-# can't apply until after per-experiment aggregation. To make those
-# filters cheap we over-fetch a wider window of experiments by
-# ``last_activity_at`` and let the post-aggregation filter trim it.
-# The multiplier and ceiling are small enough to keep the page query
-# tight while still returning a full page in the common case.
-_STATUS_FILTER_OVERFETCH_MULTIPLIER = 4
-_STATUS_FILTER_OVERFETCH_CEILING = 200
 
 
 def _baseline_agent_clause():
@@ -783,7 +764,6 @@ def _build_experiments_author_filter(
     *,
     org_id: str | None,
     experiments_author_emails: Sequence[str] | None = None,
-    include_legacy_fallback: bool = True,
 ):
     """EXISTS clause restricting experiments to a single owner, or ``None``.
 
@@ -792,9 +772,6 @@ def _build_experiments_author_filter(
     same attribution precedence as the dashboard Author column:
     ``github_username`` tag first, then legacy ``tasks.user`` values (emails
     and handles), then ``created_by_user_id`` only when neither is present.
-
-    When ``include_legacy_fallback`` is False (the org has zero NULL-owner
-    live experiments) only the indexed ``owner_user_id`` seek is emitted.
     """
     if experiments_author_user_id is None:
         return None
@@ -806,8 +783,6 @@ def _build_experiments_author_filter(
 
     # Fast path: indexed owner column when stamped at submit time.
     owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
-    if not include_legacy_fallback:
-        return owner_match
 
     github_handles = [
         handle
@@ -822,7 +797,7 @@ def _build_experiments_author_filter(
     legacy_exists = (
         select(1)
         .select_from(TaskModel)
-        .where(TaskModel.id == primary_task_id)
+        .where(TaskModel.id == primary_task_id, TaskModel.deleted_at.is_(None))
         .where(
             _build_primary_task_author_match(
                 experiments_author_user_id,
@@ -968,42 +943,20 @@ def _build_experiments_search_author_filter(
     return or_(*tiers)
 
 
-def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
+def _experiment_row_passes_status_filter(row, *, status_filter: str):
     if status_filter == "active":
-        return int(row["active_trials"] or 0) > 0
+        return row["active_trials"] > 0
     if status_filter == "retrying":
-        return int(row["retrying_trials"] or 0) > 0
+        return row["retrying_trials"] > 0
     if status_filter == "needs-review":
-        return int(row["verdict_needs_review"] or 0) > 0
+        return row["verdict_needs_review"] > 0
     if status_filter == "pending-verdict":
-        return int(row["verdict_pending"] or 0) > 0
+        return row["verdict_pending"] > 0
     if status_filter == "failed":
-        return int(row["verdict_failed"] or 0) > 0 or int(row["failed_trials"] or 0) > 0
+        return (row["verdict_failed"] > 0) | (row["failed_trials"] > 0)
     if status_filter == "completed":
-        return int(row["active_trials"] or 0) == 0
+        return row["active_trials"] == 0
     return True
-
-
-async def _org_has_unowned_live_experiments(
-    session: AsyncSession, org_id: str | None
-) -> bool:
-    """One indexed probe: does this org still have live experiments with no owner?
-
-    Rides ``idx_experiments_org_owner_user_live``. While any NULL-owner rows
-    remain the Mine filter keeps the legacy EXISTS fallback for correctness;
-    after the sweep backfill converges this returns False and the filter
-    becomes a pure indexed owner_user_id seek.
-    """
-    probe = (
-        select(1)
-        .select_from(ExperimentModel)
-        .where(ExperimentModel.owner_user_id.is_(None))
-        .where(ExperimentModel.deleted_at.is_(None))
-        .limit(1)
-    )
-    if org_id is not None:
-        probe = probe.where(ExperimentModel.org_id == org_id)
-    return (await session.execute(probe)).first() is not None
 
 
 def _experiment_tag_assignment_exists(
@@ -1090,6 +1043,19 @@ def _has_unknown_positive_tokens(ast: TagFilterAST, unknown: set[str]) -> bool:
     return bool((set(ast.all) | set(ast.any_)) & unknown)
 
 
+def dashboard_experiment_rows():
+    """Identity/attribution columns shared by prepared reads and rebuilds."""
+    return select(
+        ExperimentModel.id.label("experiment_id"),
+        ExperimentModel.name.label("experiment_name"),
+        ExperimentModel.is_public.label("experiment_is_public"),
+        ExperimentModel.last_activity_at.label("last_activity_at"),
+        ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
+        ExperimentModel.link.label("experiment_link"),
+    )
+
+
 async def load_dashboard_experiments(
     session: AsyncSession,
     *,
@@ -1120,21 +1086,10 @@ async def load_dashboard_experiments(
     experiments_search_person_user_ids: Mapping[str, Sequence[str]] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Load experiment summaries for the dashboard.
+    """Page prepared rows; history aggregation belongs to background maintenance.
 
-    Two-step query (much faster than the previous full-org aggregation):
-
-    1. Page experiments by the denormalized ``last_activity_at``
-       column (indexed via ``idx_experiments_org_last_activity_live``).
-       Optional text filter on ``experiment.name`` / ``experiment.id``
-       / latest-author fields runs against the same indexed scan.
-    2. Aggregate per-experiment task / trial counts only for the page
-       ids returned in step 1.
-
-    Status filters can't be applied until after the aggregates exist,
-    so when one is set we over-fetch a wider window in step 1 and
-    trim post-aggregation. The over-fetch ceiling caps worst-case
-    work even on huge orgs.
+    Optional metric/search predicates retain their authoritative eligibility
+    rules; ordinary Org/Mine and status changes read the prepared counts.
     """
     if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
         return [], False
@@ -1142,26 +1097,22 @@ async def load_dashboard_experiments(
     # ------------------------------------------------------------------
     # Step 1: page experiment ids by ``last_activity_at`` (indexed).
     # ------------------------------------------------------------------
-    needs_overfetch = experiments_status not in ("", "all")
     page_size = experiments_limit + 1
-    if needs_overfetch:
-        page_size = min(
-            (experiments_limit + 1) * _STATUS_FILTER_OVERFETCH_MULTIPLIER,
-            _STATUS_FILTER_OVERFETCH_CEILING,
-        )
 
     normalized_query = (experiments_query or "").strip()
     person_user_ids_by_token = experiments_search_person_user_ids or {}
 
-    page_query = select(
-        ExperimentModel.id.label("experiment_id"),
-        ExperimentModel.name.label("experiment_name"),
-        ExperimentModel.is_public.label("experiment_is_public"),
-        ExperimentModel.last_activity_at.label("last_activity_at"),
-        ExperimentModel.owner.label("experiment_owner"),
-        ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
-        ExperimentModel.link.label("experiment_link"),
-    ).where(ExperimentModel.shadow_of.is_(None))
+    page_query = (
+        dashboard_experiment_rows()
+        .add_columns(
+            ExperimentSummaryModel.payload.label("summary_payload"),
+        )
+        .outerjoin(
+            ExperimentSummaryModel,
+            ExperimentSummaryModel.experiment_id == ExperimentModel.id,
+        )
+        .where(ExperimentModel.shadow_of.is_(None))
+    )
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
     if normalized_query:
@@ -1197,34 +1148,17 @@ async def load_dashboard_experiments(
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
     # The ``github:`` search qualifier ANDs an additional author predicate on
-    # top; both share the one unowned-experiments probe below.
-    # The owner control (Mine / member picker) can drop its primary-task EXISTS
-    # fallback once the org has zero NULL owners (pure indexed seek). The github:
-    # search filter does NOT share this optimization -- it always needs the
-    # primary-task match -- so the probe gates only the owner filter.
+    # top.
     has_search_author = bool(
         (experiments_search_author_user_ids or ())
         or (experiments_search_author_github_usernames or ())
         or (experiments_search_author_emails or ())
     )
-    include_legacy_fallback = True
-    if experiments_author_user_id is not None:
-        probe_started_at = now()
-        include_legacy_fallback = await _org_has_unowned_live_experiments(
-            session, org_id
-        )
-        if record_timing is not None:
-            record_timing(
-                "dashboard_experiments_owner_probe",
-                elapsed_ms(probe_started_at),
-                "Dashboard unowned-experiments probe",
-            )
     author_filter = _build_experiments_author_filter(
         experiments_author_user_id,
         experiments_author_github_usernames,
         org_id=org_id,
         experiments_author_emails=experiments_author_emails,
-        include_legacy_fallback=include_legacy_fallback,
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
@@ -1283,6 +1217,25 @@ async def load_dashboard_experiments(
         )
         if metric_predicate is not None:
             page_query = page_query.where(metric_predicate)
+    # Apply the same status rule to stored counts before pagination.
+    status_counts = {
+        key: func.coalesce(ExperimentSummaryModel.payload[key].as_integer(), 0)
+        for key in (
+            "active_trials",
+            "retrying_trials",
+            "verdict_needs_review",
+            "verdict_pending",
+            "verdict_failed",
+            "failed_trials",
+        )
+    }
+    status_predicate = _experiment_row_passes_status_filter(
+        status_counts, status_filter=experiments_status
+    )
+    if status_predicate is not True:
+        page_query = page_query.where(
+            ExperimentSummaryModel.payload.is_not(None), status_predicate
+        )
     page_query = (
         page_query.order_by(
             nulls_last(ExperimentModel.last_activity_at.desc()),
@@ -1304,15 +1257,79 @@ async def load_dashboard_experiments(
     if not page_rows:
         return [], False
 
-    experiment_ids = [str(row["experiment_id"]) for row in page_rows]
-
-    user_tags_by_experiment: dict[str, list[UserTagView]] = {}
-    try:
-        user_tags_by_experiment = await list_direct_tags_for_targets(
-            session, scope="EXPERIMENT", target_ids=experiment_ids
+    rows = []
+    for page_row in page_rows[:experiments_limit]:
+        payload = page_row["summary_payload"]
+        if payload is None:
+            # Counts are unknown until the durable worker completes the first build.
+            payload = {
+                key: 0
+                for key in (
+                    "task_count",
+                    "total_trials",
+                    "completed_trials",
+                    "failed_trials",
+                    "skipped_trials",
+                    "retrying_trials",
+                    "active_trials",
+                    "reward_success",
+                    "reward_sum",
+                    "reward_total",
+                    "analysis_tasks",
+                    "verdict_good",
+                    "verdict_needs_review",
+                    "verdict_failed",
+                    "verdict_pending",
+                )
+            }
+            payload.update(
+                avg_score=None,
+                author=None,
+                last_runner=None,
+                last_author=None,
+                last_runner_user_id=None,
+                user_tags=[],
+            )
+        rows.append(
+            {
+                **payload,
+                "id": page_row["experiment_id"],
+                "name": page_row["experiment_name"],
+                "is_public": page_row["experiment_is_public"],
+                "owner_user_id": (
+                    None
+                    if page_row["experiment_owner_user_id"]
+                    == EXPERIMENTS_UNATTRIBUTED_OWNER
+                    else page_row["experiment_owner_user_id"]
+                ),
+                "last_created_at": payload.get("last_created_at")
+                or (
+                    page_row["last_activity_at"].isoformat()
+                    if page_row["last_activity_at"]
+                    else None
+                ),
+                "summary_pending": page_row["summary_payload"] is None,
+            }
         )
-    except Exception:  # pragma: no cover - degraded chips beat a dead dashboard
-        logger.exception("dashboard experiments user_tags hydration failed")
+    tags = await list_direct_tags_for_targets(
+        session, scope="EXPERIMENT", target_ids=[row["id"] for row in rows]
+    )
+    for row in rows:
+        row["user_tags"] = [
+            _user_tag_view_payload(tag) for tag in tags.get(row["id"], [])
+        ]
+        row.pop("primary_task_id", None)
+    return rows, len(page_rows) > experiments_limit
+
+
+async def rebuild_dashboard_experiments(
+    session: AsyncSession,
+    *,
+    page_rows: Sequence[Mapping[str, Any]],
+    org_id: str | None,
+) -> list[dict[str, Any]]:
+    """Authoritative summary calculation, used only by background maintenance."""
+    experiment_ids = [str(row["experiment_id"]) for row in page_rows]
 
     # ------------------------------------------------------------------
     # Step 1.5: primary (oldest) and latest task author info for the page.
@@ -1320,6 +1337,7 @@ async def load_dashboard_experiments(
     task_author_base = (
         select(
             task_experiments.c.experiment_id.label("experiment_id"),
+            TaskModel.id.label("task_id"),
             TaskModel.user.label("task_user"),
             TaskModel.tags["github_username"].astext.label("task_github_username"),
             TaskModel.tags["github_meta"].astext.label("task_github_meta"),
@@ -1457,15 +1475,7 @@ async def load_dashboard_experiments(
         .where(ExperimentModel.id.in_(experiment_ids))
     )
 
-    agg_started_at = now()
     agg_rows = (await session.execute(agg_query)).mappings().all()
-    if record_timing is not None:
-        record_timing(
-            "dashboard_experiments_aggregate",
-            elapsed_ms(agg_started_at),
-            "Dashboard experiments aggregate",
-        )
-
     aggregates_by_id = {str(row["experiment_id"]): row for row in agg_rows}
 
     # QA-report shadows for this page, so each row can link to its report.
@@ -1481,17 +1491,11 @@ async def load_dashboard_experiments(
     }
 
     # ------------------------------------------------------------------
-    # Step 3: stitch + post-filter, preserving page order.
+    # Stitch the prepared rows using the authoritative counts and attribution.
     # ------------------------------------------------------------------
-    build_started_at = now()
     experiments_response: list[dict[str, Any]] = []
-    has_more = False
 
     for page_row in page_rows:
-        if len(experiments_response) >= experiments_limit:
-            has_more = True
-            break
-
         exp_id = str(page_row["experiment_id"])
         agg = aggregates_by_id.get(exp_id)
         primary_task = primary_task_by_id.get(exp_id)
@@ -1538,10 +1542,6 @@ async def load_dashboard_experiments(
                 latest_task["task_github_meta"] if latest_task else None
             ),
             "last_link": latest_task["task_link"] if latest_task else None,
-            "user_tags": [
-                _user_tag_view_payload(v)
-                for v in user_tags_by_experiment.get(exp_id, [])
-            ],
         }
 
         # ``task_count`` mirrors the previous greatest(task, trial) shape
@@ -1550,11 +1550,6 @@ async def load_dashboard_experiments(
             merged["task_count"] = max(
                 int(agg["task_count"] or 0), int(agg["trial_task_count"] or 0)
             )
-
-        if not _experiment_row_passes_status_filter(
-            merged, status_filter=experiments_status
-        ):
-            continue
 
         last_created_at = merged.get("last_activity_at") or page_row.get(
             "last_activity_at"
@@ -1638,10 +1633,10 @@ async def load_dashboard_experiments(
                 ),
                 "author": author,
                 "owner_user_id": owner_user_id,
+                "primary_task_id": primary_task["task_id"] if primary_task else None,
                 "last_runner": last_runner,
                 "last_runner_user_id": last_runner_user_id_by_experiment.get(exp_id),
                 "last_author": last_runner,
-                "user_tags": merged.get("user_tags", []),
                 "last_pr_url": last_pr_url,
                 "last_pr_title": (
                     str(github_meta["pr_title"])
@@ -1653,22 +1648,7 @@ async def load_dashboard_experiments(
             }
         )
 
-    # If we filled the page exactly and the page query returned more
-    # rows than we consumed, signal there is more.
-    if (
-        not has_more
-        and len(page_rows) > len(experiments_response)
-        and (len(page_rows) >= page_size)
-    ):
-        has_more = True
-
-    if record_timing is not None:
-        record_timing(
-            "dashboard_experiments_build",
-            elapsed_ms(build_started_at),
-            "Dashboard experiments response build",
-        )
-    return experiments_response, has_more
+    return experiments_response
 
 
 # ---------------------------------------------------------------------------
@@ -1961,22 +1941,6 @@ async def get_dashboard_core(
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
         f"{include_queues}:{include_tasks}:{include_usage}"
     )
-    experiments_cache_key = (
-        f"dashboard.experiments:{org_id}:"
-        f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}:{experiments_author_user_id}:"
-        f"{','.join(experiments_author_github_usernames or ())}:"
-        f"{','.join(experiments_author_emails or ())}:"
-        f"{','.join(experiments_search_author_user_ids or ())}:"
-        f"{','.join(experiments_search_author_github_usernames or ())}:"
-        f"{','.join(experiments_search_author_emails or ())}:"
-        f"{sorted((token, tuple(user_ids)) for token, user_ids in (experiments_search_person_user_ids or {}).items())}:"
-        f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
-        f":{','.join(experiments_models or ())}:{experiments_min_steps}:{experiments_max_steps}"
-        f":{experiments_min_duration_seconds}:{experiments_max_duration_seconds}"
-        f":{experiments_min_tool_calls}:{experiments_max_tool_calls}:{experiments_trial_metric_match}"
-        f":{','.join(experiments_tool_names or ())}:{sorted((experiments_tool_count_mins or {}).items())}"
-    )
 
     async def _fetch_primary():
         """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
@@ -2141,23 +2105,7 @@ async def get_dashboard_core(
     primary_cached = _slice_get_cached(
         _dashboard_primary_cache, primary_cache_key, _PRIMARY_CACHE_TTL_SECONDS
     )
-    experiments_cached = (
-        _slice_get_cached(
-            _dashboard_experiments_cache,
-            experiments_cache_key,
-            _EXPERIMENTS_CACHE_TTL_SECONDS,
-        )
-        if include_experiments
-        else None
-    )
-    logger.info(
-        f"dashboard_core cache_lookup org={org_id} "
-        f"primary={'hit' if primary_cached is not None else 'miss'} "
-        f"experiments={('hit' if experiments_cached is not None else 'miss') if include_experiments else 'skipped'}"
-    )
-
     primary_recomputed = primary_cached is None
-    experiments_recomputed = include_experiments and experiments_cached is None
 
     if primary_recomputed:
         primary_payload = await _fetch_primary()
@@ -2166,15 +2114,7 @@ async def get_dashboard_core(
         primary_payload = primary_cached
 
     if include_experiments:
-        if experiments_recomputed:
-            experiments_payload = await _fetch_experiments()
-            _slice_set_cached(
-                _dashboard_experiments_cache,
-                experiments_cache_key,
-                experiments_payload,
-            )
-        else:
-            experiments_payload = experiments_cached
+        experiments_payload = await _fetch_experiments()
     else:
         experiments_payload = {
             "experiments": [],
@@ -2186,7 +2126,7 @@ async def get_dashboard_core(
     response = {
         **primary_payload,
         **experiments_payload,
-        "cached": not primary_recomputed and not experiments_recomputed,
+        "cached": not primary_recomputed and not include_experiments,
     }
 
     if record_timing is not None:
@@ -2200,7 +2140,7 @@ async def get_dashboard_core(
         f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
         f"cached={response['cached']} "
         f"primary={'recomputed' if primary_recomputed else 'cached'} "
-        f"experiments={('recomputed' if experiments_recomputed else 'cached') if include_experiments else 'skipped'} "
+        f"experiments={'recomputed' if include_experiments else 'skipped'} "
         f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
     )
     return response
