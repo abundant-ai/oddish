@@ -21,7 +21,10 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
-from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.harbor_artifacts import (
+    build_trial_result,
+    invalidates_score,
+)
 from oddish.core.trial_artifacts import (
     trial_name_from_manifest,
     validate_uploaded_analysis_artifacts,
@@ -304,15 +307,15 @@ class PreparedTrialRun:
     trial_attempt: int = 1
 
 
-def _prepared_trial_is_probe(prepared_trial: PreparedTrialRun) -> bool:
-    """The runner's probe test, sourced from the runner itself.
+def _prepared_trial_uses_probe_routing(prepared_trial: PreparedTrialRun) -> bool:
+    """Whether the prepared run shares operator-probe routing rules.
 
     Credential scoping must agree with the transport the agent is routed to, so
-    this defers to ``harbor.runner.trial_is_probe`` rather than restating it.
+    this defers to ``harbor.runner.uses_probe_routing`` rather than restating it.
     """
-    from oddish.workers.harbor.runner import trial_is_probe
+    from oddish.workers.harbor.runner import uses_probe_routing
 
-    return trial_is_probe(
+    return uses_probe_routing(
         harbor_config=prepared_trial.trial_harbor_config,
         trial_kind=prepared_trial.trial_kind,
     )
@@ -1038,7 +1041,19 @@ async def _store_trial_results(
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
             derived_reward = None if analysis_artifact_error else outcome.reward
-            if derived_reward is None and is_timeout and not analysis_artifact_error:
+            # Recorded provider failures invalidate the verifier reward even
+            # after partial agent work. Drop it and use the existing scoreless
+            # path: the error surfaces, and Harbor's RetryConfig -- read below
+            # by ``_is_non_retryable_outcome`` -- decides retry or fail.
+            if invalidates_score(outcome.exception_type):
+                if derived_reward is not None:
+                    console.print(
+                        f"[yellow]Trial {trial_id} discarding verifier "
+                        f"reward={derived_reward}: {outcome.exception_type} "
+                        "invalidates the score under provider-failure policy[/yellow]"
+                    )
+                derived_reward = None
+            elif derived_reward is None and is_timeout and not analysis_artifact_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -1545,7 +1560,20 @@ async def _handle_harbor_event(
                             or "Unknown error"
                         )
                         is_agent_timeout = _is_agent_timeout_exception(exc_info)
-                        if is_agent_timeout:
+                        if invalidates_score(getattr(exc_info, "exception_type", None)):
+                            # Apply settlement's provider-failure scoring rule,
+                            # including failures after partial agent work.
+                            # The row deliberately stays non-terminal. Settlement
+                            # owns the retry-or-fail decision with the whole
+                            # outcome in hand, and stamping FAILED here would
+                            # send a last-attempt trial down the cancellation
+                            # short circuit above, which stores metering only.
+                            # A worker that dies before settlement then leaves a
+                            # running row for the stale-heartbeat sweep instead
+                            # of a terminal SUCCESS carrying an invalid score.
+                            extracted_reward = None
+                            trial.error_message = str(error_msg)
+                        elif is_agent_timeout:
                             if (
                                 extracted_reward is None
                                 and result.verifier_result is not None
@@ -1655,7 +1683,7 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        is_probe = _prepared_trial_is_probe(prepared_trial)
+        probe_routing = _prepared_trial_uses_probe_routing(prepared_trial)
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
@@ -1665,7 +1693,7 @@ async def _execute_trial(
             hook_callback=partial(
                 _handle_harbor_event,
                 trial_id=trial_id,
-                probe_task_dir=task_path_to_run if is_probe else None,
+                probe_task_dir=task_path_to_run if probe_routing else None,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
@@ -2149,7 +2177,7 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
-                is_probe=_prepared_trial_is_probe(prepared_trial),
+                is_probe=_prepared_trial_uses_probe_routing(prepared_trial),
                 byok_env=byok_env,
             )
 

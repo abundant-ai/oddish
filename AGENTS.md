@@ -143,6 +143,23 @@ High-level flow:
    optional HTTP status, request ID, session ID, and retry-after metadata.
    Harbor's `TrialQueue` still owns whole-trial retries, and Oddish
    `worker_jobs` owns durable fresh-sandbox retries across worker processes.
+   Harbor runs the verifier even when the agent phase raised. In
+   `oddish.core.harbor_artifacts`, `invalidates_score`
+   identifies recorded provider, authentication, and transport exceptions that
+   invalidate the score, including failures after partial agent work. It does
+   not classify all infrastructure failures. Every settlement path — the Harbor
+   `END` hook, `_store_trial_results`, the CLI's `trial_result_to_import_spec`,
+   and the legacy `worker/local_runner.py` — drops the reward rather than
+   publishing it as a score. The trial follows the existing path for a missing
+   verifier reward: the error surfaces and `RetryConfig` decides retry or
+   fail. Endings the agent's own run caused — `AgentTimeoutError`,
+   `AgentSafetyRefusalError`, and the context/output budget errors — keep their
+   reward, because a real 0 must stay a real 0. Add a name to that set only when
+   the provider, not the agent, ended the run.
+   `oddish.workers.harbor.runner.uses_probe_routing` identifies shared routing rules for
+   operator probes and `qa`, `qa_eval`, and `audit` analysis trials. It does not
+   change their trial kinds or stored `is_probe` flags. `summarize` uses these
+   rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
    agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
@@ -1154,6 +1171,11 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`global.` / `us.` / ARN) via `to_bedrock_model_id`. The separate
   `anthropic-hdo/<model>` prefix always uses `ANTHROPIC_HDO_API_KEY` and blanks
   Bedrock routing for that trial.
+  The ephemeral Claude Code runner applies this credential precedence when building
+  its child payload: routing sees the trial's Anthropic key, and HDO wins over
+  user and worker keys even when the HDO key is missing. The child receives
+  the selected key and matching model/Bedrock settings through the private
+  payload. Temporary worker-environment changes end before the child starts.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
