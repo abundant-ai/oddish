@@ -394,7 +394,7 @@ async def _legacy_per_row_create(session, task_id, experiment_id, submission):
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
-        harbor_config = queue_mod._build_harbor_config_for_trial(submission, spec, model=model)
+        harbor_config = queue_mod._build_harbor_config_for_trial(submission, spec)
         trial = TrialModel(
             id=trial_id,
             name=f"{task_name}-{i}",
