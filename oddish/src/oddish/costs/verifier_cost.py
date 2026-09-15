@@ -171,20 +171,35 @@ def _metrics_from_atif(data: dict[str, Any]) -> tuple[
 
 
 def find_cua_artifact_dirs(job_dir: Path) -> list[Path]:
-    """Directories that look like a CUA verifier output root."""
+    """Directories that look like a CUA verifier output root.
+
+    Harbor's job root holds a trial-name subdirectory; artifacts live under
+    ``<job>/<trial_name>/verifier[/ux]``, not ``<job>/verifier``. Also accept
+    a flattened tree (backfill / selected trial dir) at ``job_dir`` itself.
+    """
     if not job_dir or not job_dir.exists():
         return []
+    roots: list[Path] = [job_dir]
+    try:
+        roots.extend(p for p in sorted(job_dir.iterdir()) if p.is_dir())
+    except OSError:
+        pass
     found: list[Path] = []
     seen: set[Path] = set()
-    for rel in _CUA_OUTPUT_RELS:
-        directory = (job_dir / rel).resolve()
-        if directory in seen or not directory.is_dir():
-            continue
-        has_report = any((directory / name).is_file() for name in _JUDGE_REPORT_NAMES)
-        has_traj = any((directory / name).is_file() for name in _TRAJECTORY_NAMES)
-        if has_report or has_traj:
-            seen.add(directory)
-            found.append(directory)
+    for root in roots:
+        for rel in _CUA_OUTPUT_RELS:
+            directory = (root / rel).resolve()
+            if directory in seen or not directory.is_dir():
+                continue
+            has_report = any(
+                (directory / name).is_file() for name in _JUDGE_REPORT_NAMES
+            )
+            has_traj = any(
+                (directory / name).is_file() for name in _TRAJECTORY_NAMES
+            )
+            if has_report or has_traj:
+                seen.add(directory)
+                found.append(directory)
     return found
 
 
@@ -570,8 +585,6 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
     """
     import tempfile
 
-    from sqlalchemy.orm import load_only
-
     from oddish.core.trial_artifacts import (
         TrialArtifactMode,
         resolve_trial_artifact_layout,
@@ -590,22 +603,11 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
             .where(VerifierCostModel.deleted_at.is_(None))
             .subquery()
         )
+        # No load_only: this is a worker sweep, not a compact FE response path,
+        # and a stray load_only trips the CI load_only_guard tripwire.
         candidates = (
             await session.execute(
                 select(TrialModel)
-                .options(
-                    load_only(
-                        TrialModel.id,
-                        TrialModel.attempts,
-                        TrialModel.experiment_id,
-                        TrialModel.org_id,
-                        TrialModel.task_id,
-                        TrialModel.task_version_id,
-                        TrialModel.trial_s3_key,
-                        TrialModel.kind,
-                        TrialModel.finished_at,
-                    )
-                )
                 .outerjoin(
                     existing,
                     (existing.c.trial_id == TrialModel.id)

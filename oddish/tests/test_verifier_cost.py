@@ -99,6 +99,26 @@ def test_build_drafts_loop_and_judge_from_ux_artifacts(tmp_path: Path) -> None:
     assert judge.cost_usd is not None or judge.unpriced_reason is not None
 
 
+def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
+    """Settlement receives the Harbor job root, not the selected trial dir."""
+    ux = tmp_path / "task__abc123" / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=1.5, prompt=100, completion=40)
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "judge_model": "anthropic/claude-opus-4-7",
+                "verdicts": [{"criterion": "a"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    drafts = build_verifier_cost_drafts(tmp_path)
+    assert len(drafts) == 2
+    loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
+    assert loop.cost_usd == 1.5
+
+
 def test_unique_index_is_partial_on_live_rows() -> None:
     """Failed attempts keep spend; SUCCESS must not replace them via upsert."""
     from oddish.db.models import VerifierCostModel

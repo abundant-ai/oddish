@@ -106,8 +106,10 @@ async def get_task_verifier_costs(
     """``task_id -> VerifierCostTotals``, omitting tasks with no verifier spend.
 
     Counts ledger rows attributed to the task directly or via a trial of that
-    task. ``trial_scope_pairs`` mirrors ``get_task_qa_costs`` so browse cards
-    use the same current-version / non-probe population as agent and QA cost.
+    task. ``trial_scope_pairs`` narrows to the same current-version / non-probe
+    population as agent and QA browse figures; when set, only the trial branch
+    is used (verifier rows always have ``trial_id``, so an unscoped task_id
+    branch would ignore those filters).
     """
     if not task_ids:
         return {}
@@ -119,11 +121,10 @@ async def get_task_verifier_costs(
         _COST.label("cost_usd"),
         VerifierCostModel.cost_source.label("cost_source"),
     )
-    direct = select(*ledger, VerifierCostModel.task_id.label("task_id")).where(
-        _LIVE,
-        VerifierCostModel.task_id.in_(ids),
-        VerifierCostModel.cost_usd.isnot(None),
-    )
+    # Unlike analysis_costs, every verifier row has a trial_id (and usually
+    # task_id). An unscoped direct task_id branch would ignore probe /
+    # superseded / version filters when ``trial_scope_pairs`` is set, so the
+    # browse card only walks trials.
     via_trials = (
         select(*ledger, TrialModel.task_id.label("task_id"))
         .select_from(VerifierCostModel)
@@ -143,11 +144,19 @@ async def get_task_verifier_costs(
                 list(trial_scope_pairs)
             ),
         )
-    if org_id is not None:
-        direct = direct.where(VerifierCostModel.org_id == org_id)
-        via_trials = via_trials.where(VerifierCostModel.org_id == org_id)
-
-    u = direct.union(via_trials).subquery()
+        if org_id is not None:
+            via_trials = via_trials.where(VerifierCostModel.org_id == org_id)
+        u = via_trials.subquery()
+    else:
+        direct = select(*ledger, VerifierCostModel.task_id.label("task_id")).where(
+            _LIVE,
+            VerifierCostModel.task_id.in_(ids),
+            VerifierCostModel.cost_usd.isnot(None),
+        )
+        if org_id is not None:
+            direct = direct.where(VerifierCostModel.org_id == org_id)
+            via_trials = via_trials.where(VerifierCostModel.org_id == org_id)
+        u = direct.union(via_trials).subquery()
     query = select(
         u.c.task_id,
         func.sum(u.c.cost_usd).label("cost_usd"),

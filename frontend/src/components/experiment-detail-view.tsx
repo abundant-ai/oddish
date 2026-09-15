@@ -605,6 +605,7 @@ function ExperimentSummaryBar({
   isInitialLoading,
   isLoadingTrials,
   showNewSpend,
+  showVerifierSpend = true,
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
@@ -620,6 +621,8 @@ function ExperimentSummaryBar({
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
   showNewSpend: boolean;
+  /** CUA/verifier spend is internal recon; omit on public share pages. */
+  showVerifierSpend?: boolean;
   costStatus: ExperimentCostTotalsResource["status"];
   qa: {
     accepted: number;
@@ -842,15 +845,17 @@ function ExperimentSummaryBar({
                     : "Review cost across this experiment's trials. Not included in the cost figure."
                 }
               />
-              <VerifierCostSuffix
-                costUsd={summary.verifierCostUsd}
-                size="tile"
-                title={
-                  summary.verifierHasEstimated
-                    ? "CUA/verifier LLM spend across this experiment's trials. Includes estimated verifier costs. Not included in the cost figure."
-                    : "CUA/verifier LLM spend across this experiment's trials. Not included in the cost figure."
-                }
-              />
+              {showVerifierSpend && (
+                <VerifierCostSuffix
+                  costUsd={summary.verifierCostUsd}
+                  size="tile"
+                  title={
+                    summary.verifierHasEstimated
+                      ? "CUA/verifier LLM spend across this experiment's trials. Includes estimated verifier costs. Not included in the cost figure."
+                      : "CUA/verifier LLM spend across this experiment's trials. Not included in the cost figure."
+                  }
+                />
+              )}
             </>
           )}
         </span>
@@ -940,11 +945,13 @@ function ExperimentSummaryBar({
                   size="tile"
                   title="Review cost on this experiment's own trials. Not included in the run cost."
                 />
-                <VerifierCostSuffix
-                  costUsd={summary.ownedVerifierCostUsd}
-                  size="tile"
-                  title="CUA/verifier LLM spend on this experiment's own trials. Not included in the run cost."
-                />
+                {showVerifierSpend && (
+                  <VerifierCostSuffix
+                    costUsd={summary.ownedVerifierCostUsd}
+                    size="tile"
+                    title="CUA/verifier LLM spend on this experiment's own trials. Not included in the run cost."
+                  />
+                )}
               </>
             )}
           </span>
@@ -1896,6 +1903,7 @@ export function ExperimentDetailView({
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
             showNewSpend={!readOnly}
+            showVerifierSpend={!readOnly}
             costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
             reviewFilter={reviewFilter}
