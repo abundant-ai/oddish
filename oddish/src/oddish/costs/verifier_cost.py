@@ -1,7 +1,6 @@
-"""CUA / LLM verifier spend: locate artifacts and price drafts.
+"""CUA / LLM verifier spend: locate artifacts, price drafts, persist rows.
 
-Does not write ``verifier_costs`` — settlement and backfill land in later
-PRs. Distinct from ``trials.cost_usd`` (solver) and ``analysis_costs`` (QA).
+Distinct from ``trials.cost_usd`` (solver) and ``analysis_costs`` (QA).
 
 Covers Harbor ``type = "cua"`` (``verifier/``) and SWE-Marathon inline CUA
 (``verifier/ux/``, ``cua_judge_report.json``).
@@ -13,14 +12,22 @@ Route uses the model id spelling: ``anthropic/…`` → Claude console;
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
+from oddish.db import VerifierCostModel, generate_id, get_session, utcnow
 from oddish.model_pricing import estimate_cost_usd
+
+log = logging.getLogger(__name__)
 
 COMPONENT_LOOP = "cua_loop"
 COMPONENT_JUDGE = "cua_judge"
@@ -472,3 +479,151 @@ def build_verifier_cost_drafts(
     if judge is not None:
         drafts.append(judge)
     return drafts
+
+
+async def upsert_verifier_cost_rows(
+    session: AsyncSession,
+    *,
+    drafts: list[VerifierCostDraft],
+    trial_id: str,
+    attempt: int,
+    experiment_id: str | None,
+    org_id: str | None,
+    task_id: str | None,
+    task_version_id: str | None,
+    cost_source_override: str | None = None,
+    created_at: datetime | None = None,
+) -> int:
+    """Insert or no-op existing ``(trial_id, attempt, component)`` rows.
+
+    Never updates a priced live row — failed attempts keep their spend; a
+    later SUCCESS does not overwrite. A prior ``no_cua_artifacts`` sentinel
+    (wrong-path backfill) IS replaced when a later pass finds real drafts.
+    Returns the number of rows inserted or replaced.
+
+    ``created_at`` defaults to now (live settlement). Backfill must pass the
+    trial's ``finished_at`` so admin windows bucket historical CUA spend with
+    the period it actually occurred, not the sweep day.
+    """
+    if not drafts:
+        return 0
+    inserted = 0
+    now = utcnow()
+    stamped = created_at or now
+    for draft in drafts:
+        source = cost_source_override or draft.cost_source
+        values = {
+            "id": generate_id(),
+            "trial_id": trial_id,
+            "attempt": attempt,
+            "component": draft.component,
+            "experiment_id": experiment_id,
+            "org_id": org_id,
+            "billed_user_id": None,
+            "task_id": task_id,
+            "task_version_id": task_version_id,
+            "model": draft.model,
+            "route": draft.route,
+            "llm_key_hash": draft.llm_key_hash,
+            "input_tokens": draft.input_tokens,
+            "output_tokens": draft.output_tokens,
+            "cache_read_tokens": draft.cache_read_tokens,
+            "cache_write_tokens": draft.cache_write_tokens,
+            "cost_usd": draft.cost_usd,
+            "cost_source": source,
+            "unpriced_reason": draft.unpriced_reason,
+            "created_at": stamped,
+            "updated_at": now,
+            "deleted_at": None,
+        }
+        update_cols = {
+            key: values[key]
+            for key in (
+                "model",
+                "route",
+                "llm_key_hash",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "cost_source",
+                "unpriced_reason",
+                "updated_at",
+                "experiment_id",
+                "org_id",
+                "task_id",
+                "task_version_id",
+            )
+        }
+        stmt = (
+            pg_insert(VerifierCostModel)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=["trial_id", "attempt", "component"],
+                index_where=VerifierCostModel.deleted_at.is_(None),
+                set_=update_cols,
+                where=(
+                    VerifierCostModel.unpriced_reason
+                    == UNPRICED_NO_CUA_ARTIFACTS
+                ),
+            )
+        )
+        result = await session.execute(stmt)
+        if result.rowcount and result.rowcount > 0:
+            inserted += 1
+    return inserted
+
+
+async def record_verifier_llm_costs(
+    *,
+    job_dir: Path | None,
+    task_path: Path | None,
+    trial_id: str,
+    attempt: int,
+    experiment_id: str | None,
+    org_id: str | None,
+    task_id: str | None,
+    task_version_id: str | None,
+    cost_source_override: str | None = None,
+    created_at: datetime | None = None,
+    session: AsyncSession | None = None,
+) -> int:
+    """Best-effort settlement write. Never raises into the trial path.
+
+    When ``session`` is provided, uses it (caller owns commit). Otherwise opens
+    a short write session. Pass ``created_at`` (usually ``trial.finished_at``)
+    for historical backfill so admin windows do not dump old spend into today.
+    """
+    if job_dir is None:
+        return 0
+    try:
+        drafts = build_verifier_cost_drafts(job_dir, task_path=task_path)
+        if not drafts:
+            return 0
+
+        async def _write(s: AsyncSession) -> int:
+            return await upsert_verifier_cost_rows(
+                s,
+                drafts=drafts,
+                trial_id=trial_id,
+                attempt=attempt,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                task_id=task_id,
+                task_version_id=task_version_id,
+                cost_source_override=cost_source_override,
+                created_at=created_at,
+            )
+
+        if session is not None:
+            return await _write(session)
+        async with get_session() as s:
+            return await _write(s)
+    except Exception:
+        log.exception(
+            "verifier LLM cost settlement failed trial_id=%s attempt=%s",
+            trial_id,
+            attempt,
+        )
+        return 0

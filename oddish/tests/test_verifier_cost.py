@@ -1,10 +1,14 @@
-"""CUA / verifier LLM cost extraction (no database writes)."""
+"""CUA / verifier LLM cost extraction and live settlement writes."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from oddish.core.harbor_artifacts import extract_trajectory_metrics
 from oddish.costs.verifier_cost import (
     COMPONENT_JUDGE,
     COMPONENT_LOOP,
@@ -15,6 +19,7 @@ from oddish.costs.verifier_cost import (
     build_verifier_cost_drafts,
     infer_verifier_route,
     load_cua_model_config,
+    record_verifier_llm_costs,
     task_has_cua_signals,
 )
 
@@ -42,6 +47,24 @@ def test_infer_route_prefers_anthropic_prefix() -> None:
     assert infer_verifier_route("bedrock/anthropic.claude-opus") == ROUTE_BEDROCK
     assert infer_verifier_route("us.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
     assert infer_verifier_route("global.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+
+
+def test_extract_trajectory_metrics_skips_verifier_tree(tmp_path: Path) -> None:
+    """Solver cost must not absorb CUA Computer1 ATIF usage."""
+    _write_atif(tmp_path / "verifier" / "ux" / "trajectory.json", cost=9.99, prompt=999)
+    agent = tmp_path / "agent"
+    _write_atif(agent / "trajectory.json", cost=1.25, prompt=40, completion=10)
+
+    metrics = extract_trajectory_metrics(tmp_path)
+    assert metrics.cost_usd == 1.25
+    assert metrics.input_tokens == 40
+
+
+def test_extract_trajectory_metrics_ignores_cua_only_tree(tmp_path: Path) -> None:
+    _write_atif(tmp_path / "verifier" / "trajectory.json", cost=5.0)
+    metrics = extract_trajectory_metrics(tmp_path)
+    assert metrics.has_trajectory is False
+    assert metrics.cost_usd is None
 
 
 def test_task_has_cua_signals_inline_swe_m(tmp_path: Path) -> None:
@@ -174,3 +197,94 @@ def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
 def test_nop_shell_without_artifacts_writes_nothing(tmp_path: Path) -> None:
     (tmp_path / "agent").mkdir()
     assert build_verifier_cost_drafts(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_record_without_job_dir_is_noop() -> None:
+    assert (
+        await record_verifier_llm_costs(
+            job_dir=None,
+            task_path=None,
+            trial_id="t-1",
+            attempt=1,
+            experiment_id=None,
+            org_id=None,
+            task_id=None,
+            task_version_id=None,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_without_artifacts_is_noop(tmp_path: Path) -> None:
+    (tmp_path / "agent").mkdir()
+    session = AsyncMock()
+    assert (
+        await record_verifier_llm_costs(
+            job_dir=tmp_path,
+            task_path=None,
+            trial_id="t-1",
+            attempt=1,
+            experiment_id="e-1",
+            org_id="o-1",
+            task_id="task-1",
+            task_version_id="tv-1",
+            session=session,
+        )
+        == 0
+    )
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_record_writes_one_row_per_draft(tmp_path: Path) -> None:
+    ux = tmp_path / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=2.5, prompt=200, completion=80)
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "judge_model": "anthropic/claude-opus-4-7",
+                "verdicts": [{"criterion": "a"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+
+    written = await record_verifier_llm_costs(
+        job_dir=tmp_path,
+        task_path=None,
+        trial_id="t-1",
+        attempt=2,
+        experiment_id="e-1",
+        org_id="o-1",
+        task_id="task-1",
+        task_version_id="tv-1",
+        session=session,
+    )
+    assert written == 2
+    assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_record_swallows_unexpected_errors(tmp_path: Path) -> None:
+    with patch(
+        "oddish.costs.verifier_cost.build_verifier_cost_drafts",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert (
+            await record_verifier_llm_costs(
+                job_dir=tmp_path,
+                task_path=None,
+                trial_id="t-1",
+                attempt=1,
+                experiment_id=None,
+                org_id=None,
+                task_id=None,
+                task_version_id=None,
+            )
+            == 0
+        )
