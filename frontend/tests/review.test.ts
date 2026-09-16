@@ -521,6 +521,37 @@ for (const verdictStatus of ["success", "running", "failed", null] as const) {
   });
 }
 for (const variant of ["inline", "summary", "card"] as const) {
+  for (const mustFixCount of [0, 3]) {
+    test(`${variant} accepted verdict visibility with ${mustFixCount} required fixes`, () => {
+      const html = renderToStaticMarkup(
+        React.createElement(badge.Component!, {
+          task: {
+            ...task,
+            verdict: {
+              verdict: "accept",
+              is_good: true,
+              confidence: "high",
+              reasoning: "No blocking defects",
+              recommendations: ["Optional improvement"],
+            },
+          },
+          variant,
+          mustFixCount,
+        })
+      );
+      if (mustFixCount > 0) {
+        assert.match(html, /3 Must fix/);
+        assert.doesNotMatch(
+          html,
+          /No blocking defects|Optional improvement|confidence/
+        );
+      } else {
+        assert.match(html, /Accepted/);
+        assert.match(html, /No blocking defects/);
+        if (variant !== "summary") assert.match(html, /Optional improvement/);
+      }
+    });
+  }
   test(`${variant} verdict keeps the count and shows detail outside the summary`, () => {
     const html = renderToStaticMarkup(
       React.createElement(badge.Component!, {
