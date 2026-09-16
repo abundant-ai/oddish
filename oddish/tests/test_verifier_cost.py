@@ -21,6 +21,10 @@ from oddish.costs.verifier_cost import (
     load_cua_model_config,
     record_verifier_llm_costs,
     task_has_cua_signals,
+    attempt_s3_prefix,
+    _no_artifacts_sentinel,
+    UNPRICED_NO_CUA_ARTIFACTS,
+    COST_BACKFILL,
 )
 
 
@@ -192,6 +196,29 @@ def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
     assert len(drafts) == 2
     loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
     assert loop.cost_usd == 1.5
+
+
+def test_attempt_s3_prefix_rewrites_sibling_attempts() -> None:
+    key = "tasks/t1/trials/t1-1/attempt-3/"
+    assert attempt_s3_prefix(key, 1) == "tasks/t1/trials/t1-1/attempt-1/"
+    assert attempt_s3_prefix(key, 2) == "tasks/t1/trials/t1-1/attempt-2/"
+    assert attempt_s3_prefix("tasks/t1/trials/t1-1/", 1) is None
+    assert attempt_s3_prefix(None, 1) is None
+
+
+def test_trial_result_cua_signal() -> None:
+    from oddish.costs.verifier_cost import _trial_result_has_cua_signal
+
+    assert _trial_result_has_cua_signal({"cua_rubric_score": 0.7}) is True
+    assert _trial_result_has_cua_signal({"reward": 1.0}) is False
+    assert _trial_result_has_cua_signal(None) is False
+
+
+def test_no_artifacts_sentinel_is_replaceable() -> None:
+    draft = _no_artifacts_sentinel()
+    assert draft.cost_usd is None
+    assert draft.unpriced_reason == UNPRICED_NO_CUA_ARTIFACTS
+    assert draft.cost_source == COST_BACKFILL
 
 
 def test_nop_shell_without_artifacts_writes_nothing(tmp_path: Path) -> None:

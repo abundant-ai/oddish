@@ -38,6 +38,7 @@ from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
+from oddish.costs.verifier_cost import backfill_verifier_costs_from_s3
 from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
     AnalysisStatus,
@@ -721,6 +722,11 @@ async def cleanup_orphaned_queue_state(
     except Exception as exc:
         console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
         modal_cost_spans_reconciled = 0
+    try:
+        verifier_costs_backfilled = await backfill_verifier_costs_from_s3()
+    except Exception as exc:
+        console.print(f"[yellow]Verifier cost backfill failed: {exc}[/yellow]")
+        verifier_costs_backfilled = 0
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
     stale_trial_events_purged = await purge_stale_trial_events()
 
@@ -760,6 +766,7 @@ async def cleanup_orphaned_queue_state(
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
         "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
+        "verifier_costs_backfilled": verifier_costs_backfilled,
     }
 
 
