@@ -2242,24 +2242,26 @@ export function ExperimentTrialsTable({
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <Label className="flex cursor-pointer items-center gap-2 px-2 text-xs font-normal">
-                  <Checkbox
-                    checked={groupEfforts}
-                    onCheckedChange={(checked) => {
-                      const params = new URLSearchParams(
-                        window.location.search
-                      );
-                      if (checked === true) params.set("groupEfforts", "1");
-                      else params.delete("groupEfforts");
-                      window.history.pushState(
-                        null,
-                        "",
-                        urlWithSearch(params.toString())
-                      );
-                    }}
-                  />
-                  Group effort levels
-                </Label>
+                {!readOnly && (
+                  <Label className="flex cursor-pointer items-center gap-2 px-2 text-xs font-normal">
+                    <Checkbox
+                      checked={groupEfforts}
+                      onCheckedChange={(checked) => {
+                        const params = new URLSearchParams(
+                          window.location.search
+                        );
+                        if (checked === true) params.set("groupEfforts", "1");
+                        else params.delete("groupEfforts");
+                        window.history.pushState(
+                          null,
+                          "",
+                          urlWithSearch(params.toString())
+                        );
+                      }}
+                    />
+                    Group effort levels
+                  </Label>
+                )}
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Button
