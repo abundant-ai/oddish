@@ -119,7 +119,7 @@ const STATUS_OPTIONS: Option[] = [
   { value: "RUNNING", label: "Running" },
   { value: "PENDING", label: "Pending" },
   { value: "ANALYZING", label: "Analyzing" },
-  { value: "VERDICT_PENDING", label: "Verdict pending" },
+  { value: "VERDICT_PENDING", label: "QA verdict pending" },
   { value: "FAILED", label: "Failed" },
 ];
 
@@ -347,7 +347,7 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "analysisClassifications",
-    label: "Analysis result",
+    label: "QA Verdict Results",
     group: "Trial",
     control: "multiselect",
     facet: "analysis_classifications",
@@ -576,7 +576,7 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
   },
   {
     id: "analysisClassifications",
-    label: "Analysis result",
+    label: "QA Verdict Results",
     control: "multiselect",
     facet: "analysis_classifications",
     keys: ["analysis_classifications"],

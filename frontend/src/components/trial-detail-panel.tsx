@@ -473,7 +473,7 @@ function TrialAnalysisCard({
                 // Analysis state exists but produced no report (e.g. failed
                 // before the classifier returned).
                 <div className="flex flex-col gap-1">
-                  <span className="font-mono text-sm font-bold">QA analysis</span>
+                  <span className="font-mono text-sm font-bold">Run QA Verdict</span>
                   {trial.analysis_status === "failed" &&
                   trial.analysis_error ? (
                     <span className="text-xs text-red-500">

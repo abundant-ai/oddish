@@ -639,7 +639,7 @@ export function TaskOverviewPanel({
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            QA analysis
+            Run QA Verdict
           </h2>
           <div className="ml-auto">{executionReviewAction}</div>
           <span className="text-muted-foreground font-mono text-[11px]">

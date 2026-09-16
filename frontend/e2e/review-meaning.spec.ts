@@ -397,7 +397,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByText(
-        /couldn’t be evaluated|COULD NOT EVALUATE RUN|ANALYSIS FAILED|^misgrade$/
+        /couldn’t be evaluated|COULD NOT EVALUATE RUN|QA FAILED|^misgrade$/
       )
     ).toHaveCount(0);
   });
@@ -424,7 +424,7 @@ test.describe("real components with local fixture API", () => {
       })
     ).toBeVisible();
     await expect(
-      page.getByText("ANALYSIS FAILED", { exact: true })
+      page.getByText("QA FAILED", { exact: true })
     ).toBeVisible();
     await expect(
       page.getByText(
@@ -1208,7 +1208,7 @@ test("a first run-review finding is counted without detailed findings in open", 
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Run review", { exact: true })
+    page.getByText("Rejected · Run QA Verdict", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page

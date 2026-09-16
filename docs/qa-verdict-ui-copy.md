@@ -2,7 +2,7 @@
 
 This change standardizes task-level review/result wording as QA verdict. It does not change QA execution, verdict rules, eligibility, request targets, costs, stored field names, filtering, or human sign-off. Error explanations and the distinctions between absent, failed, queued, running, stale, and accepted/rejected verdicts remain visible.
 
-QA cost stays QA cost. Pre-trial audit, findings, trajectory summaries, trial classifications, mixed QA history, QA work ownership, and human actions such as “Review evidence” retain their separate meanings. Cancellation stays “Cancel QA” because it can stop audits as well as task QA. The analysis used to produce the verdict is labeled QA analysis; the recorded GOOD/BAD/HARNESS outcomes retain their meanings. The run-analysis legend keeps its separate meaning; its shared error label is made explicit so changing verdict labels cannot call a solver harness error a failed task verdict.
+QA cost stays QA cost. Pre-trial audit, findings, trajectory summaries, trial classifications, mixed QA history, QA work ownership, and human actions such as “Review evidence” retain their separate meanings. Cancellation stays “Cancel QA” because it can stop audits as well as task QA. The analysis used to produce the verdict is labeled Run QA Verdict; the recorded GOOD/BAD/HARNESS outcomes retain their meanings. The run-analysis legend keeps its separate meaning; its shared error label is made explicit so changing verdict labels cannot call a solver harness error a failed task verdict.
 
 ## Complete before-and-after list
 
@@ -91,16 +91,22 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 | Analyzing | QA running | `components/trial-detail-panel.tsx` |
 | Analysis queued | QA queued | `components/trial-detail-panel.tsx` |
 | QA is running | QA verdict running | `components/trial-detail-panel.tsx` |
-| Analysis | QA analysis | `components/trial-detail-panel.tsx` |
+| Analysis | Run QA Verdict | `components/trial-detail-panel.tsx` |
 | No report was produced. | No QA report produced. | `components/trial-detail-panel.tsx` |
 | No analysis yet | No QA verdict yet | `components/trial-detail-panel.tsx` |
 | view the QA run | Open QA run | `components/trial-detail-panel.tsx` |
 | [count] awaiting review | [count] awaiting QA | `components/task-overview-panel.tsx` |
-| Trajectory analysis | QA analysis | `components/task-overview-panel.tsx` |
+| Trajectory analysis | Run QA Verdict | `components/task-overview-panel.tsx` |
 | ANALYSIS RUNNING | QA RUNNING | `components/task-overview-panel.tsx` |
 | ANALYSIS FAILED | QA FAILED | `components/task-overview-panel.tsx` |
 | NOT ANALYZED | NO QA VERDICT YET | `components/task-overview-panel.tsx` |
 | The analysis produced no root cause. | QA produced no root cause. | `components/qa-report/qa-assessment-report.tsx` |
+| Run review | Run QA Verdict | `components/task-verdict-badge.tsx`, `app/(app)/tasks/[task_id]/task-detail-client.tsx` |
+| Execution review | QA verdict | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| Analysis result | QA Verdict Results | `lib/tasks-filters.ts` |
+| source review: | pre trial verdict: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| source review could not complete: | pre trial verdict could not complete: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| Verdict pending | QA verdict pending | `lib/tasks-filters.ts` |
 
 ## Validation
 
@@ -109,4 +115,4 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 - The three Python files have identical syntax trees after replacing string contents with a placeholder. Their calculations, conditions, state writes, and calls are unchanged.
 - Direct calls to delivery QA presentation cover version mismatch, queued, running, failed with retained evidence error, and missing completion time.
 - The local fixture UI shows the new task-verdict labels and retains the original failure explanation. It uses fixture data, not live QA executions.
-- Seven targeted browser tests passed: five delivery scenarios and two experiment-filter scenarios. They retain checks for request counts, selected versions, requirement links, filtered rows, and Back/reload pressed-state persistence. Only seven stale selector strings were updated to the existing UI labels.
+- Twelve targeted browser tests passed: six delivery scenarios and six QA scenarios. They retain checks for request counts, selected versions, history refresh, requirement links, failure explanations, finding links, filtered rows, and Back/reload pressed-state persistence.

@@ -126,7 +126,7 @@ export function TaskVerdictBadge({
 }: {
   task: Task;
   variant: "card" | "inline" | "summary";
-  rejectionSource?: "Pre-trial audit" | "Run review";
+  rejectionSource?: "Pre-trial audit" | "Run QA Verdict";
   onViewFindings?: () => void;
   onRunJudge?: () => void;
   onCancelJudge?: () => void;

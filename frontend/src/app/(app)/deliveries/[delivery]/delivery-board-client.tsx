@@ -471,7 +471,7 @@ function QAHistoryVersionRow({
         </span>
         <span className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
           <span>
-            source review:{" "}
+            pre trial verdict:{" "}
             {version.pre_trial_status
               ? version.pre_trial_status.toLowerCase()
               : "not run"}
@@ -496,7 +496,7 @@ function QAHistoryVersionRow({
         {version.pre_trial_error && (
           <p>
             <span className="font-medium text-red-600 dark:text-red-400">
-              source review could not complete:
+              pre trial verdict could not complete:
             </span>{" "}
             <span className="text-muted-foreground break-words">
               {version.pre_trial_error}
@@ -967,7 +967,7 @@ function TaskRow({
                           <p className="text-muted-foreground text-sm sm:col-start-1">
                             {defect.source === "pre_trial"
                               ? "Pre-trial audit"
-                              : "Execution review"}
+                              : "QA verdict"}
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>

@@ -117,9 +117,9 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
     {
       key: "pre_trial_passed",
       kind: "automated",
-      label: "Source review completed",
+      label: "pre trial verdict completed",
       status: "pass",
-      detail: "Source review completed on v1",
+      detail: "pre trial verdict completed on v1",
     },
     {
       key: "min_rollouts",
