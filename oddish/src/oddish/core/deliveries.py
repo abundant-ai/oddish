@@ -1104,7 +1104,7 @@ async def _compute_board(
             verdict_label = {
                 "queued": "QA verdict queued",
                 "running": "QA verdict running",
-                "error": "QA verdict generation failed",
+                "error": "QA verdict failed",
             }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "QA verdict needed")
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:

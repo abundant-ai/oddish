@@ -661,7 +661,7 @@ test.describe("real components with local fixture API", () => {
       rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
     ).toHaveCount(1);
     await page
-      .getByRole("button", { name: "2 QA verdict generation failed", exact: true })
+      .getByRole("button", { name: "2 QA verdict failed", exact: true })
       .click();
     await expect(page).toHaveURL(/verdict=failed/);
     await expect(

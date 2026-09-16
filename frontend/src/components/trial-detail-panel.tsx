@@ -241,7 +241,7 @@ function TrialAnalysisCard({
 
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
-  // alone showed "No analysis yet" while the run was live.
+  // alone showed "No QA yet" while the run was live.
   const trialAnalysisInProgress = isAnalysisStatusActive(trial.analysis_status);
   const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
@@ -271,14 +271,14 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "QA verdict generation is already running";
+    queueBlockedReason = "QA verdict is running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
-        ? "Analysis is already running for this trial"
-        : "Analysis is already queued for this trial";
+        ? "QA is running for this trial"
+        : "QA is queued for this trial";
   } else if (trial.status !== "success" && trial.status !== "failed") {
-    queueBlockedReason = "The trial must finish before analysis can run";
+    queueBlockedReason = "QA requires a finished trial";
   }
 
   if (!hasAnalysis && !showQueueButton) return null;
@@ -364,7 +364,7 @@ function TrialAnalysisCard({
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
-                "Regenerates the task’s QA verdict by reanalyzing all eligible trials."
+                "Reanalyzes all eligible trials to generate this task’s QA verdict."
               }
             >
               {queuing
@@ -389,7 +389,7 @@ function TrialAnalysisCard({
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
               <p className="mb-2 text-xs text-red-500">
-                Analysis failed: {trial.analysis_error}
+                QA failed: {trial.analysis_error}
               </p>
             )}
             <QaAssessmentReport
@@ -449,10 +449,10 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
-                      ? "Analyzing"
+                      ? "QA running"
                       : trial.analysis_status
-                        ? "Analysis queued"
-                        : "QA is running"}
+                        ? "QA queued"
+                        : "QA verdict running"}
                   </span>
                   {progressLine && (
                     <span className="text-muted-foreground text-xs">
@@ -465,7 +465,7 @@ function TrialAnalysisCard({
                       onClick={() => onOpenActiveQaTrial(activeQaTrial)}
                       className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
                     >
-                      view the QA run
+                      Open QA run
                     </button>
                   )}
                 </div>
@@ -473,22 +473,22 @@ function TrialAnalysisCard({
                 // Analysis state exists but produced no report (e.g. failed
                 // before the classifier returned).
                 <div className="flex flex-col gap-1">
-                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  <span className="font-mono text-sm font-bold">QA analysis</span>
                   {trial.analysis_status === "failed" &&
                   trial.analysis_error ? (
                     <span className="text-xs text-red-500">
-                      Analysis failed: {trial.analysis_error}
+                      QA failed: {trial.analysis_error}
                     </span>
                   ) : (
                     <span className="text-muted-foreground text-xs">
-                      No report was produced.
+                      No QA report produced.
                     </span>
                   )}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
-                    No analysis yet
+                    No QA yet
                   </span>
                 </div>
               )}

@@ -93,7 +93,7 @@ export function QaAssessmentReport({
           <AnalysisProse text={rootCause} className="text-foreground/90" />
         ) : (
           <p className="text-muted-foreground text-xs">
-            The analysis produced no root cause.
+            QA produced no root cause.
           </p>
         )}
 

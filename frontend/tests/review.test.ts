@@ -249,10 +249,10 @@ test("QA verdict failure retains its cause and remains distinct from rejection",
     "",
     false
   );
-  assert.equal(presented.title, "QA verdict generation failed");
+  assert.equal(presented.title, "QA verdict failed");
   assert.equal(presented.detail, reason);
   assert.equal(presented.isGood, null);
-  assert.equal(review.REVIEW_LABELS.error, "QA verdict generation failed");
+  assert.equal(review.REVIEW_LABELS.error, "QA verdict failed");
   assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
 });
 
@@ -422,7 +422,7 @@ test("verdict summary hides empty categories and keeps clearing an active filter
   );
   assert.match(html, /QA verdicts/);
   assert.match(html, /2 Accepted/);
-  assert.match(html, /1 QA verdict generation failed/);
+  assert.match(html, /1 QA verdict failed/);
   assert.doesNotMatch(html, /0 (Rejected|Pending|No verdict)/);
   assert.match(html, /Show all tasks/);
 });

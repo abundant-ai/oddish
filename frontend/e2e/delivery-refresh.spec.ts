@@ -963,7 +963,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     page.getByRole("table").getByText("Ready", { exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText("QA verdict generation failed", { exact: true })
+    page.getByText("QA verdict failed", { exact: true })
   ).toBeVisible();
   expect(state.writes.map(({ body }) => body.check_key)).toEqual([
     "ack:verifier",

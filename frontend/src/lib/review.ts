@@ -31,7 +31,7 @@ export const VERDICT_LABELS = {
   outdated: "No QA verdict for this version",
   queued: "QA verdict queued",
   running: "QA verdict running",
-  error: "QA verdict generation failed",
+  error: "QA verdict failed",
   never: "No QA verdict",
 };
 
