@@ -241,7 +241,7 @@ function TrialAnalysisCard({
 
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
-  // alone showed "No QA yet" while the run was live.
+  // alone showed "No QA verdict yet" while the run was live.
   const trialAnalysisInProgress = isAnalysisStatusActive(trial.analysis_status);
   const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
@@ -488,7 +488,7 @@ function TrialAnalysisCard({
               ) : (
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
-                    No QA yet
+                    No QA verdict yet
                   </span>
                 </div>
               )}

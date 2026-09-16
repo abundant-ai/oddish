@@ -737,7 +737,7 @@ function TrialQaRow({
               ? gradingError
                 ? "GRADING ERROR"
                 : EXECUTION_LABELS[analysis.classification].toUpperCase()
-              : "NO QA YET"}
+              : "NO QA VERDICT YET"}
       </span>
       {analysis?.subtype && !gradingError ? (
         <span

@@ -93,13 +93,13 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 | QA is running | QA verdict running | `components/trial-detail-panel.tsx` |
 | Analysis | QA analysis | `components/trial-detail-panel.tsx` |
 | No report was produced. | No QA report produced. | `components/trial-detail-panel.tsx` |
-| No analysis yet | No QA yet | `components/trial-detail-panel.tsx` |
+| No analysis yet | No QA verdict yet | `components/trial-detail-panel.tsx` |
 | view the QA run | Open QA run | `components/trial-detail-panel.tsx` |
 | [count] awaiting review | [count] awaiting QA | `components/task-overview-panel.tsx` |
 | Trajectory analysis | QA analysis | `components/task-overview-panel.tsx` |
 | ANALYSIS RUNNING | QA RUNNING | `components/task-overview-panel.tsx` |
 | ANALYSIS FAILED | QA FAILED | `components/task-overview-panel.tsx` |
-| NOT ANALYZED | NO QA YET | `components/task-overview-panel.tsx` |
+| NOT ANALYZED | NO QA VERDICT YET | `components/task-overview-panel.tsx` |
 | The analysis produced no root cause. | QA produced no root cause. | `components/qa-report/qa-assessment-report.tsx` |
 
 ## Validation
