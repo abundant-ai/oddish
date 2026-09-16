@@ -514,9 +514,13 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--experiment ${task.experiment_id}`);
   }
 
-  const sandboxBackend = getSandboxBackend(trial);
-  if (sandboxBackend) {
-    parts.push(`-e ${sandboxBackend.id}`);
+  // Preserve every server-owned Harbor environment, even when the UI has no
+  // branded badge for it yet. Legacy rows can still fall back to a recognized
+  // sandbox job provider.
+  const trialEnvironment = normalizeRunEnvironment(trial.environment);
+  const runEnvironment = trialEnvironment ?? getSandboxBackend(trial)?.id;
+  if (runEnvironment) {
+    parts.push(`-e ${runEnvironment}`);
   }
 
   if (trial.agent) {
@@ -532,6 +536,15 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--agent-kwarg 'reasoning_effort=${effort}'`);
   }
   return parts.join(" ");
+}
+
+function normalizeRunEnvironment(
+  environment: string | null | undefined
+): string | null {
+  const normalized = environment?.trim().toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9-]*$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 function getQueueSnapshotItems(trial: Trial): string[] {
@@ -552,7 +565,13 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2" | "numinous";
+type SandboxBackendId =
+  | "daytona"
+  | "modal"
+  | "archil"
+  | "ec2"
+  | "numinous"
+  | "thunder";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -595,6 +614,12 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/numinous-logo.png",
     logoFill: true,
   },
+  thunder: {
+    id: "thunder",
+    label: "Thunder Compute",
+    logoSrc: "/thunder-compute-logo.svg",
+    logoFill: true,
+  },
 };
 
 function normalizeSandboxBackend(
@@ -606,7 +631,8 @@ function normalizeSandboxBackend(
     normalized === "modal" ||
     normalized === "archil" ||
     normalized === "ec2" ||
-    normalized === "numinous"
+    normalized === "numinous" ||
+    normalized === "thunder"
   ) {
     return normalized;
   }
