@@ -98,7 +98,11 @@ import {
   isWorkerOwnedTrialStatus,
   taskHasActiveVerdict,
 } from "@/lib/job-status";
-import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
+import {
+  isAnalysisStatusActive,
+  preloadTrial,
+  useTrial,
+} from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 import { fetcher } from "@/lib/api";
 
@@ -177,6 +181,7 @@ interface TrialDetailPanelProps {
   onNavigate?: (trial: Trial, trialIndex: number | null) => void;
   onNavigateToTask?: () => void;
   onRetry?: (taskIds?: string[]) => void | Promise<void>;
+  onRetried: (previousTrialId: string, replacement: Trial) => void;
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
@@ -747,6 +752,7 @@ export function TrialDetailPanel({
   onNavigate,
   onNavigateToTask,
   onRetry,
+  onRetried,
   onDelete,
   apiBaseUrl = "/api",
   allowRetry = true,
@@ -1057,8 +1063,14 @@ export function TrialDetailPanel({
         throw new Error(data.detail || data.error || "Failed to retry trial");
       }
 
-      onRetry?.(task ? [task.id] : undefined);
-      onClose();
+      const { trial_id: replacementId } = (await res.json()) as {
+        trial_id: string;
+      };
+      // Retry creates a new row. Load it through the drawer's shared resource
+      // so the replacement never inherits the old attempt's results or logs.
+      const replacement = await preloadTrial(apiBaseUrl, replacementId);
+      onRetried(trial.id, replacement);
+      await onRetry?.(task ? [task.id] : undefined);
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {
