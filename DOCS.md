@@ -1161,3 +1161,16 @@ reported defect, including historical `optional` findings.
 board; a version change requires reviewing the board again. `oddish delivery
 history` retains original severity labels and shows the current shipment
 requirement. An acknowledgment permits an exception without deleting a finding.
+
+### Homebrew installation
+
+The private Homebrew tap requires GitHub read access to `abundant-ai/homebrew-tap`.
+Install `gh` with `brew install gh`, then run `gh auth login` and
+`gh auth setup-git`. Install with `brew install abundant-ai/tap/oddish`.
+Set `ODDISH_API_KEY` for your Oddish organization before making API requests.
+Update with `brew update && brew upgrade abundant-ai/tap/oddish`. Homebrew owns
+this installation; `oddish update` directs you to Homebrew instead of replacing
+it from PyPI. `oddish version --check` prints the Homebrew check command.
+The Homebrew package includes CLI and shared client helpers, not the Oddish
+server, database, or worker implementations. Releases are maintained in
+https://github.com/abundant-ai/homebrew-tap.

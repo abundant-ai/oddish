@@ -2644,3 +2644,14 @@ chart before interacting with server-rendered controls.
 Finding attribution in a task overview opens trials through the host drawer,
 including trials from other experiments. Source-file clicks select the file and
 line range in the current task pane; they preserve the experiment route.
+
+### Homebrew client distribution
+
+`abundant-ai/homebrew-tap` builds a reviewed subset of the CLI and shared modules
+from an immutable Oddish commit. Its client-files.txt owns the distribution list;
+an import-closure check rejects dependencies on excluded Oddish modules. Keep
+CLI imports independent of server and sandbox implementations. Client CPU/GPU
+selection uses Daytona/Modal (Numinous when explicitly enabled); hosted APIs
+validate the requested environment. Homebrew installs carry a HOMEBREW marker
+in their distribution metadata so version/update commands never replace the
+Homebrew-managed environment through PyPI.

@@ -165,7 +165,7 @@ def _default_cloud_environment_for_task(
     *,
     override_gpus: int | None,
 ) -> EnvironmentType:
-    from oddish.runtime.routing import default_cloud_environment
+    from oddish.config import settings
 
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
@@ -185,7 +185,13 @@ def _default_cloud_environment_for_task(
         # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
         # hosted deployment validates the choice against its own cloud policy.
         return EnvironmentType.GKE
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    # Client defaults must not import server-side sandbox implementations.
+    # The hosted API validates the requested environment against its policy.
+    if requires_gpu:
+        return EnvironmentType.MODAL
+    if settings.numinous_enabled:
+        return EnvironmentType.NUMINOUS
+    return EnvironmentType.DAYTONA
 
 
 def _map_batch_sweep_results(

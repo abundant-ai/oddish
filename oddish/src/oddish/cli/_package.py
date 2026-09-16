@@ -17,8 +17,8 @@ from packaging.version import InvalidVersion, Version
 PACKAGE_NAME = "oddish"
 PYPI_JSON_URL = "https://pypi.org/pypi/oddish/json"
 
-Source = Literal["pypi", "editable", "other"]
-Manager = Literal["uv-pip", "pip"]
+Source = Literal["pypi", "editable", "other", "homebrew"]
+Manager = Literal["uv-pip", "pip", "brew"]
 
 
 class PackageError(Exception):
@@ -35,6 +35,8 @@ class InstallInfo:
 
     @property
     def source_label(self) -> str:
+        if self.source == "homebrew":
+            return "Homebrew"
         if self.source == "pypi":
             return "PyPI"
         if self.source == "editable":
@@ -43,6 +45,8 @@ class InstallInfo:
 
     @property
     def manager_label(self) -> str:
+        if self.manager == "brew":
+            return "brew"
         return "uv pip" if self.manager == "uv-pip" else "pip"
 
     def as_dict(self) -> dict[str, Any]:
@@ -76,6 +80,8 @@ def inspect_install(
     editable_path: str | None = None
     try:
         dist = distribution or metadata.distribution(PACKAGE_NAME)
+        if dist.read_text("HOMEBREW") == "abundant-ai/tap/oddish\n":
+            return InstallInfo(version=version, source="homebrew", manager="brew", installer="brew")
         raw_installer = dist.read_text("INSTALLER")
         if raw_installer:
             installer = raw_installer.strip() or None
@@ -101,6 +107,8 @@ def upgrade_command(
     force: bool = False,
     pin_version: str | None = None,
 ) -> list[str]:
+    if info.source == "homebrew":
+        raise PackageError("This install is managed by Homebrew. Run `brew upgrade abundant-ai/tap/oddish`.")
     if info.source == "editable":
         location = info.editable_path or "this checkout"
         raise PackageError(
