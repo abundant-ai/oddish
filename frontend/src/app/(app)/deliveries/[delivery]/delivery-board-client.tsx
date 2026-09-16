@@ -528,7 +528,7 @@ function QAHistoryVersionRow({
                   : "font-medium text-red-600 dark:text-red-400"
               }
             >
-              verdict:{" "}
+              QA verdict:{" "}
               {verdict.verdict ?? (verdict.is_good ? "accept" : "reject")}
             </span>
             {verdict.primary_issue && (
@@ -1057,7 +1057,7 @@ function TaskRow({
                                     {
                                       pre_trial_passed: "Pre-trial audit",
                                       min_rollouts: "Trial and agent coverage",
-                                      verdict_ok: "Verdict",
+                                      verdict_ok: "QA verdict",
                                       no_must_fix: "Finding decisions",
                                     } as Record<string, string>
                                   )[check.key] ?? check.label
@@ -1087,7 +1087,7 @@ function TaskRow({
                                   ? "View runs"
                                   : check.key === "pre_trial_passed"
                                     ? "Open pre-trial audit"
-                                    : "Open run review"}
+                                    : "Open QA verdict"}
                               </Link>
                             )}
                           {acknowledged ? (
@@ -1182,13 +1182,13 @@ function TaskRow({
               )}
               <DeliveryDisclosure panel="checks">
                 <summary className="cursor-pointer py-2 text-sm">
-                  Review status and checks
+                  QA verdict status and delivery checks
                 </summary>
                 <div className="mt-2 max-w-prose space-y-3 text-sm leading-relaxed">
                   <p>{row.qa.detail}</p>
                   {row.qa.finished_at && (
                     <p className="text-muted-foreground">
-                      Review finished{" "}
+                      QA verdict generation finished{" "}
                       {frozen
                         ? new Date(row.qa.finished_at).toLocaleString()
                         : formatRelativeTime(row.qa.finished_at)}
@@ -1199,7 +1199,7 @@ function TaskRow({
                       className="underline"
                       href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(row.qa.trial_id)}`}
                     >
-                      Open execution-review run
+                      Open QA verdict run
                     </Link>
                   )}
                   {row.checks
@@ -1826,12 +1826,12 @@ function DeliveryBoardContent({
           queued += 1;
         } catch (error) {
           failures.push(
-            `${row.task_name}: ${error instanceof Error ? error.message : "QA request failed"}`
+            `${row.task_name}: ${error instanceof Error ? error.message : "QA verdict request failed"}`
           );
         }
       }
       setNotice(
-        `Requested QA for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
+        `Requested QA verdict generation for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
       );
       if (failures.length) throw new Error(failures.join("\n"));
     });
@@ -2134,7 +2134,7 @@ function DeliveryBoardContent({
                       }
                       onClick={rerunSelected}
                     >
-                      Rerun QA ({runnableRows.length})
+                      Regenerate QA verdicts ({runnableRows.length})
                     </Button>
                     <AlertDialog
                       onOpenChange={(open) => {
@@ -2264,7 +2264,7 @@ function DeliveryBoardContent({
                           Open findings
                         </TableHead>
                         <TableHead className="w-24 text-right">
-                          Last QA
+                          Last QA verdict run
                         </TableHead>
                       </TableRow>
                     </TableHeader>

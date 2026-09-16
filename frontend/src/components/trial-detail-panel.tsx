@@ -271,7 +271,7 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "Task-level QA is already running";
+    queueBlockedReason = "QA verdict generation is already running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
@@ -295,7 +295,7 @@ function TrialAnalysisCard({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis"
+          data.detail || data.error || "Failed to queue QA verdict generation"
         );
       }
       // The server created one task-level QA trial. Refresh the task-open
@@ -303,7 +303,7 @@ function TrialAnalysisCard({
       await onQueued?.();
     } catch (err) {
       setQueueError(
-        err instanceof Error ? err.message : "Failed to queue analysis"
+        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
       );
     } finally {
       setQueuing(false);
@@ -362,13 +362,16 @@ function TrialAnalysisCard({
               disabled={queuing || queueBlockedReason !== null}
               onClick={queueRun}
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              title={queueBlockedReason ?? undefined}
+              title={
+                queueBlockedReason ??
+                "Regenerates the task’s QA verdict by reanalyzing all eligible trials."
+              }
             >
               {queuing
                 ? "Queuing…"
                 : hasAnalysis
-                  ? "Re-run analysis"
-                  : "Run analysis"}
+                  ? "Regenerate QA verdict"
+                  : "Generate QA verdict"}
             </button>
           </div>
         )}

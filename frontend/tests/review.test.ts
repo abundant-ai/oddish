@@ -217,7 +217,7 @@ for (const [label, is_good, expected] of [
         ),
         html
       );
-      assert.ok(!html.includes("No result for this version"), html);
+      assert.ok(!html.includes("No QA verdict for this version"), html);
       assert.equal(html.includes("2 completed runs"), ungradedSettled === 2);
     }
     const outdated = renderToStaticMarkup(
@@ -226,7 +226,7 @@ for (const [label, is_good, expected] of [
         ungradedSettled: 0,
       })
     );
-    assert.ok(outdated.includes("No result for this version"), outdated);
+    assert.ok(outdated.includes("No QA verdict for this version"), outdated);
   });
 }
 
@@ -242,12 +242,17 @@ test("missing and inconclusive verdicts remain unreviewed", () => {
   );
 });
 
-test("verdict failure copy does not rename execution-review failure", () => {
-  assert.equal(
-    badge.present!({ ...task, verdict_status: "failed" }, "", false).title,
-    "Review couldn’t finish"
+test("QA verdict failure retains its cause and remains distinct from rejection", () => {
+  const reason = "Insufficient evidence: no eligible solver trials.";
+  const presented = badge.present!(
+    { ...task, verdict_status: "failed", verdict_error: reason },
+    "",
+    false
   );
-  assert.equal(review.REVIEW_LABELS.error, "Review could not complete");
+  assert.equal(presented.title, "QA verdict generation failed");
+  assert.equal(presented.detail, reason);
+  assert.equal(presented.isGood, null);
+  assert.equal(review.REVIEW_LABELS.error, "QA verdict generation failed");
   assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
 });
 
@@ -313,7 +318,7 @@ test("analysis progress separates completed classifications from failed and pend
 test("accepted and missing verdict chips have concise exact labels", () => {
   for (const [verdict, label] of [
     [{ verdict: "accept", is_good: true, confidence: null }, "Accepted"],
-    [null, "No overall result"],
+    [null, "No QA verdict generated"],
   ] as const) {
     const html = renderToStaticMarkup(
       React.createElement(exports.Chip, {
@@ -415,9 +420,9 @@ test("verdict summary hides empty categories and keeps clearing an active filter
       onReviewFilter: () => {},
     })
   );
-  assert.match(html, /QA results/);
+  assert.match(html, /QA verdicts/);
   assert.match(html, /2 Accepted/);
-  assert.match(html, /1 Review error/);
+  assert.match(html, /1 QA verdict generation failed/);
   assert.doesNotMatch(html, /0 (Rejected|Pending|No verdict)/);
   assert.match(html, /Show all tasks/);
 });
@@ -574,5 +579,5 @@ test("selected version without findings does not reuse another version's count",
     false,
     0
   );
-  assert.equal(presented.title, "No result for this version");
+  assert.equal(presented.title, "No QA verdict for this version");
 });

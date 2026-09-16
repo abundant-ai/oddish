@@ -57,7 +57,6 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   EXECUTION_LABELS,
-  REVIEW_LABELS,
   VERDICT_LABELS,
   taskReviewStatus,
 } from "@/lib/review";
@@ -382,7 +381,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "Review running",
+    label: "Analysis in progress",
     dotClass: "bg-blue-400",
     animate: true,
   },
@@ -398,7 +397,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: REVIEW_LABELS.error,
+    label: "Analysis failed / Harness error",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -435,7 +434,7 @@ function TaskVerdictChip({
     hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
       : status === "never" && task.verdict_status === "success"
-        ? "No overall result"
+        ? "No QA verdict generated"
         : VERDICT_LABELS[status];
   let tip: string | null =
     status === "error" ? (task.verdict_error ?? null) : null;
@@ -444,7 +443,7 @@ function TaskVerdictChip({
     task.verdict &&
     ungradedSettled > 0
   ) {
-    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this result`;
+    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this QA verdict`;
   }
 
   const chip = (
@@ -461,7 +460,7 @@ function TaskVerdictChip({
       onFocus={onPrefetch}
       onClick={onOpen}
       className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
+      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA verdict"} for ${task.name}`}
     >
       {chip}
     </button>
@@ -523,7 +522,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-blue-400",
       animate: true,
-      title: "Review running",
+      title: "Analysis in progress",
     };
   }
 
@@ -542,7 +541,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-yellow-400",
       animate: false,
-      title: "Review error",
+      title: "Analysis failed",
     };
   }
 
@@ -1545,7 +1544,7 @@ export function ExperimentTrialsTable({
   const handleRunQAForSelectedTasks = async () => {
     if (!canRerun || isRunningQA) return;
     if (selectedQARunnableTasks.length === 0) {
-      setQAError("No tasks are ready for QA.");
+      setQAError("No tasks are ready for QA verdict generation.");
       return;
     }
 
@@ -1563,7 +1562,7 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task QA"
+              data.detail || data.error || "Failed to queue QA verdict generation"
             );
           }
         })
@@ -1571,7 +1570,9 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
+        setQAError(
+          `Failed to queue QA verdict generation for ${failures.length} task(s).`
+        );
       } else {
         setQAError(null);
       }
@@ -2171,13 +2172,13 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleCancelQAForSelectedTasks}
-                        title="Cancel task checks and run reviews for selected tasks."
+                        title="Cancel pre-trial audits and QA verdict generation for selected tasks."
                         disabled={
                           isCancellingQA ||
                           selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingQA ? "Cancelling" : "Cancel reviews"}
+                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>
@@ -2186,14 +2187,16 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunQAForSelectedTasks}
-                        title="Review runs for each selected task’s default version."
+                        title="Generate a QA verdict for each selected task’s default version by reanalyzing its eligible trials."
                         disabled={
                           isRunningQA ||
                           isCancellingQA ||
                           selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningQA ? "Queueing" : "Review runs"}
+                        {isRunningQA
+                          ? "Queuing QA verdicts…"
+                          : "Generate QA verdicts"}
                         <InlineCount>
                           {selectedQARunnableTasks.length}
                         </InlineCount>

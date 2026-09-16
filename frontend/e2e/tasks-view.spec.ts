@@ -720,7 +720,7 @@ test.describe("authenticated task view", () => {
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
     await page
-      .getByRole("button", { name: /^Review runs(?: for v\d+)?$/ })
+      .getByRole("button", { name: /^Generate QA verdict(?: for v\d+)?$/ })
       .click();
     await expect
       .poll(() => backfillBody)

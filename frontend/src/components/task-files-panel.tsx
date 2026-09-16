@@ -971,7 +971,7 @@ export function TaskFilesPanel({
         !verdictInFlight &&
         !panel?.qa_active
       : panel?.can_run_qa);
-  const qaActionLabel = `Review runs${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
+  const qaActionLabel = `Generate QA verdict${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1082,7 +1082,7 @@ export function TaskFilesPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue task QA");
+        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
       }
       onRetryComplete?.([task.id]);
       // The QA-active guard reads this cache; refresh it so the guard flips
@@ -1090,7 +1090,7 @@ export function TaskFilesPanel({
       void mutateChecks();
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue task QA"
+        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
       );
     } finally {
       setIsRunningQA(false);

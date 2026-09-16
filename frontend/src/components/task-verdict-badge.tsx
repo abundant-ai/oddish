@@ -92,7 +92,8 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = status === "success" ? "No overall result" : VERDICT_LABELS.never;
+    title =
+      status === "success" ? "No QA verdict generated" : VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
@@ -160,7 +161,7 @@ export function TaskVerdictBadge({
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = `Review runs${task.current_version != null ? ` for v${task.current_version}` : ""}`;
+  const runLabel = `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -184,7 +185,7 @@ export function TaskVerdictBadge({
               {variant === "summary" && mustFixCount > 0 && rejectionSource
                 ? `Rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
-                  ? "Queuing review…"
+                  ? "Queuing QA verdict…"
                   : p.title}
             </span>
             {mustFixCount === 0 && p.isGood !== null && verdict?.confidence ? (
@@ -283,7 +284,7 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          Run reviews
+          QA verdict
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">

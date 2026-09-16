@@ -575,7 +575,7 @@ export function TaskOverviewPanel({
       {verdictTask && mustFixCount === 0 ? (
         <div className="border-border border-b p-4">
           <div className="text-muted-foreground mb-2 text-xs">
-            QA result ·{" "}
+            QA verdict ·{" "}
             {scopeTrials != null
               ? "All runs for this task version"
               : `v${version ?? "—"}`}

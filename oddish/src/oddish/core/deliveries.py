@@ -84,7 +84,7 @@ WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 _CHECK_LABELS = {
     "pre_trial_passed": "Pre-trial audit completed",
     "min_rollouts": "Enough rollouts",
-    "verdict_ok": "No blocking defects in verdict",
+    "verdict_ok": "No blocking defects in QA verdict",
     "no_must_fix": "Every defect resolved or acknowledged",
 }
 
@@ -1102,23 +1102,23 @@ async def _compute_board(
             )
 
             verdict_label = {
-                "queued": "Verdict queued",
-                "running": "Verdict running",
-                "error": "Verdict failed",
-            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "Verdict needed")
+                "queued": "QA verdict queued",
+                "running": "QA verdict running",
+                "error": "QA verdict generation failed",
+            }.get(qa_statuses.get(task.id, DeliveryQAStatus()).status, "QA verdict needed")
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
                 automated(
                     "verdict_ok",
                     False,
-                    f"no completed execution-review verdict on {vlabel}",
+                    f"no completed QA verdict on {vlabel}",
                     [verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
-                    f"verdict does not cover {vlabel}; re-run QA on it",
+                    f"QA verdict does not cover {vlabel}; regenerate the QA verdict for it",
                     [verdict_label],
                 )
             else:
@@ -1126,7 +1126,7 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     accepted,
-                    "review found no blocking defects; human sign-off is separate"
+                    "QA verdict found no blocking defects; human sign-off is separate"
                     if accepted
                     else f"blocking defect: {verdict.get('primary_issue') or ''}",
                     ["Rejected"],
