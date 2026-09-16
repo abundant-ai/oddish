@@ -169,7 +169,7 @@ test("non-default creation keeps v7; default switch shows v8 with v7 history sti
   await page
     .getByRole("checkbox", { name: "Select Task A", exact: true })
     .click();
-  await page.getByRole("button", { name: /Rerun QA/ }).click();
+  await page.getByRole("button", { name: /Regenerate QA verdicts/ }).click();
   await expect
     .poll(() => state.writes.filter((w) => w.path.endsWith("/qa/retry")).length)
     .toBe(1);
@@ -1690,7 +1690,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count - 1})` })
+      page.getByRole("button", { name: `Regenerate QA verdicts (${count - 1})` })
     ).toBeVisible();
     last.checks[0].status = "pass";
     last.qa.status = "never";
@@ -1699,7 +1699,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count})` })
+      page.getByRole("button", { name: `Regenerate QA verdicts (${count})` })
     ).toBeEnabled();
     expect(state.writes).toEqual([]);
   });
@@ -1758,7 +1758,7 @@ for (const group of ["none", "state"]) {
       page.getByRole("link", { name: "View runs", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Open run review", exact: true })
+      page.getByRole("link", { name: "Open QA verdict", exact: true })
     ).toBeVisible();
     await expect(page.getByText(/Old verbose/)).toHaveCount(0);
     expect(state.writes).toEqual([]);

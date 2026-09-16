@@ -109,3 +109,4 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 - The three Python files have identical syntax trees after replacing string contents with a placeholder. Their calculations, conditions, state writes, and calls are unchanged.
 - Direct calls to delivery QA presentation cover version mismatch, queued, running, failed with retained evidence error, and missing completion time.
 - The local fixture UI shows the new task-verdict labels and retains the original failure explanation. It uses fixture data, not live QA executions.
+- Seven targeted browser tests passed: five delivery scenarios and two experiment-filter scenarios. They retain checks for request counts, selected versions, requirement links, filtered rows, and Back/reload pressed-state persistence. Only seven stale selector strings were updated to the existing UI labels.
