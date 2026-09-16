@@ -147,10 +147,11 @@ export function TaskVerdictBadge({
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
-  const shownDetail = mustFixCount > 0 ? null : p.detail;
+  const shownDetail =
+    variant === "summary" && mustFixCount > 0 ? null : p.detail;
   const rejectionDetail =
     shownDetail && p.isGood === false && variant !== "summary" ? (
-      <details className="mt-2 text-sm">
+      <details open className="mt-2 text-sm">
         <summary className="cursor-pointer">Rejection reason</summary>
         <AnalysisProse
           text={shownDetail}
@@ -161,7 +162,10 @@ export function TaskVerdictBadge({
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
+  const runLabel =
+    variant === "summary"
+      ? "Generate verdict"
+      : `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -174,7 +178,7 @@ export function TaskVerdictBadge({
           p.icon
         )}
         <div className="min-w-0 flex-1 basis-48">
-          <div className="flex flex-wrap items-baseline gap-x-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span
               className={
                 variant === "summary"
@@ -183,7 +187,9 @@ export function TaskVerdictBadge({
               }
             >
               {variant === "summary" && mustFixCount > 0 && rejectionSource
-                ? `Rejected · ${rejectionSource}`
+                ? rejectionSource === "Run QA Verdict"
+                  ? "Rejected"
+                  : `Rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
                   ? "Queuing QA verdict…"
                   : p.title}
@@ -193,6 +199,16 @@ export function TaskVerdictBadge({
                 · {verdict.confidence} confidence
               </span>
             ) : null}
+            {variant === "summary" && onViewFindings && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onViewFindings}
+                className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
+              >
+                View findings
+              </Button>
+            )}
           </div>
           {variant === "summary" && mustFixCount > 0 && rejectionSource ? (
             <p className="mt-1 text-sm">{mustFixCount} Must fix</p>
@@ -213,8 +229,7 @@ export function TaskVerdictBadge({
               They rendered only in the card variant, so the panes that moved
               from the pinned card to this badge kept the rejection and lost
               what to do about it. */}
-          {mustFixCount === 0 &&
-          variant !== "summary" &&
+          {variant !== "summary" &&
           p.isGood !== null &&
           verdict?.recommendations &&
           verdict.recommendations.length > 0 ? (
@@ -239,16 +254,6 @@ export function TaskVerdictBadge({
             </p>
           ) : null}
         </div>
-        {variant === "summary" && onViewFindings && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onViewFindings}
-          >
-            View findings
-          </Button>
-        )}
         {showCancelButton ? (
           <Button
             type="button"
@@ -308,8 +313,7 @@ export function TaskVerdictBadge({
                 className="text-muted-foreground mt-1"
               />
             ) : null}
-            {mustFixCount === 0 &&
-            p.isGood !== null &&
+            {p.isGood !== null &&
             verdict?.recommendations &&
             verdict.recommendations.length > 0 ? (
               <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">

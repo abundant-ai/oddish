@@ -521,7 +521,7 @@ for (const verdictStatus of ["success", "running", "failed", null] as const) {
   });
 }
 for (const variant of ["inline", "summary", "card"] as const) {
-  test(`${variant} verdict shows the required count without rejection prose`, () => {
+  test(`${variant} verdict keeps the count and shows detail outside the summary`, () => {
     const html = renderToStaticMarkup(
       React.createElement(badge.Component!, {
         task: {
@@ -540,9 +540,14 @@ for (const variant of ["inline", "summary", "card"] as const) {
       })
     );
     assert.equal((html.match(/3 Must fix/g) ?? []).length, 1);
-    assert.doesNotMatch(html, /Rejected|confidence|Duplicate|1 Must fix/);
-    if (variant !== "card")
+    assert.doesNotMatch(html, /confidence|1 Must fix/);
+    if (variant === "summary") {
       assert.equal(html.replace(/<[^>]*>/g, ""), "3 Must fix");
+    } else {
+      assert.match(html, /Duplicate explanation/);
+      assert.match(html, /Duplicate fix/);
+      assert.match(html, /<details open=""/);
+    }
   });
 }
 test("task-page rejection identifies the audit and count without generated prose", () => {

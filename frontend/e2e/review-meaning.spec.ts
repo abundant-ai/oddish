@@ -1056,6 +1056,11 @@ test("task-page findings are counted and open independently", async ({
   await page
     .getByRole("button", { name: "View findings", exact: true })
     .click();
+  const rejectionReason = page.locator("details").filter({
+    has: page.getByText("Rejection reason", { exact: true }),
+  });
+  await expect(rejectionReason).toBeVisible();
+  await expect(rejectionReason).toHaveAttribute("open", "");
   const one = page.locator('details[data-finding="first-fix"]');
   const two = page.locator('details[data-finding="second-fix"]');
   await expect(one).not.toHaveAttribute("open", "");
@@ -1121,7 +1126,7 @@ test("linked retained must-fix survives a historical optional audit finding", as
   ).toBeVisible();
 });
 
-test("rejection without structured findings keeps its reason behind a disclosure", async ({
+test("rejection without structured findings shows its reason immediately", async ({
   page,
 }) => {
   test.skip(process.env.E2E_REVIEW_FIXTURES !== "1");
@@ -1159,9 +1164,7 @@ test("rejection without structured findings keeps its reason behind a disclosure
   const disclosure = page
     .locator("details")
     .filter({ has: page.getByText("Rejection reason", { exact: true }) });
-  await expect(disclosure).not.toHaveAttribute("open", "");
-  await expect(disclosure.getByText(reason, { exact: true })).not.toBeVisible();
-  await disclosure.locator("summary").click();
+  await expect(disclosure).toHaveAttribute("open", "");
   await expect(disclosure.getByText(reason, { exact: true })).toBeVisible();
 });
 
@@ -1207,9 +1210,7 @@ test("a first run-review finding is counted without detailed findings in open", 
     })
   );
   await page.goto("/tasks/task-a");
-  await expect(
-    page.getByText("Rejected · Run QA Verdict", { exact: true })
-  ).toBeVisible();
+  await expect(page.getByText("Rejected", { exact: true })).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page
     .getByRole("button", { name: "View findings", exact: true })
