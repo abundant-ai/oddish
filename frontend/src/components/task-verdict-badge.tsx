@@ -148,7 +148,9 @@ export function TaskVerdictBadge({
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
   const shownDetail =
-    variant === "summary" && mustFixCount > 0 ? null : p.detail;
+    mustFixCount > 0 && (variant === "summary" || p.isGood === true)
+      ? null
+      : p.detail;
   const rejectionDetail =
     shownDetail && p.isGood === false && variant !== "summary" ? (
       <details className="mt-2 text-sm">
@@ -225,6 +227,7 @@ export function TaskVerdictBadge({
               from the pinned card to this badge kept the rejection and lost
               what to do about it. */}
           {variant !== "summary" &&
+          (mustFixCount === 0 || p.isGood === false) &&
           p.isGood !== null &&
           verdict?.recommendations &&
           verdict.recommendations.length > 0 ? (
@@ -308,7 +311,8 @@ export function TaskVerdictBadge({
                 className="text-muted-foreground mt-1"
               />
             ) : null}
-            {p.isGood !== null &&
+            {(mustFixCount === 0 || p.isGood === false) &&
+            p.isGood !== null &&
             verdict?.recommendations &&
             verdict.recommendations.length > 0 ? (
               <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
