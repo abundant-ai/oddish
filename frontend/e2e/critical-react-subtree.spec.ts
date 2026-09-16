@@ -748,7 +748,10 @@ test.describe("critical task and trial subtree", () => {
         request.method() === "POST" &&
         request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
     );
-    await page.getByRole("button", { name: "Generate" }).click();
+    await page
+      .getByRole("tabpanel", { name: "Trajectory", exact: true })
+      .getByRole("button", { name: "Generate", exact: true })
+      .click();
     await summaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
@@ -761,7 +764,10 @@ test.describe("critical task and trial subtree", () => {
         response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
         response.status() === 503
     );
-    await page.getByRole("button", { name: "Regenerate" }).click();
+    await page
+      .getByRole("tabpanel", { name: "Trajectory", exact: true })
+      .getByRole("button", { name: "Regenerate", exact: true })
+      .click();
     await failedSummaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     const regenerationAlert = page
