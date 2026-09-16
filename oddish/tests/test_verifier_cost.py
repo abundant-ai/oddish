@@ -223,19 +223,17 @@ def test_backfill_skips_non_cua_even_when_uncovered() -> None:
         trial_needs_verifier_backfill(
             has_cua_result_signal=False,
             covered_attempts=0,
-            real_covered_attempts=0,
             attempts=3,
         )
         is False
     )
 
 
-def test_backfill_includes_cua_sentinel_repairs() -> None:
+def test_backfill_graduates_sentinel_covered_trials() -> None:
     assert (
         trial_needs_verifier_backfill(
             has_cua_result_signal=True,
-            covered_attempts=1,
-            real_covered_attempts=0,
+            covered_attempts=0,
             attempts=1,
         )
         is True
@@ -244,7 +242,14 @@ def test_backfill_includes_cua_sentinel_repairs() -> None:
         trial_needs_verifier_backfill(
             has_cua_result_signal=True,
             covered_attempts=1,
-            real_covered_attempts=1,
+            attempts=2,
+        )
+        is True
+    )
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=True,
+            covered_attempts=1,
             attempts=1,
         )
         is False

@@ -697,19 +697,20 @@ def trial_needs_verifier_backfill(
     *,
     has_cua_result_signal: bool,
     covered_attempts: int,
-    real_covered_attempts: int,
     attempts: int,
 ) -> bool:
     """Whether a finished agent trial belongs in a backfill batch.
 
     Non-CUA trials are excluded so recent ordinary agent runs cannot fill
-    the 200-trial cap and starve historical CUA rows (including sentinel
-    repairs).
+    the 200-trial cap. Any row — priced or ``no_cua_artifacts`` sentinel —
+    counts as coverage so a correct-path miss cannot pin the newest-first
+    batch. Sentinel replacement still happens when a later selected trial
+    or live write finds real drafts.
     """
     if not has_cua_result_signal:
         return False
     max_attempt = max(int(attempts or 1), 1)
-    return covered_attempts < max_attempt or real_covered_attempts < max_attempt
+    return covered_attempts < max_attempt
 
 
 async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -> int:
@@ -844,12 +845,12 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
 async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
     """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
 
-    Only CUA-signaled finished agent trials whose attempt coverage is
-    incomplete (including false ``no_cua_artifacts`` sentinels) are selected,
-    so recent ordinary agent runs cannot starve the batch. Each trial uses
-    its own write session so one IntegrityError cannot roll back the sweep.
-    Artifacts are read from the Harbor trial subdirectory, not the bare
-    ``attempt-N/`` root.
+    Only CUA-signaled finished agent trials with at least one attempt that
+    has no ``verifier_costs`` row are selected, so recent ordinary agent
+    runs and already-sentinel-covered misses cannot starve the batch. Each
+    trial uses its own write session so one IntegrityError cannot roll back
+    the sweep. Artifacts are read from the Harbor trial subdirectory, not
+    the bare ``attempt-N/`` root.
     """
     from oddish.db import TrialModel, TrialStatus
     from oddish.db.storage import StorageClient
@@ -863,26 +864,6 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                 ),
             )
             .where(VerifierCostModel.deleted_at.is_(None))
-            .group_by(VerifierCostModel.trial_id)
-            .subquery()
-        )
-        # Exclude false "no artifacts" sentinels so CUA trials poisoned by the
-        # bare-attempt download path re-enter until real spend is written.
-        real_covered = (
-            select(
-                VerifierCostModel.trial_id.label("trial_id"),
-                func.count(func.distinct(VerifierCostModel.attempt)).label(
-                    "covered"
-                ),
-            )
-            .where(
-                VerifierCostModel.deleted_at.is_(None),
-                or_(
-                    VerifierCostModel.unpriced_reason.is_(None),
-                    VerifierCostModel.unpriced_reason
-                    != UNPRICED_NO_CUA_ARTIFACTS,
-                ),
-            )
             .group_by(VerifierCostModel.trial_id)
             .subquery()
         )
@@ -900,9 +881,6 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
             await session.execute(
                 select(TrialModel)
                 .outerjoin(all_covered, all_covered.c.trial_id == TrialModel.id)
-                .outerjoin(
-                    real_covered, real_covered.c.trial_id == TrialModel.id
-                )
                 .where(
                     TrialModel.kind == "agent",
                     TrialModel.finished_at.isnot(None),
@@ -918,8 +896,6 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                     or_(
                         all_covered.c.trial_id.is_(None),
                         all_covered.c.covered < TrialModel.attempts,
-                        real_covered.c.trial_id.is_(None),
-                        real_covered.c.covered < TrialModel.attempts,
                     ),
                 )
                 .order_by(TrialModel.finished_at.desc())
