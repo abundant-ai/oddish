@@ -98,3 +98,18 @@ def test_qa_cost_usd_passes_through_when_the_caller_resolves_it():
         ).qa_cost_usd
         == 0.5
     )
+
+
+def test_verifier_cost_usd_defaults_to_none_and_passes_through():
+    trial = _trial(billed_user_id=None)
+
+    assert build_trial_response(trial, task_path="p").verifier_cost_usd is None
+    assert (
+        build_trial_response(
+            trial, task_path="p", verifier_cost_usd=1.25
+        ).verifier_cost_usd
+        == 1.25
+    )
+    # Solver cost is independent of the verifier sidecar.
+    response = build_trial_response(trial, task_path="p", verifier_cost_usd=9.99)
+    assert response.cost_usd == trial.cost_usd

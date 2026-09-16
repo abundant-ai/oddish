@@ -1008,6 +1008,9 @@ class TaskCostTotals(BaseModel):
     # QA/analysis spend for this task's trials, joined through ``trials``
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
+    # CUA / verifier LLM spend (``verifier_costs``). Never folded into
+    # ``cost_usd`` or quotas. Distinct muted figure on the task tile.
+    verifier_cost_usd: float = 0.0
 
 
 class ExperimentCostTotals(BaseModel):
@@ -1062,6 +1065,11 @@ class ExperimentCostTotals(BaseModel):
     qa_cost_usd: float = 0.0
     owned_qa_cost_usd: float = 0.0
     qa_has_estimated: bool = False
+    # CUA / verifier LLM spend (``verifier_costs``). Same membership scopes as
+    # QA. Never folded into ``cost_usd``, ``billed_*``, or user quotas.
+    verifier_cost_usd: float = 0.0
+    owned_verifier_cost_usd: float = 0.0
+    verifier_has_estimated: bool = False
 
 
 class ExperimentPageVerdict(BaseModel):
@@ -1367,6 +1375,9 @@ class TrialResponse(BaseModel):
     # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
     # means "not resolved by this caller": most builders never populate it.
     qa_cost_usd: float | None = None
+    # CUA / verifier LLM spend for this trial (``verifier_costs``). Same
+    # None-vs-0.0 semantics as ``qa_cost_usd``. Never included in ``cost_usd``.
+    verifier_cost_usd: float | None = None
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
@@ -1698,6 +1709,8 @@ class TaskBrowseItem(BaseModel):
     # QA/analysis spend for this task's trials, joined through ``trials``
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
+    # CUA / verifier LLM spend. Never folded into ``cost_usd`` or quotas.
+    verifier_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
