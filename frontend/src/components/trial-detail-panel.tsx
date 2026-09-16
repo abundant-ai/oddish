@@ -617,7 +617,7 @@ const SANDBOX_BACKENDS: Record<
   thunder: {
     id: "thunder",
     label: "Thunder Compute",
-    logoSrc: "/thunder-compute-logo.png",
+    logoSrc: "/thunder-compute-logo.svg",
     logoFill: true,
   },
 };
