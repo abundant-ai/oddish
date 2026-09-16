@@ -272,10 +272,29 @@ retry behavior.
 
 Use `oddish preflight` to check local task files for integrity problems before
 spending trials on them. It runs entirely locally — no API key needed. It
-parses `task.toml`, requires a justification for open internet access, rejects
+parses `task.toml`, validates task metadata, requires a justification for open internet access, rejects
 repository fetches or exposed `.git` data in the agent image, requires
 readable source rather than patch-only solutions, and rejects brittle
 source-scanning anti-cheat checks.
+
+The `task_metadata` check requires:
+
+- `[task].name` whose final component matches the task directory. For a
+  directory named `fix-login`, `abundant/fix-login`, `category/fix-login`, and
+  the legacy bare name `fix-login` are accepted. Prefer `abundant/` when
+  authoring new Abundant tasks; preflight does not rename tasks.
+- An explicit `[environment].network_mode` (`public`, `no-network`, or
+  `allowlist`), or the legacy boolean `allow_internet`. Separate verifier
+  environments must declare their own network baseline, including per-step
+  environments. Agent/verifier phase overrides can inherit the baseline.
+  A public-access declaration still needs the existing written justification.
+- A nonempty string in `[metadata].reward_type`. This currently checks the
+  declaration only, without imposing a score vocabulary or changing grading.
+- Nonblank entries in `gpu_types` when supplied. GPU types remain optional;
+  preflight does not impose a provider-specific list of supported hardware.
+
+These checks inspect local source files. They do not run the task, certify
+x86/ARM compatibility, or replace the AI source review.
 
 ```bash
 # Check a task or dataset directory
