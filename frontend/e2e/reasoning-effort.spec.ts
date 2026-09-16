@@ -300,9 +300,10 @@ test("experiment view refreshes open drawer groups when the URL grouping changes
   await page.goto(
     "/effort?sample=mixed&detail=1&task=repair-queue&trial=repair-queue-low-2"
   );
+  // The development server compiles the lazy-loaded trial panel on first open.
   await expect(
     page.getByRole("button", { name: "Next trial", exact: true })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   const trials = page.getByRole("button", { name: /^Trial \d+ / });
   await expect(trials).toHaveCount(8); // Five in the table, three high-effort in the drawer.
   await page.evaluate(() => {
