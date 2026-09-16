@@ -104,8 +104,8 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 | Run review | Run QA Verdict | `components/task-verdict-badge.tsx`, `app/(app)/tasks/[task_id]/task-detail-client.tsx` |
 | Execution review | QA verdict | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
 | Analysis result | QA Verdict Results | `lib/tasks-filters.ts` |
-| source review: | pre trial verdict: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
-| source review could not complete: | pre trial verdict could not complete: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| source review: | Pre-trial audit: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| source review could not complete: | Pre-trial audit could not complete: | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
 | Verdict pending | QA verdict pending | `lib/tasks-filters.ts` |
 
 ## Validation

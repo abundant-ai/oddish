@@ -128,6 +128,7 @@ test("expanded history sees completed review on the board refresh", async ({
   const state = await controlledAPI(page);
   await openBoard(page);
   await expect(current(page)).toContainText("qa (running)");
+  await expect(current(page)).toContainText(/Pre-trial audit:\s*success/);
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");

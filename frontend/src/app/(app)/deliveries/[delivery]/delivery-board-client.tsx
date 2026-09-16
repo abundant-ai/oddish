@@ -471,7 +471,7 @@ function QAHistoryVersionRow({
         </span>
         <span className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
           <span>
-            pre trial verdict:{" "}
+            Pre-trial audit:{" "}
             {version.pre_trial_status
               ? version.pre_trial_status.toLowerCase()
               : "not run"}
@@ -496,7 +496,7 @@ function QAHistoryVersionRow({
         {version.pre_trial_error && (
           <p>
             <span className="font-medium text-red-600 dark:text-red-400">
-              pre trial verdict could not complete:
+              Pre-trial audit could not complete:
             </span>{" "}
             <span className="text-muted-foreground break-words">
               {version.pre_trial_error}
