@@ -568,6 +568,57 @@ def test_kube_chart_contract_honors_custom_agent_profile_hook(tmp_path):
     assert not hosts & {"api.openai.com", "ab.chatgpt.com"}
 
 
+def test_declare_pause_proxy_model_hosts_merges_declared_and_model_hosts(monkeypatch):
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.DAYTONA,
+        kwargs={
+            "pause_http_proxy": True,
+            "pause_http_proxy_hosts": "llm-proxy.internal, gateway.test",
+        },
+    )
+    agent_config = HarborAgentConfig(
+        import_path="example.agent:Agent",
+        model_name="anthropic/claude-example",
+        env={"ANTHROPIC_BASE_URL": "https://gateway.test/v1"},
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda model_name, *, agent_env=None, agent_kwargs=None: ["gateway.test"],
+    )
+    monkeypatch.setattr(
+        harbor_runner, "agent_runtime_hosts", lambda **kwargs: ["*.cursor.sh"]
+    )
+
+    harbor_runner.declare_pause_proxy_model_hosts(
+        environment_config=environment_config, agent_config=agent_config
+    )
+
+    assert environment_config.kwargs["pause_http_proxy_hosts"] == [
+        "llm-proxy.internal",
+        "gateway.test",
+        "*.cursor.sh",
+    ]
+
+
+def test_declare_pause_proxy_model_hosts_is_noop_without_the_proxy(monkeypatch):
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        import_path="example.agent:Agent", model_name="anthropic/claude-example"
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *args, **kwargs: pytest.fail("hosts resolved without the proxy"),
+    )
+
+    harbor_runner.declare_pause_proxy_model_hosts(
+        environment_config=environment_config, agent_config=agent_config
+    )
+
+    assert "pause_http_proxy_hosts" not in environment_config.kwargs
+
+
 def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):
     task_path = _write_network_policy_task(tmp_path, compose=True)
     environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)

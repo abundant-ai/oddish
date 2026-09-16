@@ -1234,6 +1234,41 @@ def test_spawn_args_requests_ec2_extra_for_ec2_env():
     assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["ec2"])
 
 
+def test_payload_declares_pause_proxy_model_hosts_from_the_child_env(monkeypatch):
+    from oddish.workers.harbor import runner as harbor_runner
+
+    captured: dict[str, object] = {}
+
+    def _hosts(model_name, *, agent_env=None, agent_kwargs=None):
+        captured["agent_env"] = agent_env
+        return ["gateway.test"]
+
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
+    monkeypatch.setattr(harbor_runner, "agent_runtime_hosts", lambda **kwargs: [])
+    resolved = EnvironmentConfig.model_validate(
+        {"type": "archil", "kwargs": {"pause_http_proxy": True}}
+    )
+
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="nop",
+        model=None,
+        environment_config=resolved,
+        raw_harbor_config={},
+        is_probe=False,
+        extra_agent_env={"ANTHROPIC_BASE_URL": "https://gateway.test/v1"},
+    )
+
+    assert payload["environment_config"]["kwargs"]["pause_http_proxy_hosts"] == [
+        "gateway.test"
+    ]
+    assert captured["agent_env"]["ANTHROPIC_BASE_URL"] == "https://gateway.test/v1"
+    assert payload["extra_agent_env"]["ANTHROPIC_BASE_URL"] == "https://gateway.test/v1"
+    assert "pause_http_proxy_hosts" not in resolved.kwargs
+
+
 def test_payload_serializes_resolved_environment_config_without_child_merges():
     resolved = EnvironmentConfig.model_validate(
         {

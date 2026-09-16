@@ -57,6 +57,7 @@ from .runner import (
     _format_exception_message,
     _patch_task_toml,
     _supports_auto_restricted_agent_network,
+    declare_pause_proxy_model_hosts,
 )
 from .model_hosts import agent_runtime_hosts, outbound_hosts_for_model
 
@@ -321,6 +322,13 @@ def _build_payload(
     )
     child_extra_env = _child_extra_agent_env(
         model=model, extra_agent_env=extra_agent_env, anthropic_env=anthropic_env
+    )
+    environment_config = environment_config.model_copy(deep=True)
+    declare_pause_proxy_model_hosts(
+        environment_config=environment_config,
+        agent_config=routed.model_copy(
+            update={"env": {**routed.env, **runtime_env, **child_extra_env}}
+        ),
     )
     if _supports_auto_restricted_agent_network(
         task_path=task_path,

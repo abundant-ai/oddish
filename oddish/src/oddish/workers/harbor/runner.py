@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Mapping
@@ -36,6 +38,7 @@ from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
 from oddish.config import (
+    is_nop_oracle_agent,
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
     infer_model_provider_prefix,
@@ -1091,31 +1094,66 @@ def _inject_restricted_agent_model_hosts(
     ):
         return
 
+    agent_config.extra_allowed_hosts = list(
+        dict.fromkeys(
+            [*agent_config.extra_allowed_hosts, *_model_transport_hosts(agent_config)]
+        )
+    )
+
+
+logger = logging.getLogger(__name__)
+
+
+def _model_transport_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the agent dials for its model: the model API plus the agent's own service."""
     agent_kwargs = dict(agent_config.kwargs or {})
     resolved_env = resolve_env_vars(agent_config.env) if agent_config.env else {}
     if resolved_env:
         agent_kwargs["extra_env"] = resolved_env
-    inferred_hosts = normalize_allowed_hosts(
-        [
-            *outbound_hosts_for_model(
-                agent_config.model_name,
-                agent_env=resolved_env,
-                agent_kwargs=agent_kwargs,
-            ),
-            # An agent that fronts its own service dials a host the model id
-            # does not name; without this the allowlist holds only the model
-            # API and the harness cannot reach its own endpoint.
-            *agent_runtime_hosts(
-                agent_name=agent_config.name,
-                import_path=agent_config.import_path,
-                agent_kwargs=agent_kwargs,
-                agent_env=resolved_env,
-            ),
-        ]
+    return list(
+        normalize_allowed_hosts(
+            [
+                *outbound_hosts_for_model(
+                    agent_config.model_name,
+                    agent_env=resolved_env,
+                    agent_kwargs=agent_kwargs,
+                ),
+                *agent_runtime_hosts(
+                    agent_name=agent_config.name,
+                    import_path=agent_config.import_path,
+                    agent_kwargs=agent_kwargs,
+                    agent_env=resolved_env,
+                ),
+            ]
+        )
     )
-    agent_config.extra_allowed_hosts = list(
-        dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
+
+
+def declare_pause_proxy_model_hosts(
+    *,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Tell Harbor's pause proxy which TLS hosts carry model traffic.
+
+    The proxy intercepts only these; everything else is tunnelled untouched.
+    """
+    if not environment_config.kwargs.get("pause_http_proxy"):
+        return
+    declared = environment_config.kwargs.get("pause_http_proxy_hosts") or []
+    if isinstance(declared, str):
+        declared = declared.replace(",", " ").split()
+    hosts = normalize_allowed_hosts(
+        list(dict.fromkeys([*declared, *_model_transport_hosts(agent_config)]))
     )
+    if not hosts and not is_nop_oracle_agent(agent_config.name):
+        logger.warning(
+            "No model hosts resolved for agent %s model %s; the pause proxy will "
+            "not drain model traffic before pausing",
+            agent_config.name or agent_config.import_path,
+            agent_config.model_name,
+        )
+    environment_config.kwargs["pause_http_proxy_hosts"] = list(hosts)
 
 
 _KUBE_AGENT_EGRESS_VALUES_KEY = "agentEgressProxy"
@@ -2240,6 +2278,10 @@ async def _run_harbor_trial_async_impl(
                     **(extra_agent_env or {}),
                 },
             )
+            if restricted_compose_kind != "dynamic":
+                declare_pause_proxy_model_hosts(
+                    environment_config=env_config, agent_config=agent_config
+                )
             # Public / non-Compose trials keep the stock agent class above, which
             # ignores disable_web_tools; swap in the oddish wrapper (idempotent,
             # no-op unless disabling) so --disable-web-tools actually reaches the
