@@ -187,10 +187,10 @@ def _default_cloud_environment_for_task(
         return EnvironmentType.GKE
     # Client defaults must not import server-side sandbox implementations.
     # The hosted API validates the requested environment against its policy.
+    if settings.numinous_enabled and (not requires_gpu or settings.numinous_gpu_enabled):
+        return EnvironmentType.NUMINOUS
     if requires_gpu:
         return EnvironmentType.MODAL
-    if settings.numinous_enabled:
-        return EnvironmentType.NUMINOUS
     return EnvironmentType.DAYTONA
 
 
