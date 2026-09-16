@@ -662,7 +662,7 @@ test.describe("critical task and trial subtree", () => {
       page.getByRole("button", { name: "Retry Trial" })
     ).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: "Run analysis" })
+      page.getByRole("button", { name: "Generate QA verdict" })
     ).toBeDisabled();
     await expect(page.getByText("Loading latest trial state.")).toBeVisible();
 
@@ -679,7 +679,7 @@ test.describe("critical task and trial subtree", () => {
       page.getByRole("heading", { name: "Good failure", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
+      page.getByRole("button", { name: "Regenerate QA verdict" })
     ).toBeEnabled();
 
     const taskPanelPattern = new RegExp(`/api/tasks/${TASK_ID}/panel(?:\\?|$)`);
@@ -793,7 +793,7 @@ test.describe("critical task and trial subtree", () => {
     const queuedAnalysisRequest = page.waitForRequest(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`)
     );
-    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await page.getByRole("button", { name: "Regenerate QA verdict" }).click();
     await queuedAnalysisRequest;
     const secondTrialResponse = page.waitForResponse(secondTrialPattern);
     await page.getByRole("button", { name: "Next trial" }).click();
@@ -812,7 +812,7 @@ test.describe("critical task and trial subtree", () => {
       page.locator("p.sr-only").filter({ hasText: TRIAL_ID })
     ).toHaveText(TRIAL_ID);
     await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
+      page.getByRole("button", { name: "Regenerate QA verdict" })
     ).toBeDisabled();
     // Task-level QA writes the finished report onto this terminal agent row.
     // Its settlement ends task-open polling and triggers one final trial-detail
