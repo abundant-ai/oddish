@@ -79,7 +79,7 @@ reference. The main commands are:
   otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
   separate deployment flag.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
-- `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
+- `oddish preflight` — check task name, internet/reward declarations, optional GPU types, and task integrity before `run` or `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).

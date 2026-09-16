@@ -56,7 +56,13 @@ submission controls include:
   findings;
 - `preflight --json` for a read-only machine-readable gate result.
 
-Preflight parses `task.toml` and checks that open internet is justified, the
+Preflight parses `task.toml` and requires `[task].name` to match the directory
+after any `org/` prefix (bare names are accepted), explicit environment internet
+access (`network_mode` or legacy `allow_internet`), and a nonempty
+`[metadata].reward_type` string. Separate verifier environments declare their
+own internet baseline, including per-step environments. Optional `gpu_types`
+entries must be nonblank; no provider-specific hardware list is imposed.
+It also checks that open internet is justified, the
 agent image does not fetch a repository or expose `.git`, solutions are source
 rather than patch files, and anti-cheat checks do not depend on brittle source
 scanning.
