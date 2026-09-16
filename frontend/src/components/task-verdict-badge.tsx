@@ -92,7 +92,8 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = status === "success" ? "No overall result" : VERDICT_LABELS.never;
+    title =
+      status === "success" ? "No QA verdict generated" : VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
@@ -125,7 +126,7 @@ export function TaskVerdictBadge({
 }: {
   task: Task;
   variant: "card" | "inline" | "summary";
-  rejectionSource?: "Pre-trial audit" | "Run review";
+  rejectionSource?: "Pre-trial audit" | "Run QA Verdict";
   onViewFindings?: () => void;
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
@@ -146,7 +147,10 @@ export function TaskVerdictBadge({
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
-  const shownDetail = mustFixCount > 0 ? null : p.detail;
+  const shownDetail =
+    mustFixCount > 0 && (variant === "summary" || p.isGood === true)
+      ? null
+      : p.detail;
   const rejectionDetail =
     shownDetail && p.isGood === false && variant !== "summary" ? (
       <details className="mt-2 text-sm">
@@ -160,7 +164,7 @@ export function TaskVerdictBadge({
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = `Review runs${task.current_version != null ? ` for v${task.current_version}` : ""}`;
+  const runLabel = `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -173,7 +177,7 @@ export function TaskVerdictBadge({
           p.icon
         )}
         <div className="min-w-0 flex-1 basis-48">
-          <div className="flex flex-wrap items-baseline gap-x-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span
               className={
                 variant === "summary"
@@ -184,7 +188,7 @@ export function TaskVerdictBadge({
               {variant === "summary" && mustFixCount > 0 && rejectionSource
                 ? `Rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
-                  ? "Queuing review…"
+                  ? "Queuing QA verdict…"
                   : p.title}
             </span>
             {mustFixCount === 0 && p.isGood !== null && verdict?.confidence ? (
@@ -192,6 +196,16 @@ export function TaskVerdictBadge({
                 · {verdict.confidence} confidence
               </span>
             ) : null}
+            {variant === "summary" && onViewFindings && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onViewFindings}
+                className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
+              >
+                View findings
+              </Button>
+            )}
           </div>
           {variant === "summary" && mustFixCount > 0 && rejectionSource ? (
             <p className="mt-1 text-sm">{mustFixCount} Must fix</p>
@@ -212,8 +226,8 @@ export function TaskVerdictBadge({
               They rendered only in the card variant, so the panes that moved
               from the pinned card to this badge kept the rejection and lost
               what to do about it. */}
-          {mustFixCount === 0 &&
-          variant !== "summary" &&
+          {variant !== "summary" &&
+          (mustFixCount === 0 || p.isGood === false) &&
           p.isGood !== null &&
           verdict?.recommendations &&
           verdict.recommendations.length > 0 ? (
@@ -238,16 +252,6 @@ export function TaskVerdictBadge({
             </p>
           ) : null}
         </div>
-        {variant === "summary" && onViewFindings && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onViewFindings}
-          >
-            View findings
-          </Button>
-        )}
         {showCancelButton ? (
           <Button
             type="button"
@@ -283,7 +287,7 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          Run reviews
+          QA verdict
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">
@@ -307,7 +311,7 @@ export function TaskVerdictBadge({
                 className="text-muted-foreground mt-1"
               />
             ) : null}
-            {mustFixCount === 0 &&
+            {(mustFixCount === 0 || p.isGood === false) &&
             p.isGood !== null &&
             verdict?.recommendations &&
             verdict.recommendations.length > 0 ? (

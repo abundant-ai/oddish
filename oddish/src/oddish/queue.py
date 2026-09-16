@@ -1748,7 +1748,11 @@ async def maybe_start_task_qa_stage(
     if await live_analysis_trial_id(session, task_id, kind="qa") is not None:
         return TaskQAStageAdmission()
 
-    await start_qa_for_task(session, task)
+    if task.run_analysis:
+        await start_qa_for_task(session, task)
+    else:
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = task.finished_at or utcnow()
     await session.flush()
     return TaskQAStageAdmission(advanced=True, task_version_id=task.current_version_id)
 

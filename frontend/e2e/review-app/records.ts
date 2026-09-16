@@ -233,9 +233,9 @@ export const board: DeliveryBoardResponse = {
         {
           key: "pre_trial_passed",
           kind: "automated",
-          label: "Source review completed",
+          label: "Pre-trial audit completed",
           status: record.source_status === "success" ? "pass" : "fail",
-          detail: `Source review ${record.source_status ?? "not run"} on v${record.version}; defect checks are separate.`,
+          detail: `Pre-trial audit ${record.source_status ?? "not run"} on v${record.version}; defect checks are separate.`,
         },
         {
           key: "verdict_ok",

@@ -1,6 +1,8 @@
 # Oddish Repository Guide
 
 This file is the technical guide for the entire monorepo. End-user CLI docs live in `DOCS.md`.
+Manually invoked diagnostics and statistics rebuild commands are indexed in
+`docs/operations-tools.md`; evaluate their operational use before pruning them.
 
 The repo has three main packages:
 
@@ -24,6 +26,46 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
   CLI and standalone server; hosted product concerns (auth, org membership,
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
   cloud-only policy) belong in `backend/`.
+
+## Pruning files and operational knowledge
+
+Before deleting a file, identify who or what uses it. Application modules,
+manually invoked operator tools, migration/repair commands, tests, runbooks, and
+historical campaign records have different evidence of use. No imports or text
+references is evidence to investigate, not proof that a file is useless.
+
+- Check runtime and indirect entry points: CLI registration, dynamic imports,
+  framework file conventions, Modal functions, package exports, scheduled jobs,
+  CI workflows, deployment commands, and operator documentation. Search callers
+  of a public interface as well as the concrete implementation being removed.
+- For standalone scripts, read their arguments, side effects, dependencies, and
+  Git history. A `one-off` label or old filename does not establish that a
+  database check, artifact investigation, or repair command has no repeat use.
+  Do not run a script against production merely to determine whether to keep it.
+- For runbooks and incident notes, identify information that would otherwise be
+  lost: failure symptoms and causes, credential placement, export formats,
+  recovery procedures, and experiment-validity rules. Name the surviving
+  replacement and verify it contains that information before deleting the source.
+  Documentation does not need a code caller to be useful.
+- Separate reusable knowledge from stale instructions. Archive campaign-specific
+  records with a clear historical label; remove or update fixed experiment IDs,
+  local paths, obsolete bypass flags, model prices, and deployment assumptions
+  before presenting a tool as current. Keep useful tools discoverable in
+  `docs/operations-tools.md`. Git history is recovery, not a substitute for a
+  discoverable operating guide.
+- Remove a helper and its tests only after checking its remaining callers and
+  the coverage that survives. Do not remove tests just to make a deletion pass.
+  Check shared interfaces for methods still required by other implementations
+  or callers. Run the relevant tests, imports, builds, and CLI checks; distinguish
+  static checks from actual execution and identify unverified cloud behavior.
+- Keep restoration separate from changes to operating policy. Preserve existing
+  expert advice when recovering a runbook; raise concerns separately instead of
+  silently rewriting evaluation rules, thresholds, or campaign instructions.
+- Keep a pruning PR reviewable: describe each deletion category, the evidence
+  that it is obsolete or replaced, where any retained knowledge moved, and the
+  checks performed. Separate uncertain operational removals from clearly dead
+  application code. If use remains unclear, retain the file and state the open
+  question rather than silently classifying it as dead.
 
 ## Repository Layout
 
@@ -173,7 +215,7 @@ High-level flow:
    change their trial kinds or stored `is_probe` flags. `summarize` uses these
    rules only when explicitly configured with `harbor_config.mode = "probe"`.
 4. Trajectory analysis is **task-scoped** and runs as a trial: when every
-   agent trial of a task is terminal, one QA trial (`trials.kind = 'qa'`)
+   agent trial of a task is terminal and `run_analysis` is enabled, one QA trial (`trials.kind = 'qa'`)
    is created on the same task. Its agent classifies
    every live trial, writes per-trial trajectory summaries, and synthesizes
    the task verdict into one artifact (`qa_result.json`); on settlement an
@@ -185,6 +227,8 @@ High-level flow:
    baseline rejects the task even with zero eligible solver trials. With zero
    eligible trials and no established rejection, the task completes with no
    verdict, `verdict_status=FAILED`, and an explicit insufficient-evidence error.
+   With `run_analysis=False`, automatic settlement completes the task without
+   writing a verdict or review error; explicit QA requests still run.
    Delivery requirements remain independently configurable (defaults: five
    trials and three agents); a verdict alone does not qualify a task for delivery. A sweep of `T` tasks × `N` trials therefore creates `T`
    QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
@@ -1121,6 +1165,52 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
+- Thunder is an explicit, opt-in GPU backend. `ODDISH_THUNDER_ENABLED=true`
+  registers it; `ODDISH_THUNDER_MAX_CAPACITY` (default 128) is a provider-wide
+  limit enforced by durable leases across every organization, model, queue key,
+  and Harbor variant. The `oddish-thunder` Modal secret contains only
+  `TNR_API_URL` and `TNR_API_TOKEN` and is attached only to dedicated Thunder
+  workers and teardown control. Thunder targets `thunder-sandbox==0.6.1` and
+  its native async Python transport; never add subprocess probes or package
+  requirements for `ssh`, `scp`, or `ssh-keygen` on its behalf. Registration
+  makes `environment=thunder` valid but must never put Thunder in
+  `automatic_backends()`; unspecified GPU work continues to default to Modal.
+  Oddish forces each Thunder sandbox name to its durable `sandbox_runs.id`.
+  The reconciler inventories Thunder through a credential-scoped Modal
+  function and treats that exact name match as the ownership proof needed to
+  recover a handle lost before Harbor's `environment-provisioned` event. Never
+  make the name task-configurable or terminate unmatched inventory entries.
+  Capacity fallback remains off unless `ODDISH_THUNDER_CAPACITY_FALLBACK=true`;
+  its destination defaults to `ODDISH_THUNDER_FALLBACK_PROVIDER=modal`. An
+  exact SDK `sandbox_capacity_unavailable` result bypasses ordinary trial
+  failure settlement. The END hook also defers terminal state for eligible
+  capacity misses. Handoffs require the same RUNNING trial and worker ownership
+  in both validation and the SQL update; settled results cannot revive ownership.
+  One ownership-checked transaction changes the trial
+  environment plus required runnable/claim state and moves the job from
+  `thunder_trial` to the `default` execution lane. Payload, queue key, Harbor
+  variant, priority, attempt identifiers and limits, and stored trial config
+  remain unchanged. At destination execution, Oddish rebuilds a private Harbor
+  environment config: Thunder-only kwargs are removed from both override and
+  task config, an exact Thunder `gpu_type` is transferred to the task's native
+  GPU field, and backend capabilities are checked before provisioning. Modal
+  must reject A6000 rather than remap it. A no-ID ledger is fast-finalized; a
+  provisioned `RUNNING` run is eligible for handoff, but any run with an
+  external ID remains claim-blocked and retains its Thunder capacity
+  lease until cleanup confirms teardown and clears
+  `reroute_pending_teardown`.
+  Rejected handoffs settle a still-owned worker attempt and its still-owned
+  RUNNING trial as FAILED, preserving provider handles and capacity leases for
+  cleanup; cancellation and newer attempts are never overwritten. Modal fallback
+  translates Thunder A100XL to A100-80GB and SDK A100 to A100-40GB only when
+  Modal is the destination. Both the trial and worker-job attempt budgets are
+  checked from locked current rows before a handoff. If either is exhausted,
+  the owned attempt fails without scheduling a destination retry; source handles
+  and leases remain available to cleanup.
+  Requested/completed/rejected/failed handoffs emit structured
+  `metric=thunder_capacity_handoff` logs and the bounded
+  `oddish.thunder.capacity_handoffs` counter. Apply the
+  `thunder_fallback_001` core migration before enabling the gate.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
@@ -2069,6 +2159,10 @@ and a new key is then required.
 
 ### Database Migrations
 
+The Thunder integration joins staging at core migration `merge_thunder_staging_001`.
+Apply it before deploying the combined worker code; it preserves both the existing
+Thunder fallback history and staging's worker-resource/finding migrations.
+
 Two migration stacks are required:
 
 ```bash
@@ -2511,8 +2605,11 @@ reasoning effort for that choice. Explicit effort still separates experiment
 columns and sweep counts. Historical configurations and retries keep their
 saved settings; missing effort is never inferred from the agent's runtime default.
 
-The shared frontend column identity includes agent, model, and effort even when
-only one configuration has arrived. Table cells, navigation, column visibility,
+Private experiment views separate solver columns by agent, model, and effort by
+default. Their Group effort levels toggle sets `groupEfforts=1` in the URL to
+group across efforts. Public share views always group efforts, ignore the URL
+grouping setting, and hide the toggle. The table, row filters, charts, and drawer navigation
+use this grouping; trial settings and launch requests remain unchanged. Table cells, navigation, column visibility,
 exports, and Pass/k share that identity. The model/effort label is display-only;
 model-copy and submission keep the actual model identifier. Effort suffixes
 inherit the model text's typography. Deterministic baselines and internal

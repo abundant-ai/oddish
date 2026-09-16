@@ -27,6 +27,10 @@ from oddish.db import (  # noqa: E402
     WorkerJobKind,
     WorkerJobStatus,
 )
+from oddish.core.harbor_artifacts import (  # noqa: E402
+    THUNDER_CAPACITY_UNAVAILABLE_CODE,
+)
+from oddish.config import settings  # noqa: E402
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
@@ -155,6 +159,94 @@ async def test_trial_handler_threads_harbor_retry_after_hint(monkeypatch):
 
     assert outcome.failure is not None
     assert outcome.failure.retry_after_seconds == 90.0
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_reroutes_typed_thunder_capacity_outcome(monkeypatch):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "daytona")
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RUNNING,
+        environment="thunder",
+        error_message=None,
+        attempts=9,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            retry_after_seconds=20.0,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is None
+    assert outcome.reroute is not None
+    assert outcome.reroute.target_environment == "daytona"
+    assert outcome.reroute.target_execution_lane == "default"
+    assert outcome.reroute.reason == THUNDER_CAPACITY_UNAVAILABLE_CODE
+    assert outcome.reroute.retry_after_seconds == 20.0
+    assert outcome.reroute.subject_attempt == 9
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_does_not_reroute_capacity_when_gate_is_disabled(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", False)
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        environment="thunder",
+        error_message="capacity unavailable",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            retry_after_seconds=20.0,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is None
+    assert outcome.failure is not None
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_does_not_reroute_non_capacity_thunder_error(monkeypatch):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        environment="thunder",
+        error_message="Thunder authentication failed",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code="authentication_error",
+            retry_after_seconds=None,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is None
+    assert outcome.failure is not None
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from pydantic_settings import (
 from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
+from harbor.models.environment_type import EnvironmentType
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
@@ -870,11 +871,12 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
     #
-    # Fable 5 is a Covered Model: Bedrock only serves it once the AWS
-    # account's data retention mode is set to "provider_data_share" (a
-    # one-time `PUT /data-retention` opt-in; API-only, no console UI).
+    # Fable 5 / 5.1 are Covered Models: Bedrock only serves them once the
+    # AWS account's data retention mode is set to "provider_data_share"
+    # (a one-time `PUT /data-retention` opt-in; API-only, no console UI).
     # Without it, Bedrock rejects every call with "data retention mode
     # 'default' is not available for this model".
+    "claude-fable-5-1": "global.anthropic.claude-fable-5-1",
     "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
@@ -1487,6 +1489,15 @@ class Settings(BaseSettings):
     # `numinous-environment`).
     numinous_enabled: bool = False
 
+    # Thunder GPU backend (opt-in). Registration is gated so deployments that
+    # do not carry TNR_API_TOKEN never advertise or route Thunder trials.
+    thunder_enabled: bool = False
+    thunder_max_capacity: int = 128
+    # Capacity fallback is opt-in. Its non-Thunder target is dispatched on the
+    # default lane after the source sandbox ledger is safely finalized.
+    thunder_capacity_fallback: bool = False
+    thunder_fallback_provider: str = "modal"
+
     # Numinous GPU lane (opt-in, separate flag). When enabled the backend
     # advertises a GpuSupport(accelerators=("H100", "H200", "A100", "L40S",
     # "A10", "RTX_4090"), max_count=8), so capability negotiation routes
@@ -1858,6 +1869,30 @@ class Settings(BaseSettings):
             raise ValueError("ec2_root_volume_size_gb must be greater than zero")
         if self.ec2_max_concurrent_instances <= 0:
             raise ValueError("ec2_max_concurrent_instances must be greater than zero")
+        return self
+
+    @model_validator(mode="after")
+    def validate_thunder_configuration(self) -> "Settings":
+        if self.thunder_max_capacity <= 0:
+            raise ValueError("thunder_max_capacity must be greater than zero")
+        fallback_provider = self.thunder_fallback_provider.strip().lower()
+        if not fallback_provider:
+            raise ValueError("thunder_fallback_provider cannot be blank")
+        if fallback_provider == "thunder":
+            raise ValueError("thunder_fallback_provider cannot be thunder")
+        if len(fallback_provider) > 32:
+            raise ValueError("thunder_fallback_provider cannot exceed 32 characters")
+        try:
+            fallback_environment = EnvironmentType(fallback_provider)
+        except ValueError as exc:
+            raise ValueError(
+                "thunder_fallback_provider must be a Harbor environment"
+            ) from exc
+        if fallback_environment == EnvironmentType.EC2:
+            raise ValueError(
+                "thunder_fallback_provider must use the default execution lane"
+            )
+        self.thunder_fallback_provider = fallback_provider
         return self
 
     @model_validator(mode="after")

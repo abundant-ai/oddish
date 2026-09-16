@@ -112,7 +112,11 @@ def _ephemeral_job_dir(
 
 
 def _read_ephemeral_outcome(
-    tmp_path: Path, trial_result: TrialResult, *, stats_reward: float | None = None
+    tmp_path: Path,
+    trial_result: TrialResult,
+    *,
+    stats_reward: float | None = None,
+    environment_provider: str | None = None,
 ):
     job_dir, job_result_path = _ephemeral_job_dir(
         tmp_path, trial_result, stats_reward=stats_reward
@@ -137,6 +141,7 @@ def _read_ephemeral_outcome(
         duration=11.0,
         stderr="",
         stdout_tail="",
+        environment_provider=environment_provider,
     )
 
 
@@ -161,6 +166,21 @@ def test_ephemeral_outcome_recovers_the_provider_exception(tmp_path):
     assert outcome.exception_type == "ApiClientError"
     assert outcome.http_status == 404
     assert outcome.error == "ApiClientError: the provider rejected the request"
+
+
+@pytest.mark.parametrize("provider", ["thunder", "modal"])
+def test_disk_recovered_capacity_error_keeps_provider_context(tmp_path, provider):
+    outcome = _read_ephemeral_outcome(
+        tmp_path,
+        _trial_result(exception_type="CapacityError", http_status=503),
+        environment_provider=provider,
+    )
+
+    assert outcome.exception_type == "CapacityError"
+    assert outcome.http_status == 503
+    assert outcome.provider_error_code == (
+        "sandbox_capacity_unavailable" if provider == "thunder" else None
+    )
 
 
 def test_ephemeral_outcome_recovers_phase_timing(tmp_path):

@@ -1034,7 +1034,7 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA");
+        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
       }
       revalidateReaderResources();
     } catch (err) {
@@ -1137,7 +1137,7 @@ export function TaskDetailClient({
               (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
                 ? "Pre-trial audit"
                 : (task.must_fix_count ?? 0) > 0
-                  ? "Run review"
+                  ? "Run QA Verdict"
                   : undefined
             }
             onViewFindings={() => {

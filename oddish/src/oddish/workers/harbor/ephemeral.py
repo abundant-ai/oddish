@@ -19,6 +19,7 @@ from typing import Any
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import AgentConfig, EnvironmentConfig
 from harbor.trial.hooks import TrialEvent
+from thunder_sandbox import CapacityError
 
 from oddish.config import (
     BEDROCK_ENV_VARS,
@@ -27,6 +28,7 @@ from oddish.config import (
     settings,
     to_anthropic_api_model_id,
 )
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.schemas import HarborConfig
@@ -54,27 +56,44 @@ from .runner import (
     _check_local_storage_preflight,
     _format_exception_message,
     _patch_task_toml,
+    _supports_auto_restricted_agent_network,
 )
+from .model_hosts import agent_runtime_hosts, outbound_hosts_for_model
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
 _CHILD_STREAM_LIMIT = 8 * 1024 * 1024
 _PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 logger = logging.getLogger(__name__)
-_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
-    EnvironmentType.DAYTONA: "daytona",
-    EnvironmentType.ARCHIL: "archil",
-    EnvironmentType.MODAL: "modal",
-    EnvironmentType.E2B: "e2b",
-    EnvironmentType.RUNLOOP: "runloop",
-    EnvironmentType.GKE: "gke",
-    EnvironmentType.NOVITA: "novita",
-    EnvironmentType.TENSORLAKE: "tensorlake",
-    EnvironmentType.CWSANDBOX: "cwsandbox",
-    EnvironmentType.WANDB: "wandb",
-    EnvironmentType.ISLO: "islo",
-    EnvironmentType.EC2: "ec2",
-}
+
+
+def _environment_harbor_extras(
+    environment_type: Any = EnvironmentType,
+) -> dict[Any, str]:
+    extras = {
+        environment_type.DAYTONA: "daytona",
+        environment_type.ARCHIL: "archil",
+        environment_type.MODAL: "modal",
+        environment_type.E2B: "e2b",
+        environment_type.RUNLOOP: "runloop",
+        environment_type.GKE: "gke",
+        environment_type.NOVITA: "novita",
+        environment_type.TENSORLAKE: "tensorlake",
+        environment_type.CWSANDBOX: "cwsandbox",
+        environment_type.WANDB: "wandb",
+        environment_type.ISLO: "islo",
+        environment_type.EC2: "ec2",
+    }
+    # Published Harbor releases can lag provider support shipped by Oddish's
+    # locked worker fork. Keep imports working without inventing string-backed
+    # environment members for those older builds.
+    thunder = getattr(environment_type, "THUNDER", None)
+    if thunder is not None:
+        extras[thunder] = "thunder"
+    return extras
+
+
+_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = _environment_harbor_extras()
 
 
 class HarborOverrideImportError(Exception):
@@ -297,6 +316,51 @@ def _build_payload(
             routed,
             model=_child_model_name(agent=agent, model=model, is_probe=is_probe),
         )
+    agent_config = _child_agent_config(
+        routed, raw_harbor_config=raw_harbor_config, is_probe=is_probe
+    )
+    child_extra_env = _child_extra_agent_env(
+        model=model, extra_agent_env=extra_agent_env, anthropic_env=anthropic_env
+    )
+    if _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        # Override Harbor runs in an isolated child interpreter and therefore
+        # bypasses runner.py's in-process AgentConfig host injection. Resolve
+        # the same model/runtime endpoints in the parent and serialize them in
+        # the private child payload so Harbor can widen the restricted agent
+        # phase before the provider applies it.
+        resolved_agent_env = {
+            **dict(agent_config.get("env") or {}),
+            **runtime_env,
+            **child_extra_env,
+        }
+        agent_kwargs = dict(agent_config.get("kwargs") or {})
+        if resolved_agent_env:
+            agent_kwargs["extra_env"] = resolved_agent_env
+        inferred_hosts = [
+            *outbound_hosts_for_model(
+                model,
+                agent_env=resolved_agent_env,
+                agent_kwargs=agent_kwargs,
+            ),
+            *agent_runtime_hosts(
+                agent_name=agent_config.get("name") or agent,
+                import_path=agent_config.get("import_path"),
+                agent_kwargs=agent_kwargs,
+                agent_env=resolved_agent_env,
+            ),
+        ]
+        agent_config["extra_allowed_hosts"] = list(
+            dict.fromkeys(
+                [
+                    *list(agent_config.get("extra_allowed_hosts") or []),
+                    *(host for host in inferred_hosts if host),
+                ]
+            )
+        )
+
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
@@ -304,9 +368,7 @@ def _build_payload(
         "agent": agent,
         "model": child_model,
         "environment_config": environment_config.model_dump(mode="json"),
-        "agent_config": _child_agent_config(
-            routed, raw_harbor_config=raw_harbor_config, is_probe=is_probe
-        ),
+        "agent_config": agent_config,
         "probe_subagent_model": _child_probe_subagent_model(routed, is_probe=is_probe),
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],
@@ -330,9 +392,7 @@ def _build_payload(
         "runtime_env": {**anthropic_env, **runtime_env},
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
-        "extra_agent_env": _child_extra_agent_env(
-            model=model, extra_agent_env=extra_agent_env, anthropic_env=anthropic_env
-        ),
+        "extra_agent_env": child_extra_env,
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,
             is_probe=is_probe,
@@ -594,6 +654,7 @@ async def run_ephemeral_harbor_trial(
             duration=duration,
             stderr=b"".join(stderr_chunks).decode("utf-8", "replace"),
             stdout_tail="\n".join(tail),
+            environment_provider=environment.value,
         )
         return outcome
     except asyncio.CancelledError:
@@ -661,6 +722,7 @@ def _read_outcome(
     duration: float,
     stderr: str,
     stdout_tail: str,
+    environment_provider: str | None = None,
 ) -> HarborOutcome:
     """Read the child outcome."""
     outcome_data: dict[str, Any] | None = None
@@ -709,9 +771,17 @@ def _read_outcome(
             job_result_path=job_result_path,
             job_dir=job_dir,
             duration_sec=duration,
+            environment_provider=environment_provider,
         )
 
     error = outcome_data.get("error") or (stderr or stdout_tail or "").strip()[-1500:]
+    provider_error_code = outcome_data.get("provider_error_code")
+    exception_type = outcome_data.get("exception_type")
+    is_thunder_capacity_error = (
+        environment_provider == EnvironmentType.THUNDER.value
+        and exception_type == CapacityError.__name__
+        and provider_error_code == THUNDER_CAPACITY_UNAVAILABLE_CODE
+    )
     return HarborOutcome(
         reward=None,
         error=error or "Ephemeral Harbor run failed without a result.",
@@ -719,7 +789,20 @@ def _read_outcome(
         duration_sec=duration,
         job_result_path=None,
         job_dir=job_dir,
-        exception_type="HarborOverrideImportError",
+        exception_type=(
+            exception_type if is_thunder_capacity_error else "HarborOverrideImportError"
+        ),
+        provider_error_code=(
+            provider_error_code if is_thunder_capacity_error else None
+        ),
+        http_status=(
+            outcome_data.get("http_status") if is_thunder_capacity_error else None
+        ),
+        retry_after_seconds=(
+            outcome_data.get("retry_after_seconds")
+            if is_thunder_capacity_error
+            else None
+        ),
     )
 
 

@@ -28,6 +28,7 @@ from oddish.workers.harbor._entry import (
     _ProbeClaudeCode,
     _build_job_config,
     _read_payload_and_unlink,
+    _thunder_capacity_error_metadata,
 )
 from oddish.workers.harbor.ephemeral import (
     HarborOverrideImportError,
@@ -156,6 +157,100 @@ def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     assert outcome.error == "boom"
 
 
+@pytest.mark.parametrize(
+    ("exception_type", "provider_error_code"),
+    [("SystemExit", 19), ("OSError", "EIO"), ("HTTPError", "server_error")],
+)
+def test_read_outcome_does_not_trust_arbitrary_exception_codes(
+    tmp_path, exception_type, provider_error_code
+):
+    outcome_path = tmp_path / "outcome.json"
+    outcome_path.write_text(
+        json.dumps(
+            {
+                "job_dir": str(tmp_path),
+                "job_result_path": None,
+                "error": "child crashed",
+                "exception_type": exception_type,
+                "provider_error_code": provider_error_code,
+                "http_status": 503,
+                "retry_after_seconds": 20,
+            }
+        )
+    )
+
+    outcome = _read_outcome(
+        outcome_path=outcome_path,
+        unique_parent=tmp_path,
+        returncode=1,
+        duration=1.0,
+        stderr="",
+        stdout_tail="",
+        environment_provider=EnvironmentType.THUNDER.value,
+    )
+
+    assert outcome.exception_type == "HarborOverrideImportError"
+    assert outcome.provider_error_code is None
+    assert outcome.http_status is None
+    assert outcome.retry_after_seconds is None
+
+
+def test_read_outcome_preserves_exact_typed_thunder_capacity_error(tmp_path):
+    outcome_path = tmp_path / "outcome.json"
+    outcome_path.write_text(
+        json.dumps(
+            {
+                "job_dir": str(tmp_path),
+                "job_result_path": None,
+                "error": "capacity unavailable",
+                "exception_type": "CapacityError",
+                "provider_error_code": "sandbox_capacity_unavailable",
+                "http_status": 503,
+                "retry_after_seconds": 20,
+            }
+        )
+    )
+
+    outcome = _read_outcome(
+        outcome_path=outcome_path,
+        unique_parent=tmp_path,
+        returncode=1,
+        duration=1.0,
+        stderr="",
+        stdout_tail="",
+        environment_provider=EnvironmentType.THUNDER.value,
+    )
+
+    assert outcome.exception_type == "CapacityError"
+    assert outcome.provider_error_code == "sandbox_capacity_unavailable"
+    assert outcome.http_status == 503
+    assert outcome.retry_after_seconds == 20
+
+
+def test_child_exports_metadata_only_for_typed_thunder_capacity_error():
+    class CodedError(RuntimeError):
+        code = "sandbox_capacity_unavailable"
+        status = 503
+        retry_after = 20
+
+    assert _thunder_capacity_error_metadata(SystemExit(19)) == {}
+    assert _thunder_capacity_error_metadata(CodedError("not Thunder")) == {}
+
+    from thunder_sandbox import CapacityError
+
+    error = CapacityError(
+        "unavailable",
+        code="sandbox_capacity_unavailable",
+        status=503,
+        retry_after=20,
+    )
+    assert _thunder_capacity_error_metadata(error) == {
+        "provider_error_code": "sandbox_capacity_unavailable",
+        "http_status": 503,
+        "retry_after_seconds": 20,
+    }
+
+
 def test_build_payload_prefers_passed_env_build_multiplier():
     # The runner computes the GKE-sized env-build multiplier and passes it in; it
     # must win over whatever rode in the raw config, so the child JobConfig gets
@@ -222,6 +317,126 @@ def test_build_payload_carries_agent_config():
         is_probe=False,
     )
     assert payload["agent_config"] == agent_config
+
+
+def test_thunder_override_payload_injects_openai_hosts_for_restricted_agent(
+    tmp_path, monkeypatch
+):
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+
+[verifier]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "outbound_hosts_for_model",
+        lambda *_args, **_kwargs: ["api.openai.com", "ab.chatgpt.com"],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "agent_runtime_hosts",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_runtime_env_overrides",
+        lambda **_kwargs: {"OPENAI_API_KEY": "test-key"},
+    )
+
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "jobs" / "outcome.json",
+        agent="codex",
+        model="openai/gpt-5.5",
+        environment_config=EnvironmentConfig(type=EnvironmentType.THUNDER),
+        raw_harbor_config={"agent_config": {"extra_allowed_hosts": []}},
+        is_probe=False,
+    )
+
+    assert payload["agent_config"]["extra_allowed_hosts"] == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+    child_config = _build_job_config(payload)
+    assert child_config.agents[0].extra_allowed_hosts == [
+        "api.openai.com",
+        "ab.chatgpt.com",
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsupported_shape",
+    ["compose", "extra-compose", "kube-chart", "custom-environment"],
+)
+def test_override_payload_skips_host_injection_for_unsupported_network_shapes(
+    tmp_path, monkeypatch, unsupported_shape
+):
+    task_path = tmp_path / "task"
+    environment_dir = task_path / "environment"
+    environment_dir.mkdir(parents=True)
+    (task_path / "task.toml").write_text(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+
+[verifier]
+network_mode = "no-network"
+""",
+        encoding="utf-8",
+    )
+    environment_config = EnvironmentConfig(type=EnvironmentType.DAYTONA)
+    if unsupported_shape == "compose":
+        (environment_dir / "docker-compose.yaml").write_text("services: {}\n")
+    elif unsupported_shape == "extra-compose":
+        environment_config.extra_docker_compose = [tmp_path / "extra-compose.yaml"]
+    elif unsupported_shape == "kube-chart":
+        chart = environment_dir / "chart"
+        chart.mkdir()
+        (chart / "Chart.yaml").write_text(
+            "apiVersion: v2\nname: test\nversion: 0.1.0\n"
+        )
+    else:
+        environment_config.import_path = "custom.environment:Environment"
+
+    def unexpected_hosts(*_args, **_kwargs):
+        raise AssertionError("unsupported task shapes must not infer agent hosts")
+
+    monkeypatch.setattr(harbor_ephemeral, "outbound_hosts_for_model", unexpected_hosts)
+    monkeypatch.setattr(harbor_ephemeral, "agent_runtime_hosts", unexpected_hosts)
+    monkeypatch.setattr(
+        harbor_ephemeral,
+        "_runtime_env_overrides",
+        lambda **_kwargs: {},
+    )
+
+    payload = _build_payload(
+        task_path=task_path,
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "jobs" / "outcome.json",
+        agent="codex",
+        model="openai/gpt-5.5",
+        environment_config=environment_config,
+        raw_harbor_config={"agent_config": {"extra_allowed_hosts": ["submitted.test"]}},
+        is_probe=False,
+    )
+
+    assert payload["agent_config"]["extra_allowed_hosts"] == ["submitted.test"]
 
 
 # Every Anthropic-compatible provider Oddish routes through the claude-code
@@ -299,6 +514,39 @@ def test_ephemeral_fireworks_agent_reaches_the_fireworks_endpoint(monkeypatch):
     assert env["ANTHROPIC_API_KEY"] == ""
     assert env["CLAUDE_CODE_USE_BEDROCK"] == ""
     assert env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+
+
+def test_thunder_host_injection_uses_routed_child_environment(monkeypatch):
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        harbor_ephemeral, "_supports_auto_restricted_agent_network", lambda **_: True
+    )
+    observed_envs = []
+
+    def capture_hosts(*_args, **kwargs):
+        observed_envs.append(kwargs["agent_env"])
+        return ["api.fireworks.ai"]
+
+    monkeypatch.setattr(harbor_ephemeral, "outbound_hosts_for_model", capture_hosts)
+    monkeypatch.setattr(harbor_ephemeral, "agent_runtime_hosts", capture_hosts)
+    payload = _compat_payload(
+        "fireworks/glm-5p2",
+        environment_config=EnvironmentConfig(type=EnvironmentType.THUNDER),
+        extra_agent_env={"ANTHROPIC_AUTH_TOKEN": "byok-token"},
+        raw_harbor_config={
+            **_EPHEMERAL_HC,
+            "agent_config": {"extra_allowed_hosts": ["submitted.test"]},
+        },
+    )
+
+    assert len(observed_envs) == 2
+    for env in observed_envs:
+        assert env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+        assert env["ANTHROPIC_AUTH_TOKEN"] == "byok-token"
+    assert payload["agent_config"]["extra_allowed_hosts"] == [
+        "submitted.test",
+        "api.fireworks.ai",
+    ]
 
 
 def test_ephemeral_compat_env_defers_to_a_submitted_base_url():
@@ -918,6 +1166,35 @@ def test_spawn_args_requests_archil_extra_for_archil_env():
     assert req.startswith("harbor[archil] @ git+")
 
 
+def test_spawn_args_requests_thunder_extra_for_thunder_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.THUNDER
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["thunder"])
+    assert req.startswith("harbor[thunder] @ git+")
+
+
+def test_ephemeral_extra_map_allows_harbor_without_thunder():
+    class PublicHarborEnvironmentType:
+        DAYTONA = object()
+        ARCHIL = object()
+        MODAL = object()
+        E2B = object()
+        RUNLOOP = object()
+        GKE = object()
+        NOVITA = object()
+        TENSORLAKE = object()
+        CWSANDBOX = object()
+        WANDB = object()
+        ISLO = object()
+        EC2 = object()
+
+    extras = harbor_ephemeral._environment_harbor_extras(PublicHarborEnvironmentType)
+
+    assert "thunder" not in extras.values()
+
+
 def test_ephemeral_daytona_forces_ownership_labels():
     raw_kwargs = {
         "auto_labels": False,
@@ -1526,8 +1803,11 @@ def test_payload_routes_with_trial_anthropic_key(monkeypatch, force_direct, is_p
 @pytest.mark.parametrize("force_direct", [True, False])
 @pytest.mark.parametrize("hdo_key", ["test-hdo-key", ""])
 @pytest.mark.parametrize("worker_key", ["test-worker-key", None])
+@pytest.mark.parametrize(
+    "environment", [EnvironmentType.DOCKER, EnvironmentType.THUNDER]
+)
 def test_payload_hdo_key_wins_over_worker_and_user_keys(
-    monkeypatch, force_direct, hdo_key, worker_key
+    tmp_path, monkeypatch, force_direct, hdo_key, worker_key, environment
 ):
     from oddish.config import BEDROCK_ENV_VARS
 
@@ -1542,14 +1822,21 @@ def test_payload_hdo_key_wins_over_worker_and_user_keys(
     monkeypatch.setattr(
         harbor_ephemeral.settings, "claude_code_force_direct_api", force_direct
     )
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        '[environment]\nnetwork_mode = "public"\n'
+        '[agent]\nnetwork_mode = "allowlist"\n'
+        '[verifier]\nnetwork_mode = "no-network"\n'
+    )
     before = dict(os.environ)
     payload = _build_payload(
-        task_path=Path("/tmp/task"),
+        task_path=task_path,
         jobs_dir=Path("/tmp/jobs"),
         outcome_path=Path("/tmp/jobs/outcome.json"),
         agent="claude-code",
         model="anthropic-hdo/claude-opus-5",
-        environment=EnvironmentType.DOCKER,
+        environment=environment,
         raw_harbor_config=dict(_EPHEMERAL_HC),
         is_probe=False,
         extra_agent_env={"ANTHROPIC_API_KEY": "test-user-key"},
@@ -1562,3 +1849,5 @@ def test_payload_hdo_key_wins_over_worker_and_user_keys(
     assert child_agent.env["ANTHROPIC_API_KEY"] == hdo_key
     assert all(payload["runtime_env"][name] == "" for name in BEDROCK_ENV_VARS)
     assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)
+    if environment == EnvironmentType.THUNDER:
+        assert "api.anthropic.com" in child_agent.extra_allowed_hosts

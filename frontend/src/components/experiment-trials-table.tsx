@@ -57,7 +57,6 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   EXECUTION_LABELS,
-  REVIEW_LABELS,
   VERDICT_LABELS,
   taskReviewStatus,
 } from "@/lib/review";
@@ -154,6 +153,7 @@ export type AgentSummary = ExperimentAgentSummary;
 type ExperimentTrialsTableProps = {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
 
   isLoading: boolean;
   isLoadingTrials?: boolean;
@@ -381,7 +381,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "Review running",
+    label: "QA verdict in progress",
     dotClass: "bg-blue-400",
     animate: true,
   },
@@ -397,7 +397,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: REVIEW_LABELS.error,
+    label: "QA failed / Harness error",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -434,7 +434,7 @@ function TaskVerdictChip({
     hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
       : status === "never" && task.verdict_status === "success"
-        ? "No overall result"
+        ? "No QA verdict generated"
         : VERDICT_LABELS[status];
   let tip: string | null =
     status === "error" ? (task.verdict_error ?? null) : null;
@@ -443,7 +443,7 @@ function TaskVerdictChip({
     task.verdict &&
     ungradedSettled > 0
   ) {
-    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this result`;
+    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this QA verdict`;
   }
 
   const chip = (
@@ -460,7 +460,7 @@ function TaskVerdictChip({
       onFocus={onPrefetch}
       onClick={onOpen}
       className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
+      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA verdict"} for ${task.name}`}
     >
       {chip}
     </button>
@@ -522,7 +522,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-blue-400",
       animate: true,
-      title: "Review running",
+      title: "QA verdict in progress",
     };
   }
 
@@ -541,18 +541,21 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-yellow-400",
       animate: false,
-      title: "Review error",
+      title: "QA failed",
     };
   }
 
   return null;
 }
 
-function groupTrialsByAgent(trials: Trial[] | null | undefined) {
+function groupTrialsByAgent(
+  trials: Trial[] | null | undefined,
+  groupEfforts: boolean
+) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
   for (const trial of trials) {
-    const key = getExperimentAgentKey(trial);
+    const key = getExperimentAgentKey(trial, groupEfforts);
     const existing = grouped.get(key) ?? [];
     existing.push(trial);
     grouped.set(key, existing);
@@ -590,6 +593,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
+  groupEfforts = false,
 
   isLoading,
   isLoadingTrials = false,
@@ -994,7 +998,7 @@ export function ExperimentTrialsTable({
       rowFilterMode === "none" || rowFilterAgentKeys.length === 0
         ? searchFiltered
         : searchFiltered.filter((task) => {
-            const trialsByAgent = groupTrialsByAgent(task.trials);
+            const trialsByAgent = groupTrialsByAgent(task.trials, groupEfforts);
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
@@ -1030,6 +1034,7 @@ export function ExperimentTrialsTable({
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
+    groupEfforts,
   ]);
 
   const getTaskContext = useMemo(() => {
@@ -1051,7 +1056,10 @@ export function ExperimentTrialsTable({
       const cached = contextCache.get(task);
       if (cached) return cached;
 
-      const groupedTrialsByAgent = groupTrialsByAgent(task.trials);
+      const groupedTrialsByAgent = groupTrialsByAgent(
+        task.trials,
+        groupEfforts
+      );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
       const trialGroups: Array<{
@@ -1084,7 +1092,7 @@ export function ExperimentTrialsTable({
       contextCache.set(task, context);
       return context;
     };
-  }, [visibleAgents]);
+  }, [visibleAgents, groupEfforts]);
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
@@ -1536,7 +1544,7 @@ export function ExperimentTrialsTable({
   const handleRunQAForSelectedTasks = async () => {
     if (!canRerun || isRunningQA) return;
     if (selectedQARunnableTasks.length === 0) {
-      setQAError("No tasks are ready for QA.");
+      setQAError("No tasks are ready for QA verdict generation.");
       return;
     }
 
@@ -1554,7 +1562,7 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task QA"
+              data.detail || data.error || "Failed to queue QA verdict generation"
             );
           }
         })
@@ -1562,7 +1570,9 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
+        setQAError(
+          `Failed to queue QA verdict generation for ${failures.length} task(s).`
+        );
       } else {
         setQAError(null);
       }
@@ -2059,6 +2069,7 @@ export function ExperimentTrialsTable({
               <PassAtKGraph
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2069,6 +2080,7 @@ export function ExperimentTrialsTable({
               <PassAtOneLeaderboard
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2160,13 +2172,13 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleCancelQAForSelectedTasks}
-                        title="Cancel task checks and run reviews for selected tasks."
+                        title="Cancel pre-trial audits and QA verdict generation for selected tasks."
                         disabled={
                           isCancellingQA ||
                           selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingQA ? "Cancelling" : "Cancel reviews"}
+                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>
@@ -2175,14 +2187,16 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunQAForSelectedTasks}
-                        title="Review runs for each selected task’s default version."
+                        title="Generate a QA verdict for each selected task’s default version by reanalyzing its eligible trials."
                         disabled={
                           isRunningQA ||
                           isCancellingQA ||
                           selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningQA ? "Queueing" : "Review runs"}
+                        {isRunningQA
+                          ? "Queuing QA verdicts…"
+                          : "Generate QA verdicts"}
                         <InlineCount>
                           {selectedQARunnableTasks.length}
                         </InlineCount>
@@ -2231,6 +2245,26 @@ export function ExperimentTrialsTable({
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {!readOnly && (
+                  <Label className="flex cursor-pointer items-center gap-2 px-2 text-xs font-normal">
+                    <Checkbox
+                      checked={groupEfforts}
+                      onCheckedChange={(checked) => {
+                        const params = new URLSearchParams(
+                          window.location.search
+                        );
+                        if (checked === true) params.set("groupEfforts", "1");
+                        else params.delete("groupEfforts");
+                        window.history.pushState(
+                          null,
+                          "",
+                          urlWithSearch(params.toString())
+                        );
+                      }}
+                    />
+                    Group effort levels
+                  </Label>
+                )}
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Button
