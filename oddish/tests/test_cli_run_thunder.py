@@ -68,3 +68,13 @@ print(_default_cloud_environment_for_task(None, override_gpus=1).value)
     )
 
     assert result.stdout.strip().splitlines()[-1] == "modal"
+
+
+def test_explicit_numinous_gpu_opt_in_keeps_its_priority(monkeypatch):
+    from oddish.config import settings
+    monkeypatch.setattr(settings, "numinous_enabled", True)
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", True)
+    assert run_module._default_cloud_environment_for_task(None, override_gpus=1) is EnvironmentType.NUMINOUS
+    monkeypatch.setattr(settings, "numinous_gpu_enabled", False)
+    assert run_module._default_cloud_environment_for_task(None, override_gpus=1) is EnvironmentType.MODAL
+    assert run_module._default_cloud_environment_for_task(None, override_gpus=0) is EnvironmentType.NUMINOUS
