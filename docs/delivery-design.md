@@ -47,7 +47,7 @@ delivery stores `customer_id`; display names come from the join.
 | Pre-trial audit result | `task_versions.pre_trial` / `pre_trial_status` | task version |
 | Rollouts | `trials` (`kind='agent'`, non-probe, non-superseded — `EligibleTrialScope`) | `trials.task_version_id` |
 | Verdict | `tasks.verdict` (+ `verdict_status`), produced by the `qa`-kind trial | current version |
-| Defects (action items) | trial `analysis` / verdict action items (`tier` must_fix / should_fix / optional) | trial → version |
+| Defects (action items) | trial `analysis` / verdict action items (`tier` must_fix / optional) | trial → version |
 | QA disagreement votes | `feedback` table | verdict / action item |
 | Past QA runs | old `qa` / `audit`-kind trials + their stored artifacts | `trials.task_version_id` |
 
@@ -116,8 +116,8 @@ Built-in automated checks (each toggleable / parameterized in `check_config`):
    generation, which needs only one eligible trial).
 3. **verdict_ok** — verdict exists for the current version, status not FAILED,
    classification acceptable (no oracle/nop-style violations).
-4. **no_must_fix** — no open `must_fix` action items against the current
-   version. (`should_fix` shows as a warning, not a blocker, by default.)
+4. **no_must_fix** — every reported defect on the current version is resolved
+   or individually acknowledged.
 5. **no_open_disagreements** *(optional, off by default)* — no unresolved
    "disagree" feedback votes on the verdict/items.
 6. **delivery_qa_ok** *(only when `qa_config` is set)* — a QA run using the
@@ -279,3 +279,57 @@ already `dirty` against staging.
    attached to the delivery until a customer entity exists.)
 
 Phases 1–3 replace the spreadsheet. 4 and 5 are the customer-facing upgrades.
+
+## Every reported task defect requires a decision
+
+New source audits and execution reviews report only `must_fix` findings. This
+means a fix or an explicit delivery exception is required. It does not mean the
+defect caused every execution failure. Both prompts still require inspected
+source or recorded execution evidence and real file/line anchors. Suggestions,
+speculative concerns, and review execution errors are not task findings. The
+shared sandbox/submission/import validator rejects new lower-tier findings;
+historical `optional` findings remain readable. The severity migration converts
+the retired category to `must_fix` in stored reports and delivery snapshots,
+preserving finding IDs, evidence, and acknowledgments.
+
+Active deliveries collect every recorded `must_fix` and `optional`
+defect on the current default version, including deleted or superseded execution
+rows. `no_must_fix` remains the API key, but its meaning is now “every defect
+resolved or individually acknowledged.” It cannot be disabled or waived as a
+whole. Disabling it in old configuration does not bypass the current rule.
+A previously signed delivery becomes blocked if a newly applicable defect lacks
+its own acknowledgment. Finalization recomputes the same requirements.
+
+The collector returns the original finding, recorded tier, source, reporting
+execution ID, and review ID where recorded. A historical accepted verdict may
+coexist with a blocked active delivery: the old review outcome is retained,
+while the current shipment requirement applies to all its reported defects.
+The dashboard explicitly explains that distinction. Acknowledgment permits an
+exception and does not erase the defect or change the recorded verdict.
+
+Before replacing audit or execution-review state, the existing findings are
+retained in `task_versions.reported_findings`. Successful imports also retain
+new findings. The shared collector reads these alongside current review data,
+using the existing finding identities. Re-running analysis on unchanged task
+bytes cannot remove a reported defect. Fixes must be published as a new version.
+Task summaries and delivery history expose retained findings. Historical review
+artifacts are never edited or re-analyzed to obtain a new severity label.
+
+Acknowledgments and sign-offs keep the existing manual-check mechanism. A
+positive `signoff`, `ack:<finding-id>`, or `waive:<check>` request must include
+`expected_version_id` and an authenticated person. The server locks the task and
+rejects stale version IDs with HTTP 409, or missing identity/version with HTTP
+422. The CLI and dashboard send the version they reviewed. Standalone operation
+uses its existing local identity convention, `local`. No caller-supplied person
+field overrides hosted authentication. Decisions remain separate per version;
+a v8 decision does not overwrite Maya’s v7 acknowledgment. The QA-history API
+includes the person, version, check/finding identity, time, note, and delivery.
+
+Migration `task_defects_001` adds the nullable retained-findings column and
+changes the manual-check uniqueness index to include task version. It neither
+backfills review data nor touches `delivery_snapshots` or the worker queue.
+Committed finalized boards continue to be served from their saved snapshots.
+Deploy the migration before application code. Rolling back this migration is
+intentionally refused because removing retained findings or merging version
+records would destroy history; repair with a forward migration. Deploying this
+policy, opening a delivery, and acknowledging a finding enqueue no analysis.

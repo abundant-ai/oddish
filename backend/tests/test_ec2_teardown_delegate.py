@@ -54,3 +54,50 @@ async def test_api_delegate_invokes_remote_control_function_once(monkeypatch) ->
         ),
         ("remote", ("ec2://owned",), {}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_thunder_control_function_uses_backend(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Backend:
+        async def teardown(self, external_id: str) -> bool:
+            calls.append(external_id)
+            return True
+
+    monkeypatch.setattr(worker_functions, "get_backend", lambda _provider: Backend())
+
+    result = await worker_functions.teardown_thunder_sandbox.get_raw_f()(
+        "sb-thunder-123"
+    )
+
+    assert result is True
+    assert calls == ["sb-thunder-123"]
+
+
+@pytest.mark.asyncio
+async def test_api_thunder_delegate_invokes_scoped_function(monkeypatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+
+    async def remote_aio(external_id: str) -> bool:
+        calls.append(("remote", (external_id,), {}))
+        return True
+
+    class FakeFunction:
+        remote = type("Remote", (), {"aio": staticmethod(remote_aio)})()
+
+    def from_name(*args, **kwargs):
+        calls.append(("from_name", args, kwargs))
+        return FakeFunction()
+
+    monkeypatch.setattr(endpoints.modal.Function, "from_name", from_name)
+
+    assert await endpoints._teardown_thunder_sandbox("sb-thunder-123") is True
+    assert calls == [
+        (
+            "from_name",
+            ("oddish", "teardown_thunder_sandbox"),
+            {"environment_name": None},
+        ),
+        ("remote", ("sb-thunder-123",), {}),
+    ]

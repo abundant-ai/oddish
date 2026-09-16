@@ -4,14 +4,13 @@ import {
   Loader2,
   Microscope,
   OctagonX,
-  XCircle,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { isActivePipelineStatus, taskHasActiveVerdict } from "@/lib/job-status";
+import { VERDICT_LABELS, taskReviewStatus } from "@/lib/review";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
@@ -28,79 +27,81 @@ type VerdictPresentation = {
 function presentVerdict(
   task: Task,
   iconSizeClass: string,
-  qaActive: boolean
+  qaActive: boolean,
+  mustFixCount = task.must_fix_count ?? 0
 ): VerdictPresentation {
   const status = task.verdict_status;
   const verdict = task.verdict ?? null;
-  const verdictPending = qaActive || taskHasActiveVerdict(task);
-  const failed = status === "failed";
-  const isGood = verdict?.is_good ?? null;
-  // The single task-level QA job classifies every trial and then synthesizes
-  // the verdict, so any in-flight classification is also "QA running".
-  const analysesInFlight =
-    !verdictPending &&
-    !failed &&
-    isGood == null &&
-    (task.status === "analyzing" ||
-      (task.trials ?? []).some(
-        (t) =>
-          isActivePipelineStatus(t.analysis_status) ||
-          (t.kind === "qa" &&
-            !t.superseded_by_trial_id &&
-            !["success", "failed", "skipped"].includes(
-              (t.status ?? "").toLowerCase()
-            ))
-      ));
-  const pending = verdictPending || analysesInFlight;
+  const review = qaActive ? "running" : taskReviewStatus(task);
+  const pending = review === "queued" || review === "running";
+  const failed = review === "error";
+  const isGood =
+    review === "accepted" ? true : review === "needs_fixes" ? false : null;
 
   let icon: ReactNode;
   let title: string;
   let toneCard: string;
   let toneInline: string;
-  if (pending) {
+  if (mustFixCount > 0) {
+    icon = (
+      <AlertTriangle className={`${iconSizeClass} shrink-0 text-red-600`} />
+    );
+    title = `${mustFixCount} Must fix`;
+    toneCard = "border-red-500/50 bg-red-500/10";
+    toneInline = "border-red-500/50 bg-red-500/10";
+  } else if (pending) {
     icon = (
       <Loader2
         className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`}
       />
     );
-    title = "Running QA...";
+    title = VERDICT_LABELS[review];
     toneCard = "border-blue-500/30 bg-blue-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   } else if (failed) {
-    icon = <XCircle className={`${iconSizeClass} shrink-0 text-red-500`} />;
-    title = "QA failed";
-    toneCard = "border-red-500/30 bg-red-500/5";
-    toneInline = "border-red-500/40 bg-red-500/[0.04]";
+    icon = (
+      <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-600`} />
+    );
+    title = VERDICT_LABELS.error;
+    toneCard = "border-amber-500/30 bg-amber-500/5";
+    toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
+  } else if (review === "outdated") {
+    icon = (
+      <Microscope
+        className={`${iconSizeClass} text-muted-foreground shrink-0`}
+      />
+    );
+    title = VERDICT_LABELS.outdated;
+    toneCard = "border-border";
+    toneInline = "border-border";
   } else if (isGood === true) {
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
     );
-    title = "Accepted";
+    title = VERDICT_LABELS.accepted;
     toneCard = "border-emerald-500/30 bg-emerald-500/5";
     toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
   } else if (isGood === false) {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-red-600`} />
     );
-    title = "Rejected";
+    title = VERDICT_LABELS.needs_fixes;
     toneCard = "border-red-500/50 bg-red-500/10";
     toneInline = "border-red-500/50 bg-red-500/10";
   } else {
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = status === "success" ? "No current verdict" : "QA pending";
+    title =
+      status === "success" ? "No QA verdict generated" : VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
 
   // An in-flight review must never display a previous verdict from cached data.
   let detail: string | null = null;
-  if (failed && task.verdict_error) {
-    detail = task.verdict_error;
-  } else if (!pending && status === "success" && isGood == null) {
-    detail =
-      "QA finished without an overall verdict. Review the trial findings below.";
+  if (failed) {
+    detail = task.verdict_error ?? null;
   } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
   } else if (!pending && isGood === false) {
@@ -113,6 +114,7 @@ function presentVerdict(
 export function TaskVerdictBadge({
   task,
   variant,
+  rejectionSource,
   onViewFindings,
   onRunJudge,
   onCancelJudge,
@@ -120,9 +122,11 @@ export function TaskVerdictBadge({
   qaActive = false,
   isCancelling,
   error,
+  mustFixCount = task.must_fix_count ?? 0,
 }: {
   task: Task;
   variant: "card" | "inline" | "summary";
+  rejectionSource?: "Pre-trial audit" | "Run QA Verdict";
   onViewFindings?: () => void;
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
@@ -130,8 +134,11 @@ export function TaskVerdictBadge({
   qaActive?: boolean;
   isCancelling?: boolean;
   error?: string | null;
+  /** Required findings for the selected version, including run reviews. */
+  mustFixCount?: number;
 }) {
   const hasAny =
+    mustFixCount > 0 ||
     qaActive ||
     Boolean(task.run_analysis) ||
     Boolean(task.verdict_status) ||
@@ -139,12 +146,22 @@ export function TaskVerdictBadge({
   if (!hasAny && !onRunJudge) return null;
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
-  const p = presentVerdict(task, iconSize, qaActive);
+  const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
+  const shownDetail = mustFixCount > 0 ? null : p.detail;
+  const rejectionDetail =
+    shownDetail && p.isGood === false && variant !== "summary" ? (
+      <details className="mt-2 text-sm">
+        <summary className="cursor-pointer">Rejection reason</summary>
+        <AnalysisProse
+          text={shownDetail}
+          className="text-muted-foreground mt-2"
+        />
+      </details>
+    ) : null;
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
+  const runLabel = `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -165,22 +182,23 @@ export function TaskVerdictBadge({
                   : "font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]"
               }
             >
-              {isRunning
-                ? "Queuing QA..."
-                : variant === "summary" &&
-                    !p.pending &&
-                    !p.failed &&
-                    p.isGood === false
-                  ? "QA rejected this task"
+              {variant === "summary" && mustFixCount > 0 && rejectionSource
+                ? `Rejected · ${rejectionSource}`
+                : isRunning && mustFixCount === 0
+                  ? "Queuing QA verdict…"
                   : p.title}
             </span>
-            {!p.pending && verdict?.confidence ? (
+            {mustFixCount === 0 && p.isGood !== null && verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
                 · {verdict.confidence} confidence
               </span>
             ) : null}
           </div>
-          {p.detail ? (
+          {variant === "summary" && mustFixCount > 0 && rejectionSource ? (
+            <p className="mt-1 text-sm">{mustFixCount} Must fix</p>
+          ) : null}
+          {rejectionDetail}
+          {shownDetail && p.isGood !== false ? (
             <p
               className={
                 variant === "summary"
@@ -188,15 +206,16 @@ export function TaskVerdictBadge({
                   : "mt-0.5 font-mono text-[11px] leading-snug text-[color:var(--paper-ink-2)]"
               }
             >
-              {p.detail}
+              {shownDetail}
             </p>
           ) : null}
           {/* A rejected task's fixes are the actionable half of the verdict.
               They rendered only in the card variant, so the panes that moved
               from the pinned card to this badge kept the rejection and lost
               what to do about it. */}
-          {variant !== "summary" &&
-          !p.pending &&
+          {mustFixCount === 0 &&
+          variant !== "summary" &&
+          p.isGood !== null &&
           verdict?.recommendations &&
           verdict.recommendations.length > 0 ? (
             <div className="mt-1.5 border-l-2 border-amber-500/50 pl-2">
@@ -265,7 +284,7 @@ export function TaskVerdictBadge({
       <CardHeader className="px-4 pt-2 pb-1">
         <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
           <Microscope className="h-3 w-3" />
-          QA Verdict
+          QA verdict
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4 pb-3">
@@ -274,19 +293,23 @@ export function TaskVerdictBadge({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="font-mono text-sm font-bold">{p.title}</span>
-              {!p.pending && verdict?.confidence ? (
+              {mustFixCount === 0 &&
+              p.isGood !== null &&
+              verdict?.confidence ? (
                 <span className="text-muted-foreground text-xs">
                   · {verdict.confidence} confidence
                 </span>
               ) : null}
             </div>
-            {p.detail ? (
+            {rejectionDetail}
+            {shownDetail && p.isGood !== false ? (
               <AnalysisProse
-                text={p.detail}
+                text={shownDetail}
                 className="text-muted-foreground mt-1"
               />
             ) : null}
-            {!p.pending &&
+            {mustFixCount === 0 &&
+            p.isGood !== null &&
             verdict?.recommendations &&
             verdict.recommendations.length > 0 ? (
               <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">

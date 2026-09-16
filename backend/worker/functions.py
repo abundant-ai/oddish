@@ -51,6 +51,11 @@ from modal_app import (
     WORKER_BATCH_BUDGET_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_CPU,
+    WORKER_CANDIDATE_CPU,
+    WORKER_CANDIDATE_CPU_LIMIT,
+    WORKER_CANDIDATE_MEMORY_MB,
+    WORKER_CANDIDATE_MAX_CONTAINERS,
+    WORKER_CANDIDATE_CONFIGURATION,
     WORKER_MAX_CONTAINERS,
     WORKER_MEMORY_MB,
     WORKER_MIN_CONTAINERS,
@@ -63,6 +68,7 @@ from modal_app import (
     harbor_variant_images,
     image,
     runtime_secrets,
+    thunder_worker_secrets,
     worker_volumes,
 )
 from backfill_github_id import backfill_github_id
@@ -95,6 +101,7 @@ from oddish.workers.queue.slots import (
 from oddish.workers.queue.sandbox_capacity import (
     SANDBOX_CAPACITY_LEASE_SECONDS,
     acquire_sandbox_capacity_lease,
+    configured_sandbox_capacity_limit,
     count_held_sandbox_capacity_leases,
     release_sandbox_capacity_lease,
 )
@@ -117,10 +124,14 @@ from oddish.workers.queue.worker_job_single_job import (
     run_single_worker_job,
 )
 from oddish.core.harbor_source import harbor_variant_function_name
+from oddish.core.helpers import register_provider_teardown_delegate
 from oddish.runtime.registry import get_backend
+from oddish.runtime.backends.thunder import register_thunder_inventory_delegate
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
     EC2_TRIAL_EXECUTION_LANE,
+    THUNDER_TRIAL_EXECUTION_LANE,
+    capacity_provider_for_execution_lane,
 )
 
 from oddish.workers.analysis_trials import register_qa_imported_hook
@@ -128,10 +139,11 @@ from oddish.workers.analysis_trials import register_qa_imported_hook
 from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
-# Generic workers must never receive EC2 launch credentials or the SSH key.
-# Only the dedicated ``ec2_trial`` lane carries those secrets.
+# Provider credentials are lane-scoped. Generic workers receive neither EC2
+# nor Thunder credentials; each provider lane carries only its own secrets.
 trial_worker_secrets = [*runtime_secrets]
 ec2_trial_worker_secrets = [*runtime_secrets, *ec2_worker_secrets]
+thunder_trial_worker_secrets = [*runtime_secrets, *thunder_worker_secrets]
 reconciler_secrets = [*runtime_secrets, *ec2_control_secrets]
 
 
@@ -147,6 +159,47 @@ async def teardown_ec2_sandbox(external_id: str) -> bool:
     if backend is None:
         raise RuntimeError("EC2 backend is not registered in the teardown worker")
     return await backend.teardown(external_id)
+
+
+@app.function(
+    image=image,
+    secrets=thunder_trial_worker_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def teardown_thunder_sandbox(external_id: str) -> bool:
+    backend = get_backend("thunder")
+    if backend is None:
+        raise RuntimeError("Thunder backend is not registered in the teardown worker")
+    return await backend.teardown(external_id)
+
+
+@app.function(
+    image=image,
+    secrets=thunder_trial_worker_secrets,
+    timeout=300,
+    cpu=1.0,
+    memory=1024,
+)
+async def snapshot_thunder_sandboxes():
+    from oddish.runtime.backends.thunder import ThunderBackend
+
+    return await ThunderBackend().snapshot_sandboxes_direct()
+
+
+async def _teardown_thunder_via_function(external_id: str) -> bool:
+    return bool(await teardown_thunder_sandbox.remote.aio(external_id))
+
+
+register_provider_teardown_delegate("thunder", _teardown_thunder_via_function)
+
+
+async def _snapshot_thunder_via_function():
+    return tuple(await snapshot_thunder_sandboxes.remote.aio())
+
+
+register_thunder_inventory_delegate(_snapshot_thunder_via_function)
 
 
 # Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified
@@ -222,6 +275,9 @@ async def _run_one_job(
     reservation_token: str | None = None,
     priority_class: bool | None = None,
     org_id: str | None = None,
+    *,
+    worker_billing_spec: WorkerBillingSpec | None = None,
+    resource_candidate: bool = False,
 ) -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
@@ -229,6 +285,13 @@ async def _run_one_job(
     ``process_single_job__<id>`` Function -- they differ only in the image (which
     Harbor is baked) and which ``harbor_variant_id`` rows they claim.
     """
+    if worker_billing_spec is None:
+        worker_billing_spec = WorkerBillingSpec(
+            cpu_cores=WORKER_CPU,
+            memory_mb=WORKER_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            configuration=f"base-cpu{WORKER_CPU:g}-mem{WORKER_MEMORY_MB}",
+        )
     # Resolve the Modal function-call id BEFORE opening the span so
     # it can ride as a span attribute. This is a pure in-process
     # lookup, no I/O, so it's safe to do pre-span.
@@ -248,6 +311,9 @@ async def _run_one_job(
         harbor_variant_id=harbor_variant_id,
         execution_lane=execution_lane,
         modal_function_call_id=fc_id,
+        worker_configuration=worker_billing_spec.configuration,
+        worker_cpu=worker_billing_spec.cpu_cores,
+        worker_memory_mb=worker_billing_spec.memory_mb,
     )
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
@@ -259,7 +325,8 @@ async def _run_one_job(
     try:
         console.print(
             f"[cyan]Job worker starting (queue_key={queue_key}, "
-            f"execution_lane={execution_lane})...[/cyan]"
+            f"execution_lane={execution_lane}, configuration={worker_billing_spec.configuration}, "
+            f"cpu={worker_billing_spec.cpu_cores}, memory_mb={worker_billing_spec.memory_mb})...[/cyan]"
         )
         if fc_id:
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
@@ -268,19 +335,22 @@ async def _run_one_job(
         if execution_lane not in {
             DEFAULT_EXECUTION_LANE,
             EC2_TRIAL_EXECUTION_LANE,
+            THUNDER_TRIAL_EXECUTION_LANE,
         }:
             raise RuntimeError(f"unsupported execution lane: {execution_lane!r}")
-        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        capacity_provider = capacity_provider_for_execution_lane(execution_lane)
+        if capacity_provider is not None:
+            capacity_limit = configured_sandbox_capacity_limit(capacity_provider)
             capacity_slot = await acquire_sandbox_capacity_lease(
-                provider="ec2",
-                limit=settings.ec2_max_concurrent_instances,
+                provider=capacity_provider,
+                limit=capacity_limit,
                 worker_id=worker_id,
                 lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
             )
             if capacity_slot is None:
                 console.print(
-                    "metric=sandbox_capacity_exhausted provider=ec2 "
-                    f"limit={settings.ec2_max_concurrent_instances}"
+                    f"metric=sandbox_capacity_exhausted provider={capacity_provider} "
+                    f"limit={capacity_limit}"
                 )
                 return
 
@@ -313,12 +383,7 @@ async def _run_one_job(
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        worker_billing_spec = WorkerBillingSpec(
-            cpu_cores=WORKER_CPU,
-            memory_mb=WORKER_MEMORY_MB,
-            nonpreemptible=WORKER_NONPREEMPTIBLE,
-        )
-        if execution_lane == EC2_TRIAL_EXECUTION_LANE:
+        if capacity_provider is not None:
             # Only a normal return proves the sandbox teardown path completed.
             # On cancellation, reconciliation keeps this lease until the owner
             # is terminal.
@@ -333,9 +398,11 @@ async def _run_one_job(
                     authorize_job=authorize_worker_job,
                     harbor_variant_id=harbor_variant_id,
                     execution_lane=execution_lane,
-                    capacity_provider="ec2",
+                    capacity_provider=capacity_provider,
                     capacity_slot=capacity_slot,
                     worker_billing_spec=worker_billing_spec,
+                    resource_candidate=resource_candidate,
+                    candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
                     priority_class=priority_class,
                     org_id=org_id,
                 )
@@ -353,6 +420,8 @@ async def _run_one_job(
                 harbor_variant_id=harbor_variant_id,
                 execution_lane=execution_lane,
                 worker_billing_spec=worker_billing_spec,
+                resource_candidate=resource_candidate,
+                candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
                 priority_class=priority_class,
                 org_id=org_id,
             )
@@ -386,7 +455,7 @@ async def _run_one_job(
             finally:
                 if capacity_slot is not None and release_capacity_lease:
                     await release_sandbox_capacity_lease(
-                        provider="ec2",
+                        provider=capacity_provider,
                         slot=capacity_slot,
                         worker_id=worker_id,
                     )
@@ -444,6 +513,56 @@ async def process_single_job(
 @app.function(
     image=image,
     volumes=worker_volumes,
+    secrets=trial_worker_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_CANDIDATE_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=(WORKER_CANDIDATE_CPU, WORKER_CANDIDATE_CPU_LIMIT),
+    memory=WORKER_CANDIDATE_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_job_candidate(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = DEFAULT_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
+):
+    """Same Harbor body, smaller reservation; every claim rechecks live admission."""
+    if (harbor_variant_id, execution_lane, priority_class) != (
+        "default",
+        DEFAULT_EXECUTION_LANE,
+        False,
+    ):
+        raise ValueError(
+            "Candidate requires an ordinary default-image/default-lane launch"
+        )
+    if reservation_token is None:
+        raise ValueError("Candidate requires a dispatcher reservation")
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        execution_lane,
+        reservation_token=reservation_token,
+        priority_class=priority_class,
+        org_id=org_id,
+        resource_candidate=True,
+        worker_billing_spec=WorkerBillingSpec(
+            cpu_cores=WORKER_CANDIDATE_CPU,
+            cpu_limit=WORKER_CANDIDATE_CPU_LIMIT,
+            memory_mb=WORKER_CANDIDATE_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            configuration=WORKER_CANDIDATE_CONFIGURATION,
+        ),
+    )
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
     secrets=ec2_trial_worker_secrets,
     min_containers=0,
     buffer_containers=0,
@@ -465,6 +584,41 @@ async def process_single_ec2_trial_job(
     if execution_lane != EC2_TRIAL_EXECUTION_LANE:
         raise RuntimeError(
             f"EC2 worker refused non-EC2 execution lane {execution_lane!r}"
+        )
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        execution_lane,
+        reservation_token=reservation_token,
+        priority_class=priority_class,
+        org_id=org_id,
+    )
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=thunder_trial_worker_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_thunder_trial_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    execution_lane: str = THUNDER_TRIAL_EXECUTION_LANE,
+    reservation_token: str | None = None,
+    priority_class: bool | None = None,
+    org_id: str | None = None,
+):
+    if execution_lane != THUNDER_TRIAL_EXECUTION_LANE:
+        raise RuntimeError(
+            f"Thunder worker refused non-Thunder execution lane {execution_lane!r}"
         )
     await _run_one_job(
         queue_key,
@@ -530,6 +684,8 @@ def build_harbor_variant_functions(
             secrets=(
                 ec2_trial_worker_secrets
                 if execution_lane == EC2_TRIAL_EXECUTION_LANE
+                else thunder_trial_worker_secrets
+                if execution_lane == THUNDER_TRIAL_EXECUTION_LANE
                 else trial_worker_secrets
             ),
             min_containers=0,
@@ -541,9 +697,9 @@ def build_harbor_variant_functions(
             memory=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
             name=(
-                f"{harbor_variant_function_name(variant_id)}__ec2_trial"
-                if execution_lane == EC2_TRIAL_EXECUTION_LANE
-                else harbor_variant_function_name(variant_id)
+                harbor_variant_function_name(variant_id)
+                if execution_lane == DEFAULT_EXECUTION_LANE
+                else f"{harbor_variant_function_name(variant_id)}__{execution_lane}"
             ),
             serialized=True,
         )(_make_variant_entry(variant_id, execution_lane))
@@ -733,6 +889,23 @@ async def reconcile_queue_state():
 
 @app.function(
     image=image,
+    secrets=runtime_secrets,
+    timeout=1800,
+    max_containers=1,
+    schedule=modal.Period(hours=1),
+)
+async def record_delivery_history():
+    """Record progress even when no delivery page is open."""
+    from oddish.core.delivery_progress import sample_active_deliveries
+
+    try:
+        await sample_active_deliveries()
+    finally:
+        await close_database_connections()
+
+
+@app.function(
+    image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
@@ -828,6 +1001,9 @@ async def refresh_trial_facets():
 _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
 _EC2_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
     app, execution_lane=EC2_TRIAL_EXECUTION_LANE
+)
+_THUNDER_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
+    app, execution_lane=THUNDER_TRIAL_EXECUTION_LANE
 )
 
 
@@ -982,14 +1158,22 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
-        ec2_capacity_limit = (
-            settings.ec2_max_concurrent_instances if settings.ec2_enabled else 0
-        )
-        held_ec2_capacity = (
-            await count_held_sandbox_capacity_leases(provider="ec2")
-            if ec2_capacity_limit > 0
-            else 0
-        )
+        capacity_providers_by_lane = {
+            EC2_TRIAL_EXECUTION_LANE: "ec2",
+            THUNDER_TRIAL_EXECUTION_LANE: "thunder",
+        }
+        capacity_limits_by_lane = {
+            lane: configured_sandbox_capacity_limit(provider)
+            for lane, provider in capacity_providers_by_lane.items()
+        }
+        held_by_lane = {
+            lane: (
+                await count_held_sandbox_capacity_leases(provider=provider)
+                if capacity_limits_by_lane[lane] > 0
+                else 0
+            )
+            for lane, provider in capacity_providers_by_lane.items()
+        }
         with _otel_span("worker.reserve_queue_launches"):
             plan, reservations = await reserve_queue_launches(
                 partial(
@@ -997,11 +1181,11 @@ async def poll_queue():
                     _counts=approved_worker_job_counts,
                     max_workers=MAX_WORKERS_PER_POLL,
                     concurrency_limits_for=_effective_model_concurrency_limits,
-                    capacity_limits_by_lane={
-                        EC2_TRIAL_EXECUTION_LANE: ec2_capacity_limit,
-                    },
-                    held_by_lane={EC2_TRIAL_EXECUTION_LANE: held_ec2_capacity},
-                )
+                    capacity_limits_by_lane=capacity_limits_by_lane,
+                    held_by_lane=held_by_lane,
+                ),
+                candidate_configuration=WORKER_CANDIDATE_CONFIGURATION,
+                candidate_max_workers=WORKER_CANDIDATE_MAX_CONTAINERS,
             )
         record_dispatch_snapshot(
             queue_keys=plan.queue_keys,
@@ -1058,11 +1242,6 @@ async def poll_queue():
             console.print(f"[dim]queued_by_org: {summary}[/dim]")
 
         console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
-        console.print(
-            "[dim]EC2 capacity: "
-            f"held={held_ec2_capacity} "
-            f"limit={ec2_capacity_limit}[/dim]"
-        )
 
         spawn_plan = [reservation.unit for reservation in reservations]
         spawn_cap_reached = len(spawn_plan) >= MAX_WORKERS_PER_POLL
@@ -1117,9 +1296,12 @@ async def poll_queue():
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,
+                candidate_fn=process_single_job_candidate,
                 ec2_fn=process_single_ec2_trial_job,
+                thunder_fn=process_single_thunder_trial_job,
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
                 ec2_variant_fns=_EC2_VARIANT_JOB_FUNCTIONS,
+                thunder_variant_fns=_THUNDER_VARIANT_JOB_FUNCTIONS,
             )
             spawn_kwargs["reservation_token"] = reservation.token
             spawn_requests.append((fn, spawn_kwargs))

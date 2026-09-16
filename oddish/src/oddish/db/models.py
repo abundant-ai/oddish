@@ -33,9 +33,16 @@ from sqlalchemy import column as sql_column
 from sqlalchemy import event as sa_event
 from sqlalchemy import table as sql_table
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.ext.hybrid import hybrid_property
+
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
+
+from oddish.reasoning_effort import (
+    configured_reasoning_effort,
+    reasoning_effort_expression,
+)
 
 
 def utcnow() -> datetime:
@@ -823,6 +830,8 @@ class TaskVersionModel(TimestampedMixin, Base):
 
     # Human coordination is shared by every delivery of this version.
     qa_work: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Evidence retained when an audit or execution review is replaced.
+    reported_findings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
     # Pre-trial QA analysis (task-source audit; runs once per version since
     # each version is a distinct source snapshot to audit)
@@ -910,9 +919,7 @@ class TaskVersionModelMetricsModel(Base):
     agent: Mapped[str] = mapped_column(String(128), primary_key=True)
     # Older trials carry no model; "" keeps them addressable in the primary key
     # rather than dropping them or inventing a name.
-    model: Mapped[str] = mapped_column(
-        String(256), primary_key=True, server_default=""
-    )
+    model: Mapped[str] = mapped_column(String(256), primary_key=True, server_default="")
     task_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -1020,6 +1027,15 @@ class TrialModel(TimestampedMixin, Base):
 
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    @hybrid_property
+    def reasoning_effort(self) -> str | None:
+        return configured_reasoning_effort(self.harbor_config)
+
+    @reasoning_effort.inplace.expression
+    @classmethod
+    def _reasoning_effort_expression(cls):
+        return reasoning_effort_expression(cls.harbor_config)
 
     # Concrete Harbor commit SHA this trial executed against (denormalized,
     # indexed projection of harbor_config["resolved_sha"]; stamped at creation).
@@ -1439,8 +1455,8 @@ sa_event.listen(
         # the view before the historical column ALTERs later in the chain,
         # and Postgres refuses to alter a column a view depends on. The
         # chain creates the view itself at analysisspend01.
-        callable_=lambda ddl, target, bind, **kw: not os.environ.get(
-            "ODDISH_ALEMBIC_RUNNING"
+        callable_=lambda ddl, target, bind, **kw: (
+            not os.environ.get("ODDISH_ALEMBIC_RUNNING")
         )
     ),
 )
@@ -1665,14 +1681,56 @@ class ModelRequestLeaseModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     pool_id: Mapped[str] = mapped_column(Text, nullable=False)
     worker_job_id: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False)
     input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
     __table_args__ = (
         Index("ix_model_request_pool_expiry", "pool_id", "expires_at"),
         Index("ix_model_request_worker_created", "worker_job_id", "created_at"),
+    )
+
+
+class WorkerResourceRolloutModel(Base):
+    """Live, database-scoped candidate admission; zero is the shipped state."""
+
+    __tablename__ = "worker_resource_rollout"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_worker_rollout_singleton"),
+        CheckConstraint(
+            "fraction >= 0 AND fraction <= 1", name="ck_worker_rollout_fraction"
+        ),
+        CheckConstraint("max_workers >= 0", name="ck_worker_rollout_max_workers"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fraction: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    max_workers: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="2"
+    )
+    configuration: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="candidate-cpu0.6-mem3072"
+    )
+
+
+class WorkerResourceAttemptModel(Base):
+    """Claim-time resource attribution, preserved across retries and cost outages."""
+
+    __tablename__ = "worker_resource_attempts"
+    worker_job_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
+    configuration: Mapped[str] = mapped_column(Text, nullable=False)
+    modal_function_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cpu_request: Mapped[float] = mapped_column(Float, nullable=False)
+    cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    nonpreemptible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
@@ -1706,6 +1764,10 @@ class QueueSlotModel(Base):
 
     # Retained through adoption until the first job claim commits.
     launch_demand: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Retained after the first claim, unlike launch_demand, to cap whole workers.
+    resource_candidate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     __table_args__ = (
         Index(
@@ -1805,7 +1867,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         String(64), nullable=False, server_default=text("'default'")
     )
 
-    # Credential/capacity routing lane. Only ``ec2_trial`` workers receive EC2
+    # Credential/capacity routing lane. Provider lanes receive only their own
     # control + SSH material; every other job remains on the secret-free lane.
     execution_lane: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default=text("'default'")
@@ -1889,7 +1951,7 @@ class WorkerJobModel(TimestampedMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "execution_lane IN ('default', 'ec2_trial')",
+            "execution_lane IN ('default', 'ec2_trial', 'thunder_trial')",
             name="ck_worker_jobs_execution_lane",
         ),
         Index(
@@ -1950,6 +2012,15 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+    # Durable provider-handoff provenance. A pending teardown makes the row
+    # undispatchable until cleanup confirms the source sandbox is gone.
+    reroute_from_environment: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    reroute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reroute_pending_teardown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Per-stage timing for the pre-harbor preamble (design spec §12). The
     # existing claimed_at/started_at cover claim+total-elapsed; these fill the
@@ -2756,10 +2827,11 @@ class CustomerModel(TimestampedMixin, Base):
 class DeliveryModel(TimestampedMixin, Base):
     """A customer-facing shipping checklist over a set of tasks.
 
-    Readiness is never stored: the board is recomputed from live signals
+    Readiness is computed from live signals
     (pre-trial audits, eligible trials, verdicts) against each task's
-    current default version. Only membership, manual ticks, config, and
-    the finalize snapshot persist.
+    current default version. Hourly observations track progress only; they never
+    decide readiness. Membership, manual ticks, config, and the finalize
+    snapshot also persist.
     """
 
     __tablename__ = "deliveries"
@@ -2822,9 +2894,7 @@ class DeliveryModel(TimestampedMixin, Base):
     finalized_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    finalized_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    finalized_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class DeliveryTaskModel(TimestampedMixin, Base):
@@ -2875,10 +2945,11 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
         # delivery-level ticks (delivery_task_id IS NULL) get their own
         # partial unique index.
         Index(
-            "uq_delivery_manual_checks_task",
+            "uq_delivery_manual_checks_task_version",
             "delivery_id",
             "delivery_task_id",
             "check_key",
+            "task_version_id",
             unique=True,
             postgresql_where=text("delivery_task_id IS NOT NULL"),
         ),
@@ -2904,11 +2975,30 @@ class DeliveryManualCheckModel(TimestampedMixin, Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    note: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     checked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class DeliveryProgressModel(Base):
+    """Hourly observations, independent of the immutable shipping snapshot."""
+
+    __tablename__ = "delivery_progress"
+
+    delivery_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("deliveries.id", ondelete="CASCADE"), primary_key=True
+    )
+    sample_hour: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), primary_key=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    counts: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class DeliverySnapshotModel(Base):

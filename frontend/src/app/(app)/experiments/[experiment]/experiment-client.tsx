@@ -112,6 +112,14 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const experimentName = experimentOpen?.name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
+  useEffect(() => {
+    const title = `${displayName} · Oddish`;
+    const previousTitle = document.title;
+    document.title = title;
+    return () => {
+      if (document.title === title) document.title = previousTitle;
+    };
+  }, [displayName]);
   const canManageExperimentShare = isOrgAdminRole(orgRole);
   // The qa-report experiment is QA's machinery, not a product surface: the
   // verdict, reasoning, and per-trial grades are all inline on this page and

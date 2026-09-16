@@ -14,7 +14,7 @@ import {
 export function ExperimentsSkeleton({ rows = 10 }: { rows?: number }) {
   return (
     <div
-      className="max-h-[68vh] min-h-[560px] overflow-y-auto"
+      className="max-h-[68vh] min-h-[560px] overflow-x-hidden overflow-y-auto overscroll-y-none"
       aria-busy="true"
       aria-label="Loading experiments"
     >

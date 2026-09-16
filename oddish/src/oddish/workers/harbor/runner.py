@@ -39,7 +39,6 @@ from oddish.config import (
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
     infer_model_provider_prefix,
-    is_anthropic_hdo_model,
     settings,
 )
 from oddish.costs.modal_cost import (
@@ -67,7 +66,7 @@ from .agent_config import (
     _apply_antigravity_cli_oddish_wrapper,
     _apply_gemini_cli_oddish_wrapper,
     _apply_cursor_cli_oddish_wrapper,
-    _resolve_anthropic_hdo_api_key,
+    surfaced_anthropic_env,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -118,6 +117,22 @@ from .storage import (
 )
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+_THUNDER_ONLY_ENVIRONMENT_KWARGS = frozenset(
+    {
+        "gpu_type",
+        "provision_attempts",
+        "retry_max_wait_sec",
+        "sandbox_name",
+        "sandbox_timeout_sec",
+        "startup_timeout_sec",
+        "termination_timeout_sec",
+    }
+)
+
+
+class FallbackEnvironmentCompatibilityError(RuntimeError):
+    """The destination provider cannot honor the source accelerator request."""
 
 
 # Harbor's default task-environment ``build_timeout_sec`` -- the base it
@@ -266,6 +281,7 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
+    "geometric": ("GEOMETRIC_API_KEY", "OPENAI_API_KEY"),
     "fireworks": ("FIREWORKS_API_KEY",),
     "deepseek": ("DEEPSEEK_API_KEY",),
     "zai": ("ZAI_API_KEY",),
@@ -1005,8 +1021,19 @@ def _supports_auto_restricted_agent_network(
     """Whether the existing single-container phase bridge applies."""
     if environment_config.import_path is not None:
         return False
-    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+    if environment_config.type not in (
+        EnvironmentType.DAYTONA,
+        EnvironmentType.MODAL,
+        EnvironmentType.THUNDER,
+        EnvironmentType.ARCHIL,
+    ):
         return False
+
+    # Thunder enforces phase policies on the managed VM rather than inside the
+    # task container. Its boundary therefore works for both Dockerfile and
+    # Compose tasks; the container topology is immaterial to host injection.
+    if environment_config.type == EnvironmentType.THUNDER:
+        return _task_has_dynamic_restricted_agent_phase(task_path)
 
     environment_dir = task_path / "environment"
     if (environment_dir / _HARBOR_COMPOSE_FILENAME).exists():
@@ -1529,7 +1556,13 @@ def _check_local_storage_preflight(
     return None
 
 
-def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
+def _patch_task_toml(
+    task_dir: Path,
+    hc: HarborConfig,
+    *,
+    drop_environment_kwargs: frozenset[str] = frozenset(),
+    fallback_gpu_types: list[str] | None = None,
+) -> None:
     """Patch task.toml with ``docker_image`` and ``mcp_servers`` from *hc*.
 
     These fields are read by Harbor from the task's task.toml rather than
@@ -1545,6 +1578,20 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         return
 
     changed = False
+
+    if drop_environment_kwargs:
+        cleaned_kwargs = {
+            key: value
+            for key, value in task_config.environment.kwargs.items()
+            if key not in drop_environment_kwargs
+        }
+        if cleaned_kwargs != task_config.environment.kwargs:
+            task_config.environment.kwargs = cleaned_kwargs
+            changed = True
+
+    if fallback_gpu_types is not None:
+        task_config.environment.gpu_types = fallback_gpu_types
+        changed = True
 
     if hc.docker_image:
         task_config.environment.docker_image = str(hc.docker_image)
@@ -1585,6 +1632,107 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
+def _accelerator_family(value: str) -> str:
+    normalized = value.strip().upper().replace("_", "-").rstrip("!")
+    normalized = normalized.split(":", 1)[0].rstrip("!")
+    if normalized in {"A100", "A100XL", "A100-40", "A100-80", "A100-40GB", "A100-80GB"}:
+        return "A100"
+    return normalized
+
+
+def _fallback_gpu_types(
+    *,
+    task_path: Path,
+    hc: HarborConfig,
+    environment: EnvironmentType,
+    backend: Any,
+) -> list[str] | None:
+    """Validate and translate a Thunder GPU request for the destination.
+
+    Thunder's ``gpu_type`` constructor kwarg is exact and overrides the task's
+    provider-neutral ``gpu_types`` list. Move it into the copied task config so
+    Modal receives the same request through its native resource channel.
+    """
+    if backend is None:
+        raise FallbackEnvironmentCompatibilityError(
+            f"Thunder fallback provider {environment.value!r} is not registered"
+        )
+
+    config_path = task_path / "task.toml"
+    task_config = HarborTaskConfig.model_validate_toml(
+        config_path.read_text(encoding="utf-8")
+    )
+    task_environment = task_config.environment
+    source_kwargs = {
+        **dict(task_environment.kwargs or {}),
+        **dict(hc.environment.kwargs or {}),
+    }
+    gpu_count = (
+        hc.environment.override_gpus
+        if hc.environment.override_gpus is not None
+        else task_environment.gpus
+    )
+    if not gpu_count:
+        return None
+
+    support = backend.capabilities().gpu
+    if support is None:
+        raise FallbackEnvironmentCompatibilityError(
+            f"Thunder fallback provider {environment.value!r} does not support "
+            f"the requested {gpu_count} GPU(s)"
+        )
+    if gpu_count > support.max_count:
+        raise FallbackEnvironmentCompatibilityError(
+            f"Thunder fallback provider {environment.value!r} supports at most "
+            f"{support.max_count} GPUs, but this trial requests {gpu_count}"
+        )
+
+    exact_gpu_type = source_kwargs.get("gpu_type")
+    requested = (
+        [str(exact_gpu_type)]
+        if exact_gpu_type is not None
+        else list(task_environment.gpu_types or [])
+    )
+    if not requested:
+        return None
+
+    if environment == EnvironmentType.MODAL:
+        # Thunder's SDK names its 80 GiB A100 A100XL; Modal expects
+        # A100-80GB. Do not forward SDK-only names into Modal's GPU parser.
+        modal_gpu_names = {
+            "A100": "A100-40GB",
+            "A100XL": "A100-80GB",
+            "A100-80": "A100-80GB",
+            "A100-40": "A100-40GB",
+        }
+        requested = [
+            modal_gpu_names.get(
+                accelerator.strip().upper(), accelerator.strip().upper()
+            )
+            for accelerator in requested
+        ]
+
+    supported_families = {
+        _accelerator_family(accelerator) for accelerator in support.accelerators
+    }
+    compatible = [
+        accelerator
+        for accelerator in requested
+        if _accelerator_family(accelerator) in supported_families
+    ]
+    if exact_gpu_type is not None and not compatible:
+        compatible = []
+    if not compatible:
+        requested_label = ", ".join(requested)
+        supported_label = ", ".join(support.accelerators)
+        raise FallbackEnvironmentCompatibilityError(
+            f"Thunder fallback provider {environment.value!r} cannot satisfy "
+            f"the requested accelerator ({requested_label}); supported "
+            f"accelerators: {supported_label}. The request will not be remapped."
+        )
+    return compatible
+
+
 def _resolve_provider_environment_config(
     *,
     hc: HarborConfig,
@@ -1594,9 +1742,20 @@ def _resolve_provider_environment_config(
     trial_id: str | None,
     worker_job_id: str | None,
     sandbox_launch: SandboxLaunchContext | None,
+    fallback_from_environment: str | None = None,
 ) -> HarborEnvironmentConfig:
     environment_config = hc.environment.model_copy(deep=True)
     environment_config.type = environment
+    if (
+        (fallback_from_environment or "").strip().lower()
+        == EnvironmentType.THUNDER.value
+        and environment != EnvironmentType.THUNDER
+    ):
+        environment_config.kwargs = {
+            key: value
+            for key, value in environment_config.kwargs.items()
+            if key not in _THUNDER_ONLY_ENVIRONMENT_KWARGS
+        }
     if backend is not None:
         environment_config.kwargs = backend.harbor_env_kwargs(
             dict(environment_config.kwargs)
@@ -1633,6 +1792,16 @@ def _resolve_provider_environment_config(
             **environment_config.kwargs,
             "tags": tags,
         }
+    elif environment == EnvironmentType.THUNDER:
+        if sandbox_launch is None:
+            raise RuntimeError("Thunder trial is missing its durable sandbox run")
+        # Thunder has no provider tags. Its globally visible name is the
+        # ownership channel used by inventory reconciliation, so task-authored
+        # kwargs must never override it.
+        environment_config.kwargs = {
+            **environment_config.kwargs,
+            "sandbox_name": sandbox_launch.sandbox_run_id,
+        }
     return HarborEnvironmentConfig.model_validate(
         environment_config.model_dump(mode="python")
     )
@@ -1653,6 +1822,7 @@ async def run_harbor_trial_async(
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
     trial_kind: str = "agent",
+    fallback_from_environment: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -1663,7 +1833,10 @@ async def run_harbor_trial_async(
     Returns a HarborOutcome with reward, error, tokens, cost, timing,
     trajectory presence, and artifact paths.
     """
-    apply_harbor_patches(require_ec2=environment == EnvironmentType.EC2)
+    apply_harbor_patches(
+        require_ec2=environment == EnvironmentType.EC2,
+        require_thunder=environment == EnvironmentType.THUNDER,
+    )
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
     if environment == EnvironmentType.EC2:
@@ -1695,10 +1868,32 @@ async def run_harbor_trial_async(
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
             trial_kind=trial_kind,
+            fallback_from_environment=fallback_from_environment,
             raw=raw,
             hc=hc,
             backend=backend,
         )
+
+
+def uses_probe_routing(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
+    """Whether a trial uses the routing rules shared with operator probes.
+
+    Operator probes (``harbor_config.mode == "probe"``) and analysis kinds
+    ``qa``, ``qa_eval``, and ``audit`` share these rules; ``summarize`` does not
+    unless explicitly configured as an operator probe. Sharing routing does
+    not change a trial's kind or its stored ``is_probe`` flag. Claude Code's
+    direct-API choice also requires an available Anthropic key, as checked by
+    ``_claude_code_forces_direct_api``. Execution and job credential selection
+    use this helper so they agree on that routing input.
+    """
+    # Imported here for the same reason the caller below does: the analysis
+    # module imports back into the worker package.
+    from oddish.workers.analysis_trials import is_analysis_kind
+
+    raw = harbor_config or {}
+    if raw.get("mode") == "probe":
+        return True
+    return is_analysis_kind(trial_kind) and trial_kind != "summarize"
 
 
 async def _run_harbor_trial_async_impl(
@@ -1719,8 +1914,28 @@ async def _run_harbor_trial_async_impl(
     backend: Any,
     sandbox_launch: SandboxLaunchContext | None,
     trial_kind: str,
+    fallback_from_environment: str | None,
 ) -> HarborOutcome:
     from oddish.workers.analysis_trials import is_analysis_kind
+
+    normalized_fallback_source = (fallback_from_environment or "").strip().lower()
+    is_provider_fallback = bool(
+        normalized_fallback_source and normalized_fallback_source != environment.value
+    )
+    fallback_gpu_types: list[str] | None = None
+    fallback_drop_kwargs = frozenset()
+    if is_provider_fallback:
+        if normalized_fallback_source != EnvironmentType.THUNDER.value:
+            raise FallbackEnvironmentCompatibilityError(
+                f"Unsupported fallback source {normalized_fallback_source!r}"
+            )
+        fallback_drop_kwargs = _THUNDER_ONLY_ENVIRONMENT_KWARGS
+        fallback_gpu_types = _fallback_gpu_types(
+            task_path=task_path,
+            hc=hc,
+            environment=environment,
+            backend=backend,
+        )
 
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
@@ -1750,7 +1965,7 @@ async def _run_harbor_trial_async_impl(
 
     is_operator_probe = raw.get("mode") == "probe"
     is_analysis_trial = is_analysis_kind(trial_kind)
-    is_probe = is_operator_probe or (is_analysis_trial and trial_kind != "summarize")
+    probe_routing = uses_probe_routing(harbor_config=raw, trial_kind=trial_kind)
     skip_task_validation = is_operator_probe or is_analysis_trial
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
@@ -1777,10 +1992,11 @@ async def _run_harbor_trial_async_impl(
         hc=hc,
         environment=environment,
         backend=backend,
-        is_probe=is_probe,
+        is_probe=probe_routing,
         trial_id=trial_id,
         worker_job_id=worker_job_id,
         sandbox_launch=sandbox_launch,
+        fallback_from_environment=fallback_from_environment,
     )
 
     # An allowlisted override that is neither the locked default nor a blessed
@@ -1804,20 +2020,38 @@ async def _run_harbor_trial_async_impl(
             )
         from .ephemeral import run_ephemeral_harbor_trial
 
-        return await run_ephemeral_harbor_trial(
-            task_path=task_path,
-            agent=agent,
-            jobs_dir=jobs_dir,
-            model=model,
-            hook_callback=hook_callback,
-            trial_id=trial_id,
-            environment_config=resolved_environment_config,
-            harbor_config=harbor_config,
-            extra_agent_env=extra_agent_env,
-            environment_build_timeout_multiplier=env_build_multiplier,
-            is_probe=is_probe,
-            skip_task_validation=skip_task_validation,
-        )
+        fallback_tmpdir: tempfile.TemporaryDirectory | None = None
+        ephemeral_task_path = task_path
+        try:
+            if is_provider_fallback:
+                fallback_tmpdir = tempfile.TemporaryDirectory(
+                    prefix="oddish-fallback-task-"
+                )
+                ephemeral_task_path = Path(fallback_tmpdir.name) / task_path.name
+                shutil.copytree(task_path, ephemeral_task_path)
+                _patch_task_toml(
+                    ephemeral_task_path,
+                    hc,
+                    drop_environment_kwargs=fallback_drop_kwargs,
+                    fallback_gpu_types=fallback_gpu_types,
+                )
+            return await run_ephemeral_harbor_trial(
+                task_path=ephemeral_task_path,
+                agent=agent,
+                jobs_dir=jobs_dir,
+                model=model,
+                hook_callback=hook_callback,
+                trial_id=trial_id,
+                environment_config=resolved_environment_config,
+                harbor_config=harbor_config,
+                extra_agent_env=extra_agent_env,
+                environment_build_timeout_multiplier=env_build_multiplier,
+                is_probe=probe_routing,
+                skip_task_validation=skip_task_validation,
+            )
+        finally:
+            if fallback_tmpdir is not None:
+                fallback_tmpdir.cleanup()
 
     # Probes and analysis trials attach to an existing task and inherit its
     # task.toml, which may predate the timeout requirement. Rather than
@@ -1825,7 +2059,7 @@ async def _run_harbor_trial_async_impl(
     if not skip_task_validation:
         validate_task_timeout_config(task_path)
 
-    needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
+    needs_task_patch = bool(hc.docker_image or hc.mcp_servers or is_provider_fallback)
     preflight_error = _check_local_storage_preflight(
         jobs_dir,
         include_temp_root=needs_task_patch,
@@ -1852,7 +2086,12 @@ async def _run_harbor_trial_async_impl(
         task_tmpdir = tempfile.TemporaryDirectory(prefix="oddish-task-")
         patched_task = Path(task_tmpdir.name) / task_path.name
         shutil.copytree(task_path, patched_task)
-        _patch_task_toml(patched_task, hc)
+        _patch_task_toml(
+            patched_task,
+            hc,
+            drop_environment_kwargs=fallback_drop_kwargs,
+            fallback_gpu_types=fallback_gpu_types,
+        )
         effective_task_path = patched_task
 
     actual_job_dir = unique_parent
@@ -1903,20 +2142,16 @@ async def _run_harbor_trial_async_impl(
         # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
         # and auth both use the HDO credential instead of Bedrock / the default
         # Anthropic key. HDO wins over BYOK when the model prefix opts in.
-        byok_anthropic_env: dict[str, str] = {}
-        if is_anthropic_hdo_model(model):
-            byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
-        elif "claude-code" in (agent or "").strip().lower():
-            _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
-            if _byok_key:
-                byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key
+        byok_anthropic_env = surfaced_anthropic_env(
+            agent=agent, model=model, agent_env=extra_agent_env
+        )
 
         with _temporary_env(byok_anthropic_env):
             agent_config = _build_agent_config(
                 agent=agent,
                 model=model,
                 raw_harbor_config=raw,
-                is_probe=is_probe,
+                is_probe=probe_routing,
                 probe_oddish_env=extra_agent_env,
             )
             # Early no-serialized-routes checkpoint, symmetric with the
@@ -2164,7 +2399,7 @@ async def _run_harbor_trial_async_impl(
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+            byok_anthropic_env or _claude_code_forces_direct_api(probe_routing)
         ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
             # bakes in Bedrock credentials. Blank them when claude-code runs
@@ -2259,6 +2494,7 @@ async def _run_harbor_trial_async_impl(
             job_result_path=job_result_path,
             job_dir=job_dir,
             duration_sec=duration,
+            environment_provider=environment.value,
         )
         if outcome.error:
             outcome = replace(
@@ -2328,6 +2564,17 @@ async def _run_harbor_trial_async_impl(
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
             exception_type=type(e).__name__,
+            provider_error_code=getattr(e, "code", None),
+            http_status=(
+                getattr(e, "http_status", None)
+                if getattr(e, "http_status", None) is not None
+                else getattr(e, "status", None)
+            ),
+            retry_after_seconds=(
+                getattr(e, "retry_after_seconds", None)
+                if getattr(e, "retry_after_seconds", None) is not None
+                else getattr(e, "retry_after", None)
+            ),
         )
     finally:
         if task_tmpdir is not None:

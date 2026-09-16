@@ -27,15 +27,16 @@ Still report `oracle`, `mismatch`, and `must_fix` when the reference produces wr
 * `"incompleteness"` — a needed check, behavior, case, protection, or file is missing.
 * `"mismatch"` — two parts both exist but disagree: the instruction and the verifier, the oracle and the verifier, or the intended secrecy and the real sandbox exposure.
 
-`tier` — how severe:
+`tier` — the delivery requirement:
 
-* `"must_fix"` — can misgrade a trial, break the oracle, or give a practical shortcut to the answer.
-* `"should_fix"` — weakens the task, but will not decide most trials by itself.
-* `"optional"` — a hardening or clarity item. The risk is low.
+Every reported task defect must use `"must_fix"`: fix it or explicitly acknowledge an exception before delivery sign-off.
+Report only a concrete defect supported by inspected task source and a real file/line anchor. Explain its consequence.
+Do not report stylistic preferences, speculative risks, or optional hardening suggestions. If evidence does not establish a defect, omit it.
+A failed review, unavailable evidence, or a tool error is a review failure, not a task finding. Never invent a defect to represent it.
 
 ## OUTPUT
 
-Write one item per issue. Every item needs all ten keys, spelled exactly as shown. The pipeline discards an item with a missing key or an unknown value.
+Write one item per issue. Every item needs all ten keys, spelled exactly as shown. The pipeline rejects the result if an item has a missing key or an unknown value.
 
 {"items": [
   {

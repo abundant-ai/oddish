@@ -5,7 +5,7 @@ import { File as PierreFile } from "@pierre/diffs/react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import { useIsDark } from "./use-is-dark";
 import { PIERRE_THEME, PIERRE_UNSAFE_CSS } from "./pierre-options";
-import type { LineRange } from "@/lib/line-range";
+import { lineRangesEqual, type LineRange } from "@/lib/line-range";
 
 interface CodeRendererProps {
   content: string;
@@ -99,10 +99,14 @@ export function CodeRenderer({
       unsafeCSS: PIERRE_UNSAFE_CSS,
       enableLineSelection: true,
       onLineSelected: (range: SelectedLineRange | null) => {
+        const selection = toLineRange(range);
+        // Pierre also reports selections applied through its selectedLines prop.
+        // Echoing those back can overwrite a newer browser-history address.
+        if (lineRangesEqual(selection, selectedLinesRef.current)) return;
         // A user-driven selection means the user is already looking at the
         // lines — disarm the deep-link scroll so it never yanks the view.
         didScrollRef.current = true;
-        onSelectLinesRef.current?.(toLineRange(range));
+        onSelectLinesRef.current?.(selection);
       },
       onPostRender: () => {
         scrollToSelection();

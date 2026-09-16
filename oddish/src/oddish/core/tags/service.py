@@ -758,32 +758,6 @@ async def archive_tag_core(
     )
 
 
-async def unarchive_tag_core(
-    session,
-    *,
-    tag_id: str,
-    org_id: str | None,
-    actor_user_id: str | None,
-    expected_row_version: int,
-) -> None:
-    await _optimistic_state_update(
-        session,
-        tag_id=tag_id,
-        new_state="ACTIVE",
-        allowed_from=["ARCHIVED"],
-        expected_row_version=expected_row_version,
-    )
-    await _emit_tag_event(
-        session,
-        action="UNARCHIVE",
-        org_id=org_id,
-        tag_id=tag_id,
-        scope=None,
-        target_id=None,
-        actor_user_id=actor_user_id,
-    )
-
-
 async def delete_tag_core(
     session,
     *,

@@ -2,6 +2,9 @@
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from test_statement_budgets import count_statements
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -80,7 +83,7 @@ def _trial(
     )
 
 
-async def _green_task(session, name: str):
+async def _green_task(session, name: str, version_number: int = 1):
     """A task whose current version passes every default automated check."""
     experiment = ExperimentModel(name=f"exp-{name}", org_id=ORG)
     task = _task(name)
@@ -88,7 +91,7 @@ async def _green_task(session, name: str):
     await session.flush()
     version = _version(
         task,
-        1,
+        version_number,
         pre_trial_status=VerdictStatus.SUCCESS,
         pre_trial={"items": []},
     )
@@ -126,6 +129,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
                 data=ManualCheckSet(
                     check_key=f"ack:{defect.id}",
                     delivery_task_id=row.delivery_task_id,
+                    expected_version_id=row.version_id,
                     checked=True,
                 ),
                 user_id=user,
@@ -137,6 +141,7 @@ async def _sign_off(session, delivery_id, task_id, user="signer"):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id=user,
@@ -162,6 +167,7 @@ async def test_green_task_board_is_ready(session):
     }
     # Every task needs a person's sign-off before the board is ready.
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == "awaiting sign-off on v1"
     assert not board.ready
 
     await _sign_off(session, delivery.id, task.id, user="u9")
@@ -170,6 +176,75 @@ async def test_green_task_board_is_ready(session):
     )
     assert board.ready and board.ready_task_count == 1
     assert _checks(board, task.id)["signoff"].checked_by_user_id == "u9"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_count", [1, 12])
+async def test_board_read_statement_budget(session, task_count):
+    tasks = [
+        (await _green_task(session, f"board-budget-{i}"))[0] for i in range(task_count)
+    ]
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme", name="board-budget", task_ids=[t.id for t in tasks]
+        ),
+        org_id=ORG,
+        user_id="u1",
+    )
+    # A new identity map includes the delivery/customer reads that an actual
+    # request pays; fixture objects in the write session must not hide them.
+    async with AsyncSession(bind=await session.connection()) as reader:
+        with count_statements() as statements:
+            board = await get_delivery_board_core(
+                reader, delivery_id=delivery.id, org_id=ORG
+            )
+    assert board.task_count == task_count
+    assert all(_checks(board, t.id)["min_rollouts"].status == "pass" for t in tasks)
+    assert all(_checks(board, t.id)["verdict_ok"].status == "pass" for t in tasks)
+    assert all(
+        statement.lstrip().upper().startswith("SELECT") for statement in statements
+    )
+    print(f"board tasks={task_count}: {len(statements)} SQL statements")
+    assert len(statements) <= 11, "\n".join(statements)
+
+
+@pytest.mark.asyncio
+async def test_board_keeps_deleted_tasks_and_missing_versions_but_omits_removed_members(
+    session,
+):
+    from oddish.core.deliveries import remove_delivery_task_core
+    from oddish.db import utcnow
+
+    live, _, _ = await _green_task(session, "board-live")
+    deleted, _, _ = await _green_task(session, "board-deleted")
+    removed, _, _ = await _green_task(session, "board-removed")
+    no_version, _, _ = await _green_task(session, "board-no-version")
+    task_ids = [t.id for t in (live, deleted, removed, no_version)]
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="board-deletions", task_ids=task_ids),
+        org_id=ORG,
+        user_id="u1",
+    )
+    await remove_delivery_task_core(
+        session, delivery_id=delivery.id, org_id=ORG, task_id=removed.id
+    )
+    deleted.deleted_at = utcnow()
+    no_version.current_version_id = None
+    await session.flush()
+
+    async with AsyncSession(bind=await session.connection()) as reader:
+        board = await get_delivery_board_core(
+            reader, delivery_id=delivery.id, org_id=ORG
+        )
+    assert [row.task_id for row in board.tasks] == [live.id, deleted.id, no_version.id]
+    assert not board.ready
+    assert _checks(board, deleted.id)["task_exists"].status == "fail"
+    assert (
+        _checks(board, no_version.id)["pre_trial_passed"].detail
+        == "task has no default version"
+    )
 
 
 @pytest.mark.asyncio
@@ -197,6 +272,9 @@ async def test_version_bump_resets_board(session):
     assert checks["verdict_ok"].status == "fail"
     assert "does not cover" in checks["verdict_ok"].detail
     assert checks["signoff"].status == "fail"
+    assert checks["signoff"].detail == "signed off on an older version; sign off again"
+    assert checks["signoff"].checked_by_user_id is None
+    assert checks["signoff"].checked_at is None
     assert not board.ready
 
 
@@ -206,7 +284,7 @@ async def test_must_fix_defects_block(session):
     version.pre_trial = {
         "items": [
             {"tier": "must_fix", "title": "leak"},
-            {"tier": "should_fix", "title": "nit"},
+            {"tier": "must_fix", "title": "The verifier misses invalid input"},
         ]
     }
     cheat_trial = _trial(
@@ -236,9 +314,32 @@ async def test_must_fix_defects_block(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "2 of 2 must-fix unacknowledged" in check.detail
+    assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
-    assert len(row.defects) == 2 and not any(d.acknowledged for d in row.defects)
+    assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
+    assert "historically lower-severity" not in check.detail
+
+    historical_defect = next(
+        d for d in row.defects if d.title == "The verifier misses invalid input"
+    )
+    await set_manual_check_core(
+        session,
+        delivery_id=delivery.id,
+        org_id=ORG,
+        data=ManualCheckSet(
+            check_key=f"ack:{historical_defect.id}",
+            delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
+            checked=True,
+        ),
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(
+        session, delivery_id=delivery.id, org_id=ORG
+    )
+    check = _checks(board, task.id)["no_must_fix"]
+    assert check.status == "fail"
+    assert check.detail == "2 of 3 task defects unacknowledged on v1"
 
     # Deleting the trial that reported a defect must not clear it: only an
     # acknowledgement or a new version does.
@@ -250,7 +351,7 @@ async def test_must_fix_defects_block(session):
         session, delivery_id=delivery.id, org_id=ORG
     )
     row = next(r for r in board.tasks if r.task_id == task.id)
-    assert len(row.defects) == 2
+    assert len(row.defects) == 3
 
 
 @pytest.mark.asyncio
@@ -289,7 +390,7 @@ async def test_same_title_defects_stay_distinct(session):
     assert len(row.defects) == 3
     assert len({d.id for d in row.defects}) == 3
     assert {d.source for d in row.defects} == {"pre_trial", "trial"}
-    assert "3 of 3 must-fix unacknowledged" in (
+    assert "3 of 3 task defects unacknowledged" in (
         _checks(board, task.id)["no_must_fix"].detail
     )
 
@@ -322,7 +423,7 @@ async def test_manual_tick_and_version_reset(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="proofread", delivery_task_id=member_id, checked=True
+            check_key="proofread", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u2",
     )
@@ -502,7 +603,7 @@ async def test_qa_history(session):
     assert [run.kind for run in history.unversioned_runs] == ["qa"]
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
-    assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert broken.must_fix == 0
     assert broken.findings == []
     assert broken.pre_trial_error == "docker died"
     assert [run.error for run in broken.qa_runs] == ["container OOM"]
@@ -532,6 +633,40 @@ async def test_qa_history(session):
         await get_task_qa_history_core(
             session, task_id=task.id, org_id="other-org"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["pre_trial", "trial", "preserved"])
+@pytest.mark.parametrize(
+    "tiers, expected",
+    [
+        ({"tier": None, "severity": "must_fix"}, "must_fix"),
+        ({"severity": "must_fix"}, "must_fix"),
+        ({"tier": "optional", "severity": "must_fix"}, "optional"),
+    ],
+)
+async def test_qa_history_legacy_severity(session, source, tiers, expected):
+    task, version, experiment = await _green_task(session, "legacy-severity")
+    finding = {"id": "legacy", "title": "Legacy finding", **tiers}
+    if source == "pre_trial":
+        version.pre_trial = {"items": [finding]}
+    elif source == "trial":
+        session.add(
+            _trial(
+                task,
+                experiment,
+                version.id,
+                analysis={"action_items": [finding]},
+            )
+        )
+    else:
+        version.reported_findings = [{"finding": finding, "source": "trial"}]
+    await session.flush()
+
+    history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+    assert [(f.tier, f.title, f.source) for f in history.versions[0].findings] == [
+        (expected, "Legacy finding", "pre_trial" if source == "pre_trial" else "trial")
+    ]
 
 
 @pytest.mark.asyncio
@@ -627,7 +762,8 @@ async def test_finalized_delivery_cannot_be_deleted(session):
 
 
 @pytest.mark.asyncio
-async def test_verdict_freshness_follows_newest_qa_run(session):
+@pytest.mark.parametrize("has_finished_at", [True, False])
+async def test_verdict_freshness_follows_newest_qa_run(session, has_finished_at):
     from datetime import datetime, timezone
 
     task, v1, experiment = await _green_task(session, "deliv-qa-order")
@@ -667,7 +803,8 @@ async def test_verdict_freshness_follows_newest_qa_run(session):
     # A NEWER successful QA on another version overwrote tasks.verdict, so
     # the stored verdict no longer covers the current default.
     qa_newer = _trial(task, experiment, v2.id, kind="qa")
-    qa_newer.finished_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    qa_newer.created_at = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    qa_newer.finished_at = qa_newer.created_at if has_finished_at else None
     session.add(qa_newer)
     await session.flush()
     board = await get_delivery_board_core(
@@ -740,14 +877,15 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
     )
     check = _checks(board, task.id)["no_must_fix"]
     assert check.status == "fail"
-    assert "1 of 1 must-fix unacknowledged" in check.detail
+    assert "1 of 1 task defects unacknowledged" in check.detail
 
 
 @pytest.mark.asyncio
-async def test_signoff_requires_defect_acknowledgement(session):
+@pytest.mark.parametrize("tier", ["must_fix", "optional"])
+async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {
-        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+        "items": [{"id": "def-1", "tier": tier, "title": "leaky check"}]
     }
     await session.flush()
     delivery = await create_delivery_core(
@@ -771,6 +909,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="signoff",
                 delivery_task_id=row.delivery_task_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -787,6 +926,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
             data=ManualCheckSet(
                 check_key="ack:not-a-defect",
                 delivery_task_id=row.delivery_task_id,
+                expected_version_id=row.version_id,
                 checked=True,
             ),
             user_id="u5",
@@ -801,6 +941,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="ack:def-1",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u5",
@@ -812,6 +953,7 @@ async def test_signoff_requires_defect_acknowledgement(session):
         data=ManualCheckSet(
             check_key="signoff",
             delivery_task_id=row.delivery_task_id,
+            expected_version_id=row.version_id,
             checked=True,
         ),
         user_id="u6",
@@ -825,6 +967,9 @@ async def test_signoff_requires_defect_acknowledgement(session):
     assert row.defects[0].acknowledged_by_user_id == "u5"
     assert _checks(board, task.id)["signoff"].checked_by_user_id == "u6"
     assert _checks(board, task.id)["no_must_fix"].status == "pass"
+    assert _checks(board, task.id)["no_must_fix"].detail == (
+        "all 1 task defects acknowledged as exceptions on v1"
+    )
 
     # A reserved key cannot be redefined in check_config.
     from oddish.schemas import DeliveryCheckConfig as _Config
@@ -913,7 +1058,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key="signoff", delivery_task_id=member_id, checked=True
+                check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -928,7 +1073,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
                 delivery_id=delivery.id,
                 org_id=ORG,
                 data=ManualCheckSet(
-                    check_key=bad_key, delivery_task_id=member_id, checked=True
+                    check_key=bad_key, delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
                 ),
                 user_id="u5",
             )
@@ -940,7 +1085,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
             delivery_id=delivery.id,
             org_id=ORG,
             data=ManualCheckSet(
-                check_key=f"waive:{key}", delivery_task_id=member_id, checked=True
+                check_key=f"waive:{key}", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
             ),
             user_id="u5",
         )
@@ -949,7 +1094,7 @@ async def test_failing_checks_need_acknowledgement_before_signoff(session):
         delivery_id=delivery.id,
         org_id=ORG,
         data=ManualCheckSet(
-            check_key="signoff", delivery_task_id=member_id, checked=True
+            check_key="signoff", delivery_task_id=member_id, expected_version_id=board.tasks[0].version_id, checked=True
         ),
         user_id="u6",
     )
@@ -1133,6 +1278,259 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
     checks = _checks(board, task.id)
     assert checks["verdict_ok"].status == "pass"
     assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    assert checks["min_rollouts"].failure_labels == (
+        [] if custom_minimum else [f"Runs: {run_count}/5", "Agents: 1/3"]
+    )
     if not custom_minimum:
         assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
         assert not board.ready
+
+@pytest.mark.asyncio
+async def test_completed_source_review_can_block_a_fair_agent_failure(session):
+    task, version, experiment = await _green_task(session, "review-meaning-defect")
+    version.pre_trial = {
+        "items": [
+            {
+                "id": "empty-answer",
+                "tier": "must_fix",
+                "title": "The verifier accepts an empty answer.",
+                "file": "tests/test.sh",
+                "line_start": 7,
+                "line_end": 7,
+            }
+        ]
+    }
+    session.add(
+        _trial(
+            task,
+            experiment,
+            version.id,
+            analysis={
+                "classification": "GOOD_FAILURE",
+                "action_items": [],
+            },
+        )
+    )
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme",
+            name="review-meaning",
+            task_ids=[task.id],
+        ),
+        org_id=ORG,
+        user_id="maya",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    row = board.tasks[0]
+    checks = {check.key: check for check in row.checks}
+    assert checks["pre_trial_passed"].status == "pass"
+    assert "pre-trial audit completed" in checks["pre_trial_passed"].detail
+    assert "defect checks are separate" in checks["pre_trial_passed"].detail
+    assert checks["no_must_fix"].status == "fail"
+    assert checks["signoff"].status == "fail"
+    assert not row.ready
+    assert row.defects[0].recorded_tier == "must_fix"
+    assert row.defects[0].finding == version.pre_trial["items"][0]
+    assert row.defects[0].finding_id == "empty-answer"
+    assert row.defects[0].file == "tests/test.sh"
+    assert row.defects[0].line_start == row.defects[0].line_end == 7
+
+
+@pytest.mark.asyncio
+async def test_review_failure_is_unknown_quality_not_a_defect(session):
+    task, version, _ = await _green_task(session, "review-meaning-error")
+    version.pre_trial_status = VerdictStatus.FAILED
+    version.pre_trial_error = "Evidence unavailable; cause not established"
+    task.verdict = None
+    task.verdict_status = VerdictStatus.FAILED
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme",
+            name="review-error",
+            task_ids=[task.id],
+        ),
+        org_id=ORG,
+        user_id="maya",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    checks = _checks(board, task.id)
+    assert checks["pre_trial_passed"].status == "fail"
+    assert "task quality not established" in checks["pre_trial_passed"].detail
+    assert "no reported task defects" in checks["no_must_fix"].detail
+    assert board.tasks[0].defects == []
+    assert not board.tasks[0].ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat", [False, True])
+async def test_acknowledgment_statement_budget(session, repeat):
+    task, version, _ = await _green_task(session, "ack-budget")
+    version.pre_trial = {
+        "items": [{"id": "def-1", "tier": "must_fix", "title": "leaky check"}]
+    }
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="ack-budget", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    data = ManualCheckSet(
+        check_key="ack:def-1",
+        delivery_task_id=board.tasks[0].delivery_task_id,
+        expected_version_id=version.id,
+        checked=True,
+    )
+    if repeat:
+        await set_manual_check_core(
+            session, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u1"
+        )
+    async with AsyncSession(bind=await session.connection()) as writer:
+        with count_statements() as statements:
+            await set_manual_check_core(
+                writer, delivery_id=delivery.id, org_id=ORG, data=data, user_id="u2"
+            )
+        updated = await get_delivery_board_core(
+            writer, delivery_id=delivery.id, org_id=ORG
+        )
+        assert updated.tasks[0].defects[0].acknowledged
+        assert updated.tasks[0].defects[0].acknowledged_by_user_id == "u2"
+    print(f"ack repeat={repeat}: {len(statements)} SQL statements")
+    assert len(statements) <= 6, "\n".join(statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_creation_time", [False, True])
+async def test_verdict_timestamp_ties_agree_between_board_and_history(session, same_creation_time):
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    task, v1, experiment = await _green_task(session, "deliv-qa-tie")
+    first = await session.scalar(select(TrialModel).where(
+        TrialModel.task_id == task.id, TrialModel.kind == "qa"
+    ))
+    first.created_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    first.finished_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    second = _trial(task, experiment, v2.id, kind="qa")
+    # A larger unique ID resolves even an exact timestamp tie.
+    second.id = "zz-" + second.id
+    second.created_at = first.created_at if same_creation_time else datetime(2026, 7, 2, tzinfo=timezone.utc)
+    second.finished_at = first.finished_at
+    session.add(second)
+    await session.flush()
+    delivery = await create_delivery_core(session, data=DeliveryCreate(
+        customer="acme", name="timestamp-ties", task_ids=[task.id]
+    ), org_id=ORG, user_id="u1")
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+        assert _checks(board, task.id)["verdict_ok"].status == ("pass" if version == v2 else "fail")
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == v2.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "newer_run",
+    [
+        "deleted",
+        "failed",
+        "classification",
+        "unversioned",
+        "audit",
+        "superseded",
+        "unfinished_timestamp",
+    ],
+)
+async def test_member_verdict_lookup_preserves_eligibility(session, newer_run):
+    from datetime import timedelta
+    from sqlalchemy import select
+    from oddish.db import utcnow
+
+    task, v1, experiment = await _green_task(session, "member-verdict")
+    first = await session.scalar(
+        select(TrialModel).where(TrialModel.task_id == task.id, TrialModel.kind == "qa")
+    )
+    first.created_at = utcnow() - timedelta(days=3)
+    first.finished_at = utcnow() - timedelta(days=2)
+    v2 = _version(task, 2)
+    session.add(v2)
+    await session.flush()
+    newer = _trial(task, experiment, v2.id, kind="qa")
+    # Completion takes precedence even when creation is older than the first.
+    newer.created_at = utcnow() - timedelta(days=4)
+    newer.finished_at = utcnow() - timedelta(days=1)
+    if newer_run == "deleted":
+        newer.deleted_at = utcnow()
+    elif newer_run == "failed":
+        newer.status = TrialStatus.FAILED
+    elif newer_run == "classification":
+        newer.harbor_config = {"analysis_payload": {"with_verdict": False}}
+    elif newer_run == "unversioned":
+        newer.task_version_id = None
+    elif newer_run == "audit":
+        newer.kind = "audit"
+    elif newer_run == "superseded":
+        # Historical verdict provenance still includes superseded QA runs.
+        newer.superseded_by_trial_id = first.id
+    elif newer_run == "unfinished_timestamp":
+        newer.created_at = utcnow() - timedelta(days=1)
+        newer.finished_at = None
+    session.add(newer)
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="member-verdict", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    expected = v2 if newer_run in {"superseded", "unfinished_timestamp"} else v1
+    for version in (v1, v2):
+        task.current_version_id = version.id
+        await session.flush()
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery.id, org_id=ORG
+        )
+        assert _checks(board, task.id)["verdict_ok"].status == (
+            "pass" if version == expected else "fail"
+        )
+        history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
+        assert history.verdict_version_id == expected.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audit_status, label",
+    [
+        (None, "Pre-trial audit needed"),
+        (VerdictStatus.QUEUED, "Pre-trial audit queued"),
+        (VerdictStatus.RUNNING, "Pre-trial audit running"),
+        (VerdictStatus.FAILED, "Pre-trial audit failed"),
+        (VerdictStatus.SUCCESS, None),
+    ],
+)
+async def test_delivery_failure_labels_identify_audit_state(
+    session, audit_status, label
+):
+    task, version, _ = await _green_task(session, "audit-label")
+    version.pre_trial_status = audit_status
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="audit-label", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["pre_trial_passed"]
+    assert check.failure_labels == ([] if label is None else [label])
+    assert check.status == ("pass" if label is None else "fail")

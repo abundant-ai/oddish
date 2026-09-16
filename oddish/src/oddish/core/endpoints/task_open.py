@@ -117,6 +117,7 @@ async def get_task_open_core(
             current_version_id=identity["current_version_id"],
             user_tags=tags(identity["task_tags"]),
             run_analysis=bool(identity["run_analysis"]),
+            review_version_matches=identity["review_version_matches"],
             verdict_status=identity["verdict_status"],
             verdict=compact_verdict(identity["verdict"]),
             verdict_error=bounded_text(identity["verdict_error"]),

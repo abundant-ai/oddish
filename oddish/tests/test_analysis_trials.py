@@ -558,7 +558,7 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environm
         pre_trial={
             "items": [
                 {"id": "audit-1", "tier": "must_fix"},
-                {"id": "audit-2", "severity": "should_fix"},
+                {"id": "audit-2", "severity": "must_fix"},
                 {"id": "audit-1", "tier": "must_fix"},
                 {"title": "An old finding without an id"},
             ]
@@ -612,7 +612,7 @@ async def test_qa_creation_persists_the_pre_trial_contract(monkeypatch, environm
     assert captured["environment"] == environment
     payload = captured["payload"]
     assert payload["pre_trial_item_ids"] == ["audit-1", "audit-2"]
-    assert payload["pre_trial_must_fix_ids"] == ["audit-1"]
+    assert payload["pre_trial_must_fix_ids"] == ["audit-1", "audit-2"]
     assert payload["trial_evidence"] == [
         {
             "trial_id": "trial-1",
@@ -3256,6 +3256,9 @@ async def test_qa_import_replaces_old_acceptance_with_only_the_current_verdict(
         "oddish.core.trial_io.read_trial_trajectory", AsyncMock(return_value=None)
     )
 
+    monkeypatch.setattr(
+        "oddish.core.task_findings.preserve_task_findings", AsyncMock(return_value=[])
+    )
     await analysis_trials._import_qa_result(qa)
 
     assert task.status == TaskStatus.COMPLETED

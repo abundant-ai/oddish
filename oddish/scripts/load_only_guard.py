@@ -93,6 +93,24 @@ _COVERAGE_UNITS = (
             (_PKG_ROOT / "core" / "analysis_payload.py", ("qa_trial_evidence",)),
         ),
     ),
+    (
+        "_compute_board",
+        _PKG_ROOT / "core" / "deliveries.py",
+        (
+            (_PKG_ROOT / "core" / "deliveries.py", ("_compute_board",)),
+            (_PKG_ROOT / "core" / "delivery_qa.py", ("evaluate_delivery_qa",)),
+            (_PKG_ROOT / "core" / "analysis_payload.py", ("audit_snapshot_matches",)),
+            (_PKG_ROOT / "core" / "task_findings.py", ("task_defect_items",)),
+        ),
+    ),
+    (
+        "delivery_page",
+        _PKG_ROOT / "core" / "delivery_view.py",
+        (
+            (_PKG_ROOT / "core" / "delivery_view.py", ("delivery_page",)),
+            (_PKG_ROOT / "core" / "task_findings.py", ("task_defect_items",)),
+        ),
+    ),
 )
 
 
@@ -321,6 +339,13 @@ class _ReadCollector:
             sites.append((target.id, _LoopElement(iter_expr)))
 
     def _resolve_bindings(self, fn: ast.AST) -> None:
+        # Query tuples and dictionary lookups often need an explicit local
+        # annotation; their model type is not visible from the expression alone.
+        for node in ast.walk(fn):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                inferred = _annotation_type(node.annotation, self.metas)
+                if inferred is not None:
+                    self.bindings[node.target.id] = inferred
         sites = self._binding_sites(fn)
         # Fixpoint: re-resolve until no new binding appears. Bounded by the
         # number of sites + 1 so a pathological chain still terminates.

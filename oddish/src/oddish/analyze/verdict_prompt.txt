@@ -16,7 +16,7 @@ Each analysis gives its trial one label. A label is a claim from that analysis, 
 
 Five kinds of evidence reject the task on their own. Look for them first. If you find one, reject the task. Good results from the other trials do not cancel it.
 
-* Any current source-audit finding with tier `must_fix`. That tier means the defect can decide a trial.
+* Any reported task defect from the source audit or an execution review, including historical lower-severity findings. Every newly reported defect has tier `must_fix`. This is a delivery requirement; it does not establish causation for an execution. A delivery acknowledgment permits an exception without making the task defect-free.
 * A used leak. A trial read the hidden tests, the solution, or other files the task must keep hidden (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
 * A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The finding counts even if no trial used the leak.
 * Weak tests. A trial measured that the tests also pass work that does not solve the task. Example: the untouched base model already scores above the pass threshold. Weak tests make every pass meaningless, including the ones labeled GOOD_SUCCESS.

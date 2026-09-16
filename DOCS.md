@@ -5,6 +5,14 @@
 ## Installation
 
 ```bash
+uv pip install oddish
+```
+
+`oddish update` upgrades that install. `oddish version --check` compares with PyPI.
+
+To install the development tree:
+
+```bash
 uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
@@ -40,12 +48,15 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete trials, tasks, or experiments (what's allowed depends on the deployment; see [Delete Data](#delete-data))
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish link` - print the dashboard URL for a task or trial (built locally; needs no API key)
+- `oddish version` - print the installed CLI version (`--check` compares with the latest PyPI release)
+- `oddish update` - upgrade a `uv pip install oddish` install from PyPI
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 - `oddish skill` - print or install the packaged SKILL.md agent guide
 
 Most commands accept `--json` for machine-readable output (CI / scripts /
 agents). The exceptions are `oddish logs`, `oddish link`, `oddish skill`, and
 the `oddish probe` helpers, which print human-readable output only.
+`oddish version` and `oddish update` are local and do not require an API key.
 
 ### Lifecycle
 
@@ -123,7 +134,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, `thunder`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -148,7 +159,7 @@ Options
 - `--force-build/--no-force-build` - Force a rebuild of the environment image
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
-- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
+- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times. Omitted reasoning effort uses the agent’s own default. Set it explicitly with e.g. `--agent-kwarg reasoning_effort=high`; the server saves that choice with the trial.
 - `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
 - `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
@@ -179,6 +190,21 @@ without `--env` continue to use Daytona. V1 does not accept GPU/TPU requests,
 attach mode, retained instances, or caller overrides of platform EC2 settings.
 It uses a public address and key-only SSH; the instance is terminated after the
 trial or cancellation.
+
+### Run on Thunder
+
+A Thunder-enabled deployment can run a trial in one disposable GPU sandbox by
+selecting the backend explicitly:
+
+```bash
+oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
+```
+
+The hosted API rejects `--env thunder` unless its operator enabled the backend.
+Thunder is never an automatic fallback. Its provider-wide capacity limit is
+shared across models, organizations, queue keys, and Harbor variants. Oddish
+persists the Thunder sandbox ID before operating it and uses that ID for normal
+teardown, cancellation, and orphan cleanup.
 
 ### Re-run with `--retry`
 
@@ -370,7 +396,7 @@ The command writes two UTF-8 CSV files (existing files are overwritten):
   agent-run analysis statuses, counts of exported findings by tier, and
   `fetch_error`. Structured detail is stored as JSON inside CSV cells.
 
-Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+The default tier is `must_fix`. Repeat `--tier` to select tiers;
 `optional` is also supported. Counts reflect exported occurrences, not unique
 defects. A finding reported by two runs keeps two rows with distinct trial IDs;
 version-audit findings appear once per version. CSV quoting preserves commas,
@@ -952,7 +978,9 @@ a dropdown of existing customers and a form for a new one. `POST
 
 The dashboard board can filter its task list: all tasks, blocked tasks
 (a failing check or an open defect), tasks awaiting sign-off (every
-check passes), or ready tasks. Use it to hide what is already approved. Each row also
+check passes), or ready tasks. Use it to hide what is already approved. The filter, the
+page, and the page size live in the URL (`?filter=`, `?page=`,
+`?per_page=`), so a filtered view can be shared or reloaded. Each row also
 has a selection checkbox (the header checkbox selects the whole filtered
 view): the bulk bar signs off every clean selected task or removes the
 selected tasks from the delivery in one action.
@@ -1107,3 +1135,10 @@ drawer's summary. `results.summary` must carry all six counts (`tests`,
 a report missing any of them is dropped whole. Missing, malformed, or
 oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
+
+Delivery sign-off requires resolving or individually acknowledging every
+reported defect, including historical `optional` findings.
+`oddish delivery check`, `ack`, and `signoff` send the task version shown by the
+board; a version change requires reviewing the board again. `oddish delivery
+history` retains original severity labels and shows the current shipment
+requirement. An acknowledgment permits an exception without deleting a finding.

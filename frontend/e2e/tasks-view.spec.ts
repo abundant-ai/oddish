@@ -568,9 +568,12 @@ test.describe("authenticated task view", () => {
     await page.getByRole("button", { name: "readme.txt" }).click();
     await expect(page.getByText("text preview loaded")).toBeVisible();
     await expect(page.getByText(/Showing first 100\.0 KB/)).toBeVisible();
+    await expect(page).toHaveURL(/taskFile=readme\.txt/);
 
     await page.getByRole("button", { name: "preview.png" }).click();
     await binaryRequestStarted;
+    await expect(page).toHaveURL(/taskFile=preview\.png/);
+    await expect(page.getByText("text preview loaded")).toHaveCount(0);
     await expect(page.getByRole("img", { name: "preview.png" })).toHaveCount(0);
     expect(
       binaryRequests.filter((url) => url.searchParams.get("presign") !== "1")
@@ -579,6 +582,17 @@ test.describe("authenticated task view", () => {
     releaseBinaryRequest();
     await expect(page.getByRole("img", { name: "preview.png" })).toBeVisible();
     expect(binaryRequests).toHaveLength(1);
+
+    // An incoming URL change must still select its file after a local click.
+    await page.evaluate(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("taskFile", "readme.txt");
+      window.history.pushState(null, "", url);
+    });
+    await expect(page.getByText("text preview loaded")).toBeVisible();
+    await expect(page.getByRole("img", { name: "preview.png" })).toHaveCount(0);
+    await page.goBack();
+    await expect(page.getByRole("img", { name: "preview.png" })).toBeVisible();
   });
 
   test("bounded open renders exact metrics, recent previews, historical experiments, and default switching", async ({
@@ -640,12 +654,12 @@ test.describe("authenticated task view", () => {
     await expect(page.getByText("$25.00").last()).toBeVisible();
     await expect(page.getByText("$1.00")).toBeVisible();
 
-    await page.getByRole("button", { name: /v2/ }).click();
+    await page.getByRole("button", { name: /^v2\b/ }).click();
     await page.getByText("v3", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Third experiment" }).last()
     ).toBeVisible();
-    await page.getByRole("button", { name: /v3/ }).click();
+    await page.getByRole("button", { name: /^v3\b/ }).click();
     await page.getByText("v1", { exact: true }).click();
     await historicalRequestStarted;
     releaseHistoricalRequest();
@@ -657,17 +671,17 @@ test.describe("authenticated task view", () => {
     );
     await page.getByRole("button", { name: "Make default" }).click();
     await expect.poll(() => defaultMutationCount).toBe(1);
-    await expect(page).not.toHaveURL(/version=/);
+    await expect(page).toHaveURL(/version=version-1/);
 
     // Revisit a resource cached before the mutation, then select the former
     // default. Every versioned cache must agree that v1 is now the default;
     // otherwise v3 treats v2 as bare/default and incorrectly jumps back to v1.
-    await page.getByRole("button", { name: /v1/ }).click();
+    await page.getByRole("button", { name: /^v1\b/ }).click();
     await page.getByText("v3", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Third experiment" }).last()
     ).toBeVisible();
-    await page.getByRole("button", { name: /v3/ }).click();
+    await page.getByRole("button", { name: /^v3\b/ }).click();
     await page.getByText("v2", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Current experiment" }).last()
@@ -705,7 +719,9 @@ test.describe("authenticated task view", () => {
     );
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
-    await page.getByRole("button", { name: "Run QA" }).click();
+    await page
+      .getByRole("button", { name: /^Generate QA verdict(?: for v\d+)?$/ })
+      .click();
     await expect
       .poll(() => backfillBody)
       .toEqual({
@@ -834,7 +850,7 @@ test.describe("authenticated task view", () => {
     expect(detailRequests).toBe(0);
   });
 
-  test("invalid explicit version proves the default and clears only version state", async ({
+  test("missing explicit version preserves evidence address until current version is explicitly opened", async ({
     page,
   }) => {
     await signIn(page);
@@ -860,15 +876,19 @@ test.describe("authenticated task view", () => {
       `/tasks/${READER_TASK_ID}?version=missing-version&drawer=task&taskFile=README.txt&taskLines=L1-L2`
     );
     await expect(
+      page.getByText("Historical version unavailable", { exact: true })
+    ).toBeVisible();
+    await expect(page).toHaveURL(/version=missing-version/);
+    await expect(page).toHaveURL(/taskFile=README.txt/);
+    await expect(page).toHaveURL(/taskLines=L1-L2/);
+    expect(openUrls.filter((url) => !url.includes("version_id"))).toHaveLength(
+      0
+    );
+    await page.getByRole("link", { name: "Open the current version" }).click();
+    await expect(
       page.getByRole("heading", { name: "Bounded task reader", exact: true })
     ).toBeVisible();
     await expect(page).not.toHaveURL(/version=/);
-    await expect(page).toHaveURL(/drawer=task/);
-    await expect(page).toHaveURL(/taskFile=README.txt/);
-    await expect(page).toHaveURL(/taskLines=L1-L2/);
-    expect(openUrls.filter((url) => !url.includes("version_id")).length).toBe(
-      1
-    );
   });
 
   test("a missing default remains a genuine task failure", async ({ page }) => {

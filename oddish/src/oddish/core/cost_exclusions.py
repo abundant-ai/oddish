@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.cache import TTLCache
@@ -147,8 +147,8 @@ class CostExclusions:
 
 # The three lists change a few times a month from the admin page and are read
 # on every task, trial and experiment fetch. One entry per container, refreshed
-# at most once per ``settings.cost_exclusions_cache_seconds``, keeps those
-# three statements (plus the SAVEPOINT around them) off the request path. The
+# at most once per ``settings.cost_exclusions_cache_seconds``, keeps the
+# combined statement (plus the SAVEPOINT around it) off the request path. The
 # admin routers call ``invalidate_cost_exclusions`` after each edit so the
 # container that served the edit answers fresh; the TTL bounds the lag on
 # every other container.
@@ -161,13 +161,32 @@ def invalidate_cost_exclusions() -> None:
 
 
 async def _read_cost_exclusions(session: AsyncSession) -> CostExclusions:
-    llm_keys = list(await session.scalars(select(CostExcludedLlmKeyModel)))
-    models = list(await session.scalars(select(CostExcludedModelModel)))
-    experiments = list(await session.scalars(select(CostExcludedExperimentModel)))
+    # UNION ALL appends the lists without multiplying rows across categories.
+    # Explicit live predicates also cover compound-select execution paths.
+    rows = await session.execute(
+        union_all(
+            select(literal(REASON_KEY), CostExcludedLlmKeyModel.key_hash).where(
+                CostExcludedLlmKeyModel.deleted_at.is_(None)
+            ),
+            select(literal(REASON_MODEL), CostExcludedModelModel.model_name).where(
+                CostExcludedModelModel.deleted_at.is_(None)
+            ),
+            select(
+                literal(REASON_EXPERIMENT), CostExcludedExperimentModel.experiment_id
+            ).where(CostExcludedExperimentModel.deleted_at.is_(None)),
+        )
+    )
+    values: dict[str, set[str]] = {
+        REASON_KEY: set(),
+        REASON_MODEL: set(),
+        REASON_EXPERIMENT: set(),
+    }
+    for reason, value in rows:
+        values[reason].add(value)
     return CostExclusions(
-        llm_key_hashes=frozenset(row.key_hash for row in llm_keys),
-        models=frozenset(row.model_name for row in models),
-        experiment_ids=frozenset(row.experiment_id for row in experiments),
+        llm_key_hashes=frozenset(values[REASON_KEY]),
+        models=frozenset(values[REASON_MODEL]),
+        experiment_ids=frozenset(values[REASON_EXPERIMENT]),
     )
 
 

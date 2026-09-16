@@ -18,7 +18,7 @@ from models import UserModel
 from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.helpers import escape_like, parse_search_query
-from oddish.db import get_read_session
+from oddish.db import get_read_session, get_session
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
@@ -420,7 +420,9 @@ async def get_dashboard(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    async with get_read_session() as session:
+    # A missing author profile writes its discovered identities and reclaims
+    # unowned experiments. Commit those before the dashboard reads their owners.
+    async with get_session() as session:
         resolve_started_at = now()
         (
             author_user_id,
@@ -464,6 +466,8 @@ async def get_dashboard(
             elapsed_ms(resolve_started_at),
             "Dashboard author filter resolve",
         )
+
+    async with get_read_session() as session:
         try:
             metric_filter = TrialMetricFilter.from_query(
                 models=experiments_models,

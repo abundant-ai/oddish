@@ -22,6 +22,9 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Explicitly use an operator-enabled ephemeral EC2 backend
 # oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
 
+# Explicitly use an operator-enabled Thunder GPU sandbox
+# oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
+
 # Append trials to a task an experiment already runs; add
 # --use-default-version to target the task's default version instead
 # oddish run --task <task_id> -E <experiment> -a codex --n-trials 2
@@ -34,6 +37,9 @@ oddish status <task_id> --watch
 # Pull logs and artifacts locally
 oddish pull <task_id> --watch
 ```
+
+Omitted reasoning effort uses the agent’s own default.
+Use `--agent-kwarg reasoning_effort=high` (or another supported value) to set it explicitly.
 
 The CLI targets Oddish Cloud by default. All API-backed commands require
 `ODDISH_API_KEY`. For self-deployed instances, also set `ODDISH_API_URL`.
@@ -61,14 +67,14 @@ Need package internals, architecture, or development notes? See [`AGENTS.md`](..
 
 ## Commands
 
-- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix`/`should_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
+- `oddish qa export --ids-file task-ids.txt --output qa-findings.csv` — export existing `must_fix` findings and a companion task-summary CSV; accepts positional task IDs and `--all-versions`.
 
 Run `oddish --help` or see [`../DOCS.md`](../DOCS.md) for the full CLI
 reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and
   task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
-  `gke`, `archil`, and `numinous`; Archil, EC2, and Numinous are controlled by
+  `gke`, `archil`, `thunder`, and `numinous`; Archil, EC2, and Numinous are controlled by
   deployment settings. When Numinous is enabled it is the first CPU candidate;
   otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
   separate deployment flag.
@@ -89,6 +95,8 @@ reference. The main commands are:
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 - `oddish assign` — assign QA review ownership by task IDs or `--tasks-file`; active delivery boards show the owner.
 - `oddish skill` — print the packaged SKILL.md or install the complete agent skill with its reference files.
+- `oddish version` — print the installed CLI version (`--check` compares with the latest PyPI release). No API key.
+- `oddish update` — upgrade a `uv pip install oddish` install from PyPI. No API key.
 
 Most commands support `--json` for machine-readable output; `oddish logs`,
 `oddish link`, `oddish skill`, and the `oddish probe` helpers do not.
@@ -121,3 +129,7 @@ those terms requires a separate license from the rights holders. Contact
 
 Rights already granted for code released under Apache 2.0 remain in place.
 See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own license.
+
+Delivery sign-off requires a fix or individual acknowledgment for every reported
+task defect, including historical lower-severity findings. The CLI sends the
+reviewed version; new versions require a new decision. See `../DOCS.md`.

@@ -51,6 +51,13 @@ dependencies = [
 
     # Profanity filter for org-scoped tag naming policies.
     "better-profanity>=0.7.0,<1.0",
+
+    # ``worker/gke_cluster_reaper.py`` imports ``google.auth`` and
+    # ``google.api_core`` directly. The Modal image gets the full GKE client
+    # stack from Harbor's ``gke`` extra (see modal_app.py); these pins keep the
+    # local and test environments carrying the same two packages.
+    "google-auth==2.48.0",
+    "google-api-core==2.25.2",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +70,7 @@ dev = [
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
 # Mirror oddish/src/oddish/harbor-pin.toml (run oddish/scripts/sync_harbor_pin.py).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f8f7378d26e44d1eadff3d3d62125839a177df8d" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ca077e0cfffa4961d23fb2bc73f23fda71ec5794" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
@@ -87,6 +94,8 @@ py-modules = [
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
+    "endpoint_health",
+    "endpoint_health_worker",
     "idempotency_store",
     "modal_app",
     "models",

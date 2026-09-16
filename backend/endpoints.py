@@ -45,6 +45,7 @@ from modal_app import (  # noqa: E402
     API_MAX_CONTAINERS,
     API_MEMORY_MB,
     API_MIN_CONTAINERS,
+    API_REGION,
     API_TIMEOUT_SECONDS,
     API_WEBHOOK_LABEL,
     api_volumes,
@@ -65,7 +66,17 @@ async def _teardown_ec2_sandbox(external_id: str) -> bool:
     return bool(await function.remote.aio(external_id))
 
 
+async def _teardown_thunder_sandbox(external_id: str) -> bool:
+    function = modal.Function.from_name(
+        os.environ.get("MODAL_APP_NAME", "oddish"),
+        "teardown_thunder_sandbox",
+        environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+    )
+    return bool(await function.remote.aio(external_id))
+
+
 register_provider_teardown_delegate("ec2", _teardown_ec2_sandbox)
+register_provider_teardown_delegate("thunder", _teardown_thunder_sandbox)
 
 api = create_asgi_app()
 
@@ -77,6 +88,7 @@ api = create_asgi_app()
     timeout=API_TIMEOUT_SECONDS,
     cpu=API_CPU,
     memory=API_MEMORY_MB,
+    region=API_REGION,
     min_containers=API_MIN_CONTAINERS,
     buffer_containers=API_BUFFER_CONTAINERS,
     max_containers=API_MAX_CONTAINERS,

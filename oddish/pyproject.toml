@@ -37,6 +37,8 @@ dependencies = [
     # Validation & settings
     "pydantic==2.12.5",
     "pydantic-settings==2.12.0",
+    # PEP 440 version comparison for `oddish version --check` / `oddish update`
+    "packaging==26.0",
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling). Published wheels
@@ -89,10 +91,12 @@ worker = [
     # which require the SDK API shipped in 0.192.0 and newer.
     "daytona>=0.192.0",
     "archil==0.12.0",
+    # Hosted workers orchestrate Thunder sandboxes directly. Keep this aligned
+    # with Harbor's thunder extra so cancellation can recover a sandbox by id.
+    "thunder-sandbox==0.7.1",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
-    "google-generativeai==0.8.6",
     "modal>=1.5.0",
     "dockerfile-parse>=2.0.1",
 ]
@@ -118,7 +122,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "f8f7378d26e44d1eadff3d3d62125839a177df8d" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ca077e0cfffa4961d23fb2bc73f23fda71ec5794" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
@@ -147,7 +151,6 @@ module = [
     "harbor.*",
     "asyncpg.*",
     "aioboto3.*",
-    "google.generativeai.*",
 ]
 ignore_missing_imports = true
 

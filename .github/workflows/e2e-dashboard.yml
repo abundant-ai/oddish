@@ -167,7 +167,7 @@ jobs:
         if: steps.gate.outputs.have_clerk == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22" # Native TypeScript execution for delivery URL tests.
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -210,6 +210,11 @@ jobs:
           cat /tmp/frontend.log
           exit 1
 
+      - name: Run effort selector fixture tests
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.effort.config.ts --output effort-test-results
+
       - name: Run Playwright dashboard spec
         if: steps.gate.outputs.have_clerk == 'true'
         working-directory: frontend
@@ -218,6 +223,20 @@ jobs:
           E2E_TASK_ID: ${{ steps.seed.outputs.task_id }}
           CLERK_JWT_TEMPLATE: oddish
         run: pnpm exec playwright test
+
+      - name: Run file loading and account layout fixture tests
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        env:
+          E2E_REVIEW_FIXTURES: "1"
+        run: pnpm exec playwright test --config playwright.files.config.ts file-loading.spec.ts user-ui-layout.spec.ts --output fixture-test-results
+
+      - name: Run delivery page and URL fixture tests
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: |
+          node --experimental-strip-types --test tests/delivery-view.test.ts tests/delivery-qa.test.ts
+          pnpm exec playwright test --config playwright.delivery.config.ts --output delivery-test-results
 
       - name: Show server logs on failure
         if: ${{ failure() && steps.gate.outputs.have_clerk == 'true' }}
@@ -235,6 +254,9 @@ jobs:
           path: |
             frontend/playwright-report/
             frontend/test-results/
+            frontend/fixture-test-results/
+            frontend/effort-test-results/
+            frontend/delivery-test-results/
             /tmp/backend.log
             /tmp/frontend.log
           retention-days: 7

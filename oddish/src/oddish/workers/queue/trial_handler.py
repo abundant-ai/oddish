@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,13 +21,18 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
-from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.harbor_artifacts import (
+    THUNDER_CAPACITY_UNAVAILABLE_CODE,
+    build_trial_result,
+    invalidates_score,
+)
 from oddish.core.trial_artifacts import (
     trial_name_from_manifest,
     validate_uploaded_analysis_artifacts,
 )
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
+from oddish.observability import record_thunder_capacity_handoff
 from oddish.costs.recorder import (
     close_agent_sandboxes,
     price_unpriced_spans,
@@ -58,6 +65,7 @@ from oddish.observability import (
 from oddish.runtime.sandbox_lifecycle import (
     SandboxLaunchContext,
     create_ec2_sandbox_run,
+    create_thunder_sandbox_run,
     mark_environment_provisioned,
     terminate_sandbox_run,
 )
@@ -80,6 +88,7 @@ from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
+    FallbackEnvironmentCompatibilityError,
     HarborOutcome,
     capture_live_sandbox_resources,
     capture_sandbox_resources,
@@ -204,7 +213,13 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
 
 
 async def _issue_job_credentials(
-    *, worker_job_id: str, agent: str, model: str | None, trial_id: str
+    *,
+    worker_job_id: str,
+    agent: str,
+    model: str | None,
+    trial_id: str,
+    is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
 ) -> job_tokens.JobCredentialBundle | None:
     """Mint a job-scoped credential bundle and persist its token hash.
 
@@ -219,7 +234,13 @@ async def _issue_job_credentials(
         from oddish.db.models import WorkerJobModel
 
         bundle, token_hash = job_tokens.build_bundle(
-            agent=agent, model=model, trial_id=trial_id, settings=settings, now=utcnow()
+            agent=agent,
+            model=model,
+            trial_id=trial_id,
+            settings=settings,
+            now=utcnow(),
+            is_probe=is_probe,
+            byok_env=byok_env,
         )
         async with get_session() as session:
             await session.execute(
@@ -273,6 +294,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    fallback_from_environment: str | None = None
     trial_kind: str = "agent"
     task_version: int | None = None
     # Fields for sauron S3 mirror
@@ -288,6 +310,20 @@ class PreparedTrialRun:
     created_by_user_id: str | None = None
     billed_user_id: str | None = None
     trial_attempt: int = 1
+
+
+def _prepared_trial_uses_probe_routing(prepared_trial: PreparedTrialRun) -> bool:
+    """Whether the prepared run shares operator-probe routing rules.
+
+    Credential scoping must agree with the transport the agent is routed to, so
+    this defers to ``harbor.runner.uses_probe_routing`` rather than restating it.
+    """
+    from oddish.workers.harbor.runner import uses_probe_routing
+
+    return uses_probe_routing(
+        harbor_config=prepared_trial.trial_harbor_config,
+        trial_kind=prepared_trial.trial_kind,
+    )
 
 
 @dataclass(slots=True)
@@ -358,6 +394,48 @@ def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> b
     retry = harbor_config.get("retry") if isinstance(harbor_config, dict) else None
     return not RetryConfig.model_validate(retry or {}).should_retry(
         outcome.exception_type
+    )
+
+
+def thunder_capacity_fallback_provider(
+    environment: str | None,
+    outcome: HarborOutcome | None,
+) -> str | None:
+    """Return the configured destination for an exact Thunder capacity miss."""
+    if not settings.thunder_capacity_fallback:
+        return None
+    if (environment or "").strip().lower() != EnvironmentType.THUNDER.value:
+        return None
+    if (
+        outcome is None
+        or outcome.provider_error_code != THUNDER_CAPACITY_UNAVAILABLE_CODE
+    ):
+        return None
+    return settings.thunder_fallback_provider
+
+
+def _is_thunder_capacity_hook_error(
+    hook_event: TrialHookEvent, *, environment: str | None = None
+) -> bool:
+    """Identify a capacity miss before the END hook closes the trial."""
+    if not settings.thunder_capacity_fallback:
+        return False
+    provider = getattr(hook_event, "environment_provider", None) or environment or ""
+    if provider.strip().lower() != EnvironmentType.THUNDER.value:
+        return False
+    result = getattr(hook_event, "result", None)
+    exception_info = getattr(result, "exception_info", None)
+    provider_error_code = getattr(exception_info, "provider_error_code", None) or getattr(
+        exception_info, "code", None
+    )
+    if provider_error_code is not None:
+        return provider_error_code == THUNDER_CAPACITY_UNAVAILABLE_CODE
+    return (
+        (
+            getattr(hook_event, "environment_provider", None) or environment or ""
+        ).strip().lower()
+        == EnvironmentType.THUNDER.value
+        and getattr(exception_info, "exception_type", None) == "CapacityError"
     )
 
 
@@ -627,6 +705,7 @@ async def _prepare_trial_run(
     worker_id: str | None,
     queue_slot: int | None,
     modal_function_call_id: str | None,
+    fallback_from_environment: str | None = None,
 ) -> PreparedTrialRun | None:
     async with _trial_session(trial_id, with_for_update=True) as (session, trial):
         if not trial:
@@ -723,6 +802,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            fallback_from_environment=fallback_from_environment,
             trial_kind=trial.kind or "agent",
             task_version=task_version,
             task_name=task_name,
@@ -1010,7 +1090,19 @@ async def _store_trial_results(
             # artifact never reached storage: keep the trial on the normal retry
             # path instead of publishing an unrecoverable SUCCESS row.
             derived_reward = None if analysis_artifact_error else outcome.reward
-            if derived_reward is None and is_timeout and not analysis_artifact_error:
+            # Recorded provider failures invalidate the verifier reward even
+            # after partial agent work. Drop it and use the existing scoreless
+            # path: the error surfaces, and Harbor's RetryConfig -- read below
+            # by ``_is_non_retryable_outcome`` -- decides retry or fail.
+            if invalidates_score(outcome.exception_type):
+                if derived_reward is not None:
+                    console.print(
+                        f"[yellow]Trial {trial_id} discarding verifier "
+                        f"reward={derived_reward}: {outcome.exception_type} "
+                        "invalidates the score under provider-failure policy[/yellow]"
+                    )
+                derived_reward = None
+            elif derived_reward is None and is_timeout and not analysis_artifact_error:
                 verifier_ran = _verifier_ran_from_job_result(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
@@ -1049,6 +1141,7 @@ async def _store_trial_results(
                 outcome.verifier_summary,
                 outcome.error,
                 outcome.exception_type,
+                provider_error_code=outcome.provider_error_code,
                 http_status=outcome.http_status,
                 request_id=outcome.request_id,
                 session_id=outcome.session_id,
@@ -1217,6 +1310,9 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                 # one exception; ``_store_trial_results`` writes their
                 # classification during settlement, above.
                 if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
+                    from oddish.core.task_findings import preserve_task_findings
+
+                    await preserve_task_findings(session, trial.task_version_id)
                     trial.analysis = None
                     trial.analysis_status = None
                     trial.analysis_error = None
@@ -1334,10 +1430,11 @@ async def _handle_harbor_event(
 
     if _ENVIRONMENT_PROVISIONED is not None and event == _ENVIRONMENT_PROVISIONED:
         provider = (hook_event.environment_provider or "").strip().lower()
-        if provider == "ec2":
+        if provider in {"ec2", "thunder"}:
             if sandbox_launch is None:
+                provider_label = "EC2" if provider == "ec2" else "Thunder"
                 raise RuntimeError(
-                    f"Trial {trial_id} received an EC2 environment-provisioned "
+                    f"Trial {trial_id} received a {provider_label} environment-provisioned "
                     "event without a sandbox ledger row"
                 )
             await mark_environment_provisioned(
@@ -1496,6 +1593,9 @@ async def _handle_harbor_event(
 
                 extracted_reward = None
                 has_error = False
+                capacity_handoff = _is_thunder_capacity_hook_error(
+                    hook_event, environment=trial.environment
+                )
                 if hook_event.result:
                     result = hook_event.result
                     if result.verifier_result and result.verifier_result.rewards:
@@ -1514,7 +1614,20 @@ async def _handle_harbor_event(
                             or "Unknown error"
                         )
                         is_agent_timeout = _is_agent_timeout_exception(exc_info)
-                        if is_agent_timeout:
+                        if invalidates_score(getattr(exc_info, "exception_type", None)):
+                            # Apply settlement's provider-failure scoring rule,
+                            # including failures after partial agent work.
+                            # The row deliberately stays non-terminal. Settlement
+                            # owns the retry-or-fail decision with the whole
+                            # outcome in hand, and stamping FAILED here would
+                            # send a last-attempt trial down the cancellation
+                            # short circuit above, which stores metering only.
+                            # A worker that dies before settlement then leaves a
+                            # running row for the stale-heartbeat sweep instead
+                            # of a terminal SUCCESS carrying an invalid score.
+                            extracted_reward = None
+                            trial.error_message = str(error_msg)
+                        elif is_agent_timeout:
                             if (
                                 extracted_reward is None
                                 and result.verifier_result is not None
@@ -1525,9 +1638,16 @@ async def _handle_harbor_event(
                             else:
                                 trial.error_message = str(error_msg)
                                 has_error = True
-                        else:
+                        elif not capacity_handoff:
                             trial.error_message = str(error_msg)
                             has_error = True
+
+                # Capacity fallback is settled by the worker-job outcome layer.
+                # Harbor's END hook must not turn the still-owned trial terminal
+                # before that atomic handoff runs.
+                if capacity_handoff:
+                    trial.error_message = None
+                    has_error = False
 
                 if extracted_reward is not None:
                     trial.status = TrialStatus.SUCCESS
@@ -1624,10 +1744,7 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
-        harbor_config = prepared_trial.trial_harbor_config or {}
-        is_probe = bool(harbor_config.get("extra_instructions")) and (
-            prepared_trial.trial_kind != "summarize"
-        )
+        probe_routing = _prepared_trial_uses_probe_routing(prepared_trial)
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
@@ -1637,7 +1754,7 @@ async def _execute_trial(
             hook_callback=partial(
                 _handle_harbor_event,
                 trial_id=trial_id,
-                probe_task_dir=task_path_to_run if is_probe else None,
+                probe_task_dir=task_path_to_run if probe_routing else None,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
@@ -1652,13 +1769,16 @@ async def _execute_trial(
             billed_user_id=prepared_trial.billed_user_id,
             extra_agent_env=extra_agent_env,
             sandbox_launch=sandbox_launch,
+            fallback_from_environment=prepared_trial.fallback_from_environment,
         )
     except asyncio.CancelledError:
         console.print(f"[yellow]Trial {trial_id} cancelled by worker runtime[/yellow]")
         raise
     except Exception as e:
         execution_error = f"{type(e).__name__}: {e}"
-        retryable = not isinstance(e, QuotaPauseControlError)
+        retryable = not isinstance(
+            e, (QuotaPauseControlError, FallbackEnvironmentCompatibilityError)
+        )
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
@@ -1849,12 +1969,12 @@ async def _release_prepared_trial_attempt(
             )
             if not terminated:
                 console.print(
-                    f"[red]EC2 sandbox teardown remains retryable "
+                    f"[red]Sandbox teardown remains retryable "
                     f"sandbox_run={sandbox_launch.sandbox_run_id}[/red]"
                 )
         except Exception as exc:
             console.print(
-                f"[red]EC2 sandbox teardown failed "
+                f"[red]Sandbox teardown failed "
                 f"sandbox_run={sandbox_launch.sandbox_run_id}: {exc}[/red]"
             )
     if prepared_task.probe_key_id:
@@ -1925,6 +2045,14 @@ async def _prepare_claimed_trial_attempt(
             if worker_job_id is None or worker_job_attempt is None:
                 raise RuntimeError("EC2 trial requires worker job attempt identity")
             sandbox_launch = await create_ec2_sandbox_run(
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                trial_id=trial_id,
+            )
+        elif span_provider == "thunder":
+            if worker_job_id is None or worker_job_attempt is None:
+                raise RuntimeError("Thunder trial requires worker job attempt identity")
+            sandbox_launch = await create_thunder_sandbox_run(
                 worker_job_id=worker_job_id,
                 worker_job_attempt=worker_job_attempt,
                 trial_id=trial_id,
@@ -2010,6 +2138,7 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
+    fallback_from_environment: str | None = None,
 ) -> HarborOutcome | None:
     """
     Execute a claimed trial.
@@ -2044,6 +2173,7 @@ async def run_trial_job(
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
+        fallback_from_environment=fallback_from_environment,
     )
     if prepared_trial is None:
         return None
@@ -2121,6 +2251,8 @@ async def run_trial_job(
                 agent=prepared_trial.trial_agent,
                 model=prepared_trial.trial_model,
                 trial_id=trial_id,
+                is_probe=_prepared_trial_uses_probe_routing(prepared_trial),
+                byok_env=byok_env,
             )
 
         from oddish.workers.queue.model_gateway import (
@@ -2170,6 +2302,28 @@ async def run_trial_job(
             heartbeat_interrupt.result()
         execution = await execution_task
         await _settle_compute_costs(cost_state, execution.outcome)
+
+        fallback_provider = thunder_capacity_fallback_provider(
+            prepared_trial.trial_environment,
+            execution.outcome,
+        )
+        if fallback_provider is not None:
+            message = (
+                "metric=thunder_capacity_handoff outcome=requested "
+                f"job_id={worker_job_id or 'unknown'} trial_id={trial_id} "
+                f"target={fallback_provider} "
+                f"reason={THUNDER_CAPACITY_UNAVAILABLE_CODE}"
+            )
+            console.print(message)
+            logger.info(message)
+            record_thunder_capacity_handoff(
+                outcome="requested", target_environment=fallback_provider
+            )
+            # Do not run ordinary failure settlement: the worker outcome layer
+            # owns the atomic trial/job/ledger/lease transition. Returning from
+            # inside this try still executes the teardown and credential cleanup
+            # below before the reroute can be persisted.
+            return execution.outcome
 
         qa_validation_error = (
             _qa_artifact_validation_error(execution.outcome)

@@ -8,7 +8,12 @@ import {
   useMemo,
   useEffectEvent,
 } from "react";
-import useSWR from "swr";
+import useSWR, { unstable_serialize, useSWRConfig } from "swr";
+import {
+  useTaskFileTree,
+  type TaskFile,
+  type FilesListingResponse,
+} from "@/lib/use-task-file-tree";
 import {
   observeFileListRevision,
   receiveFileListRevision,
@@ -71,22 +76,6 @@ import {
   taskHasCancellableWork,
 } from "@/lib/job-status";
 
-interface TaskFile {
-  path: string;
-  key: string;
-  content?: string;
-  size?: number;
-  last_modified?: string;
-  url?: string; // Presigned S3 URL for direct access
-}
-
-interface FilesListingResponse {
-  source_hash?: string | null;
-  files?: TaskFile[];
-  dirs?: Array<{ path: string }>;
-  cursor?: string | null;
-}
-
 /**
  * Chunks of the NDJSON listing stream: the bare tree first, then file
  * bodies as the backend loads them (shallowest files first).
@@ -147,9 +136,10 @@ interface DirectoryListing {
   status: "ready" | "loading" | "error";
 }
 
-type FilePreview =
+type FilePreview = { sourceHash?: string | null } & (
   | { kind: "text"; content: string; isTruncated: boolean; size: number | null }
-  | { kind: "binary"; url: string; size: number | null };
+  | { kind: "binary"; url: string; size: number | null }
+);
 
 interface TaskFilesPanelProps {
   isOpen: boolean;
@@ -241,7 +231,6 @@ function getNodeName(path: string): string {
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
-const FILE_LOAD_ERROR = "Error loading file content";
 
 /**
  * Build the full nested tree from a recursive listing in one pass.
@@ -317,15 +306,6 @@ function buildDirectoryPage(listing: FilesListingResponse): TreeNode[] {
     size: file.size,
   }));
   return sortTreeLevel([...dirs, ...files]);
-}
-
-function mergeTreeLevel(current: TreeNode[], incoming: TreeNode[]): TreeNode[] {
-  const byPath = new Map(current.map((node) => [node.path, node]));
-  for (const node of incoming) {
-    const existing = byPath.get(node.path);
-    byPath.set(node.path, existing ? { ...node, ...existing } : node);
-  }
-  return sortTreeLevel([...byPath.values()]);
 }
 
 function includeSelectedPathChild(
@@ -546,7 +526,10 @@ export function TaskFilesPanel({
     checksLoadError && !panel
       ? "Unable to load the static checks state."
       : null;
-  const checksFindings = checksVersion?.pre_trial_findings ?? [];
+  const checksFindings = [
+    ...(checksVersion?.retained_findings ?? []),
+    ...(checksVersion?.pre_trial_findings ?? []),
+  ];
   const taskQaActive = panel?.qa_active ?? false;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   // Trial file routes stream the file itself; task file routes answer with a
@@ -559,8 +542,8 @@ export function TaskFilesPanel({
   // directory. Trial files and eager file-only panes keep their existing
   // recursive contract until their callers opt in.
   const loadsTaskTreeByDirectory = loadFilesLazily && !fileRouteServesBytes;
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [streamLoading, setLoading] = useState(false);
+  const [streamError, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
@@ -568,12 +551,8 @@ export function TaskFilesPanel({
   // Trajectory analysis is a single task-level QA job (classify every trial,
   // then synthesize the verdict), surfaced as one Run QA action.
   const [isRunningQA, setIsRunningQA] = useState(false);
-  const [qaEnvironment, setQAEnvironment] = useState("");
   const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
-  const [directoryListings, setDirectoryListings] = useState<
-    Record<string, DirectoryListing>
-  >({});
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const selectFilePath = useCallback(
@@ -583,15 +562,17 @@ export function TaskFilesPanel({
     },
     [onSelectedFileChange]
   );
-  const [loadingFullFile, setLoadingFullFile] = useState(false);
+  const { mutate: mutateResource } = useSWRConfig();
+  const [loadingFullFiles, setLoadingFullFiles] = useState<Set<string>>(
+    new Set()
+  );
+  const fullFileRequests = useRef(new Set<string>());
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
   const [copiedFileContent, setCopiedFileContent] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
-  const listingGenerationRef = useRef(0);
-  const activeDirectoryRequestsRef = useRef<Set<string>>(new Set());
   const currentVersion =
     taskVersion !== undefined
       ? taskVersion
@@ -625,6 +606,46 @@ export function TaskFilesPanel({
       return received.requestHash === observedRevision.requestHash;
     }
   );
+  const treeResource = useTaskFileTree({
+    enabled: isOpen && loadsTaskTreeByDirectory,
+    url: resolvedFilesUrl,
+    version: shouldScopeFilesToVersion ? currentVersion : null,
+    hash: listingContentHash,
+  });
+  const { loadDirectory: loadDirectoryPage } = treeResource;
+  const directoryListings = useMemo<Record<string, DirectoryListing>>(() => {
+    const listings: Record<string, DirectoryListing> = {};
+    for (const [path, page] of Object.entries(
+      treeResource.data?.directories ?? {}
+    )) {
+      listings[path] = {
+        nodes: buildDirectoryPage(page),
+        cursor: page.cursor ?? null,
+        status: "ready",
+      };
+    }
+    for (const [path, status] of Object.entries(
+      treeResource.statusByDirectory
+    )) {
+      listings[path] = {
+        nodes: listings[path]?.nodes ?? [],
+        cursor: listings[path]?.cursor ?? null,
+        status,
+      };
+    }
+    return listings;
+  }, [treeResource.data, treeResource.statusByDirectory]);
+  const loading = loadsTaskTreeByDirectory
+    ? treeResource.isLoading
+    : streamLoading;
+  const error = loadsTaskTreeByDirectory
+    ? (treeResource.error?.message ?? null)
+    : streamError;
+  const treeSourceHash = treeResource.data?.source_hash;
+  useEffect(() => {
+    if (treeSourceHash !== undefined)
+      acceptFileListing(treeSourceHash, fileListIdentity);
+  }, [treeSourceHash, fileListIdentity, treeResource.identity]);
   const rootListing = directoryListings[""];
   const visibleTree = useMemo(
     () =>
@@ -703,6 +724,27 @@ export function TaskFilesPanel({
       })
     : null;
 
+  // The body and listing can observe different revisions during an overwrite.
+  // Track the body's own response hash before accepting late panel metadata.
+  const previewSourceIdentity = JSON.stringify([
+    fileListIdentity,
+    selectedFilePath,
+  ]);
+  const [previewRevision, setPreviewRevision] = useState<FileListRevision>({
+    identity: previewSourceIdentity,
+    observedHash: currentContentHash,
+    requestHash: currentContentHash,
+    receivedHash: null,
+  });
+  const observedPreviewRevision = observeFileListRevision(
+    previewRevision,
+    previewSourceIdentity,
+    currentContentHash
+  );
+  if (observedPreviewRevision !== previewRevision)
+    setPreviewRevision(observedPreviewRevision);
+  const previewContentHash = observedPreviewRevision.requestHash;
+
   const buildSelectedFileUrl = (presign = false, maxBytes?: number) => {
     if (!selectedFile) return null;
     const params = new URLSearchParams();
@@ -711,7 +753,7 @@ export function TaskFilesPanel({
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
-    if (currentContentHash) params.set("source_hash", currentContentHash);
+    if (previewContentHash) params.set("source_hash", previewContentHash);
     const query = params.toString();
     return `${resolvedFilesUrl}/${encodeURIComponent(selectedFile.path)}${
       query ? `?${query}` : ""
@@ -733,6 +775,8 @@ export function TaskFilesPanel({
         }
       : null;
   const immediatePreview = listedPreview ?? directBinaryPreview;
+  // Directory metadata arriving later must not restart an existing file read;
+  // the version and content hash identify the contents, not the listed size.
   const previewRequestKey =
     selectedFile && !immediatePreview
       ? [
@@ -740,18 +784,13 @@ export function TaskFilesPanel({
           resolvedFilesUrl,
           selectedFile.path,
           shouldScopeFilesToVersion ? currentVersion : null,
-          currentContentHash,
+          previewContentHash,
           loadFilesLazily,
           fileRouteServesBytes ? "raw" : "json",
           selectedFile.url ?? null,
-          selectedFile.size ?? null,
         ]
       : null;
-  const {
-    data: fetchedPreview,
-    error: previewError,
-    mutate: mutateFilePreview,
-  } = useSWR<FilePreview>(
+  const { data: fetchedPreview, error: previewError } = useSWR<FilePreview>(
     previewRequestKey,
     async () => {
       if (!selectedFile) throw new Error("No file selected");
@@ -762,9 +801,17 @@ export function TaskFilesPanel({
         if (!url) throw new Error("File URL unavailable");
         const res = await fetch(url);
         if (!res.ok) throw new Error("Failed to fetch file URL");
-        const data = (await res.json()) as { url?: string };
+        const data = (await res.json()) as {
+          url?: string;
+          source_hash?: string | null;
+        };
         if (!data.url) throw new Error("File URL unavailable");
-        return { kind: "binary", url: data.url, size };
+        return {
+          kind: "binary",
+          url: data.url,
+          size,
+          sourceHash: data.source_hash ?? null,
+        };
       }
 
       const shouldTruncate =
@@ -772,6 +819,7 @@ export function TaskFilesPanel({
         selectedFile.size > TRUNCATE_THRESHOLD;
       let content: string | null = null;
       let isTruncated = false;
+      let sourceHash: string | null = null;
 
       if (selectedFile.url) {
         try {
@@ -797,7 +845,12 @@ export function TaskFilesPanel({
         );
         if (!url) throw new Error("File content unavailable");
         const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to fetch file content");
+        if (!res.ok)
+          throw new Error(
+            res.status === 404
+              ? `${selectedFile.path}${currentVersion != null ? ` on v${currentVersion}` : ""} is unavailable. Historical evidence may have been removed; current content has not been substituted.`
+              : `Could not read ${selectedFile.path} (HTTP ${res.status}). Retry loading the evidence.`
+          );
         if (fileRouteServesBytes) {
           content = await res.text();
         } else {
@@ -805,55 +858,61 @@ export function TaskFilesPanel({
             content?: string;
             is_truncated?: boolean;
             size?: number;
+            source_hash?: string | null;
           };
           content = data.content ?? "";
           isTruncated = data.is_truncated ?? isTruncated;
           size = data.size ?? size;
+          sourceHash = data.source_hash ?? null;
         }
       }
 
-      return { kind: "text", content, isTruncated, size };
+      return { kind: "text", content, isTruncated, size, sourceHash };
     },
     { revalidateOnFocus: false, shouldRetryOnError: false }
   );
+  useEffect(() => {
+    if (!fetchedPreview) return;
+    setPreviewRevision((revision) =>
+      revision.identity === previewSourceIdentity
+        ? receiveFileListRevision(revision, fetchedPreview.sourceHash ?? null)
+        : revision
+    );
+  }, [
+    fetchedPreview,
+    previewSourceIdentity,
+    observedPreviewRevision.observedHash,
+  ]);
   const selectedPreview = immediatePreview ?? fetchedPreview ?? null;
+  const previewIdentity = unstable_serialize(previewRequestKey);
+  const loadingFullFile = loadingFullFiles.has(previewIdentity);
 
   const verdictSource = panel?.task ?? task;
-  // Task drawers request one directory page at a time. File-only and trial
-  // panes retain the recursive/streaming contract because those callers may
-  // depend on eager bodies and automatic first-file selection.
-  const buildListingUrl = useCallback(
-    (prefix?: string, cursor?: string) => {
-      const params = new URLSearchParams();
-      params.set("recursive", loadsTaskTreeByDirectory ? "0" : "1");
-      if (loadFilesLazily) {
-        params.set("inline", "0");
-        params.set("presign", "0");
-      }
-      if (!loadsTaskTreeByDirectory && !taskPaneExists && !loadFilesLazily) {
-        params.set("stream", "1");
-      }
-      if (loadsTaskTreeByDirectory) {
-        params.set("limit", "100");
-        if (prefix) params.set("prefix", prefix);
-        if (cursor) params.set("cursor", cursor);
-      }
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      if (listingContentHash) params.set("source_hash", listingContentHash);
-      return `${resolvedFilesUrl}?${params.toString()}`;
-    },
-    [
-      resolvedFilesUrl,
-      shouldScopeFilesToVersion,
-      currentVersion,
-      listingContentHash,
-      taskPaneExists,
-      loadFilesLazily,
-      loadsTaskTreeByDirectory,
-    ]
-  );
+  // Trial files and eager file-only callers retain their recursive/streaming
+  // contract. Task directory batches are owned by useTaskFileTree.
+  const buildRecursiveListingUrl = useCallback(() => {
+    const params = new URLSearchParams();
+    params.set("recursive", "1");
+    if (loadFilesLazily) {
+      params.set("inline", "0");
+      params.set("presign", "0");
+    }
+    if (!taskPaneExists && !loadFilesLazily) {
+      params.set("stream", "1");
+    }
+    if (shouldScopeFilesToVersion && currentVersion != null) {
+      params.set("version", String(currentVersion));
+    }
+    if (listingContentHash) params.set("source_hash", listingContentHash);
+    return `${resolvedFilesUrl}?${params.toString()}`;
+  }, [
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion,
+    currentVersion,
+    listingContentHash,
+    taskPaneExists,
+    loadFilesLazily,
+  ]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
@@ -912,15 +971,7 @@ export function TaskFilesPanel({
         !verdictInFlight &&
         !panel?.qa_active
       : panel?.can_run_qa);
-  const qaActionLabel =
-    panel?.has_analysis ||
-    verdictSource?.verdict_status ||
-    verdictSource?.verdict ||
-    (task?.trials ?? []).some(
-      (trial) => trial.analysis_status || trial.analysis
-    )
-      ? "Rerun QA"
-      : "Run QA";
+  const qaActionLabel = `Generate QA verdict${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1028,12 +1079,10 @@ export function TaskFilesPanel({
       // the task verdict.
       const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ environment: qaEnvironment || null }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue task QA");
+        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
       }
       onRetryComplete?.([task.id]);
       // The QA-active guard reads this cache; refresh it so the guard flips
@@ -1041,7 +1090,7 @@ export function TaskFilesPanel({
       void mutateChecks();
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue task QA"
+        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
       );
     } finally {
       setIsRunningQA(false);
@@ -1082,8 +1131,6 @@ export function TaskFilesPanel({
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ environment: qaEnvironment || null }),
         }
       );
       if (!res.ok) {
@@ -1098,67 +1145,7 @@ export function TaskFilesPanel({
     } finally {
       setChecksRerunning(false);
     }
-  }, [
-    baseUrl,
-    effectiveChecksTaskId,
-    panel,
-    checksRerunning,
-    mutateChecks,
-    qaEnvironment,
-  ]);
-
-  const loadDirectoryPage = useCallback(
-    async (path: string | null, cursor?: string | null) => {
-      if (!loadsTaskTreeByDirectory) return;
-
-      const directoryKey = path ?? "";
-      const generation = listingGenerationRef.current;
-      const requestKey = `${generation}:${directoryKey}`;
-      if (activeDirectoryRequestsRef.current.has(requestKey)) return;
-      activeDirectoryRequestsRef.current.add(requestKey);
-      setDirectoryListings((listings) => ({
-        ...listings,
-        [directoryKey]: {
-          nodes: listings[directoryKey]?.nodes ?? [],
-          cursor: listings[directoryKey]?.cursor ?? null,
-          status: "loading",
-        },
-      }));
-
-      try {
-        const res = await fetch(
-          buildListingUrl(path ?? undefined, cursor ?? undefined)
-        );
-        if (!res.ok) throw new Error("Failed to fetch files");
-        const data = (await res.json()) as FilesListingResponse;
-        if (listingGenerationRef.current !== generation) return;
-
-        const page = buildDirectoryPage(data);
-        setDirectoryListings((listings) => ({
-          ...listings,
-          [directoryKey]: {
-            nodes: mergeTreeLevel(listings[directoryKey]?.nodes ?? [], page),
-            cursor: data.cursor ?? null,
-            status: "ready",
-          },
-        }));
-      } catch {
-        if (listingGenerationRef.current === generation) {
-          setDirectoryListings((listings) => ({
-            ...listings,
-            [directoryKey]: {
-              nodes: listings[directoryKey]?.nodes ?? [],
-              cursor: listings[directoryKey]?.cursor ?? null,
-              status: "error",
-            },
-          }));
-        }
-      } finally {
-        activeDirectoryRequestsRef.current.delete(requestKey);
-      }
-    },
-    [buildListingUrl, loadsTaskTreeByDirectory]
-  );
+  }, [baseUrl, effectiveChecksTaskId, panel, checksRerunning, mutateChecks]);
 
   // Conventional task directories are presented as section contents rather
   // than folder rows. Fetch only those directory pages, using the same bounded
@@ -1197,18 +1184,17 @@ export function TaskFilesPanel({
       return;
     }
 
+    setSelectedFilePath(null);
+    setExpandedDirs(new Set());
+    if (loadsTaskTreeByDirectory) return;
+
     let cancelled = false;
     const controller = new AbortController();
-    const generation = listingGenerationRef.current + 1;
-    listingGenerationRef.current = generation;
 
     async function fetchFiles() {
       setLoading(true);
       setError(null);
       setFileTree([]);
-      setDirectoryListings({});
-      setSelectedFilePath(null);
-      setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
       // a usable tree with an error state — missing bodies just fall back
@@ -1227,7 +1213,7 @@ export function TaskFilesPanel({
       };
 
       try {
-        const res = await fetch(buildListingUrl(), {
+        const res = await fetch(buildRecursiveListingUrl(), {
           signal: controller.signal,
         });
         if (!res.ok) {
@@ -1271,19 +1257,7 @@ export function TaskFilesPanel({
             !acceptFileListing(data.source_hash ?? null, fileListIdentity)
           )
             return;
-          if (loadsTaskTreeByDirectory) {
-            paintedTree = true;
-            setDirectoryListings((listings) => ({
-              ...listings,
-              "": {
-                nodes: buildDirectoryPage(data),
-                cursor: data.cursor ?? null,
-                status: "ready",
-              },
-            }));
-          } else {
-            applyListing(buildTreeFromListing(data.files || []));
-          }
+          applyListing(buildTreeFromListing(data.files || []));
         }
       } catch (err) {
         if (!cancelled && !paintedTree) {
@@ -1303,9 +1277,6 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
       controller.abort();
-      if (listingGenerationRef.current === generation) {
-        listingGenerationRef.current += 1;
-      }
     };
   }, [
     isOpen,
@@ -1313,7 +1284,7 @@ export function TaskFilesPanel({
     filesUrl,
     resolvedFilesUrl,
     fileListIdentity,
-    buildListingUrl,
+    buildRecursiveListingUrl,
     taskPaneExists,
     loadsTaskTreeByDirectory,
   ]);
@@ -1375,22 +1346,33 @@ export function TaskFilesPanel({
     visibleTree,
   ]);
 
-  // Load full file content (when user clicks "Load full file")
+  // Load the remainder on explicit click or when an addressed line is outside the preview.
   async function loadFullFile() {
-    if (!selectedFile) return;
-
-    setLoadingFullFile(true);
+    if (
+      !selectedFile ||
+      !previewRequestKey ||
+      fullFileRequests.current.has(previewIdentity)
+    )
+      return;
+    // Capture the cache address now: navigation may change the active SWR key
+    // before a large file finishes downloading.
+    const requestKey = previewRequestKey;
+    const requestIdentity = previewIdentity;
+    fullFileRequests.current.add(requestIdentity);
+    setLoadingFullFiles((previous) => new Set(previous).add(requestIdentity));
     try {
       if (selectedFile.url) {
         const s3Res = await fetch(selectedFile.url);
         if (s3Res.ok) {
           const content = await s3Res.text();
-          await mutateFilePreview(
+          await mutateResource<FilePreview>(
+            requestKey,
             {
               kind: "text",
               content,
               isTruncated: false,
               size: selectedFile.size ?? null,
+              sourceHash: fetchedPreview?.sourceHash ?? null,
             },
             { revalidate: false }
           );
@@ -1405,27 +1387,53 @@ export function TaskFilesPanel({
         return;
       }
       let content: string;
+      let sourceHash: string | null = null;
       if (fileRouteServesBytes) {
         content = await res.text();
       } else {
-        const data = (await res.json()) as { content?: string };
+        const data = (await res.json()) as {
+          content?: string;
+          source_hash?: string | null;
+        };
         content = data.content ?? "";
+        sourceHash = data.source_hash ?? null;
       }
-      await mutateFilePreview(
+      await mutateResource<FilePreview>(
+        requestKey,
         {
           kind: "text",
           content,
           isTruncated: false,
           size: selectedFile.size ?? null,
+          sourceHash,
         },
         { revalidate: false }
       );
     } catch {
       // Keep truncated content on error
     } finally {
-      setLoadingFullFile(false);
+      fullFileRequests.current.delete(requestIdentity);
+      setLoadingFullFiles((previous) => {
+        const next = new Set(previous);
+        next.delete(requestIdentity);
+        return next;
+      });
     }
   }
+
+  const loadAddressedLines = useEffectEvent(() => {
+    void loadFullFile();
+  });
+  useEffect(() => {
+    if (
+      selectedLines &&
+      selectedPreview?.kind === "text" &&
+      selectedPreview.isTruncated &&
+      selectedLines.end >= selectedPreview.content.split("\n").length
+    ) {
+      loadAddressedLines();
+    }
+  }, [selectedLines, selectedPreview]);
 
   // Scroll to top when selected file changes
   useEffect(() => {
@@ -1438,17 +1446,42 @@ export function TaskFilesPanel({
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
-      setDirectoryListings({});
       setSelectedFilePath(null);
       setError(null);
       setExpandedDirs(new Set());
-      setLoadingFullFile(false);
       setQAActionError(null);
       setIsRunningQA(false);
     }
   }, [isOpen, taskId]);
 
-  // Synchronize a deep-linked file with its selection and directory pages.
+  const initialFileNode =
+    initialFilePath && !loadsTaskTreeByDirectory
+      ? (findNodeByPath(fileTree, initialFilePath) ??
+        findNodeBySuffix(fileTree, initialFilePath))
+      : null;
+  const initialSelectionPath =
+    initialFilePath &&
+    (loadsTaskTreeByDirectory || fileTree.length > 0) &&
+    initialFileNode?.type !== "dir"
+      ? (initialFileNode?.path ?? initialFilePath)
+      : null;
+  // Apply an incoming file address, not every local selection change. Next's
+  // search params can still contain the previous file just after a click.
+  useEffect(() => {
+    if (!isOpen || activePane !== "file" || !initialSelectionPath) return;
+    // Set it even if the preceding render already showed this path: a version
+    // reset in this commit may have queued a clear. Incoming addresses do not
+    // notify the parent as if the user had clicked a different file.
+    setSelectedFilePath(initialSelectionPath);
+  }, [
+    activePane,
+    initialSelectionPath,
+    isOpen,
+    fileListIdentity,
+    listingContentHash,
+  ]);
+
+  // Directory responses can expand the deep link without reselecting it.
   useEffect(() => {
     if (!isOpen || activePane !== "file" || !initialFilePath) return;
     if (!loadsTaskTreeByDirectory && fileTree.length === 0) return;
@@ -1477,12 +1510,6 @@ export function TaskFilesPanel({
         }
       }
     }
-
-    if (node?.type === "dir") return;
-
-    // A file URL is already an exact resource address. Selecting it does not
-    // depend on whether its containing directory page happens to include it.
-    if (selectedFilePath !== targetPath) selectFilePath(targetPath);
   }, [
     activePane,
     directoryListings,
@@ -1491,8 +1518,6 @@ export function TaskFilesPanel({
     isOpen,
     loadDirectoryPage,
     loadsTaskTreeByDirectory,
-    selectFilePath,
-    selectedFilePath,
   ]);
 
   useEffect(() => {
@@ -1576,7 +1601,6 @@ export function TaskFilesPanel({
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
             <Loader2 className="h-3 w-3 animate-spin" />
-            Loading…
           </div>
         ) : null}
         {directory?.status === "error" ? (
@@ -1670,11 +1694,7 @@ export function TaskFilesPanel({
 
   const renderFileContent = () => {
     if (!selectedFile) {
-      return (
-        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          Select a file to view its contents
-        </div>
-      );
+      return null;
     }
 
     if (!selectedPreview && !previewError) {
@@ -1689,7 +1709,9 @@ export function TaskFilesPanel({
     if (previewError || !selectedPreview) {
       return (
         <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          {FILE_LOAD_ERROR}
+          {previewError instanceof Error
+            ? previewError.message
+            : "File evidence unavailable"}
         </div>
       );
     }
@@ -1839,9 +1861,9 @@ export function TaskFilesPanel({
 
   const fileTreeContent = (
     <div className="@container/file-browser flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {isListingLoading && !taskPaneExists ? (
+      {isListingLoading && !taskPaneExists && !selectedFile ? (
         listingSkeleton
-      ) : listingError && !taskPaneExists ? (
+      ) : listingError && !taskPaneExists && !selectedFile ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1851,7 +1873,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : visibleTree.length === 0 && !taskPaneExists ? (
+      ) : visibleTree.length === 0 && !taskPaneExists && !selectedFile ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1883,7 +1905,6 @@ export function TaskFilesPanel({
                           ? "bg-primary/20 text-primary"
                           : "hover:bg-muted/50 cursor-pointer"
                       }`}
-                      title="View task QA and aggregated trial QA"
                     >
                       <ListChecks
                         className="h-3.5 w-3.5 shrink-0"
@@ -1907,7 +1928,6 @@ export function TaskFilesPanel({
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="Browse task files"
                   >
                     <FolderOpen
                       className="h-3.5 w-3.5 shrink-0"
@@ -1923,12 +1943,13 @@ export function TaskFilesPanel({
                 </div>
               ) : null}
               {isListingLoading ? (
-                <p
+                <div
                   role="status"
-                  className="text-muted-foreground px-2 py-2 text-xs"
+                  aria-label="Loading files"
+                  className="px-2 py-2"
                 >
-                  Loading files…
-                </p>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                </div>
               ) : listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
@@ -2101,6 +2122,48 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  onOpenSource={(item) => {
+                    if (!item.file) return;
+                    const node =
+                      findNodeByPath(fileTree, item.file) ??
+                      findNodeBySuffix(fileTree, item.file);
+                    const path = node?.path ?? item.file;
+                    selectFilePath(path);
+                    onSelectLinesChange?.(
+                      item.line_start
+                        ? {
+                            start: item.line_start,
+                            end: item.line_end ?? item.line_start,
+                          }
+                        : null
+                    );
+                    setExpandedDirs(
+                      (previous) =>
+                        new Set([...previous, ...getAncestorPaths(path)])
+                    );
+                    onActivePaneChange?.("file");
+                  }}
+                  executionReviewAction={
+                    showAnalysis &&
+                    task && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleRunQA}
+                        disabled={!canRunQA || isRunningQA}
+                        className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                      >
+                        {isRunningQA ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Microscope className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {isRunningQA ? "Queueing..." : qaActionLabel}
+                      </Button>
+                    )
+                  }
+                  executionReviewError={qaActionError}
                 />
               ) : (
                 renderFileContent()
@@ -2242,9 +2305,6 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
-                    title={
-                      actionsReady ? undefined : "Loading latest task state."
-                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw
@@ -2254,39 +2314,6 @@ export function TaskFilesPanel({
                     />
                     {isRerunning ? "Rerunning..." : "Rerun trials"}
                   </Button>
-                )}
-                {showAnalysis && task && (
-                  <>
-                    <select
-                      aria-label="QA sandbox provider"
-                      value={qaEnvironment}
-                      onChange={(event) => setQAEnvironment(event.target.value)}
-                      disabled={isRunningQA || checksRerunning}
-                      className="h-7 rounded border border-[color:var(--paper-line)] bg-transparent px-2 text-xs"
-                    >
-                      <option value="">QA: Worker default</option>
-                      <option value="modal">QA: Modal</option>
-                      <option value="daytona">QA: Daytona</option>
-                    </select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleRunQA}
-                      disabled={!canRunQA || isRunningQA}
-                      title={
-                        actionsReady ? undefined : "Loading latest task state."
-                      }
-                      className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                    >
-                      {isRunningQA ? (
-                        <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Microscope className="mr-1 h-3.5 w-3.5" />
-                      )}
-                      {isRunningQA ? "Queueing..." : qaActionLabel}
-                    </Button>
-                  </>
                 )}
               </div>
             </div>

@@ -6,7 +6,9 @@ calls, no auth layer, ``org_id=None`` (single-tenant rows).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Annotated
+
+from fastapi import APIRouter, Query
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -16,6 +18,7 @@ from oddish.core.deliveries import (
     delete_delivery_core,
     finalize_delivery_core,
     get_delivery_board_core,
+    get_delivery_task_core,
     get_task_qa_history_core,
     list_customers_core,
     list_deliveries_core,
@@ -24,16 +27,21 @@ from oddish.core.deliveries import (
     remove_delivery_task_core,
     set_manual_check_core,
 )
-from oddish.db import get_session
+from oddish.core.delivery_view import delivery_page, delivery_selection
+from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
     CustomerResponse,
     DeliveryBoardResponse,
     DeliveryCreate,
     DeliveryListItem,
+    DeliveryPageResponse,
     DeliveryPatch,
     DeliveryResponse,
+    DeliverySelectionItem,
     DeliveryTasksAdd,
+    DeliveryTaskBoardRow,
+    DeliveryViewQuery,
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
@@ -84,6 +92,44 @@ async def get_delivery_board(delivery_id: str) -> DeliveryBoardResponse:
         return board
 
 
+@router.get("/deliveries/{delivery_id}/view", response_model=DeliveryPageResponse)
+async def get_delivery_view(
+    delivery_id: str,
+    view: Annotated[DeliveryViewQuery, Query()],
+) -> DeliveryPageResponse:
+    async with get_read_session() as session:
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery_id, org_id=None, include_details=False
+        )
+        board.qa_viewer_user_id = "local"
+        return await delivery_page(session, board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/selection", response_model=list[DeliverySelectionItem]
+)
+async def get_delivery_selection(
+    delivery_id: str,
+    view: Annotated[DeliveryViewQuery, Query()],
+) -> list[DeliverySelectionItem]:
+    async with get_read_session() as session:
+        board = await get_delivery_board_core(
+            session, delivery_id=delivery_id, org_id=None, include_details=False
+        )
+        board.qa_viewer_user_id = "local"
+        return delivery_selection(board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/tasks/{task_id}", response_model=DeliveryTaskBoardRow
+)
+async def get_delivery_task(delivery_id: str, task_id: str) -> DeliveryTaskBoardRow:
+    async with get_read_session() as session:
+        return await get_delivery_task_core(
+            session, delivery_id=delivery_id, org_id=None, task_id=task_id
+        )
+
+
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)
 async def patch_delivery(delivery_id: str, data: DeliveryPatch) -> DeliveryResponse:
     async with get_session() as session:
@@ -126,7 +172,7 @@ async def remove_delivery_task(delivery_id: str, task_id: str) -> dict:
 async def set_manual_check(delivery_id: str, data: ManualCheckSet) -> dict:
     async with get_session() as session:
         await set_manual_check_core(
-            session, delivery_id=delivery_id, org_id=None, data=data, user_id=None
+            session, delivery_id=delivery_id, org_id=None, data=data, user_id="local"
         )
         await session.commit()
         return {"check_key": data.check_key, "checked": data.checked}

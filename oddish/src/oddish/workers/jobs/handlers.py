@@ -13,6 +13,7 @@ the queue execution code.
 from __future__ import annotations
 
 
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
     TrialModel,
     TrialStatus,
@@ -26,7 +27,10 @@ from oddish.registry_auth import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
-from oddish.workers.queue.trial_handler import run_trial_job
+from oddish.workers.queue.trial_handler import (
+    run_trial_job,
+    thunder_capacity_fallback_provider,
+)
 
 
 class WorkerJobLike:
@@ -38,6 +42,7 @@ class WorkerJobLike:
     worker_id: str | None
     queue_slot: int | None
     modal_function_call_id: str | None
+    reroute_from_environment: str | None
 
 
 def _fail_retryable(message: str) -> JobOutcome:
@@ -76,6 +81,7 @@ class TrialJobHandler:
                 modal_function_call_id=job.modal_function_call_id,
                 worker_job_id=job.id,
                 worker_job_attempt=job.attempts,
+                fallback_from_environment=job.reroute_from_environment,
             )
         finally:
             current_registry_credentials.reset(cred_token)
@@ -84,6 +90,18 @@ class TrialJobHandler:
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
                 return _fail_permanent(f"Trial {trial_id} vanished mid-run")
+            fallback_provider = thunder_capacity_fallback_provider(
+                getattr(trial, "environment", None),
+                harbor_outcome,
+            )
+            if fallback_provider is not None:
+                return JobOutcome.reroute_to(
+                    target_environment=fallback_provider,
+                    target_execution_lane="default",
+                    reason=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+                    retry_after_seconds=harbor_outcome.retry_after_seconds,
+                    subject_attempt=trial.attempts,
+                )
             if trial.status == TrialStatus.SUCCESS:
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:

@@ -474,14 +474,8 @@ jobs:
       # new password lives in oddish-staging-db-pending from the start.
       - name: Publish oddish-staging-db Modal secret
         env:
-          MODAL_ENVIRONMENT: staging
-          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
-        run: |
-          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
-            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
-            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
-            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
-            "LOGFIRE_ENVIRONMENT=staging"
+          STAGING_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+        run: uv run python ../.github/scripts/staging/publish_runtime_db.py
 
       - name: Mark bootstrap done
         shell: bash

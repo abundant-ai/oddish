@@ -145,6 +145,7 @@ test("experiment rows retain the rejection preview before trial pages load", () 
   const page = openPage(
     task({
       verdict_status: "success",
+      must_fix_count: 2,
       verdict: {
         verdict: "reject",
         is_good: false,
@@ -155,5 +156,6 @@ test("experiment rows retain the rejection preview before trial pages load", () 
   );
   const [row] = buildExperimentTasks([page], undefined, false);
   assert.equal(row.verdict?.primary_issue, primaryIssue);
+  assert.equal(row.must_fix_count, 2);
   assert.equal(row.trials, undefined);
 });

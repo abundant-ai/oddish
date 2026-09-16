@@ -16,33 +16,48 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
 
 from oddish.config import settings
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.costs.recorder import (
     WorkerBillingSpec,
     close_worker_span,
     open_worker_span,
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
-from oddish.observability import record_worker_job_transition
+from oddish.observability import (
+    ThunderCapacityHandoffOutcome,
+    record_thunder_capacity_handoff,
+    record_worker_job_transition,
+)
+from oddish.runtime.sandbox_lifecycle import (
+    DEFAULT_EXECUTION_LANE,
+    THUNDER_TRIAL_EXECUTION_LANE,
+    capacity_provider_for_execution_lane,
+)
 from oddish.workers.jobs.registry import (
     HANDLERS,
-    JobOutcome,
     JobHandler,
+    JobOutcome,
+    JobReroute,
     NoHandlerRegisteredError,
     get_handler,
 )
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
+
+from oddish.workers.queue.resource_rollout import COHORT_SQL, load_rollout
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +196,7 @@ def calculate_trial_retry_delay_seconds(
 #     is 0 for every row, so ORDER BY collapses to
 #     ``priority DESC, created_at ASC`` (plain FIFO with priority).
 # ---------------------------------------------------------------------------
-_CLAIM_WORKER_JOB_SQL = """
+_CLAIM_WORKER_JOB_SQL = f"""
 WITH capacity AS (
     SELECT provider, slot
     FROM sandbox_capacity_leases
@@ -226,12 +241,19 @@ candidate AS (
       -- execution-lane / sandbox-capacity params above.
       AND  wj.kind::text = ANY($10::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
+      AND  NOT wj.reroute_pending_teardown
       AND  wj.available_after <= NOW()
       AND  ($11::boolean IS NULL OR (
           (wj.priority > 0) = $11 AND wj.org_id IS NOT DISTINCT FROM $12::text
       ))
       AND  tr.deleted_at IS NULL
       AND  tk.deleted_at IS NULL
+      AND ($13::boolean IS NULL OR $13 = ({COHORT_SQL.format(fraction="$14")}))
+      AND (NOT COALESCE($13, false) OR EXISTS (
+          SELECT 1 FROM queue_slots qs
+          WHERE qs.queue_key = $1 AND qs.slot = $3 AND qs.locked_by = $2
+            AND qs.resource_candidate AND qs.locked_until > NOW()
+      ))
     ORDER  BY wj.priority DESC,
               COALESCE(rpg.running_count, 0) ASC,
               wj.created_at ASC
@@ -253,7 +275,20 @@ claimed AS (
     WHERE id = (SELECT id FROM candidate)
     RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
               attempts, max_attempts, queue_key, org_id, parent_job_id,
-              harbor_variant_id, execution_lane, claimed_at
+              harbor_variant_id, execution_lane, claimed_at,
+              reroute_from_environment
+),
+recorded_resources AS (
+    INSERT INTO worker_resource_attempts (
+        worker_job_id, attempt, configuration, modal_function_call_id,
+        cpu_request, cpu_limit, memory_mb, nonpreemptible, claimed_at
+    )
+    SELECT id, attempts, $15::jsonb->>'configuration', $4,
+           ($15::jsonb->>'cpu_cores')::double precision,
+           ($15::jsonb->>'cpu_limit')::double precision,
+           ($15::jsonb->>'memory_mb')::integer,
+           ($15::jsonb->>'nonpreemptible')::boolean, claimed_at
+    FROM claimed WHERE $15::jsonb IS NOT NULL
 ),
 cleared_launch AS (
     UPDATE queue_slots AS qs
@@ -302,6 +337,7 @@ class ClaimedWorkerJob:
     parent_job_id: str | None
     harbor_variant_id: str = "default"
     execution_lane: str = "default"
+    reroute_from_environment: str | None = None
     worker_id: str | None = None
     queue_slot: int | None = None
     modal_function_call_id: str | None = None
@@ -387,13 +423,15 @@ async def heartbeat_worker_job(
             current_worker_id,
             SANDBOX_CAPACITY_LEASE_SECONDS,
         )
-        if (
-            capacity_heartbeat is not None
-            and capacity_heartbeat["execution_lane"] == "ec2_trial"
-            and not capacity_heartbeat["capacity_renewed"]
-        ):
+        heartbeat_lane = (
+            capacity_heartbeat["execution_lane"]
+            if capacity_heartbeat is not None
+            else None
+        )
+        capacity_provider = capacity_provider_for_execution_lane(heartbeat_lane)
+        if capacity_provider is not None and not capacity_heartbeat["capacity_renewed"]:
             raise SandboxCapacityLeaseLostError(
-                f"EC2 worker_job {job_id} lost its global capacity lease"
+                f"{capacity_provider} worker_job {job_id} lost its global capacity lease"
             )
         return bool(capacity_heartbeat and capacity_heartbeat["still_owned"])
     finally:
@@ -412,6 +450,9 @@ async def claim_single_worker_job(
     org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
+    worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
@@ -427,33 +468,59 @@ async def claim_single_worker_job(
     is in ``RUNNING`` state with ``attempts`` incremented and claim metadata
     stamped.
     """
-    if execution_lane == "ec2_trial":
-        if capacity_provider != "ec2" or capacity_slot is None:
+    expected_capacity_provider = capacity_provider_for_execution_lane(execution_lane)
+    if expected_capacity_provider is not None:
+        if capacity_provider != expected_capacity_provider or capacity_slot is None:
+            provider_label = expected_capacity_provider.upper()
             raise RuntimeError(
-                "EC2 trial claims require a pre-acquired EC2 capacity lease"
+                f"{provider_label} trial claims require a pre-acquired "
+                f"{provider_label} capacity lease"
             )
     elif capacity_provider is not None or capacity_slot is not None:
         raise RuntimeError(
-            "sandbox capacity lease cannot be attached to a non-EC2 claim"
+            "sandbox capacity lease cannot be attached to an unbounded claim"
         )
 
     connection = await _open_connection()
     try:
-        row = await connection.fetchrow(
-            _CLAIM_WORKER_JOB_SQL,
-            queue_key,
-            worker_id,
-            queue_slot,
-            modal_function_call_id,
-            harbor_variant_id,
-            execution_lane,
-            capacity_provider,
-            capacity_slot,
-            SANDBOX_CAPACITY_LEASE_SECONDS,
-            sorted(kind.value for kind in HANDLERS),
-            priority_class,
-            org_id,
-        )
+        async with (
+            connection.transaction()
+            if resource_candidate is not None
+            else nullcontext()
+        ):
+            fraction = 0.0
+            if resource_candidate is not None:
+                if candidate_configuration is None:
+                    raise ValueError(
+                        "Hosted resource routing requires a candidate configuration"
+                    )
+                fraction, _ = await load_rollout(
+                    connection, configuration=candidate_configuration, lock=True
+                )
+            if resource_candidate and fraction <= 0:
+                return None
+            row = await connection.fetchrow(
+                _CLAIM_WORKER_JOB_SQL,
+                queue_key,
+                worker_id,
+                queue_slot,
+                modal_function_call_id,
+                harbor_variant_id,
+                execution_lane,
+                capacity_provider,
+                capacity_slot,
+                SANDBOX_CAPACITY_LEASE_SECONDS,
+                sorted(kind.value for kind in HANDLERS),
+                priority_class,
+                org_id,
+                resource_candidate,
+                fraction,
+                (
+                    json.dumps(asdict(worker_billing_spec))
+                    if worker_billing_spec is not None
+                    else None
+                ),
+            )
     finally:
         await connection.close()
 
@@ -464,7 +531,6 @@ async def claim_single_worker_job(
     if isinstance(raw_payload, str):
         # asyncpg returns JSONB as str unless a codec is registered on
         # this connection. Be defensive.
-        import json
 
         payload = json.loads(raw_payload) if raw_payload else {}
     else:
@@ -483,11 +549,446 @@ async def claim_single_worker_job(
         parent_job_id=row["parent_job_id"],
         harbor_variant_id=str(row["harbor_variant_id"]),
         execution_lane=str(row["execution_lane"]),
+        reroute_from_environment=row.get("reroute_from_environment"),
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
         claimed_at=row.get("claimed_at"),
     )
+
+
+def _updated_one(command: str) -> bool:
+    return command.endswith(" 1")
+
+
+def _emit_thunder_handoff_event(
+    outcome: ThunderCapacityHandoffOutcome,
+    *,
+    job_id: str,
+    trial_id: str | None,
+    target: str,
+    reason: str,
+) -> None:
+    message = (
+        f"metric=thunder_capacity_handoff outcome={outcome} "
+        f"job_id={job_id} trial_id={trial_id or 'unknown'} "
+        f"target={target} reason={reason}"
+    )
+    console.print(message)
+    logger.info(message)
+    record_thunder_capacity_handoff(
+        outcome=outcome,
+        target_environment=target,
+    )
+
+
+async def _record_reroute_outcome(
+    connection: asyncpg.Connection,
+    *,
+    job_id: str,
+    worker_id: str,
+    reroute: JobReroute,
+    attempts: int,
+    kind: WorkerJobKind | None,
+    subject_table: str | None,
+    subject_id: str | None,
+) -> WorkerJobStatus | None:
+    """Hand a Thunder trial to a default-lane provider, gating on teardown."""
+    if (
+        not settings.thunder_capacity_fallback
+        or reroute.target_environment != settings.thunder_fallback_provider
+        or kind != WorkerJobKind.TRIAL
+        or subject_table != "trials"
+        or not subject_id
+        or reroute.target_execution_lane != DEFAULT_EXECUTION_LANE
+        or reroute.reason != THUNDER_CAPACITY_UNAVAILABLE_CODE
+        or reroute.subject_attempt is None
+    ):
+        _emit_thunder_handoff_event(
+            "rejected",
+            job_id=job_id,
+            trial_id=subject_id,
+            target=reroute.target_environment,
+            reason="unsupported_disposition",
+        )
+        raise ValueError("unsupported worker-job reroute disposition")
+
+    try:
+        async with connection.transaction():
+            job = await connection.fetchrow(
+                """
+            SELECT id,
+                   kind::text AS kind,
+                   status::text AS status,
+                   subject_table,
+                   subject_id,
+                   attempts,
+                   max_attempts,
+                   current_worker_id,
+                   execution_lane,
+                   provider,
+                   external_id
+            FROM worker_jobs
+            WHERE id = $1
+            FOR UPDATE
+            """,
+                job_id,
+            )
+            if (
+                job is None
+                or job["kind"] != WorkerJobKind.TRIAL.value
+                or job["status"] != WorkerJobStatus.RUNNING.value
+                or job["subject_table"] != "trials"
+                or job["subject_id"] != subject_id
+                or int(job["attempts"]) != attempts
+                or job["current_worker_id"] != worker_id
+                or job["execution_lane"] != THUNDER_TRIAL_EXECUTION_LANE
+            ):
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="worker_ownership_changed",
+                )
+                return None
+
+            trial = await connection.fetchrow(
+                """
+            SELECT id,
+                   status::text AS status,
+                   environment,
+                   attempts,
+                   max_attempts,
+                   current_worker_id,
+                   deleted_at,
+                   superseded_by_trial_id
+            FROM trials
+            WHERE id = $1
+            FOR UPDATE
+            """,
+                subject_id,
+            )
+            # Capacity handoffs bypass settlement in run_trial_job. A settled
+            # trial no longer belongs to this handoff, even if an earlier
+            # result contains a capacity error. Match the UPDATE below.
+            if (
+                trial is None
+                or trial["status"] != "RUNNING"
+                or (trial["environment"] or "").strip().lower() != "thunder"
+                or int(trial["attempts"]) != reroute.subject_attempt
+                or trial["current_worker_id"] != worker_id
+                or trial["deleted_at"] is not None
+                or trial["superseded_by_trial_id"] is not None
+            ):
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="trial_ownership_changed",
+                )
+                return None
+
+            # The source attempt counts against both budgets. Read the limits
+            # under the same locks as the handoff so operator changes apply.
+            if attempts >= int(job["max_attempts"]) or reroute.subject_attempt >= int(
+                trial["max_attempts"]
+            ):
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="attempts_exhausted",
+                )
+                return await _settle_rejected_reroute(
+                    connection,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    attempts=attempts,
+                    subject_id=subject_id,
+                    subject_attempt=reroute.subject_attempt,
+                    error_message=(
+                        "Thunder capacity fallback not scheduled: attempt budget "
+                        f"exhausted (job {attempts}/{job['max_attempts']}, "
+                        f"trial {reroute.subject_attempt}/{trial['max_attempts']})."
+                    ),
+                )
+
+            sandbox_run = await connection.fetchrow(
+                """
+            SELECT id,
+                   state,
+                   provider,
+                   external_id,
+                   worker_job_attempt,
+                   trial_id,
+                   deleted_at
+            FROM sandbox_runs
+            WHERE worker_job_id = $1
+              AND worker_job_attempt = $2
+            FOR UPDATE
+            """,
+                job_id,
+                attempts,
+            )
+            if (
+                sandbox_run is None
+                or sandbox_run["provider"] != "thunder"
+                or int(sandbox_run["worker_job_attempt"]) != attempts
+                or sandbox_run["trial_id"] != subject_id
+                or sandbox_run["deleted_at"] is not None
+                or sandbox_run["state"]
+                not in {
+                    "PROVISIONING",
+                    "RUNNING",
+                    "TERMINATING",
+                    "TERMINATED",
+                    "FAILED",
+                }
+            ):
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="sandbox_ownership_changed",
+                )
+                return None
+
+            sandbox_external_id = sandbox_run["external_id"]
+            if sandbox_external_id is None:
+                handle_matches = job["provider"] is None and job["external_id"] is None
+            else:
+                handle_matches = (
+                    job["provider"] == "thunder"
+                    and job["external_id"] == sandbox_external_id
+                )
+            if not handle_matches:
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="provider_handle_mismatch",
+                )
+                return None
+
+            capacity_leases = await connection.fetch(
+                """
+            SELECT provider, slot, locked_by, worker_job_id
+            FROM sandbox_capacity_leases
+            WHERE provider = 'thunder'
+              AND worker_job_id = $1
+              AND locked_by = $2
+            FOR UPDATE
+            """,
+                job_id,
+                worker_id,
+            )
+            if len(capacity_leases) != 1:
+                _emit_thunder_handoff_event(
+                    "rejected",
+                    job_id=job_id,
+                    trial_id=subject_id,
+                    target=reroute.target_environment,
+                    reason="capacity_lease_changed",
+                )
+                return None
+            capacity_lease = capacity_leases[0]
+            teardown_pending = bool(
+                sandbox_external_id is not None and sandbox_run["state"] != "TERMINATED"
+            )
+
+            if sandbox_external_id is None:
+                run_update = await connection.execute(
+                    """
+            UPDATE sandbox_runs
+            SET state = 'TERMINATED',
+                termination_requested_at = COALESCE(termination_requested_at, NOW()),
+                terminated_at = COALESCE(terminated_at, NOW()),
+                last_error = NULL
+            WHERE id = $1
+              AND external_id IS NULL
+            """,
+                    sandbox_run["id"],
+                )
+                if not _updated_one(run_update):
+                    raise RuntimeError("Thunder reroute lost sandbox-run ownership")
+
+            trial_update = await connection.execute(
+                """
+            UPDATE trials
+            SET environment = $2,
+                status = 'RETRYING',
+                finished_at = NULL,
+                next_retry_at = NULL,
+                current_worker_id = NULL,
+                current_queue_slot = NULL,
+                heartbeat_at = NOW()
+            WHERE id = $1
+              AND status::text = 'RUNNING'
+              AND current_worker_id = $3
+              AND deleted_at IS NULL
+              AND superseded_by_trial_id IS NULL
+            """,
+                subject_id,
+                reroute.target_environment,
+                worker_id,
+            )
+            if not _updated_one(trial_update):
+                raise RuntimeError("Thunder reroute lost trial ownership")
+
+            job_update = await connection.execute(
+                """
+            UPDATE worker_jobs
+            SET execution_lane = $2,
+                status = 'RETRYING',
+                next_retry_at = NULL,
+                available_after = NOW(),
+                current_worker_id = NULL,
+                current_queue_slot = NULL,
+                modal_function_call_id = NULL,
+                provider = CASE WHEN $5 THEN provider ELSE NULL END,
+                external_id = CASE WHEN $5 THEN external_id ELSE NULL END,
+                reroute_from_environment = 'thunder',
+                reroute_reason = $6,
+                reroute_pending_teardown = $5
+            WHERE id = $1
+              AND status::text = 'RUNNING'
+              AND current_worker_id = $3
+              AND attempts = $4
+              AND execution_lane = 'thunder_trial'
+            """,
+                job_id,
+                reroute.target_execution_lane,
+                worker_id,
+                attempts,
+                teardown_pending,
+                reroute.reason,
+            )
+            if not _updated_one(job_update):
+                raise RuntimeError("Thunder reroute lost worker-job ownership")
+
+            if not teardown_pending:
+                lease_update = await connection.execute(
+                    """
+            UPDATE sandbox_capacity_leases
+            SET locked_by = NULL,
+                worker_job_id = NULL,
+                locked_at = NULL,
+                locked_until = NULL
+            WHERE provider = $1
+              AND slot = $2
+              AND locked_by = $3
+              AND worker_job_id = $4
+            """,
+                    capacity_lease["provider"],
+                    capacity_lease["slot"],
+                    worker_id,
+                    job_id,
+                )
+                if not _updated_one(lease_update):
+                    raise RuntimeError("Thunder reroute lost capacity-lease ownership")
+    except Exception as exc:
+        _emit_thunder_handoff_event(
+            "failed",
+            job_id=job_id,
+            trial_id=subject_id,
+            target=reroute.target_environment,
+            reason=type(exc).__name__,
+        )
+        raise
+
+    if not teardown_pending:
+        _emit_thunder_handoff_event(
+            "completed",
+            job_id=job_id,
+            trial_id=subject_id,
+            target=reroute.target_environment,
+            reason=reroute.reason,
+        )
+    else:
+        _emit_thunder_handoff_event(
+            "pending",
+            job_id=job_id,
+            trial_id=subject_id,
+            target=reroute.target_environment,
+            reason="teardown_pending",
+        )
+    return WorkerJobStatus.RETRYING
+
+
+async def _settle_rejected_reroute(
+    connection: asyncpg.Connection,
+    *,
+    job_id: str,
+    worker_id: str,
+    attempts: int,
+    subject_id: str | None,
+    subject_attempt: int | None,
+    error_message: str | None = None,
+) -> WorkerJobStatus | None:
+    """Close a rejected, still-owned attempt without releasing uncertain capacity."""
+    async with connection.transaction():
+        job = await connection.fetchrow(
+            """
+            SELECT status::text AS status, current_worker_id, attempts,
+                   kind::text AS kind, subject_table, subject_id, execution_lane
+            FROM worker_jobs WHERE id = $1 FOR UPDATE
+            """,
+            job_id,
+        )
+        if (
+            job is None
+            or job["status"] != "RUNNING"
+            or job["current_worker_id"] != worker_id
+            or int(job["attempts"]) != attempts
+            or job["kind"] != WorkerJobKind.TRIAL.value
+            or job["subject_table"] != "trials"
+            or job["subject_id"] != subject_id
+            or job["execution_lane"] != THUNDER_TRIAL_EXECUTION_LANE
+        ):
+            return None
+        message = error_message or (
+            "Thunder capacity fallback rejected: handoff ownership or sandbox "
+            "state changed. Provider handles and capacity leases retained for cleanup."
+        )
+        command = await connection.execute(
+            """
+            UPDATE worker_jobs
+            SET status = 'FAILED', error_message = $2, finished_at = NOW(),
+                heartbeat_at = NOW(), next_retry_at = NULL,
+                current_worker_id = NULL, current_queue_slot = NULL,
+                payload = payload - 'registry_auth_enc'
+            WHERE id = $1 AND status::text = 'RUNNING'
+              AND current_worker_id = $3 AND attempts = $4
+            """,
+            job_id,
+            message,
+            worker_id,
+            attempts,
+        )
+        if not _updated_one(command):
+            raise RuntimeError("Rejected Thunder handoff lost worker-job ownership")
+        await connection.execute(
+            """
+            UPDATE trials
+            SET status = 'FAILED', error_message = $2, finished_at = NOW(),
+                heartbeat_at = NOW(), next_retry_at = NULL,
+                current_worker_id = NULL, current_queue_slot = NULL
+            WHERE id = $1 AND status::text = 'RUNNING'
+              AND current_worker_id = $3 AND attempts = $4
+              AND LOWER(environment) = 'thunder'
+              AND deleted_at IS NULL AND superseded_by_trial_id IS NULL
+            """,
+            subject_id,
+            message,
+            worker_id,
+            subject_attempt,
+        )
+    return WorkerJobStatus.FAILED
 
 
 async def _record_outcome(
@@ -501,11 +1002,35 @@ async def _record_outcome(
     subject_table: str | None = None,
     subject_id: str | None = None,
 ) -> WorkerJobStatus | None:
-    def row_was_updated(command: str) -> bool:
-        return command.endswith(" 1")
-
     connection = await _open_connection()
     try:
+        if outcome.reroute is not None:
+            try:
+                status = await _record_reroute_outcome(
+                    connection,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    reroute=outcome.reroute,
+                    attempts=attempts,
+                    kind=kind,
+                    subject_table=subject_table,
+                    subject_id=subject_id,
+                )
+            except (ValueError, RuntimeError):
+                # Any partial handoff has rolled back. Recheck ownership in a
+                # fresh transaction before settling a rejected disposition.
+                logger.exception("Thunder handoff rejected for worker job %s", job_id)
+                status = None
+            if status is not None:
+                return status
+            return await _settle_rejected_reroute(
+                connection,
+                job_id=job_id,
+                worker_id=worker_id,
+                attempts=attempts,
+                subject_id=subject_id,
+                subject_attempt=outcome.reroute.subject_attempt,
+            )
         if outcome.success is not None:
             import json
 
@@ -528,7 +1053,7 @@ async def _record_outcome(
                 json.dumps(summary) if summary is not None else None,
                 worker_id,
             )
-            if not row_was_updated(command):
+            if not _updated_one(command):
                 console.print(
                     f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
                 )
@@ -591,7 +1116,7 @@ async def _record_outcome(
                 retry_at,
                 worker_id,
             )
-            if not row_was_updated(command):
+            if not _updated_one(command):
                 console.print(
                     f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
                 )
@@ -643,7 +1168,7 @@ async def _record_outcome(
                 outcome.failure.error_message,
                 worker_id,
             )
-            if not row_was_updated(command):
+            if not _updated_one(command):
                 console.print(
                     f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
                 )
@@ -667,6 +1192,8 @@ async def run_single_worker_job(
     org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
@@ -698,10 +1225,25 @@ async def run_single_worker_job(
         )
     if priority_class is not None:
         claim_kwargs.update(priority_class=priority_class, org_id=org_id)
+    if resource_candidate is not None or worker_billing_spec is not None:
+        claim_kwargs.update(
+            resource_candidate=resource_candidate,
+            candidate_configuration=candidate_configuration,
+            worker_billing_spec=worker_billing_spec,
+        )
     job = await claim_single_worker_job(queue_key, **claim_kwargs)
     if job is None:
         return False
 
+    logger.info(
+        "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
+        job.id,
+        job.attempts,
+        worker_billing_spec.configuration if worker_billing_spec else "unreported",
+        modal_function_call_id,
+        worker_billing_spec.cpu_cores if worker_billing_spec else None,
+        worker_billing_spec.memory_mb if worker_billing_spec else None,
+    )
     attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
     attempt_started_monotonic = time.monotonic()
 
@@ -750,7 +1292,11 @@ async def run_single_worker_job(
             )
             outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
-    if (outcome.success is None) == (outcome.failure is None):
+    disposition_count = sum(
+        value is not None
+        for value in (outcome.success, outcome.failure, outcome.reroute)
+    )
+    if disposition_count != 1:
         # A handler can mutate the dataclass after construction. Keep an invalid
         # result from leaving its claimed worker_jobs row RUNNING indefinitely.
         outcome = JobOutcome.fail(
@@ -822,6 +1368,8 @@ async def drain_worker_jobs(
     org_id: str | None = None,
     capacity_provider: str | None = None,
     capacity_slot: int | None = None,
+    resource_candidate: bool | None = None,
+    candidate_configuration: str | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
@@ -867,6 +1415,11 @@ async def drain_worker_jobs(
             )
         if priority_class is not None:
             run_kwargs.update(priority_class=priority_class, org_id=org_id)
+        if resource_candidate is not None:
+            run_kwargs.update(
+                resource_candidate=resource_candidate,
+                candidate_configuration=candidate_configuration,
+            )
         job_found = await run_job(queue_key, **run_kwargs)
         if not job_found:
             break

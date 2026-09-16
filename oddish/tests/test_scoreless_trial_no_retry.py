@@ -24,6 +24,7 @@ def _trial(**overrides):
         task_id="task-1",
         agent="codex",
         model="gpt-5",
+        kind="agent",
         harbor_config=None,
         status=TrialStatus.RUNNING,
         error_message=None,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { markOpenIntent } from "@/lib/open-intent";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {
@@ -49,6 +50,7 @@ import {
   parseLineRange,
   type LineRange,
 } from "@/lib/line-range";
+import { experimentModelLabel } from "@/lib/experiment-agent-grouping";
 import { sameFilePath } from "@/lib/file-path";
 
 /**
@@ -239,7 +241,7 @@ function TrialAnalysisCard({
 
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
-  // alone showed "No analysis yet" while the run was live.
+  // alone showed "No QA verdict yet" while the run was live.
   const trialAnalysisInProgress = isAnalysisStatusActive(trial.analysis_status);
   const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
@@ -269,14 +271,14 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "Task-level QA is already running";
+    queueBlockedReason = "QA verdict is running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
-        ? "Analysis is already running for this trial"
-        : "Analysis is already queued for this trial";
+        ? "QA is running for this trial"
+        : "QA is queued for this trial";
   } else if (trial.status !== "success" && trial.status !== "failed") {
-    queueBlockedReason = "The trial must finish before analysis can run";
+    queueBlockedReason = "QA requires a finished trial";
   }
 
   if (!hasAnalysis && !showQueueButton) return null;
@@ -293,7 +295,7 @@ function TrialAnalysisCard({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis"
+          data.detail || data.error || "Failed to queue QA verdict generation"
         );
       }
       // The server created one task-level QA trial. Refresh the task-open
@@ -301,7 +303,7 @@ function TrialAnalysisCard({
       await onQueued?.();
     } catch (err) {
       setQueueError(
-        err instanceof Error ? err.message : "Failed to queue analysis"
+        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
       );
     } finally {
       setQueuing(false);
@@ -319,10 +321,8 @@ function TrialAnalysisCard({
             (now - new Date(trial.analysis_started_at).getTime()) / 1000
           )
         );
-        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+        progressLine = `${Math.floor(secs / 60)}m ${secs % 60}s`;
       }
-    } else {
-      progressLine = "Waiting for a QA worker.";
     }
   }
 
@@ -364,16 +364,14 @@ function TrialAnalysisCard({
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
-                (hasAnalysis
-                  ? "Reset this trial's analysis and re-run it with the latest prompt"
-                  : "Analyze this trial with the latest prompt")
+                "Reanalyzes all eligible trials to generate this task’s QA verdict."
               }
             >
               {queuing
                 ? "Queuing…"
                 : hasAnalysis
-                  ? "Re-run analysis"
-                  : "Run analysis"}
+                  ? "Regenerate QA verdict"
+                  : "Generate QA verdict"}
             </button>
           </div>
         )}
@@ -391,7 +389,7 @@ function TrialAnalysisCard({
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
               <p className="mb-2 text-xs text-red-500">
-                Analysis failed: {trial.analysis_error}
+                QA failed: {trial.analysis_error}
               </p>
             )}
             <QaAssessmentReport
@@ -451,23 +449,23 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
-                      ? "Analyzing"
+                      ? "QA running"
                       : trial.analysis_status
-                        ? "Analysis queued"
-                        : "QA is running"}
+                        ? "QA queued"
+                        : "QA verdict running"}
                   </span>
-                  <span className="text-muted-foreground text-xs">
-                    {trial.analysis_status
-                      ? progressLine
-                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
-                  </span>
+                  {progressLine && (
+                    <span className="text-muted-foreground text-xs">
+                      {progressLine}
+                    </span>
+                  )}
                   {activeQaTrial && onOpenActiveQaTrial && (
                     <button
                       type="button"
                       onClick={() => onOpenActiveQaTrial(activeQaTrial)}
                       className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
                     >
-                      view the QA run
+                      Open QA run
                     </button>
                   )}
                 </div>
@@ -475,25 +473,22 @@ function TrialAnalysisCard({
                 // Analysis state exists but produced no report (e.g. failed
                 // before the classifier returned).
                 <div className="flex flex-col gap-1">
-                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  <span className="font-mono text-sm font-bold">Run QA Verdict</span>
                   {trial.analysis_status === "failed" &&
                   trial.analysis_error ? (
                     <span className="text-xs text-red-500">
-                      Analysis failed: {trial.analysis_error}
+                      QA failed: {trial.analysis_error}
                     </span>
                   ) : (
                     <span className="text-muted-foreground text-xs">
-                      No report was produced.
+                      No QA report produced.
                     </span>
                   )}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
-                    No analysis yet
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    This trial has not been analyzed.
+                    No QA verdict yet
                   </span>
                 </div>
               )}
@@ -522,9 +517,13 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--experiment ${task.experiment_id}`);
   }
 
-  const sandboxBackend = getSandboxBackend(trial);
-  if (sandboxBackend) {
-    parts.push(`-e ${sandboxBackend.id}`);
+  // Preserve every server-owned Harbor environment, even when the UI has no
+  // branded badge for it yet. Legacy rows can still fall back to a recognized
+  // sandbox job provider.
+  const trialEnvironment = normalizeRunEnvironment(trial.environment);
+  const runEnvironment = trialEnvironment ?? getSandboxBackend(trial)?.id;
+  if (runEnvironment) {
+    parts.push(`-e ${runEnvironment}`);
   }
 
   if (trial.agent) {
@@ -535,7 +534,20 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`-m ${trial.queue_key || trial.model}`);
   }
 
+  if (trial.reasoning_effort) {
+    const effort = trial.reasoning_effort.replace(/'/g, "'\\''");
+    parts.push(`--agent-kwarg 'reasoning_effort=${effort}'`);
+  }
   return parts.join(" ");
+}
+
+function normalizeRunEnvironment(
+  environment: string | null | undefined
+): string | null {
+  const normalized = environment?.trim().toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9-]*$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 function getQueueSnapshotItems(trial: Trial): string[] {
@@ -556,7 +568,13 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2" | "numinous";
+type SandboxBackendId =
+  | "daytona"
+  | "modal"
+  | "archil"
+  | "ec2"
+  | "numinous"
+  | "thunder";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -599,6 +617,12 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/numinous-logo.png",
     logoFill: true,
   },
+  thunder: {
+    id: "thunder",
+    label: "Thunder Compute",
+    logoSrc: "/thunder-compute-logo.svg",
+    logoFill: true,
+  },
 };
 
 function normalizeSandboxBackend(
@@ -610,7 +634,8 @@ function normalizeSandboxBackend(
     normalized === "modal" ||
     normalized === "archil" ||
     normalized === "ec2" ||
-    normalized === "numinous"
+    normalized === "numinous" ||
+    normalized === "thunder"
   ) {
     return normalized;
   }
@@ -820,6 +845,25 @@ export function TrialDetailPanel({
     const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+
+  // Selecting the trial is not the moment someone asks for its trajectory:
+  // the drawer opens on Summary, and `ActiveTabContent` renders null for every
+  // other tab, so `TrajectoryViewer` -- a dynamic import -- does not mount
+  // until this tab is chosen. Stamping only the trial click would fold however
+  // long they read the summary into the trajectory's load time, or age out
+  // past MAX_INTENT_AGE_MS and lose the chunk download the stamp exists to
+  // capture. The intent map overwrites by key, so this supersedes the trial
+  // click while leaving it correct for a `?tab=trajectory` deep link, where
+  // the viewer really does mount with the drawer.
+  const handleTabChange = useCallback(
+    (next: string) => {
+      if (next === "trajectory" && trial) {
+        markOpenIntent("ui.trajectory.open", trial.id);
+      }
+      setActiveTab(next);
+    },
+    [trial]
+  );
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -1263,9 +1307,9 @@ export function TrialDetailPanel({
           <span className="flex max-w-full min-w-0 flex-1 basis-52 items-center gap-1.5">
             <span
               className="min-w-0 flex-1 truncate"
-              title={trial.model ?? undefined}
+              title={experimentModelLabel(trial.model, trial.reasoning_effort)}
             >
-              {trial.model ?? "—"}
+              {experimentModelLabel(trial.model, trial.reasoning_effort)}
             </span>
             {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           </span>
@@ -1548,7 +1592,7 @@ export function TrialDetailPanel({
 
       <Tabs
         value={effectiveTab}
-        onValueChange={setActiveTab}
+        onValueChange={handleTabChange}
         className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="border-border border-b px-4 sm:px-6">
@@ -1618,10 +1662,6 @@ export function TrialDetailPanel({
                         </span>
                       ))}
                     </div>
-                    <p className="text-muted-foreground mt-2 text-xs">
-                      Live scheduler snapshot. This can move as other trials
-                      start, finish, or get retried.
-                    </p>
                   </CardContent>
                 </Card>
               )}

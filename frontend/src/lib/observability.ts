@@ -3,6 +3,7 @@
 import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import * as logfire from "@pydantic/logfire-browser";
+import { flushTelemetry } from "@/lib/telemetry-flush";
 
 let configured = false;
 
@@ -90,16 +91,7 @@ function installFlushHandlers(): void {
   if (typeof document === "undefined") return;
 
   const flush = () => {
-    try {
-      const provider = trace.getTracerProvider() as {
-        forceFlush?: () => Promise<void>;
-      };
-      provider.forceFlush?.().catch(() => {
-        /* swallow; flushing is best-effort on unload */
-      });
-    } catch {
-      /* swallow */
-    }
+    flushTelemetry();
   };
 
   document.addEventListener("visibilitychange", () => {

@@ -175,3 +175,106 @@ async def test_panel_qa_worker_is_not_a_solver_and_deleted_jobs_do_not_block(ses
     await session.flush()
     panel = await get_task_panel_core(session, task_id=task.id)
     assert panel.cancel is None and panel.can_run_qa
+
+
+@pytest.mark.asyncio
+async def test_old_verdict_never_claims_to_review_new_selected_version(session):
+    from oddish.core.endpoints.task_open import get_task_open_core
+    from oddish.db import VerdictStatus
+
+    task, versions, solver = await seed(session)
+    qa = TrialModel(
+        id=uuid4().hex,
+        name="old-review",
+        task_id=task.id,
+        task_version_id=versions[0].id,
+        experiment_id=solver.experiment_id,
+        org_id=task.org_id,
+        agent="codex",
+        provider="openai",
+        model="gpt-5.5",
+        queue_key="openai/gpt-5.5",
+        kind="qa",
+        status=TrialStatus.SUCCESS,
+    )
+    session.add(qa)
+    task.verdict = {"is_good": True, "_graded_by": qa.id}
+    task.verdict_status = VerdictStatus.SUCCESS
+    task.current_version_id = versions[1].id
+    await session.flush()
+    for selected, expected in [(versions[0], True), (versions[1], False)]:
+        panel = await get_task_panel_core(
+            session, task_id=task.id, version=selected.version, org_id=task.org_id
+        )
+        opened = await get_task_open_core(
+            session, task_id=task.id, version_id=selected.id, org_id=task.org_id
+        )
+        assert panel.task.review_version_matches is expected
+        assert opened.task.review_version_matches is expected
+        assert opened.selected_version.id == selected.id
+    # Classification-only runs cannot steal the stored verdict's provenance.
+    qa.harbor_config = {"analysis_payload": {"with_verdict": False}}
+    await session.flush()
+    panel = await get_task_panel_core(
+        session, task_id=task.id, version=1, org_id=task.org_id
+    )
+    assert panel.task.review_version_matches is True
+
+
+@pytest.mark.asyncio
+async def test_experiment_summary_excludes_failed_and_outdated_acceptance(session):
+    from oddish.core.endpoints.experiment_page import (
+        _experiment_summary,
+        _experiment_task_rows,
+    )
+    from oddish.db import VerdictStatus, task_experiments
+
+    task, versions, solver = await seed(session)
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id, experiment_id=solver.experiment_id
+        )
+    )
+    qa = TrialModel(
+        id=uuid4().hex,
+        name="review",
+        task_id=task.id,
+        task_version_id=versions[0].id,
+        experiment_id=solver.experiment_id,
+        org_id=task.org_id,
+        agent="codex",
+        provider="openai",
+        queue_key="test",
+        kind="qa",
+        status=TrialStatus.SUCCESS,
+    )
+    session.add(qa)
+    task.verdict = {"is_good": True, "_graded_by": qa.id}
+    task.verdict_status = VerdictStatus.SUCCESS
+    await session.flush()
+    summary, _ = await _experiment_summary(
+        session, experiment_id=solver.experiment_id, org_id=task.org_id
+    )
+    assert summary.qa_accepted == 1
+    # Failed reviews have no published verdict; task quality remains unknown.
+    task.verdict_status = VerdictStatus.FAILED
+    task.verdict = None
+    await session.flush()
+    summary, _ = await _experiment_summary(
+        session, experiment_id=solver.experiment_id, org_id=task.org_id
+    )
+    assert summary.qa_accepted == 0 and summary.qa_failed == 1
+    task.verdict_status = VerdictStatus.SUCCESS
+    task.verdict = {"is_good": True, "_graded_by": qa.id}
+    # The experiment now displays v2; the stored QA verdict still belongs to v1.
+    task.current_version_id = versions[1].id
+    solver.task_version_id = versions[1].id
+    await session.flush()
+    summary, _ = await _experiment_summary(
+        session, experiment_id=solver.experiment_id, org_id=task.org_id
+    )
+    assert summary.qa_accepted == 0 and summary.qa_rejected == 0
+    rows = await session.execute(
+        _experiment_task_rows(experiment_id=solver.experiment_id, org_id=task.org_id)
+    )
+    assert rows.mappings().one()["review_version_matches"] is False

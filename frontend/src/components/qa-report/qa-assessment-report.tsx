@@ -1,10 +1,12 @@
+import { EXECUTION_LABELS } from "@/lib/review";
+import type { AnalysisClassification } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
-import { SeverityGroups } from "./action-items";
+import { FindingList } from "./action-items";
 import type { FeedbackRecord } from "./types";
 
 const isNa = (s: string | null | undefined) => !s || /^n\/a/i.test(s);
@@ -40,7 +42,7 @@ export function QaAssessmentReport({
   const token = VERDICT_TOKENS[classification] ?? FALLBACK_TOKEN;
   const Icon = token.icon;
   const items = actionItems ?? [];
-  const mustFix = items.filter((i) => i.tier === "must_fix").length;
+  const mustFix = items.length;
 
   return (
     <article
@@ -58,7 +60,8 @@ export function QaAssessmentReport({
             token.accent
           )}
         >
-          {classification.replace(/_/g, " ")}
+          {EXECUTION_LABELS[classification as AnalysisClassification] ??
+            classification.replace(/_/g, " ")}
         </h2>
         {subtype && !isNa(subtype) ? (
           <span
@@ -75,7 +78,7 @@ export function QaAssessmentReport({
         <div className="text-muted-foreground ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px]">
           {mustFix > 0 ? (
             <span className="bg-destructive/15 text-destructive rounded-md px-1.5 py-0.5 font-semibold">
-              {mustFix} must_fix
+              {mustFix} task defects
             </span>
           ) : null}
           {duration ? <span>{duration}</span> : null}
@@ -90,7 +93,7 @@ export function QaAssessmentReport({
           <AnalysisProse text={rootCause} className="text-foreground/90" />
         ) : (
           <p className="text-muted-foreground text-xs">
-            The analysis produced no root cause.
+            QA produced no root cause.
           </p>
         )}
 
@@ -108,7 +111,7 @@ export function QaAssessmentReport({
 
         {onFeedback ? (
           <FeedbackControl
-            label={`the ${classification.replace(/_/g, " ")} verdict`}
+            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} verdict`}
             className="mt-3"
             onSubmit={(vote, note) =>
               onFeedback({
@@ -125,7 +128,7 @@ export function QaAssessmentReport({
             <h3 className="text-muted-foreground font-mono text-[10px] font-semibold tracking-widest uppercase">
               Action items ({items.length})
             </h3>
-            <SeverityGroups
+            <FindingList
               items={items}
               onFeedback={onFeedback}
               className="mt-2"

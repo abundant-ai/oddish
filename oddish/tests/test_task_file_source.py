@@ -64,3 +64,25 @@ async def test_task_file_source_selects_exact_authorized_version(session) -> Non
                 session, task_id=task.id, org_id=org_id, version=version
             )
         assert exc.value.status_code == 404
+
+    # Missing historical source metadata must not read today's task archive.
+    task.task_s3_key = f"tasks/{task.id}/current/"
+    historical.task_s3_key = None
+    historical.expanded_manifest_key = None
+    await session.flush()
+    source = await resolve_task_file_source(
+        session, task_id=task.id, org_id="org-1", version=2
+    )
+    assert source.task_s3_prefix == f"tasks/{task.id}/v2/"
+
+    from unittest.mock import AsyncMock
+    from oddish.db.storage import StorageClient
+
+    storage = object.__new__(StorageClient)
+    storage.object_exists = AsyncMock(return_value=False)
+    root, archive = await storage._resolve_task_prefix(
+        task.id, source.version, source.task_s3_prefix
+    )
+    assert root == f"tasks/{task.id}/v2/"
+    assert archive.startswith(root)
+    storage.object_exists.assert_not_awaited()

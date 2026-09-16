@@ -76,7 +76,7 @@ from oddish.core.sharing.helpers import (
     make_task_files_ndjson_response,
     stream_task_files_s3,
 )
-from oddish.core.task_files import resolve_task_file_source
+from api.services.task_file_source import resolve_authorized_task_file_source
 from oddish.core.idempotency import (
     IdempotencyReplay,
     SWEEP_ROUTE,
@@ -91,7 +91,14 @@ from api.schemas import (
     ModelRenameRequest,
     ModelRenameResponse,
 )
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    authorized_read_session,
+    get_auth_context,
+    require_admin,
+    require_auth,
+)
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
@@ -361,8 +368,11 @@ async def create_task_sweep(
                 now=utcnow(),
             )
             if replay_json is not None:
-                if await replay_has_retryable_failed_trials(
-                    session, replay_json, org_id=auth.org_id
+                if (
+                    not submission.add_trials
+                    and await replay_has_retryable_failed_trials(
+                        session, replay_json, org_id=auth.org_id
+                    )
                 ):
                     # The stable CLI key normally identifies a transport replay.
                     # Once its current retry-chain leaf has failed, the same
@@ -1666,13 +1676,12 @@ async def get_task_status(
 async def get_task_open(
     request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version_id: str | None = None,
 ) -> TaskOpenResponse:
     """Bounded task-page header, aggregates, and trial preview."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_open_core(
             session,
             task_id=task_id,
@@ -1684,12 +1693,13 @@ async def get_task_open(
 
 @router.get("/tasks/{task_id}/panel", response_model=TaskPanelResponse)
 async def get_task_panel(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     version: int | None = None,
 ) -> TaskPanelResponse:
-    auth.require_scope(APIKeyScope.READ)
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_panel_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
         )
@@ -1697,13 +1707,13 @@ async def get_task_panel(
 
 @router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
 async def get_task_detail(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TaskDetailResponse:
     """Task detail bundle: task + trials + per-version + cost rollups."""
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.READ)
         return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
@@ -1786,8 +1796,9 @@ def _build_task_file_etag(archive_etag: str, file_path: str) -> str:
 
 @router.get("/tasks/{task_id}/files")
 async def list_task_files(
+    request: Request,
     task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
@@ -1799,6 +1810,16 @@ async def list_task_files(
         True, description="Include eligible text file contents in the listing"
     ),
     version: int | None = Query(None, description="Task version number"),
+    directories: Annotated[
+        list[str] | None,
+        Query(
+            max_length=8,
+            description="Repeat for 1–8 directory pages; empty means root",
+        ),
+    ] = None,
+    previews: bool = Query(
+        False, description="Include bounded small text previews in directory batches"
+    ),
     stream: bool = Query(
         False,
         description="Stream NDJSON: the file tree first, then file contents",
@@ -1811,15 +1832,12 @@ async def list_task_files(
     With stream=True the response is NDJSON: a listing chunk as soon as the
     tree is known, then per-file content chunks as they load.
     """
-    auth.require_scope(APIKeyScope.READ)
+    source = await resolve_authorized_task_file_source(
+        request, auth, task_id=task_id, version=version
+    )
 
-    async with get_read_session() as session:
-        source = await resolve_task_file_source(
-            session,
-            task_id=task_id,
-            org_id=auth.org_id,
-            version=version,
-        )
+    if (directories is not None or previews) and stream:
+        raise HTTPException(400, "Batched directory listings do not stream file bodies")
 
     if stream:
         return await make_task_files_ndjson_response(
@@ -1840,6 +1858,8 @@ async def list_task_files(
 
     return await list_task_files_s3(
         task_id=task_id,
+        **({"directories": directories} if directories is not None else {}),
+        **({"previews": True} if previews else {}),
         prefix=prefix,
         recursive=recursive,
         limit=limit,
@@ -1860,7 +1880,7 @@ async def get_task_file_content(
     file_path: str,
     request: Request,
     response: Response,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
     max_bytes: int | None = Query(None, ge=1),
@@ -1872,15 +1892,9 @@ async def get_task_file_content(
     ``If-None-Match`` with a ``304``. Versions can be explicitly overwritten,
     so clients must revalidate rather than treating a version URL as immutable.
     """
-    auth.require_scope(APIKeyScope.READ)
-
-    async with get_read_session() as session:
-        source = await resolve_task_file_source(
-            session,
-            task_id=task_id,
-            org_id=auth.org_id,
-            version=version,
-        )
+    source = await resolve_authorized_task_file_source(
+        request, auth, task_id=task_id, version=version
+    )
 
     try:
         result = await get_task_file_content_s3(

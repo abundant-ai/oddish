@@ -53,9 +53,15 @@ SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
 API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-api"
+# Keep database-heavy API reads near the hosted PostgreSQL database in US East.
+# This is a deploy-time setting; other deployments can select their DB's region.
+API_REGION = os.environ.get("ODDISH_MODAL_API_REGION", "us-east")
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
+)
+ENABLE_ENDPOINT_MONITORING = _env_flag(
+    "ODDISH_ENABLE_ENDPOINT_MONITORING", MODAL_APP_NAME == "oddish"
 )
 ENABLE_CARL_AGENT = _env_flag("ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish")
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
@@ -195,6 +201,21 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 #   dispatcher for the larger result sets it materializes.
 WORKER_CPU = _env_float("ODDISH_MODAL_WORKER_CPU", 1.0)
 WORKER_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_MEMORY_MB", 3072)
+# Separate entry point; rollout admission is read live from worker_resource_rollout.
+WORKER_CANDIDATE_CPU = _env_float("ODDISH_MODAL_WORKER_CANDIDATE_CPU", 0.6)
+WORKER_CANDIDATE_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB", 3072)
+WORKER_CANDIDATE_MAX_CONTAINERS = _env_int(
+    "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS", 2
+)
+WORKER_CANDIDATE_CPU_LIMIT = 17.0
+if not 0 < WORKER_CANDIDATE_CPU <= WORKER_CANDIDATE_CPU_LIMIT:
+    raise ValueError("Candidate CPU request must be in (0, 17]")
+if WORKER_CANDIDATE_MEMORY_MB <= 0 or WORKER_CANDIDATE_MAX_CONTAINERS <= 0:
+    raise ValueError("Candidate memory and container cap must be positive")
+WORKER_CANDIDATE_CONFIGURATION = (
+    f"candidate-cpu{WORKER_CANDIDATE_CPU:g}-mem{WORKER_CANDIDATE_MEMORY_MB}"
+)
+
 DISPATCHER_CPU = _env_float("ODDISH_MODAL_DISPATCHER_CPU", 1.0)
 DISPATCHER_MEMORY_MB = _env_int("ODDISH_MODAL_DISPATCHER_MEMORY_MB", 1024)
 RECONCILER_CPU = _env_float("ODDISH_MODAL_RECONCILER_CPU", 1.0)
@@ -249,6 +270,15 @@ _GKE_COORDS_FILE = "/opt/oddish/gke_coords.json"
 
 _EC2_ENABLED_ENV = "ODDISH_EC2_ENABLED"
 _NUMINOUS_ENABLED_ENV = "ODDISH_NUMINOUS_ENABLED"
+_THUNDER_ENABLED_ENV = "ODDISH_THUNDER_ENABLED"
+_THUNDER_CAPACITY_FALLBACK_ENV = "ODDISH_THUNDER_CAPACITY_FALLBACK"
+_THUNDER_FALLBACK_PROVIDER_ENV = "ODDISH_THUNDER_FALLBACK_PROVIDER"
+_THUNDER_SECRET_NAME_ENV = "ODDISH_THUNDER_SECRET_NAME"
+_THUNDER_SECRET_NAME = (
+    os.environ.get(_THUNDER_SECRET_NAME_ENV)
+    or LOCAL_DOTENV_VARS.get(_THUNDER_SECRET_NAME_ENV)
+    or "oddish-thunder"
+)
 _NUMINOUS_GPU_ENABLED_ENV = "ODDISH_NUMINOUS_GPU_ENABLED"
 _NUMINOUS_SECRET_NAME = os.environ.get("ODDISH_NUMINOUS_SECRET_NAME", "oddish-numinous")
 _EC2_CONTROL_SECRET_NAME_ENV = "ODDISH_EC2_CONTROL_SECRET_NAME"
@@ -265,7 +295,7 @@ _EC2_RAW_SECRET_ENV_NAMES = frozenset(
 
 
 def _is_truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (value or "").strip().lower() in {"1", "t", "true", "yes", "on"}
 
 
 def _effective_gke_cluster_name(
@@ -612,6 +642,23 @@ for _numinous_secret_name in NUMINOUS_SECRET_PLAN:
         )
     )
 
+# Thunder credentials are worker-only. The named secret contains TNR_API_URL
+# and TNR_API_TOKEN; it is deliberately excluded from runtime_secrets because
+# that broader list also reaches the API, dispatcher, and scheduled functions.
+_THUNDER_ENABLED = _is_truthy(
+    _deploy_value(_THUNDER_ENABLED_ENV, os.environ, LOCAL_DOTENV_VARS)
+)
+THUNDER_SECRET_PLAN = (
+    [_THUNDER_SECRET_NAME] if _THUNDER_ENABLED and _THUNDER_SECRET_NAME else []
+)
+thunder_worker_secrets = [
+    modal.Secret.from_name(
+        secret_name,
+        environment_name=MODAL_SECRET_ENVIRONMENT,
+    )
+    for secret_name in THUNDER_SECRET_PLAN
+]
+
 # EC2 secrets intentionally do not join ``runtime_secrets``. That base list is
 # attached to the API, dispatcher, and unrelated scheduled functions. EC2's AWS
 # control secret goes only to trial workers and the reconciler; its SSH private
@@ -623,6 +670,7 @@ _broad_runtime_secret_names = {
     RUNTIME_SECRET_NAME,
     *GKE_SECRET_PLAN,
     *NUMINOUS_SECRET_PLAN,
+    *THUNDER_SECRET_PLAN,
 }
 if SAURON_AWS_SECRET_NAME:
     _broad_runtime_secret_names.add(SAURON_AWS_SECRET_NAME)
@@ -807,8 +855,24 @@ _EC2_PUBLIC_ENV_NAMES = {
     "ODDISH_EC2_MAX_CONCURRENT_INSTANCES",
 }
 
+_THUNDER_PUBLIC_ENV_NAMES = {
+    "ODDISH_THUNDER_CAPACITY_FALLBACK",
+    "ODDISH_THUNDER_ENABLED",
+    "ODDISH_THUNDER_FALLBACK_PROVIDER",
+    "ODDISH_THUNDER_MAX_CAPACITY",
+    "ODDISH_THUNDER_SECRET_NAME",
+}
+
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
+    "ODDISH_MODAL_WORKER_CPU": str(WORKER_CPU),
+    "ODDISH_MODAL_WORKER_MEMORY_MB": str(WORKER_MEMORY_MB),
+    "ODDISH_MODAL_WORKER_NONPREEMPTIBLE": str(WORKER_NONPREEMPTIBLE).lower(),
+    "ODDISH_MODAL_WORKER_CANDIDATE_CPU": str(WORKER_CANDIDATE_CPU),
+    "ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB": str(WORKER_CANDIDATE_MEMORY_MB),
+    "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS": str(
+        WORKER_CANDIDATE_MAX_CONTAINERS
+    ),
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
@@ -822,6 +886,10 @@ ENV_VARS = {
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
     "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
+    "ODDISH_ENABLE_ENDPOINT_MONITORING": str(ENABLE_ENDPOINT_MONITORING).lower(),
+    "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS": str(
+        ENABLE_SLACK_EXPENSE_NOTIFICATIONS
+    ).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -832,7 +900,7 @@ ENV_VARS = {
     # auth.permissions.is_operator_org). Overridable by the deploy env /
     # backend/.env; defaults to the Abundant org by its immutable internal id
     # (its slug is the Clerk-autogenerated "abundant-1771551017", which the id
-    # match avoids depending on -- see backend/scripts/legacy_transfer.py).
+    # match avoids depending on).
     "ODDISH_OPERATOR_ORG_ID": (
         (os.environ.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
         or (LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
@@ -870,6 +938,11 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k in _EC2_PUBLIC_ENV_NAMES
     },
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k in _THUNDER_PUBLIC_ENV_NAMES
+    },
     # Numinous opt-in flag, baked like ODDISH_EC2_ENABLED: runtime registration
     # (settings.numinous_enabled in oddish.runtime.registry) and secret
     # attachment (NUMINOUS_SECRET_PLAN above) resolve from the same deploy-time
@@ -883,6 +956,30 @@ ENV_VARS = {
     # sees it. Independent of _NUMINOUS_ENABLED: a CPU-only deploy leaves
     # this "false" and GPU trials stay on Modal.
     _NUMINOUS_GPU_ENABLED_ENV: str(_NUMINOUS_GPU_ENABLED).lower(),
+    # Keep worker-side Settings and the deploy-time secret plan in lockstep.
+    _THUNDER_ENABLED_ENV: str(_THUNDER_ENABLED).lower(),
+    _THUNDER_CAPACITY_FALLBACK_ENV: str(
+        _is_truthy(
+            _deploy_value(
+                _THUNDER_CAPACITY_FALLBACK_ENV, os.environ, LOCAL_DOTENV_VARS
+            )
+        )
+    ).lower(),
+    _THUNDER_FALLBACK_PROVIDER_ENV: (
+        _deploy_value(
+            _THUNDER_FALLBACK_PROVIDER_ENV, os.environ, LOCAL_DOTENV_VARS
+        )
+        or "modal"
+    ),
+    "ODDISH_THUNDER_MAX_CAPACITY": str(
+        int(
+            _deploy_value(
+                "ODDISH_THUNDER_MAX_CAPACITY", os.environ, LOCAL_DOTENV_VARS
+            )
+            or "128"
+        )
+    ),
+    _THUNDER_SECRET_NAME_ENV: _THUNDER_SECRET_NAME,
 }
 
 
@@ -895,6 +992,12 @@ runtime_secrets.append(
         {
             name: ENV_VARS[name]
             for name in (
+                "ODDISH_MODAL_WORKER_CPU",
+                "ODDISH_MODAL_WORKER_MEMORY_MB",
+                "ODDISH_MODAL_WORKER_NONPREEMPTIBLE",
+                "ODDISH_MODAL_WORKER_CANDIDATE_CPU",
+                "ODDISH_MODAL_WORKER_CANDIDATE_MEMORY_MB",
+                "ODDISH_MODAL_WORKER_CANDIDATE_MAX_CONTAINERS",
                 "ODDISH_MODAL_MAX_WORKERS_PER_POLL",
                 "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
                 "ODDISH_DEFAULT_MODEL_CONCURRENCY",
@@ -1070,6 +1173,8 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "dashboard_cache",
             "dashboard_owner_backfill",
             "endpoints",
+            "endpoint_health",
+            "endpoint_health_worker",
             "idempotency_store",
             "modal_app",
             "modal_runtime",

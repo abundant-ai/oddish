@@ -1,7 +1,7 @@
 import json
 from collections import Counter, defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from uuid import uuid4
 from contextlib import asynccontextmanager
 
@@ -112,7 +112,7 @@ async def acquire_queue_slot(
                 UPDATE queue_slots
                 SET locked_by = $3,
                     locked_until = NOW() + make_interval(secs => $4),
-                    locked_at = NOW(), launch_demand = NULL
+                    locked_at = NOW(), launch_demand = NULL, resource_candidate = false
                 FROM candidate
                 WHERE queue_slots.queue_key = candidate.queue_key
                   AND queue_slots.slot = candidate.slot
@@ -213,6 +213,9 @@ async def cleanup_stale_queue_slots() -> int:
 
 async def reserve_queue_launches(
     build_plan: Callable[..., Awaitable["DispatchPlan"]],
+    *,
+    candidate_configuration: str | None = None,
+    candidate_max_workers: int = 0,
 ) -> tuple["DispatchPlan", list[LaunchReservation]]:
     """Commit planning cursors and short slot leases before any remote launch.
 
@@ -231,16 +234,43 @@ async def reserve_queue_launches(
             cursors = json.loads(raw)
             rows = await conn.fetch(
                 """
-                SELECT launch_demand FROM queue_slots
+                SELECT launch_demand, resource_candidate FROM queue_slots
                 WHERE launch_demand IS NOT NULL AND locked_until > NOW()
                 """
             )
             pending = Counter(
                 tuple(json.loads(row["launch_demand"])["key"]) for row in rows
             )
-            plan = await build_plan(
+            plan_kwargs: dict[str, Any] = dict(
                 fairness_cursors=cursors, pending_by_org_queue=pending
             )
+            if candidate_configuration is not None:
+                from oddish.workers.queue.resource_rollout import (
+                    load_rollout,
+                    candidate_queue_counts,
+                )
+
+                fraction, live_cap = await load_rollout(
+                    conn, configuration=candidate_configuration
+                )
+                candidate_counts = await candidate_queue_counts(conn, fraction)
+                for row in rows:
+                    if row["resource_candidate"]:
+                        pending_key = tuple(json.loads(row["launch_demand"])["key"])
+                        candidate_counts[pending_key] = max(
+                            0, candidate_counts.get(pending_key, 0) - 1
+                        )
+                held_candidates = await conn.fetchval(
+                    "SELECT COUNT(*) FROM queue_slots WHERE resource_candidate "
+                    "AND locked_by IS NOT NULL AND (locked_until IS NULL OR locked_until > NOW())"
+                )
+                plan_kwargs.update(
+                    candidate_by_org_queue=candidate_counts,
+                    candidate_capacity=max(
+                        0, min(candidate_max_workers, live_cap) - held_candidates
+                    ),
+                )
+            plan = await build_plan(**plan_kwargs)
             by_queue = defaultdict(list)
             for unit in plan.unit_plan:
                 by_queue[unit.queue_key].append(unit)
@@ -295,6 +325,7 @@ async def reserve_queue_launches(
                             token,
                             LAUNCH_LEASE_SECONDS,
                             json.dumps({"key": demand, "adopted": False}),
+                            unit.resource_candidate,
                         )
                     )
             if updates:
@@ -303,7 +334,8 @@ async def reserve_queue_launches(
                     UPDATE queue_slots
                     SET locked_by = $3,
                         locked_until = NOW() + make_interval(secs => $4),
-                        locked_at = NOW(), launch_demand = $5::jsonb
+                        locked_at = NOW(), launch_demand = $5::jsonb,
+                        resource_candidate = $6
                     WHERE queue_key = $1 AND slot = $2
                     """,
                     updates,

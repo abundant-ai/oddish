@@ -13,12 +13,14 @@ the repository rules that are easy to misread from command output.
 
 ```bash
 oddish --help
+oddish version
 oddish status --json
 ```
 
 API-backed commands require `ODDISH_API_KEY`. Never print, log, commit, or
-return its value. The API target resolves in this order:
-`ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then hosted Oddish.
+return its value. `oddish version` and `oddish update` are local. The API
+target resolves in this order: `ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then
+hosted Oddish.
 
 Run `oddish <command> --help` before relying on an option not shown here.
 `--json` exists on many operational commands, but it is not a global option.
@@ -61,10 +63,26 @@ not authorize a later mutation.
    already runs; pass `--use-default-version` to pin new trials to the
    task's current default version instead.
 
+   Omitted reasoning effort uses the agent’s own default. Set it explicitly
+   with `--agent-kwarg reasoning_effort=high` (or another supported value).
+   Explicit choices are saved; missing historical effort remains unknown.
+
    Include nop, oracle, and paid model trials in the same sweep. `run --json`
    implies background mode. Preserve `tasks[].id` and `experiment_url` from
    the output; the `experiment` field is the experiment name, not a guaranteed
    identifier.
+
+   Use `--env thunder` only when the target deployment has explicitly enabled
+   its Thunder GPU backend. For a deployment smoke test, keep the execution
+   deterministic and bounded:
+
+   ```bash
+   oddish run ./smoke_test_thunder/task --env thunder -a nop \
+     --n-trials 1 --max-trial-attempts 1 --json
+   ```
+
+   Never request, print, or persist the operator's `TNR_API_URL` or
+   `TNR_API_TOKEN`; those belong to the worker-only deployment secret.
 
 3. Inspect a task, experiment, or individual trial:
 

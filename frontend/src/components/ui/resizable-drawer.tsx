@@ -26,6 +26,9 @@ interface ResizableDrawerProps {
   width?: number;
   /** Called whenever the user drags the resize handle. */
   onWidthChange?: (width: number) => void;
+  maximized?: boolean;
+  onMaximizedChange?: (maximized: boolean) => void;
+  onResizeEnd?: () => void;
 }
 
 /** Viewport width, or null until mounted (there is no window on the server). */
@@ -51,6 +54,9 @@ export function ResizableDrawer({
   hideCloseButton = false,
   width: controlledWidth,
   onWidthChange,
+  maximized: controlledMaximized,
+  onMaximizedChange,
+  onResizeEnd,
 }: ResizableDrawerProps) {
   const [internalWidth, setInternalWidth] = React.useState(defaultWidth);
   const width = controlledWidth ?? internalWidth;
@@ -61,7 +67,7 @@ export function ResizableDrawer({
       }
       onWidthChange?.(next);
     },
-    [controlledWidth, onWidthChange],
+    [controlledWidth, onWidthChange]
   );
   const [isResizing, setIsResizing] = React.useState(false);
   const drawerRef = React.useRef<HTMLDivElement>(null);
@@ -71,7 +77,15 @@ export function ResizableDrawer({
   // Its own state rather than a `width === ceiling` derivation, so the drawer
   // keeps filling the screen when the window is resized and so `width` survives
   // as the restore target.
-  const [maximized, setMaximized] = React.useState(false);
+  const [internalMaximized, setInternalMaximized] = React.useState(false);
+  const maximized = controlledMaximized ?? internalMaximized;
+  const setMaximized = React.useCallback(
+    (next: boolean) => {
+      if (controlledMaximized === undefined) setInternalMaximized(next);
+      onMaximizedChange?.(next);
+    },
+    [controlledMaximized, onMaximizedChange]
+  );
   const displayWidth = maximized
     ? widthCeiling
     : Math.max(Math.min(width, widthCeiling), Math.min(minWidth, widthCeiling));
@@ -79,16 +93,6 @@ export function ResizableDrawer({
   // wider than the viewport is clamped to the ceiling without ever setting
   // `maximized`, and that is just as full-bleed.
   const atFullWidth = displayWidth >= widthCeiling;
-
-  // Maximizing by drag writes the ceiling into `width`, so the width to come
-  // back to has to be held separately or Restore has nothing to restore to.
-  const restoreWidthRef = React.useRef(defaultWidth);
-  const rememberRestoreWidth = React.useCallback(
-    (candidate: number) => {
-      if (candidate < widthCeiling) restoreWidthRef.current = candidate;
-    },
-    [widthCeiling],
-  );
 
   // Handle resize via mouse drag
   const handleMouseDown = React.useCallback(
@@ -98,50 +102,36 @@ export function ResizableDrawer({
 
       const startX = e.clientX;
       const startWidth = displayWidth;
-      const startMaximized = maximized;
 
       const handleMouseMove = (moveEvent: MouseEvent) => {
         const deltaX = startX - moveEvent.clientX;
         const newWidth = Math.min(
           widthCeiling,
-          Math.max(minWidth, startWidth + deltaX),
+          Math.max(minWidth, startWidth + deltaX)
         );
         const nextMaximized = newWidth >= widthCeiling;
-        if (nextMaximized && !startMaximized) {
-          rememberRestoreWidth(startWidth);
-        }
         setMaximized(nextMaximized);
-        setWidth(newWidth);
+        // Full-screen mode leaves the expanded preference intact for Restore.
+        if (!nextMaximized) setWidth(newWidth);
       };
 
       const handleMouseUp = () => {
         setIsResizing(false);
         document.removeEventListener("mousemove", handleMouseMove);
         document.removeEventListener("mouseup", handleMouseUp);
+        onResizeEnd?.();
       };
 
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [
-      displayWidth,
-      maximized,
-      minWidth,
-      widthCeiling,
-      rememberRestoreWidth,
-      setWidth,
-    ],
+    [displayWidth, minWidth, widthCeiling, setMaximized, setWidth, onResizeEnd]
   );
 
   const toggleMaximized = React.useCallback(() => {
-    if (maximized) {
-      setMaximized(false);
-      setWidth(restoreWidthRef.current);
-    } else {
-      rememberRestoreWidth(displayWidth);
-      setMaximized(true);
-    }
-  }, [maximized, displayWidth, rememberRestoreWidth, setWidth]);
+    setMaximized(!maximized);
+    onResizeEnd?.();
+  }, [maximized, setMaximized, onResizeEnd]);
 
   // Handle escape key to close
   React.useEffect(() => {
@@ -178,7 +168,7 @@ export function ResizableDrawer({
           // At full width the left border sits off-screen and the rounded
           // corner would clip content against the viewport edge.
           atFullWidth ? "border-l-0" : "rounded-tl-lg",
-          className,
+          className
         )}
         style={{
           width: `${displayWidth}px`,

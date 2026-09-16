@@ -9,7 +9,7 @@ export function TrialGridSkeleton({
 }) {
   const gridTemplateColumns = `240px repeat(${columnCount}, minmax(0, 1fr))`;
   return (
-    <div className="overflow-x-auto p-3">
+    <div className="overflow-x-auto overflow-y-hidden overscroll-x-none p-3">
       <div className="w-full min-w-[960px] space-y-2">
         <div
           className="bg-muted/40 grid gap-2 rounded-md p-2"

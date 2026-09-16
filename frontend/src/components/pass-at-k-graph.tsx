@@ -35,6 +35,7 @@ export const AGENT_COLORS = [
 interface PassAtKGraphProps {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
   hiddenAgents: Set<string>;
   onToggleAgent: (agent: string) => void;
   hoverAgent?: string | null;
@@ -51,13 +52,8 @@ const PASS_AT_K_CAP = 10;
 function buildAgentStats(
   tasks: Task[],
   agentSummaries: AgentSummary[],
+  groupEfforts: boolean
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
-  const modelScopedAgents = new Set(
-    agentSummaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
-  );
-
   let maxN = 1;
   const taskAgentTrials: Record<string, Record<string, Trial[]>> = {};
 
@@ -66,7 +62,7 @@ function buildAgentStats(
 
     taskAgentTrials[task.id] = {};
     for (const trial of task.trials) {
-      const key = getExperimentAgentKey(trial, modelScopedAgents);
+      const key = getExperimentAgentKey(trial, groupEfforts);
       if (!taskAgentTrials[task.id][key]) {
         taskAgentTrials[task.id][key] = [];
       }
@@ -98,6 +94,7 @@ function buildAgentStats(
 export const PassAtKGraph = memo(function PassAtKGraph({
   tasks,
   agentSummaries,
+  groupEfforts = false,
   hiddenAgents,
   onToggleAgent,
   hoverAgent,
@@ -107,7 +104,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents],
+    [agentSummaries, hiddenAgents]
   );
 
   useEffect(() => {
@@ -130,7 +127,11 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {
-      const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+      const { agentStats, maxN } = buildAgentStats(
+        tasks,
+        agentSummaries,
+        groupEfforts
+      );
       const curveMaxK = Math.min(maxN, PASS_AT_K_CAP);
       const curveData =
         maxN > 1 ? calculatePassAtKCurve(agentStats, curveMaxK) : [];
@@ -149,7 +150,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         agentColorByKey: colorMap,
         agentLabelByKey: labelMap,
       };
-    }, [tasks, agentSummaries]);
+    }, [tasks, agentSummaries, groupEfforts]);
 
   const renderTooltip = useCallback(
     (props: TooltipContentProps<TooltipValue, TooltipName>) => {
@@ -231,7 +232,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </div>
       );
     },
-    [agentColorByKey, agentLabelByKey, hoverAgent],
+    [agentColorByKey, agentLabelByKey, hoverAgent]
   );
 
   if (!hasMultipleAttempts) {
@@ -245,7 +246,8 @@ export const PassAtKGraph = memo(function PassAtKGraph({
           Pass/k
         </h3>
         <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-          n = {maxK} · {tasks.length} tasks · {agentSummaries.length} agents
+          n = {maxK} · {tasks.length} tasks · {agentSummaries.length}{" "}
+          configurations
         </span>
       </div>
 

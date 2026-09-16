@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
+import { DEFAULT_TRIAL_DRAWER_LAYOUT } from "../src/lib/user-ui-layout";
 
 import type {
   TaskBrowseResponse,
@@ -342,6 +343,15 @@ test.describe("critical task and trial subtree", () => {
     let taskQaInProgress = false;
     let failTrialRevalidation = false;
     const requests: string[] = [];
+    // This test exercises lazy loading while the account keeps task content
+    // hidden. Explicitly supply that preference instead of relying on defaults.
+    await page.route(
+      "**/api/users/me/ui-layouts/experiment.trial-drawer",
+      (route) =>
+        route.fulfill({
+          json: { ...DEFAULT_TRIAL_DRAWER_LAYOUT, showTask: false },
+        })
+    );
     let summaryGetCount = 0;
     let summaryPostCount = 0;
     let failNextSummaryPost = false;
@@ -607,6 +617,9 @@ test.describe("critical task and trial subtree", () => {
       `/api/tasks/${TASK_ID}/detail(?:\\?|$)`
     );
     const taskOpenRequest = page.waitForRequest(taskOpenPattern);
+    const layoutResponse = page.waitForResponse(
+      "**/api/users/me/ui-layouts/experiment.trial-drawer"
+    );
     await taskLink.click();
     await taskOpenRequest;
     expect(requestCount(requests, taskOpenPattern)).toBe(1);
@@ -622,6 +635,7 @@ test.describe("critical task and trial subtree", () => {
     await taskOpenResponse;
     const trialButton = page.getByRole("button", { name: "trial-p1 Fail" });
     await expect(trialButton).toBeVisible();
+    await layoutResponse;
 
     const trialDetailPattern = new RegExp(`/api/trials/${TRIAL_ID}(?:\\?|$)`);
     const taskTrialsPattern = new RegExp(
@@ -648,7 +662,7 @@ test.describe("critical task and trial subtree", () => {
       page.getByRole("button", { name: "Retry Trial" })
     ).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: "Run analysis" })
+      page.getByRole("button", { name: "Generate QA verdict", exact: true })
     ).toBeDisabled();
     await expect(page.getByText("Loading latest trial state.")).toBeVisible();
 
@@ -662,10 +676,10 @@ test.describe("critical task and trial subtree", () => {
 
     trialDetailGate.release();
     await expect(
-      page.getByRole("heading", { name: "GOOD FAILURE", exact: true })
+      page.getByRole("heading", { name: "Good failure", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
+      page.getByRole("button", { name: "Regenerate QA verdict", exact: true })
     ).toBeEnabled();
 
     const taskPanelPattern = new RegExp(`/api/tasks/${TASK_ID}/panel(?:\\?|$)`);
@@ -689,7 +703,7 @@ test.describe("critical task and trial subtree", () => {
     });
     await expect(taskFilesButton).toBeVisible();
     await expect(
-      page.getByRole("status").filter({ hasText: "Loading files…" })
+      page.getByRole("status", { name: "Loading files", exact: true })
     ).toBeVisible();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
     taskPanelGate.release();
@@ -734,7 +748,10 @@ test.describe("critical task and trial subtree", () => {
         request.method() === "POST" &&
         request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
     );
-    await page.getByRole("button", { name: "Generate" }).click();
+    await page
+      .getByRole("tabpanel", { name: "Trajectory", exact: true })
+      .getByRole("button", { name: "Generate", exact: true })
+      .click();
     await summaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     expect(summaryPostCount).toBe(1);
@@ -747,7 +764,10 @@ test.describe("critical task and trial subtree", () => {
         response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
         response.status() === 503
     );
-    await page.getByRole("button", { name: "Regenerate" }).click();
+    await page
+      .getByRole("tabpanel", { name: "Trajectory", exact: true })
+      .getByRole("button", { name: "Regenerate", exact: true })
+      .click();
     await failedSummaryPost;
     await expect(page.getByText("Replacement summary published")).toBeVisible();
     const regenerationAlert = page
@@ -779,7 +799,7 @@ test.describe("critical task and trial subtree", () => {
     const queuedAnalysisRequest = page.waitForRequest(
       new RegExp(`/api/trials/${TRIAL_ID}/analysis/rerun(?:\\?|$)`)
     );
-    await page.getByRole("button", { name: "Re-run analysis" }).click();
+    await page.getByRole("button", { name: "Regenerate QA verdict", exact: true }).click();
     await queuedAnalysisRequest;
     const secondTrialResponse = page.waitForResponse(secondTrialPattern);
     await page.getByRole("button", { name: "Next trial" }).click();
@@ -798,7 +818,7 @@ test.describe("critical task and trial subtree", () => {
       page.locator("p.sr-only").filter({ hasText: TRIAL_ID })
     ).toHaveText(TRIAL_ID);
     await expect(
-      page.getByRole("button", { name: "Re-run analysis" })
+      page.getByRole("button", { name: "Regenerate QA verdict", exact: true })
     ).toBeDisabled();
     // Task-level QA writes the finished report onto this terminal agent row.
     // Its settlement ends task-open polling and triggers one final trial-detail

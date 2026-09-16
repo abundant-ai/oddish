@@ -421,116 +421,159 @@ test("retryable focus errors preserve the streamed-trial deep-link fallback", as
     (window as typeof window & { finishResults: () => void }).finishResults()
   );
   await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible();
-  await expect(page).toHaveURL(/task=task-1&trial=task-1-2/);
+  await expect(page).toHaveURL(/task=task-1/);
+  await expect(page).toHaveURL(/trial=task-1-2/);
 });
 
-test("public trial drawers defer trajectory work", async ({ page }) => {
-  const token = "public-drawer-regression";
-  const publicTrial: Trial = {
-    id: "task-1-2",
-    name: "Public trial",
-    task_id: "task-1",
-    task_path: "tasks/task-1",
-    experiment_id: "exp-1",
-    agent: "claude-code",
-    provider: "anthropic",
-    model: "masked-model",
-    status: "success",
-    attempts: 1,
-    max_attempts: 1,
-    harbor_stage: "completed",
-    reward: 0.5,
-    task_version: 1,
-    task_version_id: "task-1-v1",
-    has_trajectory: true,
-    created_at: "2026-07-14T00:00:00Z",
-    started_at: "2026-07-14T00:00:00Z",
-    finished_at: "2026-07-14T00:01:00Z",
-  };
-  const publicTask = task({
-    current_version: 1,
-    current_version_id: "task-1-v1",
-    trial_version_id: "task-1-v1",
-    trials: [publicTrial],
-    reward_success: 0,
-    reward_sum: 0.5,
-    reward_total: 1,
-  });
-  let trajectoryRequests = 0;
+for (const hasSummary of [false, true]) {
+  test(`public trial drawers defer trajectory work, summary ${hasSummary}`, async ({
+    page,
+  }) => {
+    const token = "public-drawer-regression";
+    const publicTrial: Trial = {
+      id: "task-1-2",
+      name: "Public trial",
+      task_id: "task-1",
+      task_path: "tasks/task-1",
+      experiment_id: "exp-1",
+      agent: "claude-code",
+      provider: "anthropic",
+      model: "masked-model",
+      status: "success",
+      attempts: 1,
+      max_attempts: 1,
+      harbor_stage: "completed",
+      reward: 0.5,
+      task_version: 1,
+      task_version_id: "task-1-v1",
+      has_trajectory: true,
+      created_at: "2026-07-14T00:00:00Z",
+      started_at: "2026-07-14T00:00:00Z",
+      finished_at: "2026-07-14T00:01:00Z",
+    };
+    const publicTask = task({
+      current_version: 1,
+      current_version_id: "task-1-v1",
+      trial_version_id: "task-1-v1",
+      trials: [publicTrial],
+      reward_success: 0,
+      reward_sum: 0.5,
+      reward_total: 1,
+    });
+    let trajectoryRequests = 0;
 
-  await page.route(`**/api/public/experiments/${token}`, (route) =>
-    route.fulfill({
-      json: {
-        name: "Public drawer test",
-        public_token: token,
-        description: null,
-      },
-    })
-  );
-  await page.route(`**/api/public/experiments/${token}/cost-totals`, (route) =>
-    route.fulfill({ json: emptyCostTotals })
-  );
-  await mockResults(page, token, [publicTask], [publicTrial]);
-  await page.route(
-    `**/api/public/experiments/${token}/tasks/task-1/files?*`,
-    (route) => route.fulfill({ json: { files: [] } })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/trials/task-1-2/trajectory/summary`,
-    (route) => route.fulfill({ status: 404, json: { detail: "not found" } })
-  );
-  await page.route(
-    `**/api/public/experiments/${token}/trials/task-1-2/trajectory`,
-    (route) => {
-      trajectoryRequests += 1;
-      return route.fulfill({
+    await page.route(`**/api/public/experiments/${token}`, (route) =>
+      route.fulfill({
         json: {
-          schema_version: "1",
-          session_id: "session-1",
-          agent: {
-            name: "claude-code",
-            version: "1",
-            model_name: "masked-model",
-          },
-          steps: [
-            {
-              step_id: 1,
-              timestamp: "2026-07-14T00:00:01Z",
-              source: "agent",
-              model_name: "masked-model",
-              message: "Short collapsed preview",
-              reasoning_content: "EXPENSIVE_STEP_BODY",
-              tool_calls: null,
-              observation: null,
-              metrics: null,
-            },
-          ],
-          notes: null,
-          final_metrics: null,
+          name: "Public drawer test",
+          public_token: token,
+          description: null,
         },
-      });
+      })
+    );
+    await page.route(
+      `**/api/public/experiments/${token}/cost-totals`,
+      (route) => route.fulfill({ json: emptyCostTotals })
+    );
+    await mockResults(page, token, [publicTask], [publicTrial]);
+    await page.route(
+      `**/api/public/experiments/${token}/tasks/task-1/files?*`,
+      (route) => route.fulfill({ json: { files: [] } })
+    );
+    await page.route(
+      `**/api/public/experiments/${token}/trials/task-1-2/trajectory/summary`,
+      (route) =>
+        route.fulfill(
+          hasSummary
+            ? {
+                json: {
+                  summary: {
+                    schema_version: 5,
+                    summary:
+                      "The agent inspected the verifier and corrected the empty-answer check.",
+                    components: [],
+                    highlights: [],
+                  },
+                  refresh: {
+                    status: "failed",
+                    job_id: "summary-job",
+                    detail: "Summary service unavailable",
+                  },
+                },
+              }
+            : { status: 404, json: { detail: "not found" } }
+        )
+    );
+    await page.route(
+      `**/api/public/experiments/${token}/trials/task-1-2/trajectory`,
+      (route) => {
+        trajectoryRequests += 1;
+        return route.fulfill({
+          json: {
+            schema_version: "1",
+            session_id: "session-1",
+            agent: {
+              name: "claude-code",
+              version: "1",
+              model_name: "masked-model",
+            },
+            steps: [
+              {
+                step_id: 1,
+                timestamp: "2026-07-14T00:00:01Z",
+                source: "agent",
+                model_name: "masked-model",
+                message: "Short collapsed preview",
+                reasoning_content: "EXPENSIVE_STEP_BODY",
+                tool_calls: null,
+                observation: null,
+                metrics: null,
+              },
+            ],
+            notes: null,
+            final_metrics: null,
+          },
+        });
+      }
+    );
+
+    await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
+    await expect(
+      page.getByRole("heading", { name: "Public drawer test" })
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Trial 1 Partial" }).click();
+
+    await expect(page.getByRole("tab", { name: "Summary" })).toHaveAttribute(
+      "data-state",
+      "active"
+    );
+    await page.waitForTimeout(500);
+    expect(trajectoryRequests).toBe(0);
+
+    await page.getByRole("tab", { name: "Trajectory" }).click();
+    await expect.poll(() => trajectoryRequests).toBe(1);
+    await expect(page.getByText("EXPENSIVE_STEP_BODY")).toHaveCount(0);
+    await expect(page.getByText("Activity", { exact: true })).toHaveCount(0);
+    await expect(
+      page.getByText(
+        /Timeline · by|bars share components|one gray band|still shown below|Retrieving summary|ATIF format/
+      )
+    ).toHaveCount(0);
+    if (hasSummary) {
+      await expect(
+        page.getByText(
+          "The agent inspected the verifier and corrected the empty-answer check.",
+          { exact: true }
+        )
+      ).toBeVisible();
+      await expect(
+        page.getByText("Summary service unavailable", { exact: true })
+      ).toBeVisible();
     }
-  );
-
-  await page.goto(`/share/${token}`, { waitUntil: "domcontentloaded" });
-  await expect(
-    page.getByRole("heading", { name: "Public drawer test" })
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Trial 1 Partial" }).click();
-
-  await expect(page.getByRole("tab", { name: "Summary" })).toHaveAttribute(
-    "data-state",
-    "active"
-  );
-  await page.waitForTimeout(500);
-  expect(trajectoryRequests).toBe(0);
-
-  await page.getByRole("tab", { name: "Trajectory" }).click();
-  await expect.poll(() => trajectoryRequests).toBe(1);
-  await expect(page.getByText("EXPENSIVE_STEP_BODY")).toHaveCount(0);
-  await page.getByRole("button", { name: /^#1/ }).click();
-  await expect(page.getByText("EXPENSIVE_STEP_BODY")).toBeVisible();
-});
+    await page.getByRole("button", { name: /^#1/ }).click();
+    await expect(page.getByText("EXPENSIVE_STEP_BODY")).toBeVisible();
+  });
+}
 
 test("one continuous response shows 101 tasks and 505 trials, then enables graphs", async ({
   page,
@@ -573,16 +616,11 @@ test("one continuous response shows 101 tasks and 505 trials, then enables graph
   await expect(
     page.getByRole("button", { name: "Task 1", exact: true })
   ).toBeVisible();
-  const waiting = page.getByText(
-    "Graphs will appear once all task and trial results have loaded."
-  );
+  const waiting = page.getByRole("progressbar", { name: "Loading graphs" });
   await expect(waiting).toBeVisible();
-  const download = page
-    .getByRole("status")
-    .filter({ hasText: "Downloading results" });
-  await expect(download).toContainText(
-    "101 of 101 tasks loaded · 250 of 505 trial results loaded"
-  );
+  await expect(
+    page.getByRole("button", { name: "Task 101", exact: true })
+  ).toBeAttached();
   await expect(
     page.getByText("All results loaded.", { exact: true })
   ).toHaveCount(0);
@@ -595,8 +633,8 @@ test("one continuous response shows 101 tasks and 505 trials, then enables graph
   );
   await expect(waiting).toHaveCount(0);
   await expect(
-    page.getByRole("status").filter({ hasText: "All results loaded." })
-  ).toContainText("101 of 101 tasks loaded · 505 of 505 trial results loaded");
+    page.getByText("All results loaded.", { exact: true })
+  ).toHaveCount(0);
   await expect(page.getByText("49.5%", { exact: true })).toBeVisible({
     timeout: 15000,
   });
@@ -908,7 +946,7 @@ test("retry keeps partial rows visible until the replacement stream completes", 
   await expect(row).toHaveCount(0);
 });
 for (const view of ["share", "datasets"]) {
-  test(`${view} shows task download progress before trials and keeps exact totals after completion`, async ({
+  test(`${view} shows arriving tasks without download narration`, async ({
     page,
   }) => {
     const token = `task-progress-${view}`;
@@ -924,20 +962,21 @@ for (const view of ["share", "datasets"]) {
       records.slice(26)
     );
     await page.goto(`/${view}/${token}`, { waitUntil: "domcontentloaded" });
-    const status = page
-      .getByRole("status")
-      .filter({ hasText: "Downloading results" });
-    await expect(status).toContainText(
-      "25 of 30 tasks loaded · 0 of 0 trial results loaded"
-    );
+    if (view === "datasets") {
+      await expect(page.getByText("25", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Tasks", exact: true }).click();
+    }
+    await expect(page.getByText("Task 24", { exact: true })).toBeAttached();
+    await expect(page.getByText("Task 29", { exact: true })).toHaveCount(0);
     await expect(
       page.getByText("All results loaded.", { exact: true })
     ).toHaveCount(0);
     await page.evaluate(() =>
       (window as typeof window & { finishResults: () => void }).finishResults()
     );
+    await expect(page.getByText("Task 29", { exact: true })).toBeAttached();
     await expect(
-      page.getByRole("status").filter({ hasText: "All results loaded." })
-    ).toContainText("30 of 30 tasks loaded · 0 of 0 trial results loaded");
+      page.getByText("All results loaded.", { exact: true })
+    ).toHaveCount(0);
   });
 }

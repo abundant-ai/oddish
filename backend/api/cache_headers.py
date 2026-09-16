@@ -23,6 +23,7 @@ ROUTE_CACHE_CONTROL: dict[str, str] = {
     "/dashboard": "private, max-age=5, stale-while-revalidate=30",
     "/users": "private, max-age=30, stale-while-revalidate=120",
     "/people/search": "no-store",
+    "/users/me/ui-layouts/{layout_key}": "no-store",
     "/tasks/{task_id}/open": "no-store",
     # Listings hand out presigned URLs that expire in 15 minutes; ten minutes
     # of reuse keeps every URL in a cached listing valid.

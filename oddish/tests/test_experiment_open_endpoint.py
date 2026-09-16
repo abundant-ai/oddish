@@ -290,16 +290,21 @@ def test_experiment_open_includes_rejection_preview_without_full_report():
 
 
 @pytest.mark.parametrize("count", [None, 0, 1, 12])
-def test_experiment_open_includes_current_audit_count_without_findings(count):
-    session, response = _open(_task(1, must_fix_count=count))
+def test_experiment_open_includes_selected_audit_status_and_count_without_findings(count):
+    session, response = _open(
+        _task(1, must_fix_count=count, pre_trial_status="success")
+    )
     payload = response.model_dump()["tasks"][0]
     assert payload["must_fix_count"] == count
+    assert payload["pre_trial_status"] == "success"
     assert "pre_trial" not in payload
     sql = _sql(session.calls[2])
     assert "pre_trial_status = 'SUCCESS'" in sql
     assert "jsonb_array_length(jsonb_path_query_array(" in sql
     assert '$.items[*] ? (@.tier == "must_fix")' in sql
     assert "AS must_fix_count" in sql
+    assert "JOIN task_versions AS review_version" in sql
+    assert "coalesce(experiment_task_stats.trial_version_id, tasks.current_version_id)" in sql
     assert len(session.calls) == 4
 
 
@@ -455,17 +460,22 @@ def test_public_experiment_open_never_queries_or_serializes_task_owners(monkeypa
     assert "link" not in payload
     assert "user" not in payload["tasks"][0]
     assert "must_fix_count" not in payload["tasks"][0]
+    assert "pre_trial_status" not in payload["tasks"][0]
     assert payload["tasks"][0]["github_meta"] == {
         "category": "JS",
         "world": "World_7",
     }
     assert "Private QA finding" not in response.model_dump_json()
     assert "primary_issue" not in payload["tasks"][0]["verdict"]
+    assert "must_fix" not in payload["tasks"][0]["verdict"]
     assert "private-owner" not in response.model_dump_json()
     assert "private/repository" not in response.model_dump_json()
     task_query_sql = _sql(session.calls[1])
     assert 'tasks."user"' not in task_query_sql
     assert "must_fix_count" not in task_query_sql
+    assert "pre_trial_status" not in task_query_sql
+    assert "JOIN task_versions AS review_version" not in task_query_sql
+    assert "review_version." not in task_query_sql
 
 
 def test_later_experiment_page_skips_summary_and_bounds_trial_aggregation():
@@ -773,8 +783,10 @@ def test_results_stream_exceeds_both_page_limits_without_cursor_requests(monkeyp
     assert session.closed and all(cursor.closed for cursor in session.cursors)
     assert len(session.stream_queries) == 2
     for query in session.stream_queries:
-        assert " LIMIT " not in _sql(query)
-        assert " OFFSET " not in _sql(query)
+        # The stream itself is unbounded; a scalar review-provenance lookup
+        # may select its newest matching QA run with LIMIT 1.
+        assert query._limit_clause is None
+        assert query._offset_clause is None
         assert "org-1" in _sql(query)
 
 

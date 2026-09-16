@@ -1,6 +1,7 @@
 """Compare the latest QA run with the evidence currently selected for delivery."""
 
 from collections import defaultdict
+from typing import Any
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,9 +34,11 @@ async def delivery_qa_statuses(
 ) -> dict[str, DeliveryQAStatus]:
     if not tasks:
         return {}
+    # Instructions in harbor_config can dwarf the evidence. Project the payload
+    # separately so an ORM instance never holds a truncated writable config.
     latest = (
-        await session.scalars(
-            select(TrialModel)
+        await session.execute(
+            select(TrialModel, TrialModel.harbor_config["analysis_payload"])
             .options(
                 load_only(
                     TrialModel.id,
@@ -46,7 +49,7 @@ async def delivery_qa_statuses(
                     TrialModel.finished_at,
                     TrialModel.error_message,
                     TrialModel.analysis_error,
-                    TrialModel.harbor_config,
+                    raiseload=True,
                 )
             )
             .where(
@@ -92,9 +95,10 @@ async def delivery_qa_statuses(
             task=tasks[qa.task_id],
             version=versions.get(tasks[qa.task_id].current_version_id),
             qa=qa,
+            analysis_payload=analysis_payload,
             sources=evidence.get(tasks[qa.task_id].current_version_id, []),
         )
-        for qa in latest
+        for qa, analysis_payload in latest
     }
 
 
@@ -103,11 +107,12 @@ def evaluate_delivery_qa(
     task: TaskModel,
     version: TaskVersionModel | None,
     qa: TrialModel,
+    analysis_payload: Any,
     sources: list[TrialModel],
 ) -> DeliveryQAStatus:
     result = DeliveryQAStatus(trial_id=qa.id, finished_at=qa.finished_at)
     if version is None or qa.task_version_id != version.id:
-        result.status, result.detail = "outdated", "QA covers a different task version"
+        result.status, result.detail = "outdated", "QA verdict covers a different task version"
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
             "running"
@@ -115,22 +120,22 @@ def evaluate_delivery_qa(
             else "queued"
         )
         result.detail = (
-            "QA is running" if result.status == "running" else "QA is queued"
+            "QA verdict generation is running" if result.status == "running" else "QA verdict generation is queued"
         )
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",
-            qa.error_message or qa.analysis_error or "QA did not complete",
+            qa.error_message or qa.analysis_error or "QA verdict generation did not complete",
         )
     elif qa.finished_at is None:
-        result.status, result.detail = "outdated", "QA completion time was not recorded"
+        result.status, result.detail = "outdated", "QA verdict generation completion time was not recorded"
     else:
         try:
-            payload = parse_analysis_payload("qa", qa.harbor_config)
+            payload = parse_analysis_payload("qa", {"analysis_payload": analysis_payload})
         except AnalysisPayloadError:
             result.status, result.detail = (
                 "outdated",
-                "QA evidence coverage was not recorded; rerun QA",
+                "QA verdict evidence coverage was not recorded; regenerate the QA verdict",
             )
             return result
         pinned = list(payload.trial_evidence + payload.baseline_evidence)
@@ -146,12 +151,12 @@ def evaluate_delivery_qa(
         ):
             result.status, result.detail = (
                 "outdated",
-                "Trials changed since QA; rerun QA",
+                "Trials changed since the QA verdict run; regenerate the QA verdict",
             )
-        elif not audit_snapshot_matches(version, qa.harbor_config["analysis_payload"]):
+        elif not audit_snapshot_matches(version, analysis_payload):
             result.status, result.detail = (
                 "outdated",
-                "Source audit changed since QA; rerun QA",
+                "Source audit changed since the QA verdict run; regenerate the QA verdict",
             )
         elif (
             task.verdict_status != VerdictStatus.SUCCESS
@@ -161,15 +166,15 @@ def evaluate_delivery_qa(
             or task.verdict.get("_graded_by", qa.id if payload.with_verdict else None)
             != qa.id
         ):
-            result.status, result.detail = "error", "QA produced no current verdict"
+            result.status, result.detail = "error", "No current QA verdict was generated"
         elif task.verdict.get("is_good") is True:
             result.status, result.detail = (
                 "accepted",
-                "QA accepts the current version and trials",
+                "QA verdict accepts the current version and trials",
             )
         else:
             result.status, result.detail = (
                 "needs_fixes",
-                task.verdict.get("primary_issue") or "QA rejects the current version",
+                task.verdict.get("primary_issue") or "QA verdict rejects the current version",
             )
     return result
