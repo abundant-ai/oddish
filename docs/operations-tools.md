@@ -40,10 +40,10 @@ starts at the beginning. Versions with no eligible trials do not stall paging.
 ## Evaluation instructions and historical material
 
 Use [the SWE-Marathon runbook](swe-marathon-eval-runbook.md) for the evaluation
-workflow, checking its historical task/provider examples against current code.
-The [August campaign record](archive/swe-marathon-terra-campaign.md) preserves
-incident observations and reasoning-effort comparison lessons, not executable
-instructions for a new campaign.
+workflow. Its existing advice is unchanged by this restoration.
+The [August campaign record](archive/swe-marathon-terra-campaign.md) is restored
+verbatim from `eval-ops/PLAN.md` before #1628, including its original historical
+qualification. The referenced campaign scripts remain in Git history.
 
 ## Scope of restoration from PR #1628
 

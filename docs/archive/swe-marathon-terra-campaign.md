@@ -1,11 +1,5 @@
 # Historical campaign record — SWE-Marathon gpt-5.6-terra effort sweep
 
-Archived from `eval-ops/PLAN.md` before cleanup PR #1628. The referenced
-scripts were retired and are not restored by this document. Historical
-commands, bypass flags, heartbeat advice, and concurrency limits below are
-not current operating instructions. Consult `docs/swe-marathon-eval-runbook.md`
-for the evaluation workflow.
-
 This file records the August 2026 campaign state that produced the scripts in
 this directory. It is not a current Oddish operations runbook: the paths,
 experiment IDs, feature branch, container, and completion state are specific to

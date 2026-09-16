@@ -58,6 +58,9 @@ references is evidence to investigate, not proof that a file is useless.
   Check shared interfaces for methods still required by other implementations
   or callers. Run the relevant tests, imports, builds, and CLI checks; distinguish
   static checks from actual execution and identify unverified cloud behavior.
+- Keep restoration separate from changes to operating policy. Preserve existing
+  expert advice when recovering a runbook; raise concerns separately instead of
+  silently rewriting evaluation rules, thresholds, or campaign instructions.
 - Keep a pruning PR reviewable: describe each deletion category, the evidence
   that it is obsolete or replaced, where any retained knowledge moved, and the
   checks performed. Separate uncertain operational removals from clearly dead
