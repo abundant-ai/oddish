@@ -128,6 +128,7 @@ test("expanded history sees completed review on the board refresh", async ({
   const state = await controlledAPI(page);
   await openBoard(page);
   await expect(current(page)).toContainText("qa (running)");
+  await expect(current(page)).toContainText(/Pre-trial audit:\s*success/);
   state.history = history(7, 7, "success");
   await tick(page);
   await expect(current(page)).toContainText("qa (success)");
@@ -169,7 +170,7 @@ test("non-default creation keeps v7; default switch shows v8 with v7 history sti
   await page
     .getByRole("checkbox", { name: "Select Task A", exact: true })
     .click();
-  await page.getByRole("button", { name: /Rerun QA/ }).click();
+  await page.getByRole("button", { name: /Regenerate QA verdicts/ }).click();
   await expect
     .poll(() => state.writes.filter((w) => w.path.endsWith("/qa/retry")).length)
     .toBe(1);
@@ -963,7 +964,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     page.getByRole("table").getByText("Ready", { exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText("Review could not complete", { exact: true })
+    page.getByText("QA verdict failed", { exact: true })
   ).toBeVisible();
   expect(state.writes.map(({ body }) => body.check_key)).toEqual([
     "ack:verifier",
@@ -1690,7 +1691,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count - 1})` })
+      page.getByRole("button", { name: `Regenerate QA verdicts (${count - 1})` })
     ).toBeVisible();
     last.checks[0].status = "pass";
     last.qa.status = "never";
@@ -1699,7 +1700,7 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Rerun QA (${count})` })
+      page.getByRole("button", { name: `Regenerate QA verdicts (${count})` })
     ).toBeEnabled();
     expect(state.writes).toEqual([]);
   });
@@ -1733,7 +1734,7 @@ for (const group of ["none", "state"]) {
         status: "fail",
         label: "Verdict",
         detail: "Old verbose verdict explanation",
-        failure_labels: ["Verdict needed"],
+        failure_labels: ["QA verdict needed"],
       },
     ];
     await page.goto(`/?group=${group}`);
@@ -1744,7 +1745,7 @@ for (const group of ["none", "state"]) {
       "Pre-trial audit running",
       "Runs: 2/8",
       "Agents: 1/4",
-      "Verdict needed",
+      "QA verdict needed",
     ])
       await expect(row.getByText(label, { exact: true })).toBeVisible();
     await expect(page.getByText("QA incomplete", { exact: true })).toHaveCount(
@@ -1758,7 +1759,7 @@ for (const group of ["none", "state"]) {
       page.getByRole("link", { name: "View runs", exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Open run review", exact: true })
+      page.getByRole("link", { name: "Open QA verdict", exact: true })
     ).toBeVisible();
     await expect(page.getByText(/Old verbose/)).toHaveCount(0);
     expect(state.writes).toEqual([]);

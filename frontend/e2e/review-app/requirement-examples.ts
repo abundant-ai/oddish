@@ -23,7 +23,7 @@ const examples: { name: string; requirements: [string, string[]][] }[] = [
     name: "More runs and agents needed",
     requirements: [
       ["min_rollouts", ["Runs: 2/5", "Agents: 1/3"]],
-      ["verdict_ok", ["Verdict needed"]],
+      ["verdict_ok", ["QA verdict needed"]],
     ],
   },
   {
@@ -32,7 +32,7 @@ const examples: { name: string; requirements: [string, string[]][] }[] = [
   },
   {
     name: "Review not requested",
-    requirements: [["verdict_ok", ["Verdict needed"]]],
+    requirements: [["verdict_ok", ["QA verdict needed"]]],
   },
   {
     name: "Review in progress",

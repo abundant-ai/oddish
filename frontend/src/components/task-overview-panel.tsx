@@ -550,7 +550,7 @@ export function TaskOverviewPanel({
           })}
           {unanalyzedCount > 0 ? (
             <span className="text-muted-foreground font-mono text-[10px]">
-              {unanalyzedCount} awaiting review
+              {unanalyzedCount} awaiting QA
             </span>
           ) : null}
         </div>
@@ -575,7 +575,7 @@ export function TaskOverviewPanel({
       {verdictTask && mustFixCount === 0 ? (
         <div className="border-border border-b p-4">
           <div className="text-muted-foreground mb-2 text-xs">
-            QA result ·{" "}
+            QA verdict ·{" "}
             {scopeTrials != null
               ? "All runs for this task version"
               : `v${version ?? "—"}`}
@@ -639,7 +639,7 @@ export function TaskOverviewPanel({
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Trajectory analysis
+            Run QA Verdict
           </h2>
           <div className="ml-auto">{executionReviewAction}</div>
           <span className="text-muted-foreground font-mono text-[11px]">
@@ -730,14 +730,14 @@ function TrialQaRow({
         )}
       >
         {running
-          ? "ANALYSIS RUNNING"
+          ? "QA RUNNING"
           : failed
-            ? "ANALYSIS FAILED"
+            ? "QA FAILED"
             : analysis
               ? gradingError
                 ? "GRADING ERROR"
                 : EXECUTION_LABELS[analysis.classification].toUpperCase()
-              : "NOT ANALYZED"}
+              : "NO QA VERDICT YET"}
       </span>
       {analysis?.subtype && !gradingError ? (
         <span
