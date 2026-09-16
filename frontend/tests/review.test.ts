@@ -546,7 +546,7 @@ for (const variant of ["inline", "summary", "card"] as const) {
     } else {
       assert.match(html, /Duplicate explanation/);
       assert.match(html, /Duplicate fix/);
-      assert.match(html, /<details open=""/);
+      assert.doesNotMatch(html, /<details open/);
     }
   });
 }

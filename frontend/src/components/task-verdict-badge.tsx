@@ -151,7 +151,7 @@ export function TaskVerdictBadge({
     variant === "summary" && mustFixCount > 0 ? null : p.detail;
   const rejectionDetail =
     shownDetail && p.isGood === false && variant !== "summary" ? (
-      <details open className="mt-2 text-sm">
+      <details className="mt-2 text-sm">
         <summary className="cursor-pointer">Rejection reason</summary>
         <AnalysisProse
           text={shownDetail}
@@ -162,10 +162,7 @@ export function TaskVerdictBadge({
   const verdict = task.verdict ?? null;
   const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    variant === "summary"
-      ? "Generate verdict"
-      : `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
+  const runLabel = `Generate QA verdict${task.current_version != null ? ` for v${task.current_version}` : ""}`;
 
   if (variant === "inline" || variant === "summary") {
     return (
@@ -187,9 +184,7 @@ export function TaskVerdictBadge({
               }
             >
               {variant === "summary" && mustFixCount > 0 && rejectionSource
-                ? rejectionSource === "Run QA Verdict"
-                  ? "Rejected"
-                  : `Rejected · ${rejectionSource}`
+                ? `Rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
                   ? "Queuing QA verdict…"
                   : p.title}
