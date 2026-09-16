@@ -1063,14 +1063,20 @@ export function TrialDetailPanel({
         throw new Error(data.detail || data.error || "Failed to retry trial");
       }
 
-      const { trial_id: replacementId } = (await res.json()) as {
-        trial_id: string;
-      };
-      // Retry creates a new row. Load it through the drawer's shared resource
-      // so the replacement never inherits the old attempt's results or logs.
-      const replacement = await preloadTrial(apiBaseUrl, replacementId);
-      onRetried(trial.id, replacement);
-      await onRetry?.(task ? [task.id] : undefined);
+      try {
+        const { trial_id: replacementId } = (await res.json()) as {
+          trial_id: string;
+        };
+        // Retry creates a new row. Load it through the drawer's shared resource
+        // so the replacement never inherits the old attempt's results or logs.
+        const replacement = await preloadTrial(apiBaseUrl, replacementId);
+        onRetried(trial.id, replacement);
+      } catch (err) {
+        onClose();
+        throw err;
+      } finally {
+        await onRetry?.(task ? [task.id] : undefined);
+      }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {
