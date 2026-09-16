@@ -150,3 +150,50 @@ test("a rejected retry displays the server error without changing the drawer", a
   await retry();
   assert.deepEqual(errors, [null, "Quota exceeded"]);
 });
+
+for (const [failure, expectedError, json, preloadTrial] of [
+  [
+    "response cannot be decoded",
+    "Invalid retry response",
+    async () => {
+      throw new Error("Invalid retry response");
+    },
+    () => assert.fail("An undecodable response has no replacement ID"),
+  ],
+  [
+    "replacement cannot be loaded",
+    "Replacement unavailable",
+    async () => ({ trial_id: replacement.id }),
+    async () => {
+      throw new Error("Replacement unavailable");
+    },
+  ],
+] as const) {
+  test(`a successful retry refreshes and closes when the ${failure}`, async () => {
+    const events: string[] = [];
+    const errors: unknown[] = [];
+    const retry = handler("components/trial-detail-panel.tsx", "handleRetry", {
+      trial: previous,
+      task: { id: "task-1" },
+      retrying: false,
+      canRetry: true,
+      apiBaseUrl: "/api",
+      setRetrying: (busy: boolean) => events.push(`busy:${busy}`),
+      setRetryError: (error: unknown) => errors.push(error),
+      fetch: async () => ({ ok: true, json }),
+      preloadTrial,
+      onRetried: () =>
+        assert.fail("The drawer cannot select an unavailable replacement"),
+      onRetry: async (ids: string[]) => {
+        assert.equal(ids[0], "task-1");
+        events.push("refresh");
+      },
+      onClose: () => events.push("close"),
+    });
+
+    await retry();
+
+    assert.deepEqual(events, ["busy:true", "close", "refresh", "busy:false"]);
+    assert.deepEqual(errors, [null, expectedError]);
+  });
+}
