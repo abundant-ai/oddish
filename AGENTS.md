@@ -2563,10 +2563,10 @@ reasoning effort for that choice. Explicit effort still separates experiment
 columns and sweep counts. Historical configurations and retries keep their
 saved settings; missing effort is never inferred from the agent's runtime default.
 
-By default the shared frontend column identity includes agent, model, and effort
-even when only one configuration has arrived. The experiment table’s Group effort
-levels toggle sets `groupEfforts=1` in the URL and groups solver trials by agent
-and model across efforts. The table, row filters, charts, and drawer navigation
+Private experiment views separate solver columns by agent, model, and effort by
+default. Their Group effort levels toggle sets `groupEfforts=1` in the URL to
+group across efforts. Public share views always group efforts, ignore the URL
+grouping setting, and hide the toggle. The table, row filters, charts, and drawer navigation
 use this grouping; trial settings and launch requests remain unchanged. Table cells, navigation, column visibility,
 exports, and Pass/k share that identity. The model/effort label is display-only;
 model-copy and submission keep the actual model identifier. Effort suffixes

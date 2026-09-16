@@ -315,3 +315,17 @@ test("experiment view refreshes open drawer groups when the URL grouping changes
   await page.goBack();
   await expect(trials).toHaveCount(8);
 });
+
+
+test("public experiments always group efforts and hide the grouping control", async ({ page }) => {
+  await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
+  await page.goto("/effort?sample=mixed&detail=1&public=1&groupEfforts=0");
+  const row = page.getByRole("row").filter({ hasText: "repair-queue" });
+  await expect(row.locator("td")).toHaveCount(2);
+  await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
+  await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);
+  await expect(page.getByText("20.0%", { exact: true })).toBeVisible();
+  await page.goto("/effort?sample=mixed&detail=1&public=1");
+  await expect(row.locator("td")).toHaveCount(2);
+  await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);
+});

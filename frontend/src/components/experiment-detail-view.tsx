@@ -1024,7 +1024,7 @@ export function ExperimentDetailView({
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
-  const groupEfforts = searchParams.get("groupEfforts") === "1";
+  const groupEfforts = readOnly || searchParams.get("groupEfforts") === "1";
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
   const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
