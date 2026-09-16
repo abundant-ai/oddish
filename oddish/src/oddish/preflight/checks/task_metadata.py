@@ -12,6 +12,7 @@ CHECK_ID = "task_metadata"
 
 def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
     """Check author declarations without treating Harbor defaults as declarations."""
+    task_dir = task_dir.resolve()
     path = task_dir / "task.toml"
     raw = tomllib.loads(path.read_text())
     findings: list[Finding] = []
