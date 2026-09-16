@@ -542,11 +542,13 @@ function AgentCard({
   summary,
   trials,
   onTrialSelect,
+  showSummary,
 }: {
   agentLabel: string;
   summary: TaskOpenAgentModelSummary;
   trials: Trial[];
   onTrialSelect: (trial: Trial) => void;
+  showSummary: boolean;
 }) {
   const scorePct =
     summary.reward_total > 0
@@ -585,30 +587,36 @@ function AgentCard({
           ) : null}
         </div>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {summary.trial_count}
-            </span>
-          </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {scorePct != null
-                ? `${scorePct.toFixed(0)}% (${summary.pass_count}/${summary.reward_total})`
-                : "—"}
-            </span>
-          </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
-            <CostBadge
-              cost={summary.cost_usd}
-              trialCount={summary.cost_trial_count}
-              hasEstimated={summary.cost_has_estimated}
-              hasNative={summary.cost_has_native}
-              size="sm"
-            />
-          </span>
+          {showSummary && (
+            <>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
+                <span className="text-[color:var(--paper-ink)]">
+                  {summary.trial_count}
+                </span>
+              </span>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">
+                  avg score
+                </span>{" "}
+                <span className="text-[color:var(--paper-ink)]">
+                  {scorePct != null ? `${scorePct.toFixed(0)}%` : "—"}
+                </span>
+              </span>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">
+                  total cost
+                </span>{" "}
+                <CostBadge
+                  cost={summary.cost_usd}
+                  trialCount={summary.cost_trial_count}
+                  hasEstimated={summary.cost_has_estimated}
+                  hasNative={summary.cost_has_native}
+                  size="sm"
+                />
+              </span>
+            </>
+          )}
           <span title="Mean cost per priced trial">
             <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
@@ -625,7 +633,7 @@ function AgentCard({
               {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
             </span>
           </span>
-          {summary.last_run_at ? (
+          {showSummary && summary.last_run_at ? (
             <span title={new Date(summary.last_run_at).toLocaleString()}>
               <span className="text-[color:var(--paper-ink-3)]">last run</span>{" "}
               <span className="text-[color:var(--paper-ink)]">
@@ -1034,7 +1042,9 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
+        throw new Error(
+          data.detail || data.error || "Failed to queue QA verdict generation"
+        );
       }
       revalidateReaderResources();
     } catch (err) {
@@ -1129,7 +1139,14 @@ export function TaskDetailClient({
           }
         />
 
-        {!isBrowseSnapshot ? (
+        {!isBrowseSnapshot &&
+        !(
+          drawer &&
+          activeTaskPane === "overview" &&
+          (drawer.mode === "task" || drawerShowTask) &&
+          !["queued", "running"].includes(task.verdict_status ?? "") &&
+          !isRunningJudge
+        ) ? (
           <TaskVerdictBadge
             task={task}
             variant="summary"
@@ -1247,14 +1264,6 @@ export function TaskDetailClient({
               {versionScopedScorePct != null
                 ? `${versionScopedScorePct.toFixed(1)}%`
                 : "—"}
-              {versionSummary.rewardTotal > 0 ? (
-                <span
-                  className="font-mono text-[12px] text-[color:var(--paper-ink-3)]"
-                  title={`${versionSummary.passCount} of ${versionSummary.rewardTotal} scored trials passed (reward = 1)`}
-                >
-                  {versionSummary.passCount}/{versionSummary.rewardTotal} pass
-                </span>
-              ) : null}
             </span>
           </KpiTile>
           <KpiTile
@@ -1363,6 +1372,13 @@ export function TaskDetailClient({
                 key={card.key}
                 agentLabel={card.label}
                 summary={card.summary}
+                showSummary={
+                  isBrowseSnapshot ||
+                  !selectedVersion ||
+                  agentCards.length !== 1 ||
+                  card.summary.is_probe ||
+                  card.summary.trial_count !== selectedVersion.trial_count
+                }
                 trials={card.trials}
                 onTrialSelect={handleSelectTrial}
               />

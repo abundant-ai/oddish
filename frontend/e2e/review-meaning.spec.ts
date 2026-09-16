@@ -169,9 +169,13 @@ test.describe("real components with local fixture API", () => {
       });
       await expect
         .poll(() =>
-          header.evaluate((element) => element.getBoundingClientRect().bottom)
+          header.evaluate((element) =>
+            Math.abs(element.getBoundingClientRect().bottom - 30)
+          )
         )
-        .toBeCloseTo(30, 0);
+        // Scrolling rounds document coordinates to device pixels; the taller
+        // summary can put the table on a fractional CSS pixel.
+        .toBeLessThan(1);
       await page.evaluate(() => window.scrollTo(0, 0));
       await expect
         .poll(() =>
@@ -328,12 +332,17 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(page.getByText("1/1 analyzed", { exact: true })).toBeVisible();
     const otherExperiments = page.locator("section").filter({
-      has: page.getByRole("heading", { name: "Other experiments", exact: true }),
+      has: page.getByRole("heading", {
+        name: "Other experiments",
+        exact: true,
+      }),
     });
     await expect(
-      otherExperiments.getByText("Other experiment · other-ex", { exact: true })
-    ).toHaveAttribute("title", "other-experiment");
-    await expect(otherExperiments.getByRole("link")).toHaveCount(0);
+      otherExperiments.getByRole("link", {
+        name: "other-experiment",
+        exact: true,
+      })
+    ).toHaveAttribute("href", "/experiments/other-experiment");
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
@@ -423,9 +432,7 @@ test.describe("real components with local fixture API", () => {
         exact: true,
       })
     ).toBeVisible();
-    await expect(
-      page.getByText("QA FAILED", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("QA FAILED", { exact: true })).toBeVisible();
     await expect(
       page.getByText(
         "Trajectory analysis worker stopped before saving its report.",
@@ -488,6 +495,9 @@ test.describe("real components with local fixture API", () => {
           .locator("..");
         await expect(
           checks.getByText("1 Must fix", { exact: true })
+        ).toHaveCount(0);
+        await expect(
+          checks.locator("../..").getByText("1 Must fix", { exact: true })
         ).toBeVisible();
         await expect(
           checks.getByText("No required fixes", { exact: true })
@@ -497,7 +507,7 @@ test.describe("real components with local fixture API", () => {
         ).toBeVisible();
         if (origin === "another experiment")
           await expect(
-            page.getByText("Other experiment · another-", { exact: true })
+            page.getByRole("link", { name: "another-experiment", exact: true })
           ).toBeVisible();
       });
     }
@@ -550,10 +560,13 @@ test.describe("real components with local fixture API", () => {
         .getByRole("heading", { name: "Findings", exact: true })
         .locator("..");
       await expect(
-        checks.getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
-          exact: true,
-        })
+        checks
+          .locator("../..")
+          .getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
+            exact: true,
+          })
       ).toBeVisible();
+      await expect(checks.getByText(/Must fix/)).toHaveCount(0);
       await expect(
         page.getByText("RECORDED OPTIONAL", { exact: true })
       ).toHaveCount(2);
@@ -1117,7 +1130,10 @@ test("linked retained must-fix survives a historical optional audit finding", as
   const findings = page
     .getByRole("heading", { name: "Findings", exact: true })
     .locator("..");
-  await expect(findings.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await expect(findings.getByText("1 Must fix", { exact: true })).toHaveCount(
+    0
+  );
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await expect(
     page.locator('details[data-finding="retained-fix"]')
   ).toBeVisible();

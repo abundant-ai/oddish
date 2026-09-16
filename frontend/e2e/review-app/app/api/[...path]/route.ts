@@ -5,11 +5,63 @@ import {
 } from "../../../../delivery-page-fixtures";
 import { NextRequest, NextResponse } from "next/server";
 import { board, tasks, openFor, versionFor } from "../../../records";
+import {
+  board as deliveryBoard,
+  reviewTaskRow,
+} from "../../../../delivery-fixtures";
+
+const duplicationBoard = deliveryBoard(1);
+duplicationBoard.delivery.id = "duplication-demo";
+duplicationBoard.delivery.name = "UI duplication local verification";
+duplicationBoard.tasks = [reviewTaskRow()];
+for (const check of duplicationBoard.tasks[0].checks) {
+  if (check.key === "verdict_ok") {
+    check.status = "fail";
+    check.failure_labels = ["QA verdict failed"];
+    check.detail =
+      "Insufficient evidence: no eligible solver trials for this task version.";
+  } else if (check.key === "pre_trial_passed") {
+    check.status = "fail";
+    check.failure_labels = ["Pre-trial audit failed"];
+    check.detail =
+      "The environment could not install the test runner dependency.";
+  } else if (check.key === "min_rollouts") {
+    check.status = "fail";
+    check.failure_labels = ["Runs: 2/5", "Agents: 1/3"];
+    check.detail = "2/5 runs and 1/3 agents for verdict required.";
+  }
+}
 export async function GET(request: NextRequest) {
   const parts = request.nextUrl.pathname
     .slice(5)
     .split("/")
     .map(decodeURIComponent);
+  if (parts[0] === "duplication" && parts.at(-1) === "trials") {
+    const original = tasks[0].trials![0];
+    return NextResponse.json(
+      ["source-a", "source-a", "source-b"].map((experiment_id, index) => ({
+        ...original,
+        id: `grouped-trial-${index}`,
+        name: `grouped-trial-${index}`,
+        experiment_id,
+        analysis: {
+          ...original.analysis,
+          root_cause: "The runtime dependency is missing.",
+          evidence:
+            index === 0
+              ? "The runtime dependency is missing."
+              : "The process exited before the verifier started.",
+        },
+      }))
+    );
+  }
+  if (parts[0] === "deliveries" && parts[1] === "duplication-demo") {
+    if (parts[2] === "tasks")
+      return NextResponse.json(duplicationBoard.tasks[0]);
+    return NextResponse.json(
+      pageFixture(duplicationBoard, request.nextUrl.searchParams)
+    );
+  }
   if (parts[0] === "deliveries" && parts[1] === "requirements-demo") {
     const examples = requirementExamples();
     return NextResponse.json(
@@ -114,8 +166,35 @@ export async function GET(request: NextRequest) {
     { status: 404 }
   );
 }
-export async function POST(request: NextRequest) {
+export async function PUT(request: NextRequest) {
   // This fixture has no backend, credentials, queue, or paid operations.
+  if (request.nextUrl.pathname === "/api/deliveries/duplication-demo/checks") {
+    const { check_key, checked, expected_version_id } = await request.json();
+    const task = duplicationBoard.tasks[0];
+    if (expected_version_id !== task.version_id)
+      return NextResponse.json({ detail: "Version changed" }, { status: 409 });
+    if (check_key.startsWith("ack:")) {
+      const finding = task.defects.find(
+        (item) => `ack:${item.id}` === check_key
+      );
+      if (finding) {
+        finding.acknowledged = checked;
+        finding.acknowledged_by_name = "Local reviewer";
+      }
+    } else if (check_key.startsWith("waive:")) {
+      const check = task.checks.find(
+        (item) => `waive:${item.key}` === check_key
+      );
+      if (check) {
+        check.status = checked ? "waived" : "fail";
+        check.checked_by_name = "Local reviewer";
+      }
+    }
+    return NextResponse.json({});
+  }
+  return NextResponse.json({ detail: "Mutation outside fixture scope" }, { status: 405 });
+}
+export async function POST(request: NextRequest) {
   if (/\/qa\/(retry|pre-trial)$/.test(request.nextUrl.pathname))
     return NextResponse.json({ status: "queued" });
   return NextResponse.json(

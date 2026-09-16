@@ -2399,6 +2399,16 @@ off a delivery. `pre_trial_passed` means the source review completed; the
 existing verdict and must-fix checks still decide whether defects block delivery.
 Do not change severity policy as part of presentation changes.
 
+Task panel responses populate the existing version `experiments` list with
+source experiment names for that version's non-deleted, non-superseded trials,
+restricted to the authorized organization. The overview uses those names for
+the linked groups under Other experiments. This stays within the panel's two
+SQL statements. Delivery check `detail` includes stored failed-audit and failed-QA
+reasons; run coverage includes both configured thresholds. The short
+`failure_labels` remain status labels, ordered QA verdict, pre-trial audit, runs
+in the UI. Acknowledgement undo uses the existing version-checked `checked: false`
+request for both `ack:` findings and `waive:` check exceptions.
+
 Task open/panel and experiment task rows carry `review_version_matches`, derived
 from the saved verdict's QA trial and the displayed version. An older verdict
 must remain distinguishable from a review of the selected version. The shared
