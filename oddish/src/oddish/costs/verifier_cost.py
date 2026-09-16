@@ -21,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -689,29 +689,166 @@ def _trial_result_has_cua_signal(result: Any) -> bool:
     )
 
 
-async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
-    """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
+def trial_needs_verifier_backfill(
+    *,
+    has_cua_result_signal: bool,
+    covered_attempts: int,
+    real_covered_attempts: int,
+    attempts: int,
+) -> bool:
+    """Whether a finished agent trial belongs in a backfill batch.
 
-    Selects finished agent trials whose attempt coverage in ``verifier_costs``
-    is incomplete, plus CUA-signaled trials that only have false
-    ``no_cua_artifacts`` sentinels (from a prior wrong-path download). For each
-    missing attempt 1..N, resolves the Harbor trial subdirectory via
-    ``resolve_trial_artifact_layout`` and downloads CUA artifacts from that
-    prefix — not the bare ``attempt-N/`` root, where Harbor never writes them.
+    Non-CUA trials are excluded so recent ordinary agent runs cannot fill
+    the 200-trial cap and starve historical CUA rows (including sentinel
+    repairs).
     """
+    if not has_cua_result_signal:
+        return False
+    max_attempt = max(int(attempts or 1), 1)
+    return covered_attempts < max_attempt or real_covered_attempts < max_attempt
+
+
+async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -> int:
+    """Price missing attempts for one trial. Caller owns the session."""
     import tempfile
 
     from oddish.core.trial_artifacts import (
         TrialArtifactMode,
         resolve_trial_artifact_layout,
     )
-    from oddish.db import TrialModel, TrialStatus
-    from oddish.db.storage import StorageClient, is_missing_object
+    from oddish.db.storage import is_missing_object
 
     try:
         from botocore.exceptions import ClientError
     except ImportError:  # pragma: no cover
         ClientError = Exception  # type: ignore[misc, assignment]
+
+    reopen_sentinels = _trial_result_has_cua_signal(trial.result)
+    row_meta = (
+        await session.execute(
+            select(
+                VerifierCostModel.attempt,
+                VerifierCostModel.unpriced_reason,
+            ).where(
+                VerifierCostModel.trial_id == trial.id,
+                VerifierCostModel.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    have_real: set[int] = set()
+    have_any: set[int] = set()
+    for attempt_num, reason in row_meta:
+        n = int(attempt_num)
+        have_any.add(n)
+        if reason != UNPRICED_NO_CUA_ARTIFACTS:
+            have_real.add(n)
+    max_attempt = max(int(trial.attempts or 1), 1)
+    inserted_total = 0
+    for attempt in range(1, max_attempt + 1):
+        if attempt in have_real:
+            continue
+        if attempt in have_any and not reopen_sentinels:
+            continue
+        sibling = attempt_s3_prefix(trial.trial_s3_key, attempt)
+        if sibling is None and attempt != max_attempt:
+            n = await upsert_verifier_cost_rows(
+                session,
+                drafts=[_no_artifacts_sentinel()],
+                trial_id=trial.id,
+                attempt=attempt,
+                experiment_id=trial.experiment_id,
+                org_id=trial.org_id,
+                task_id=trial.task_id,
+                task_version_id=trial.task_version_id,
+                created_at=trial.finished_at,
+            )
+            inserted_total += n
+            have_any.add(attempt)
+            continue
+        pointer = SimpleNamespace(
+            id=trial.id,
+            trial_s3_key=sibling or trial.trial_s3_key,
+            kind=getattr(trial, "kind", "agent") or "agent",
+            attempts=attempt if sibling else (trial.attempts or 1),
+            finished_at=trial.finished_at,
+        )
+        layout = await resolve_trial_artifact_layout(pointer, storage)
+        if layout.mode is TrialArtifactMode.UNAVAILABLE or not layout.artifact_prefix:
+            n = await upsert_verifier_cost_rows(
+                session,
+                drafts=[_no_artifacts_sentinel()],
+                trial_id=trial.id,
+                attempt=attempt,
+                experiment_id=trial.experiment_id,
+                org_id=trial.org_id,
+                task_id=trial.task_id,
+                task_version_id=trial.task_version_id,
+                created_at=trial.finished_at,
+            )
+            inserted_total += n
+            have_any.add(attempt)
+            continue
+        prefix = layout.artifact_prefix.rstrip("/") + "/"
+        with tempfile.TemporaryDirectory(prefix="cua-backfill-") as tmp:
+            tmp_path = Path(tmp)
+            verifier_dir = tmp_path / "verifier" / "ux"
+            verifier_dir.mkdir(parents=True, exist_ok=True)
+            found_any = False
+            for relative, local_name in _BACKFILL_ARTIFACT_CANDIDATES:
+                key = f"{prefix}{relative}"
+                try:
+                    body = await storage.download_bytes(key)
+                except ClientError as exc:
+                    if is_missing_object(exc):
+                        continue
+                    raise
+                (verifier_dir / local_name).write_bytes(body)
+                found_any = True
+            if not found_any:
+                n = await upsert_verifier_cost_rows(
+                    session,
+                    drafts=[_no_artifacts_sentinel()],
+                    trial_id=trial.id,
+                    attempt=attempt,
+                    experiment_id=trial.experiment_id,
+                    org_id=trial.org_id,
+                    task_id=trial.task_id,
+                    task_version_id=trial.task_version_id,
+                    created_at=trial.finished_at,
+                )
+            else:
+                n = await record_verifier_llm_costs(
+                    job_dir=tmp_path,
+                    task_path=None,
+                    trial_id=trial.id,
+                    attempt=attempt,
+                    experiment_id=trial.experiment_id,
+                    org_id=trial.org_id,
+                    task_id=trial.task_id,
+                    task_version_id=trial.task_version_id,
+                    cost_source_override=COST_BACKFILL,
+                    created_at=trial.finished_at,
+                    session=session,
+                )
+            inserted_total += n
+            have_any.add(attempt)
+            if found_any:
+                have_real.add(attempt)
+    return inserted_total
+
+
+async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
+    """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
+
+    Only CUA-signaled finished agent trials whose attempt coverage is
+    incomplete (including false ``no_cua_artifacts`` sentinels) are selected,
+    so recent ordinary agent runs cannot starve the batch. Each trial uses
+    its own write session so one IntegrityError cannot roll back the sweep.
+    Artifacts are read from the Harbor trial subdirectory, not the bare
+    ``attempt-N/`` root.
+    """
+    from oddish.db import TrialModel, TrialStatus
+    from oddish.db.storage import StorageClient
 
     async with get_session() as session:
         all_covered = (
@@ -773,164 +910,44 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                             TrialStatus.SKIPPED,
                         )
                     ),
+                    cua_signal,
                     or_(
                         all_covered.c.trial_id.is_(None),
                         all_covered.c.covered < TrialModel.attempts,
-                        and_(
-                            cua_signal,
-                            or_(
-                                real_covered.c.trial_id.is_(None),
-                                real_covered.c.covered < TrialModel.attempts,
-                            ),
-                        ),
+                        real_covered.c.trial_id.is_(None),
+                        real_covered.c.covered < TrialModel.attempts,
                     ),
                 )
                 .order_by(TrialModel.finished_at.desc())
                 .limit(limit)
             )
         ).scalars().all()
+        trial_ids = [trial.id for trial in candidates]
 
-        if not candidates:
-            return 0
+    if not trial_ids:
+        return 0
 
-        storage = StorageClient()
-        inserted_total = 0
-        failures = 0
-        for trial in candidates:
-            try:
-                reopen_sentinels = _trial_result_has_cua_signal(trial.result)
-                row_meta = (
-                    await session.execute(
-                        select(
-                            VerifierCostModel.attempt,
-                            VerifierCostModel.unpriced_reason,
-                        ).where(
-                            VerifierCostModel.trial_id == trial.id,
-                            VerifierCostModel.deleted_at.is_(None),
-                        )
-                    )
-                ).all()
-                have_real: set[int] = set()
-                have_any: set[int] = set()
-                for attempt_num, reason in row_meta:
-                    n = int(attempt_num)
-                    have_any.add(n)
-                    if reason != UNPRICED_NO_CUA_ARTIFACTS:
-                        have_real.add(n)
-                max_attempt = max(int(trial.attempts or 1), 1)
-                for attempt in range(1, max_attempt + 1):
-                    if attempt in have_real:
-                        continue
-                    if attempt in have_any and not reopen_sentinels:
-                        continue
-                    sibling = attempt_s3_prefix(trial.trial_s3_key, attempt)
-                    if sibling is None and attempt != max_attempt:
-                        # Legacy shared prefix: earlier attempts are not
-                        # addressable; mark them inspected and move on.
-                        n = await upsert_verifier_cost_rows(
-                            session,
-                            drafts=[_no_artifacts_sentinel()],
-                            trial_id=trial.id,
-                            attempt=attempt,
-                            experiment_id=trial.experiment_id,
-                            org_id=trial.org_id,
-                            task_id=trial.task_id,
-                            task_version_id=trial.task_version_id,
-                            created_at=trial.finished_at,
-                        )
-                        inserted_total += n
-                        have_any.add(attempt)
-                        continue
-                    # Always resolve through the Harbor trial subdirectory.
-                    # Artifacts live at attempt-N/<trial_name>/verifier/...,
-                    # never at the bare attempt-N/ root.
-                    pointer = SimpleNamespace(
-                        id=trial.id,
-                        trial_s3_key=sibling or trial.trial_s3_key,
-                        kind=getattr(trial, "kind", "agent") or "agent",
-                        attempts=attempt if sibling else (trial.attempts or 1),
-                        finished_at=trial.finished_at,
-                    )
-                    layout = await resolve_trial_artifact_layout(
-                        pointer, storage
-                    )
-                    if (
-                        layout.mode is TrialArtifactMode.UNAVAILABLE
-                        or not layout.artifact_prefix
-                    ):
-                        n = await upsert_verifier_cost_rows(
-                            session,
-                            drafts=[_no_artifacts_sentinel()],
-                            trial_id=trial.id,
-                            attempt=attempt,
-                            experiment_id=trial.experiment_id,
-                            org_id=trial.org_id,
-                            task_id=trial.task_id,
-                            task_version_id=trial.task_version_id,
-                            created_at=trial.finished_at,
-                        )
-                        inserted_total += n
-                        have_any.add(attempt)
-                        continue
-                    prefix = layout.artifact_prefix.rstrip("/") + "/"
-                    with tempfile.TemporaryDirectory(
-                        prefix="cua-backfill-"
-                    ) as tmp:
-                        tmp_path = Path(tmp)
-                        verifier_dir = tmp_path / "verifier" / "ux"
-                        verifier_dir.mkdir(parents=True, exist_ok=True)
-                        found_any = False
-                        for relative, local_name in _BACKFILL_ARTIFACT_CANDIDATES:
-                            key = f"{prefix}{relative}"
-                            try:
-                                body = await storage.download_bytes(key)
-                            except ClientError as exc:
-                                if is_missing_object(exc):
-                                    continue
-                                raise
-                            (verifier_dir / local_name).write_bytes(body)
-                            found_any = True
-                        if not found_any:
-                            n = await upsert_verifier_cost_rows(
-                                session,
-                                drafts=[_no_artifacts_sentinel()],
-                                trial_id=trial.id,
-                                attempt=attempt,
-                                experiment_id=trial.experiment_id,
-                                org_id=trial.org_id,
-                                task_id=trial.task_id,
-                                task_version_id=trial.task_version_id,
-                                created_at=trial.finished_at,
-                            )
-                        else:
-                            n = await record_verifier_llm_costs(
-                                job_dir=tmp_path,
-                                task_path=None,
-                                trial_id=trial.id,
-                                attempt=attempt,
-                                experiment_id=trial.experiment_id,
-                                org_id=trial.org_id,
-                                task_id=trial.task_id,
-                                task_version_id=trial.task_version_id,
-                                cost_source_override=COST_BACKFILL,
-                                created_at=trial.finished_at,
-                                session=session,
-                            )
-                        inserted_total += n
-                        have_any.add(attempt)
-                        if found_any:
-                            have_real.add(attempt)
-            except Exception:
-                failures += 1
-                if failures <= 3:
-                    log.exception(
-                        "verifier cost backfill failed trial_id=%s",
-                        trial.id,
-                    )
-                continue
-        if failures > 3:
-            log.warning(
-                "verifier cost backfill: %s additional trial failures suppressed",
-                failures - 3,
-            )
-        return inserted_total
+    storage = StorageClient()
+    inserted_total = 0
+    failures = 0
+    for trial_id in trial_ids:
+        try:
+            async with get_session() as session:
+                trial = await session.get(TrialModel, trial_id)
+                if trial is None:
+                    continue
+                inserted_total += await _backfill_one_trial(session, trial, storage)
+        except Exception:
+            failures += 1
+            if failures <= 3:
+                log.exception(
+                    "verifier cost backfill failed trial_id=%s",
+                    trial_id,
+                )
+            continue
+    if failures > 3:
+        log.warning(
+            "verifier cost backfill: %s additional trial failures suppressed",
+            failures - 3,
+        )
+    return inserted_total

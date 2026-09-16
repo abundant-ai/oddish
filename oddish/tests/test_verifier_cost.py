@@ -25,6 +25,7 @@ from oddish.costs.verifier_cost import (
     _no_artifacts_sentinel,
     UNPRICED_NO_CUA_ARTIFACTS,
     COST_BACKFILL,
+    trial_needs_verifier_backfill,
 )
 
 
@@ -212,6 +213,39 @@ def test_trial_result_cua_signal() -> None:
     assert _trial_result_has_cua_signal({"cua_rubric_score": 0.7}) is True
     assert _trial_result_has_cua_signal({"reward": 1.0}) is False
     assert _trial_result_has_cua_signal(None) is False
+
+
+def test_backfill_skips_non_cua_even_when_uncovered() -> None:
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=False,
+            covered_attempts=0,
+            real_covered_attempts=0,
+            attempts=3,
+        )
+        is False
+    )
+
+
+def test_backfill_includes_cua_sentinel_repairs() -> None:
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=True,
+            covered_attempts=1,
+            real_covered_attempts=0,
+            attempts=1,
+        )
+        is True
+    )
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=True,
+            covered_attempts=1,
+            real_covered_attempts=1,
+            attempts=1,
+        )
+        is False
+    )
 
 
 def test_no_artifacts_sentinel_is_replaceable() -> None:
