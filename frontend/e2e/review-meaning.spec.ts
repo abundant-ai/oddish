@@ -661,7 +661,7 @@ test.describe("real components with local fixture API", () => {
       rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
     ).toHaveCount(1);
     await page
-      .getByRole("button", { name: "2 Review error", exact: true })
+      .getByRole("button", { name: "2 QA verdict failed", exact: true })
       .click();
     await expect(page).toHaveURL(/verdict=failed/);
     await expect(
@@ -734,7 +734,7 @@ test.describe("real components with local fixture API", () => {
     await source.click();
     await expect.poll(() => writes).toEqual(["/api/tasks/task-a/qa/pre-trial"]);
     await page
-      .getByRole("button", { name: "Review runs for v7", exact: true })
+      .getByRole("button", { name: "Generate QA verdict for v7", exact: true })
       .last()
       .click();
     await expect
@@ -818,7 +818,7 @@ test.describe("real components with local fixture API", () => {
       page.getByRole("button", { name: "Task A", exact: true })
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "0 No current result", exact: true })
+      page.getByRole("button", { name: "0 No current QA verdict", exact: true })
     ).toHaveCount(0);
     await page.getByRole("button", { name: "3 Accepted", exact: true }).click();
     await expect(
@@ -842,7 +842,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=unreviewed-only");
     await page
-      .getByRole("button", { name: "2 No current result", exact: true })
+      .getByRole("button", { name: "2 No current QA verdict", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Unreviewed version", exact: true })
@@ -926,7 +926,7 @@ test.describe("real components with local fixture API", () => {
       "/tasks/stale-review?version=8&drawer=task&taskPane=overview"
     );
     await expect(
-      page.getByText("No result for this version", { exact: true }).first()
+      page.getByText("No QA verdict for this version", { exact: true }).first()
     ).toBeVisible();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page
@@ -940,7 +940,7 @@ test.describe("real components with local fixture API", () => {
     await page.goBack();
     await expect(page).toHaveURL(/version=8/);
     await expect(
-      page.getByText("No result for this version", { exact: true }).first()
+      page.getByText("No QA verdict for this version", { exact: true }).first()
     ).toBeVisible();
     await page.goForward();
     await expect(

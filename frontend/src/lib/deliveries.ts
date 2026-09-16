@@ -17,12 +17,12 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
 
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
   accepted: "Accepted",
-  needs_fixes: "Blocking defects found",
-  outdated: "Review needs refresh",
-  queued: "Review queued",
-  running: "Review running",
-  error: "Review could not complete",
-  never: "Not reviewed",
+  needs_fixes: "Rejected",
+  outdated: "QA verdict needs refresh",
+  queued: "QA verdict queued",
+  running: "QA verdict running",
+  error: "QA verdict failed",
+  never: "No QA verdict",
 };
 
 export const DELIVERY_STATES = {
@@ -87,7 +87,7 @@ export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
               pre_trial_passed: "Pre-trial audit needed",
               min_rollouts: "Run requirements unmet",
               verdict_ok:
-                row.qa.status === "needs_fixes" ? "Rejected" : "Verdict needed",
+                row.qa.status === "needs_fixes" ? "Rejected" : "QA verdict needed",
               task_exists: "Task missing",
               no_must_fix: "Finding decisions needed",
             }[check.key] ?? check.label,

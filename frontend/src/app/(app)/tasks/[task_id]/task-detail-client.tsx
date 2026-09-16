@@ -1026,7 +1026,7 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA");
+        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
       }
       revalidateReaderResources();
     } catch (err) {
