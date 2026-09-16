@@ -505,7 +505,10 @@ async def upsert_verifier_cost_rows(
 
     ``created_at`` defaults to now (live settlement). Backfill must pass the
     trial's ``finished_at`` so admin windows bucket historical CUA spend with
-    the period it actually occurred, not the sweep day.
+    the period it actually occurred, not the sweep day. Sentinel replacement
+    restamps ``created_at`` to that same value; priced live rows stay
+    untouched because the conflict ``WHERE`` only matches
+    ``no_cua_artifacts``.
     """
     if not drafts:
         return 0
@@ -551,6 +554,7 @@ async def upsert_verifier_cost_rows(
                 "cost_usd",
                 "cost_source",
                 "unpriced_reason",
+                "created_at",
                 "updated_at",
                 "experiment_id",
                 "org_id",
