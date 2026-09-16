@@ -5,10 +5,18 @@ vendor asks for **8 trials × 20 tasks = 160 trials** on a new/internal model)
 end to end on Oddish + Modal. It captures the gotchas learned running xAI
 (`grok-build`), Meta (`mini-swe-agent`), Moonshot (`claude-code`), ZAI (`claude-code`), etc. evals so the next one is fast.
 
-**Target outcome:** ≥8 *valid* trials per task, where **valid = the trial ran to
-a real terminal state** — a clean success *or* an `AgentTimeoutError`. Any other
-infra failure (non-zero agent exit like 137/143/1, verifier infra failure, a
-Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
+**Target outcome:** the requested number of valid trials per task. Set validity
+rules before examining rewards. Preserve failed attempts and exclusion reasons;
+replace confirmed infrastructure failures through the supported retry workflow.
+A model failing the task or reaching its agent time limit is still an evaluated
+attempt. A verifier timeout needs investigation: do not assume it is either a
+valid score or an infrastructure failure without checking the task contract.
+
+The task list, resource sizes, provider fixes, and concurrency observations below
+are historical examples. Check the current dataset and deployed agent code before
+applying them. The [August campaign record](archive/swe-marathon-terra-campaign.md)
+records a later campaign-specific browser-verifier cap of 25; neither 10 nor 25
+is a universal platform limit.
 
 ## 0. Prereqs / setup
 
@@ -89,7 +97,8 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
    total trials exist for this `(task, agent, model, experiment)`"; it creates
    `N − existing`. Submitting `N ≤ existing` adds **0** (this — not idempotency —
    is the usual reason a rerun shows `added=0`). To add more, raise `N` above the
-   current count, or delete some first. (There is also a real 24h idempotency
+   current count. Use the supported retry workflow for failed attempts.
+   (There is also a real 24h idempotency
    key = SHA-256 of the whole sweep payload; a different payload → different key.)
 
 2. **Closed-internet tasks are automatic on Modal/Daytona.** Oddish's Harbor
@@ -119,12 +128,14 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
    argv.
 
 5. **Classify by underlying error, not job status.** Infra failures (137/143/1)
-   frequently show as `status=success, reward=0` with a populated
-   `error_message`. Always audit `error_message`; treat `AgentTimeoutError` /
-   `VerifierTimeoutError` as acceptable and everything else (`Command failed
-   (exit N)`, `ExceptionGroup`) as infra to delete + rerun.
+   can show as `status=success, reward=0` with a populated `error_message`.
+   Inspect the saved result, worker errors, and logs. Exit codes alone do not
+   establish infrastructure failure: an agent can terminate its own process or
+   exhaust task resources. Apply the validity rules agreed for this evaluation;
+   preserve the evidence and retry confirmed infrastructure failures.
 
-6. **CUA verifiers.** Throttle to **≤ ~10 concurrent** CUA trials so the browser
+6. **CUA verifiers (historical starting point).** Start conservatively (the
+   original evaluation used roughly 10 concurrent CUA trials) so the browser
    verifier (Anthropic key) isn't overloaded; confirm the verifier ran cleanly on
    the first CUA completion before scaling. Beware: if the shared platform
    `ANTHROPIC_API_KEY` is quota-capped, CUA verifiers fail independently of the
@@ -167,40 +178,23 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
 2. **Breadth** across all 20 at a small N.
 3. **Depth:** the per-eval target `N` is usually **8**, but confirm it per
    request because vendor requirements can vary.
-   Raise the sweep target to `N` plus a **small** buffer (e.g. `N+1`/`N+2`) to
-   absorb the occasional stochastic bad trial without over-provisioning.
-4. **Babysit loop:** audit by underlying error → delete the infra **and
-   degenerate** trials → re-topup (raise target) → repeat until every task has
-   ≥ `N` good trials and 0 infra. Then prune each task to exactly `N` (see below).
+   Submit the requested target without selecting extra attempts by reward.
+4. **Monitor:** investigate incomplete or failed trials, record confirmed
+   infrastructure exclusions, and replace those attempts through retries until
+   the agreed sample is complete. Report unresolved failures explicitly.
 
-## 4b. Pruning to N and rerunning degenerate trials
+## 4b. Trial inclusion and replacement
 
-**Degenerate trials — delete and rerun (don't keep).** Beyond the hard infra
-failures (137/143/exit-1), also drop trials that aren't a *real* attempt and
-rerun them:
+Do not discard a trial solely for a low reward, short trajectory, or agent
+timeout. In a reasoning-effort comparison, shorter attempts may be the treatment
+effect being measured. Diagnose rate limits, missing credentials, and storage or
+verifier failures from evidence rather than step-count thresholds.
 
-- Very few steps/messages relative to the task — e.g. `total_steps < ~15` when
-  the task normally runs 60–400 steps (spot them via the step distribution in
-  the audit). Watch for a low step count paired with a long runtime / timeout
-  (the agent stalled).
-- Obvious rate-limit / `429` / `RateLimitError` in the logs, or a 0-token quick
-  exit.
-
-**Pruning down to N — keep it light.** When a task has more than `N` good
-trials, prune the extras keeping the best, in this priority order:
-
-1. Exclude anything infra or degenerate first.
-2. Prefer `reward=1` over `reward=0`.
-3. Break ties toward **longer trajectories** (more steps).
-
-**pass@k caveat (important):** do **not** over-optimize this selection —
-aggressively dropping low-reward trials to keep the "best" biases the pass@k /
-pass@1 statistics the eval reports. Keep buffers small so you only ever prune a
-*handful* per task (that's fine); systematically discarding many valid trials to
-inflate scores is not. Tasks that already sit at exactly `N` need no pruning at
-all (zero bias). The clean way to minimize bias is a small buffer (target
-`N+1`/`N+2`) + reruns of only infra/degenerate trials, rather than a big
-over-provision followed by heavy pruning.
+Never prefer successful trials or longer trajectories when selecting the final
+sample: even selecting the best N from N+1 biases the measured success rate.
+Keep all valid trials and report the actual count, or use a selection rule fixed
+before observing results (such as the first N submitted valid trials). Record
+excluded attempt IDs and reasons without deleting their evidence.
 
 ## 5. Monitor / audit
 
@@ -285,14 +279,14 @@ settings, trial count, and baseline count. The agent should have access to
 > if its required API hosts are unclear.
 >
 > The four open-internet tasks use CUA verifiers backed by an Anthropic API key.
-> Keep CUA concurrency at roughly 10 trials or fewer, and confirm an initial CUA
-> verifier completes cleanly before scaling.
+> Choose concurrency from current verifier quota and observed failures; historical
+> caps are examples. Confirm an initial verifier completes before scaling.
 >
 > Monitor trial logs and trajectories throughout the run. Trials should have no
 > infrastructure failures: an `AgentTimeoutError` is an acceptable terminal
-> outcome, but agent process exits, verifier infrastructure failures, missing
-> credentials, rate limits, and Harbor exceptions must be investigated and
-> rerun. Infrastructure problems must not count against the evaluated model.
+> outcome. Investigate agent process exits, verifier failures, missing credentials,
+> rate limits, and Harbor exceptions. Replace only confirmed infrastructure
+> failures under the agreed evaluation rules, retaining evidence and reasons.
 >
 > Also run `<baseline-N>` nop trials and `<baseline-N>` oracle trials per task.
 > During this phase, do not prune trials or export artifacts to another bucket.

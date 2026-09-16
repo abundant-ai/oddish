@@ -319,6 +319,58 @@ async def test_group_losing_its_last_trial_is_deleted(session):
 
 
 @pytest.mark.asyncio
+async def test_backfill_covers_versions_and_skips_empty_ones(session):
+    """A version with no in-scope trials yields no row and must not stall the loop.
+
+    A "select versions missing a row" cursor would hand back the trial-less
+    version forever; this is the guard on the keyset pagination that replaced it.
+    """
+    from oddish.core.backfill_task_version_model_metrics import backfill
+
+    _, with_trials = await _seed(session, [{"reward": 1.0, "total_steps": 11}])
+    _, without_trials = await _seed(session, [])
+    await session.commit()
+
+    try:
+        processed = await backfill(batch=5)
+        assert processed > 0
+
+        assert await _row(session, with_trials) is not None
+        assert await _row(session, without_trials) is None
+    finally:
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_backfill_is_idempotent(session):
+    """Re-running must not duplicate or change rows."""
+    from sqlalchemy import func as sa_func
+
+    from oddish.core.backfill_task_version_model_metrics import backfill
+
+    await _seed(session, [{"reward": 1.0, "total_steps": 21}, {"reward": 0.0}])
+    await session.commit()
+
+    async def _count() -> int:
+        return (
+            await session.execute(
+                select(sa_func.count()).select_from(TaskVersionModelMetricsModel)
+            )
+        ).scalar_one()
+
+    try:
+        await backfill(batch=5)
+        first = await _count()
+        assert first > 0
+
+        await backfill(batch=5)
+        session.expire_all()
+        assert await _count() == first
+    finally:
+        await session.rollback()
+
+
+@pytest.mark.asyncio
 async def test_recompute_takes_the_version_advisory_lock(session):
     """Callers may invoke this directly, so it cannot rely on a caller's lock.
 
@@ -359,3 +411,12 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         await holder.rollback()
         await holder.close()
         await session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch,limit", [(0, None), (-1, None), (10, -1)])
+async def test_backfill_rejects_invalid_batch_bounds(batch, limit):
+    from oddish.core.backfill_task_version_model_metrics import backfill
+
+    with pytest.raises(ValueError, match="batch must be positive"):
+        await backfill(batch=batch, limit=limit)

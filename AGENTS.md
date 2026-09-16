@@ -1,6 +1,8 @@
 # Oddish Repository Guide
 
 This file is the technical guide for the entire monorepo. End-user CLI docs live in `DOCS.md`.
+Manually invoked diagnostics and statistics rebuild commands are indexed in
+`docs/operations-tools.md`; evaluate their operational use before pruning them.
 
 The repo has three main packages:
 
@@ -24,6 +26,43 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
   CLI and standalone server; hosted product concerns (auth, org membership,
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
   cloud-only policy) belong in `backend/`.
+
+## Pruning files and operational knowledge
+
+Before deleting a file, identify who or what uses it. Application modules,
+manually invoked operator tools, migration/repair commands, tests, runbooks, and
+historical campaign records have different evidence of use. No imports or text
+references is evidence to investigate, not proof that a file is useless.
+
+- Check runtime and indirect entry points: CLI registration, dynamic imports,
+  framework file conventions, Modal functions, package exports, scheduled jobs,
+  CI workflows, deployment commands, and operator documentation. Search callers
+  of a public interface as well as the concrete implementation being removed.
+- For standalone scripts, read their arguments, side effects, dependencies, and
+  Git history. A `one-off` label or old filename does not establish that a
+  database check, artifact investigation, or repair command has no repeat use.
+  Do not run a script against production merely to determine whether to keep it.
+- For runbooks and incident notes, identify information that would otherwise be
+  lost: failure symptoms and causes, credential placement, export formats,
+  recovery procedures, and experiment-validity rules. Name the surviving
+  replacement and verify it contains that information before deleting the source.
+  Documentation does not need a code caller to be useful.
+- Separate reusable knowledge from stale instructions. Archive campaign-specific
+  records with a clear historical label; remove or update fixed experiment IDs,
+  local paths, obsolete bypass flags, model prices, and deployment assumptions
+  before presenting a tool as current. Keep useful tools discoverable in
+  `docs/operations-tools.md`. Git history is recovery, not a substitute for a
+  discoverable operating guide.
+- Remove a helper and its tests only after checking its remaining callers and
+  the coverage that survives. Do not remove tests just to make a deletion pass.
+  Check shared interfaces for methods still required by other implementations
+  or callers. Run the relevant tests, imports, builds, and CLI checks; distinguish
+  static checks from actual execution and identify unverified cloud behavior.
+- Keep a pruning PR reviewable: describe each deletion category, the evidence
+  that it is obsolete or replaced, where any retained knowledge moved, and the
+  checks performed. Separate uncertain operational removals from clearly dead
+  application code. If use remains unclear, retain the file and state the open
+  question rather than silently classifying it as dead.
 
 ## Repository Layout
 
