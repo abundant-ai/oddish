@@ -1056,6 +1056,11 @@ test("task-page findings are counted and open independently", async ({
   await page
     .getByRole("button", { name: "View findings", exact: true })
     .click();
+  const rejectionReason = page.locator("details").filter({
+    has: page.getByText("Rejection reason", { exact: true }),
+  });
+  await expect(rejectionReason).toBeVisible();
+  await expect(rejectionReason).not.toHaveAttribute("open", "");
   const one = page.locator('details[data-finding="first-fix"]');
   const two = page.locator('details[data-finding="second-fix"]');
   await expect(one).not.toHaveAttribute("open", "");
