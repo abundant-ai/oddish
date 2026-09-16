@@ -2768,7 +2768,7 @@ class DeliveryQAStatus(BaseModel):
     ] = "never"
     trial_id: str | None = None
     finished_at: datetime | None = None
-    detail: str = "No QA result recorded"
+    detail: str = "No QA verdict recorded"
 
 
 class DeliveryTaskBoardRow(BaseModel):

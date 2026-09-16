@@ -43,6 +43,44 @@ test("preserves Archil when copying a trial rerun command", () => {
   );
 });
 
+test("preserves Thunder when copying a trial rerun command", () => {
+  const command = buildOddishRunCommand(
+    {
+      agent: "claude-code",
+      environment: "thunder",
+      model: "fireworks/glm-5p3",
+      provider: "fireworks",
+      queue_key: "fireworks/glm-5p3",
+    } as Trial,
+    {
+      id: "task-1",
+      experiment_id: "experiment-1",
+    } as Task
+  );
+
+  expect(command).toBe(
+    "oddish run --task task-1 --experiment experiment-1 -e thunder -a claude-code -m fireworks/glm-5p3"
+  );
+});
+
+test("preserves an environment without a branded badge", () => {
+  const command = buildOddishRunCommand(
+    {
+      agent: "nop",
+      environment: "gke",
+      model: "nop_oracle",
+      provider: "default",
+      queue_key: "nop_oracle",
+    } as Trial,
+    {
+      id: "task-1",
+      experiment_id: "experiment-1",
+    } as Task
+  );
+
+  expect(command).toContain("-e gke");
+});
+
 test("does not prepend Bedrock to a canonical inference-profile model", () => {
   const command = buildOddishRunCommand(
     {

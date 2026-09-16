@@ -30,6 +30,11 @@ def test_numinous_has_its_own_compute_provider_label() -> None:
     assert _COMPUTE_PROVIDER_LABELS["numinous"] == "Numinous Cloud"
 
 
+def test_thunder_has_its_own_compute_provider_label() -> None:
+    assert _normalize_compute_provider(" Thunder ") == "thunder"
+    assert _COMPUTE_PROVIDER_LABELS["thunder"] == "Thunder Compute"
+
+
 def _breakdown_map(result):
     return {
         row.provider: (row.cost_usd, row.span_count)

@@ -981,8 +981,8 @@ const ALERT_TOGGLES: {
   },
   {
     key: "qa_failed_enabled",
-    label: "QA failed",
-    description: "A task's QA verdict came back bad.",
+    label: "QA verdict rejected or unavailable",
+    description: "A task was rejected or its QA verdict could not be generated.",
   },
   {
     key: "experiment_finished_enabled",
@@ -996,8 +996,8 @@ const ALERT_TOGGLES: {
   },
   {
     key: "task_finished_enabled",
-    label: "Task finished",
-    description: "A task's QA verdict came back good.",
+    label: "QA verdict accepted",
+    description: "A task received an Accepted QA verdict.",
   },
 ];
 

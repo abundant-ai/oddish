@@ -109,7 +109,7 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
   row.task_name = "qa-golden-source-vadimdemedes__ink-303-927e39b0-88267eec";
   row.qa = {
     status: "error",
-    detail: "QA produced no current verdict",
+    detail: "No current QA verdict was generated",
     trial_id: "qa-1",
     finished_at: null,
   };
@@ -117,9 +117,9 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
     {
       key: "pre_trial_passed",
       kind: "automated",
-      label: "Source review completed",
+      label: "Pre-trial audit completed",
       status: "pass",
-      detail: "Source review completed on v1",
+      detail: "Pre-trial audit completed on v1",
     },
     {
       key: "min_rollouts",

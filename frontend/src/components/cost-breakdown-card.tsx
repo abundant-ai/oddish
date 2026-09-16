@@ -1103,6 +1103,7 @@ const COMPUTE_PROVIDER_LABELS: Record<string, string> = {
   daytona: "Daytona",
   archil: "Archil",
   numinous: "Numinous Cloud",
+  thunder: "Thunder Compute",
   other: "Other",
 };
 

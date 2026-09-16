@@ -828,6 +828,14 @@ export function TaskDetailClient({
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawer((current) =>
+      current?.mode === "trial" && current.fallbackTrial.id === previousTrialId
+        ? { ...current, fallbackTrial: replacement }
+        : current
+    );
+  };
+
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
   // linked: ?trial=<id> opens that trial, ?drawer=task opens the task
@@ -1026,7 +1034,7 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA");
+        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
       }
       revalidateReaderResources();
     } catch (err) {
@@ -1129,7 +1137,7 @@ export function TaskDetailClient({
               (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
                 ? "Pre-trial audit"
                 : (task.must_fix_count ?? 0) > 0
-                  ? "Run review"
+                  ? "Run QA Verdict"
                   : undefined
             }
             onViewFindings={() => {
@@ -1465,6 +1473,7 @@ export function TaskDetailClient({
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={revalidateReaderResources}
+                  onRetried={handleTrialRetried}
                   allowRetry={true}
                   apiBaseUrl="/api"
                   contentOnly={true}

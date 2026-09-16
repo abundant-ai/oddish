@@ -724,15 +724,15 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       {qa && (
-        <KpiTile label="QA results">
+        <KpiTile label="QA verdicts">
           <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-xs">
             {(
               [
                 ["accepted", qa.accepted, "Accepted"],
                 ["rejected", qa.rejected, "Rejected"],
-                ["running", qa.running, "In progress"],
-                ["failed", qa.failed, "Review error"],
-                ["unreviewed", qa.unreviewed, "No current result"],
+                ["running", qa.running, "QA verdict in progress"],
+                ["failed", qa.failed, "QA verdict failed"],
+                ["unreviewed", qa.unreviewed, "No current QA verdict"],
               ] as const
             )
               .filter(([, count]) => count > 0)
@@ -762,7 +762,7 @@ function ExperimentSummaryBar({
       )}
       <KpiTile
         label="Run cost (all versions)"
-        labelInfo="Run cost across all versions, including runs added from other experiments. Review costs are listed separately."
+        labelInfo="Run cost across all versions, including runs added from other experiments. QA costs are listed separately."
       >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -829,8 +829,8 @@ function ExperimentSummaryBar({
               size="tile"
               title={
                 summary.qaHasEstimated
-                  ? "Review cost across this experiment's trials. Includes estimated review costs. Not included in the cost figure."
-                  : "Review cost across this experiment's trials. Not included in the cost figure."
+                  ? "QA cost across this experiment's trials. Includes estimated QA costs. Not included in the cost figure."
+                  : "QA cost across this experiment's trials. Not included in the cost figure."
               }
             />
           )}
@@ -844,7 +844,7 @@ function ExperimentSummaryBar({
       {showNewSpend && (
         <KpiTile
           label="Launched here"
-          labelInfo="Cost of runs launched in this experiment, across all versions. Review costs are listed separately."
+          labelInfo="Cost of runs launched in this experiment, across all versions. QA costs are listed separately."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -918,7 +918,7 @@ function ExperimentSummaryBar({
               <QaCostSuffix
                 costUsd={summary.ownedQaCostUsd}
                 size="tile"
-                title="Review cost on this experiment's own trials. Not included in the run cost."
+                title="QA cost on this experiment's own trials. Not included in the run cost."
               />
             )}
           </span>
@@ -1024,7 +1024,7 @@ export function ExperimentDetailView({
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
-  const groupEfforts = searchParams.get("groupEfforts") === "1";
+  const groupEfforts = readOnly || searchParams.get("groupEfforts") === "1";
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
   const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
@@ -1787,6 +1787,14 @@ export function ExperimentDetailView({
     });
   };
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawerState((current) =>
+      current?.mode === "trial" && current.trial?.id === previousTrialId
+        ? { ...current, trial: replacement, trialIndex: null }
+        : current
+    );
+  };
+
   // A trial link from the task overview's aggregated QA. Always opens in
   // this drawer: the overview hands over the full trial row, so even a
   // trial the grid hasn't streamed in yet (or one gathered from another
@@ -2124,6 +2132,7 @@ export function ExperimentDetailView({
                 onNavigate={handleNavigateToTrial}
                 onNavigateToTask={handleNavigateToTask}
                 onRetry={onRerun}
+                onRetried={handleTrialRetried}
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}

@@ -300,9 +300,10 @@ test("experiment view refreshes open drawer groups when the URL grouping changes
   await page.goto(
     "/effort?sample=mixed&detail=1&task=repair-queue&trial=repair-queue-low-2"
   );
+  // The development server compiles the lazy-loaded trial panel on first open.
   await expect(
     page.getByRole("button", { name: "Next trial", exact: true })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   const trials = page.getByRole("button", { name: /^Trial \d+ / });
   await expect(trials).toHaveCount(8); // Five in the table, three high-effort in the drawer.
   await page.evaluate(() => {
@@ -314,4 +315,18 @@ test("experiment view refreshes open drawer groups when the URL grouping changes
   await expect(page).toHaveURL(/trial=repair-queue-low-2/);
   await page.goBack();
   await expect(trials).toHaveCount(8);
+});
+
+
+test("public experiments always group efforts and hide the grouping control", async ({ page }) => {
+  await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
+  await page.goto("/effort?sample=mixed&detail=1&public=1&groupEfforts=0");
+  const row = page.getByRole("row").filter({ hasText: "repair-queue" });
+  await expect(row.locator("td")).toHaveCount(2);
+  await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
+  await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);
+  await expect(page.getByText("20.0%", { exact: true })).toBeVisible();
+  await page.goto("/effort?sample=mixed&detail=1&public=1");
+  await expect(row.locator("td")).toHaveCount(2);
+  await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);
 });

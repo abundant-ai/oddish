@@ -78,7 +78,7 @@ function EffortComparison() {
         onRetryCostTotals={() => {}}
         isLoading={false}
         headerLeft={<h1>Effort comparison</h1>}
-        readOnly
+        readOnly={params.has("public")}
         allowRetry={false}
         showAnalysis={false}
       />

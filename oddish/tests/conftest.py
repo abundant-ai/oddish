@@ -65,9 +65,13 @@ def _recycle_db_engine():
 _DEFAULT_TASK_TOML = """\
 version = "1.0"
 
+[task]
+name = "abundant/{task_name}"
+
 [metadata]
 difficulty = "easy"
 description = "a sample task"
+reward_type = "binary"
 
 [verifier]
 timeout_sec = 120.0
@@ -103,6 +107,8 @@ def make_task(tmp_path: Path) -> Callable[..., Path]:
         task_dir.mkdir(parents=True, exist_ok=True)
 
         if task_toml is not None:
+            if task_toml == _DEFAULT_TASK_TOML:
+                task_toml = task_toml.replace("{task_name}", name)
             (task_dir / "task.toml").write_text(task_toml, encoding="utf-8")
         (task_dir / "instruction.md").write_text("Solve the task.\n", encoding="utf-8")
 

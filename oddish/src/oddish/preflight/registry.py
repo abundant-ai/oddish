@@ -5,11 +5,17 @@ from oddish.preflight.checks import (
     closed_internet,
     provenance,
     solution_format,
+    task_metadata,
 )
 from oddish.preflight.models import Check
 
 # Populated as each check lands. Order is display order.
 CHECKS: list[Check] = [
+    Check(
+        id=task_metadata.CHECK_ID,
+        description="Task name, internet access, reward type, and optional GPU declarations",
+        fn=task_metadata.check,
+    ),
     Check(
         id=closed_internet.CHECK_ID,
         description="Open internet requires a justification",

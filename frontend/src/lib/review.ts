@@ -22,17 +22,17 @@ import { QA_STATUS_LABELS } from "@/lib/deliveries";
 // for evidence outside the selected time window or missing required evidence.
 export const REVIEW_LABELS = {
   ...QA_STATUS_LABELS,
-  outdated: "No result for this version",
+  outdated: "No QA verdict for this version",
 };
 
 export const VERDICT_LABELS = {
   accepted: "Accepted",
   needs_fixes: "Rejected",
-  outdated: "No result for this version",
-  queued: "Review queued",
-  running: "Review running",
-  error: "Review couldn’t finish",
-  never: "Not reviewed",
+  outdated: "No QA verdict for this version",
+  queued: "QA verdict queued",
+  running: "QA verdict running",
+  error: "QA verdict failed",
+  never: "No QA verdict",
 };
 
 /** Exclude internal, superseded, and baseline runs from review coverage. */
