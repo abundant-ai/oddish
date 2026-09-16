@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -54,9 +54,20 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
+import {
+  COMPUTE_PROVIDER_LABELS,
+  PRIMARY_COMPUTE_PROVIDERS,
+  buildSpendGroups,
+  computeTransitionState,
+  defaultSpendSelection,
+  mergeSpendSeries,
+  spendEmptyMessage,
+  type SpendOptionId,
+} from "@/lib/spend-filter";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
+import { SpendSourceFilter } from "@/components/spend-source-filter";
 import { AlertCircle, DollarSign, Info, RefreshCw } from "lucide-react";
 
 // window_days values the backend understands (0 == all-time).
@@ -385,9 +396,11 @@ function ChartTooltip(
 export function CostChart({
   series,
   bucket,
+  emptyMessage,
 }: {
   series: CostSeries;
   bucket: string;
+  emptyMessage?: string | null;
 }) {
   const labels = useMemo(() => {
     const map: Record<string, string> = {};
@@ -411,10 +424,11 @@ export function CostChart({
     [series.keys]
   );
 
-  if (series.buckets.length === 0)
+  const hasSpend = series.buckets.some((b) => b.cost_usd > 0);
+  if (!hasSpend)
     return (
-      <div className="text-muted-foreground flex h-[240px] items-center justify-center rounded-lg border text-sm">
-        No spend in this window.
+      <div className="text-muted-foreground flex h-[240px] items-center justify-center rounded-lg border px-4 text-center text-sm">
+        {emptyMessage ?? "No spend in this window."}
       </div>
     );
 
@@ -464,7 +478,7 @@ export function CostChart({
               className="inline-block h-2 w-2 rounded-sm"
               style={{ backgroundColor: colorByKey[k.key] }}
             />
-            <span className="text-muted-foreground max-w-[160px] truncate">
+            <span className="text-muted-foreground max-w-[180px] truncate">
               {k.label}
             </span>
           </span>
@@ -519,6 +533,11 @@ function MethodologyNote() {
             Per-model and per-user regroup the same costs, so every view sums to
             the same total.
           </li>
+          <li>
+            Compute cost is a sandbox-runtime estimate (Modal, Thunder, …),
+            not a provider invoice. The Spend chart filter can stack selected
+            models and compute providers together.
+          </li>
         </ul>
       </PopoverContent>
     </Popover>
@@ -530,6 +549,7 @@ function MethodologyNote() {
 // =============================================================================
 
 export type ChartDimension =
+  | "spend"
   | "agent"
   | "model"
   | "user"
@@ -538,15 +558,15 @@ export type ChartDimension =
   | "compute";
 
 const CHART_DIMENSIONS: ChartDimension[] = [
+  "spend",
   "agent",
-  "model",
   "user",
   "type",
   "analysis_type",
-  "compute",
 ];
 
 const DIMENSION_LABELS: Record<ChartDimension, string> = {
+  spend: "Spend",
   agent: "Agent",
   model: "Model",
   user: "User",
@@ -557,6 +577,12 @@ const DIMENSION_LABELS: Record<ChartDimension, string> = {
 
 const EMPTY_COMPUTE_SERIES: CostSeries = {
   dimension: "provider",
+  keys: [],
+  buckets: [],
+};
+
+const EMPTY_MODEL_SERIES: CostSeries = {
+  dimension: "model",
   keys: [],
   buckets: [],
 };
@@ -590,7 +616,11 @@ export function StackBySelector({
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("1");
-  const [dimension, setDimension] = useState<ChartDimension>("agent");
+  const [dimension, setDimension] = useState<ChartDimension>("spend");
+  const [spendSelection, setSpendSelection] = useState<Set<SpendOptionId>>(
+    () => new Set(),
+  );
+  const [spendSelectionReady, setSpendSelectionReady] = useState(false);
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
@@ -598,21 +628,65 @@ export function CostBreakdownCard() {
     { refreshInterval: 30000 }
   );
 
+  const spendGroups = useMemo(
+    () =>
+      buildSpendGroups(
+        data?.series_by_model ?? EMPTY_MODEL_SERIES,
+        data?.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES,
+      ),
+    [data?.series_by_model, data?.series_compute_by_provider],
+  );
+
+  useEffect(() => {
+    if (!data) return;
+    setSpendSelection(
+      defaultSpendSelection(
+        buildSpendGroups(
+          data.series_by_model ?? EMPTY_MODEL_SERIES,
+          data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES,
+        ),
+      ),
+    );
+    setSpendSelectionReady(true);
+    // Only when the window changes (or first payload). Do not reset on the
+    // 30s SWR refresh timestamp or the user's checkbox choices vanish.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowDays, Boolean(data)]);
+
+  const transition = useMemo(
+    () =>
+      computeTransitionState(
+        data?.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES,
+      ),
+    [data?.series_compute_by_provider],
+  );
+
   const windowLabel =
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const series = data
-    ? dimension === "agent"
-      ? data.series_by_agent
-      : dimension === "model"
-        ? data.series_by_model
-        : dimension === "user"
-          ? data.series_by_user
-          : dimension === "type"
-            ? (data.series_by_type ?? data.series_by_agent)
-            : dimension === "analysis_type"
-              ? (data.series_by_analysis_type ?? data.series_by_agent)
-              : (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
+    ? dimension === "spend"
+      ? mergeSpendSeries(
+          data.series_by_model,
+          data.series_compute_by_provider,
+          spendSelection,
+        )
+      : dimension === "agent"
+        ? data.series_by_agent
+        : dimension === "model"
+          ? data.series_by_model
+          : dimension === "user"
+            ? data.series_by_user
+            : dimension === "type"
+              ? (data.series_by_type ?? data.series_by_agent)
+              : dimension === "analysis_type"
+                ? (data.series_by_analysis_type ?? data.series_by_agent)
+                : (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
     : null;
+
+  const spendEmpty =
+    data && dimension === "spend" && series
+      ? spendEmptyMessage(spendGroups, spendSelection, series)
+      : null;
 
   return (
     <Card>
@@ -672,20 +746,41 @@ export function CostBreakdownCard() {
                 : "Check if you have admin access."}
             </AlertDescription>
           </Alert>
-        ) : !data || !series ? (
+        ) : !data || !series || (dimension === "spend" && !spendSelectionReady) ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-medium">Cost over time</h3>
-                <StackBySelector
-                  dimensions={CHART_DIMENSIONS}
-                  value={dimension}
-                  onChange={setDimension}
-                />
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {dimension === "spend" && (
+                    <SpendSourceFilter
+                      groups={spendGroups}
+                      selected={spendSelection}
+                      onChange={setSpendSelection}
+                    />
+                  )}
+                  <StackBySelector
+                    dimensions={CHART_DIMENSIONS}
+                    value={dimension}
+                    onChange={setDimension}
+                  />
+                </div>
               </div>
-              <CostChart series={series} bucket={data.bucket} />
+              {dimension === "spend" && transition.label && (
+                <p className="text-muted-foreground text-[11px]">
+                  {transition.label}
+                  {transition.modalCost > 0 || transition.thunderCost > 0
+                    ? ` · Modal ${formatCostUsd(transition.modalCost)} · Thunder ${formatCostUsd(transition.thunderCost)}`
+                    : null}
+                </p>
+              )}
+              <CostChart
+                series={series}
+                bucket={data.bucket}
+                emptyMessage={spendEmpty}
+              />
             </div>
 
             <StatTiles totals={data.totals} />
@@ -707,15 +802,16 @@ export function CostBreakdownCard() {
               </section>
             )}
 
-            {data.compute_by_provider &&
-              data.compute_by_provider.length > 0 && (
-                <section className="space-y-2">
-                  <h3 className="text-sm font-medium">
-                    Compute cost by provider
-                  </h3>
-                  <ComputeProviderTable providers={data.compute_by_provider} />
-                </section>
-              )}
+            <section className="space-y-2">
+              <h3 className="text-sm font-medium">Compute cost by provider</h3>
+              <p className="text-muted-foreground text-[11px]">
+                Sandbox runtime estimates. Modal and Thunder stay listed during
+                the provider migration even when one side is idle.
+              </p>
+              <ComputeProviderTable
+                providers={data.compute_by_provider ?? []}
+              />
+            </section>
 
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -1098,20 +1194,41 @@ function QaModelTable({ models }: { models: CostQaModelBreakdown[] }) {
   );
 }
 
-const COMPUTE_PROVIDER_LABELS: Record<string, string> = {
-  modal: "Modal",
-  daytona: "Daytona",
-  archil: "Archil",
-  numinous: "Numinous Cloud",
-  thunder: "Thunder Compute",
-  other: "Other",
-};
+const COMPUTE_PROVIDER_LABELS_UI = COMPUTE_PROVIDER_LABELS;
 
 function ComputeProviderTable({
   providers,
 }: {
   providers: CostComputeProviderBreakdown[];
 }) {
+  const byProvider = new Map(
+    providers.map((provider) => [provider.provider, provider]),
+  );
+  const orderedKeys = [
+    ...PRIMARY_COMPUTE_PROVIDERS,
+    ...providers
+      .map((p) => p.provider)
+      .filter(
+        (key) =>
+          !(PRIMARY_COMPUTE_PROVIDERS as readonly string[]).includes(key),
+      ),
+  ];
+  const seen = new Set<string>();
+  const rows = orderedKeys
+    .filter((key) => {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((key) => {
+      const existing = byProvider.get(key);
+      return {
+        provider: key,
+        cost_usd: existing?.cost_usd ?? 0,
+        span_count: existing?.span_count ?? 0,
+      };
+    });
+
   return (
     <Table>
       <TableHeader>
@@ -1122,19 +1239,44 @@ function ComputeProviderTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {providers.map((provider) => (
-          <TableRow key={provider.provider}>
-            <TableCell className="text-xs">
-              {COMPUTE_PROVIDER_LABELS[provider.provider] ?? provider.provider}
-            </TableCell>
-            <TableCell className="text-right font-mono text-xs">
-              {formatCostUsd(provider.cost_usd)}
-            </TableCell>
-            <TableCell className="text-right font-mono text-xs">
-              {provider.span_count.toLocaleString()}
-            </TableCell>
-          </TableRow>
-        ))}
+        {rows.map((provider) => {
+          const idle = provider.cost_usd <= 0 && provider.span_count <= 0;
+          return (
+            <TableRow key={provider.provider}>
+              <TableCell className="text-xs">
+                <span className="inline-flex items-center gap-1.5">
+                  {COMPUTE_PROVIDER_LABELS_UI[provider.provider] ??
+                    provider.provider}
+                  {idle &&
+                    (PRIMARY_COMPUTE_PROVIDERS as readonly string[]).includes(
+                      provider.provider,
+                    ) && (
+                      <Badge
+                        variant="outline"
+                        className="text-muted-foreground text-[9px] font-normal"
+                      >
+                        idle
+                      </Badge>
+                    )}
+                </span>
+              </TableCell>
+              <TableCell
+                className={`text-right font-mono text-xs ${
+                  idle ? "text-muted-foreground" : ""
+                }`}
+              >
+                {idle ? "—" : formatCostUsd(provider.cost_usd)}
+              </TableCell>
+              <TableCell
+                className={`text-right font-mono text-xs ${
+                  idle ? "text-muted-foreground" : ""
+                }`}
+              >
+                {idle ? "—" : provider.span_count.toLocaleString()}
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );

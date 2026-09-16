@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -38,12 +38,21 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
+import {
+  buildSpendGroups,
+  computeTransitionState,
+  defaultSpendSelection,
+  mergeSpendSeries,
+  spendEmptyMessage,
+  type SpendOptionId,
+} from "@/lib/spend-filter";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
   CostChart,
   StackBySelector,
   type ChartDimension,
 } from "@/components/cost-breakdown-card";
+import { SpendSourceFilter } from "@/components/spend-source-filter";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { ArrowLeft, DollarSign, Info } from "lucide-react";
 
@@ -57,13 +66,13 @@ const WINDOW_OPTIONS: { value: string; label: string }[] = [
 
 const TASK_LIMIT = 100;
 
-// Every dimension the dashboard offers but "user" — this page is one user.
+// Spend is the consolidated models+compute view; other dimensions remain
+// exclusive stacks. Model/compute alone are folded into Spend.
 const CHART_DIMENSIONS: ChartDimension[] = [
+  "spend",
   "agent",
-  "model",
   "type",
   "analysis_type",
-  "compute",
 ];
 
 const EMPTY_SERIES: CostSeries = { dimension: "none", keys: [], buckets: [] };
@@ -72,9 +81,16 @@ const EMPTY_SERIES: CostSeries = { dimension: "none", keys: [], buckets: [] };
 // not yet shipped the dimension the picker asked for.
 function seriesFor(
   data: UserCostBreakdownResponse,
-  dimension: ChartDimension
+  dimension: ChartDimension,
+  spendSelection: ReadonlySet<SpendOptionId>,
 ): CostSeries {
   switch (dimension) {
+    case "spend":
+      return mergeSpendSeries(
+        data.series_by_model,
+        data.series_compute_by_provider,
+        spendSelection,
+      );
     case "agent":
       return data.series_by_agent ?? data.series_by_model;
     case "type":
@@ -83,6 +99,8 @@ function seriesFor(
       return data.series_by_analysis_type ?? EMPTY_SERIES;
     case "compute":
       return data.series_compute_by_provider ?? EMPTY_SERIES;
+    case "model":
+      return data.series_by_model;
     default:
       return data.series_by_model;
   }
@@ -340,13 +358,54 @@ export default function AdminUserCostPage({
   const [windowDays, setWindowDays] = useState(() =>
     WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7"
   );
-  const [dimension, setDimension] = useState<ChartDimension>("model");
+  const [dimension, setDimension] = useState<ChartDimension>("spend");
+  const [spendSelection, setSpendSelection] = useState<Set<SpendOptionId>>(
+    () => new Set(),
+  );
+  const [spendSelectionReady, setSpendSelectionReady] = useState(false);
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
     `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}`,
     fetcher,
     { refreshInterval: 30000 }
   );
+
+  const spendGroups = useMemo(
+    () =>
+      buildSpendGroups(
+        data?.series_by_model ?? EMPTY_SERIES,
+        data?.series_compute_by_provider ?? EMPTY_SERIES,
+      ),
+    [data?.series_by_model, data?.series_compute_by_provider],
+  );
+
+  useEffect(() => {
+    if (!data) return;
+    setSpendSelection(
+      defaultSpendSelection(
+        buildSpendGroups(
+          data.series_by_model ?? EMPTY_SERIES,
+          data.series_compute_by_provider ?? EMPTY_SERIES,
+        ),
+      ),
+    );
+    setSpendSelectionReady(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowDays, Boolean(data)]);
+
+  const transition = useMemo(
+    () =>
+      computeTransitionState(data?.series_compute_by_provider ?? EMPTY_SERIES),
+    [data?.series_compute_by_provider],
+  );
+
+  const chartSeries = data
+    ? seriesFor(data, dimension, spendSelection)
+    : null;
+  const spendEmpty =
+    data && dimension === "spend" && chartSeries
+      ? spendEmptyMessage(spendGroups, spendSelection, chartSeries)
+      : null;
 
   const windowLabel =
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
@@ -420,7 +479,7 @@ export default function AdminUserCostPage({
                   : "Check if you have admin access."}
             </AlertDescription>
           </Alert>
-        ) : isLoading || !data ? (
+        ) : isLoading || !data || !chartSeries || (dimension === "spend" && !spendSelectionReady) ? (
           <div className="space-y-4">
             <div className="flex gap-2">
               <Skeleton className="h-6 w-24" />
@@ -461,15 +520,33 @@ export default function AdminUserCostPage({
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-medium">Cost over time</h3>
-                <StackBySelector
-                  dimensions={CHART_DIMENSIONS}
-                  value={dimension}
-                  onChange={setDimension}
-                />
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {dimension === "spend" && (
+                    <SpendSourceFilter
+                      groups={spendGroups}
+                      selected={spendSelection}
+                      onChange={setSpendSelection}
+                    />
+                  )}
+                  <StackBySelector
+                    dimensions={CHART_DIMENSIONS}
+                    value={dimension}
+                    onChange={setDimension}
+                  />
+                </div>
               </div>
+              {dimension === "spend" && transition.label && (
+                <p className="text-muted-foreground text-[11px]">
+                  {transition.label}
+                  {transition.modalCost > 0 || transition.thunderCost > 0
+                    ? ` · Modal ${formatCostUsd(transition.modalCost)} · Thunder ${formatCostUsd(transition.thunderCost)}`
+                    : null}
+                </p>
+              )}
               <CostChart
-                series={seriesFor(data, dimension)}
+                series={chartSeries}
                 bucket={data.bucket}
+                emptyMessage={spendEmpty}
               />
             </div>
 
