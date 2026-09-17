@@ -734,6 +734,57 @@ validates organization scope and experiment membership through the shared
 errors, and permits one successful submission per mounted control. There are
 no public, read, update, triage, snapshot, or notification paths.
 
+### Reward Kit agent-judge costs
+
+A task that uses paid Reward Kit agent judges must set this before submission:
+
+```toml
+[metadata.oddish]
+verifier_judge_costs = true
+```
+
+The worker saves a pending cost record before it starts the task. It then reads
+`verifier/reward-details.json` from the exact Harbor trial in the result manifest.
+The read is limited to 2 MiB, 128 agent/LLM components, and 16 models per component.
+Reward Kit 0.2.1 agent judges report input, output, cache-read, cache-write, and
+per-model token counts. Input includes cache tokens. Oddish uses its model price
+list and labels this cost `estimated`; it is not a provider invoice.
+
+Each component and actual model has a stable ledger ID derived from the saved
+trial ID and attempt. The worker takes org, task, experiment, and payer identity
+from the locked trial row, never from the report. Repeated settlement does not
+charge twice. Retry attempts remain separate charges. These records use
+`analysis_costs.job_kind = verifier_judge`; the solver's `trials.cost_usd` keeps
+its old meaning. No database migration or credential change is needed.
+
+The initial record has `cost_source = pending` and no price. Settlement closes
+that record with a zero price only when all usage is accounted for. If usage is
+missing, a model has no known price, or a component reports paid tool requests
+whose price is not supported, its accounting stays incomplete. Known token
+charges are still saved. A worker crash leaves the pending record unpriced.
+A report with only programmatic criteria records zero judge spend; use that
+only when a verifier stops before it starts any judge. Missing or broken reports
+never prove zero spend. LLM judges are not supported: Reward Kit 0.2.1 omits their
+usage. A backend exception that loses agent usage also remains incomplete.
+
+`GET /experiments/{id}/cost-totals` adds `qa_cost_complete`,
+`qa_unpriced_count`, and `qa_pending_count`, plus the three `owned_qa_*`
+equivalents. Counts refer to ledger records, including the attempt record.
+Pending experiment counts require an unfinished trial. A completed trial with
+an unpriced pending record is an accounting fault, not ongoing work. The dollar
+total is only the known part while any unpriced record remains. Clients that
+control a budget must wait for pending usage and stop new paid work when settled
+usage is incomplete. These fields describe recorded usage; they do not mean
+that all trials or later QA have finished. Costs on QA shadow trials count in
+the parent experiment. The compact trial result `_verifier_judges` records the
+attempt, fixed error codes, report digest, and report path. Full reports stay in
+artifact storage. Task-authored metrics cannot set this reserved field.
+
+This is opt-in accounting for trusted verifier usage records. It does not grant
+model credentials, change network rules, run judges, or prove that every task
+has declared its paid tools. Configure and validate verifier-only model access
+before enabling paid judges. Existing tasks and older clients keep working.
+
 ### Task Identity
 
 `GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
