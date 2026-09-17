@@ -9,6 +9,10 @@ export default defineConfig({
   // The fixture serves development bundles and lazy-loaded charts on CI.
   // Leave time for navigation and hydration before exercising the controls.
   timeout: 90_000,
+  // The dev server compiles the lazy chart chunks on demand; on CI one such
+  // compile stalled past the hydration wait (run 35189328446). A retry gets a
+  // fresh page load, like the main config already allows.
+  retries: process.env.CI ? 1 : 0,
   workers: 1,
   reporter: "list",
   use: {
