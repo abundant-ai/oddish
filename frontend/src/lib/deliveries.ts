@@ -73,12 +73,18 @@ export function deliveryTaskState(
   return row.ready ? "ready" : "awaiting_signoff";
 }
 
+/** Shared QA-first order for row status labels and expanded check cards. */
+export function deliveryCheckOrder(key: string): number {
+  return { verdict_ok: 0, pre_trial_passed: 1, min_rollouts: 2 }[key] ?? 3;
+}
+
 /** Keep missing delivery requirements visible without parsing check prose. */
 export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
   const defects = row.defects.filter((finding) => !finding.acknowledged).length;
   if (defects > 0) return [`Rejected: ${defects} Must Fix`];
   const labels = row.checks
     .filter((check) => check.kind === "automated" && check.status === "fail")
+    .sort((a, b) => deliveryCheckOrder(a.key) - deliveryCheckOrder(b.key))
     .flatMap((check) =>
       check.failure_labels?.length
         ? check.failure_labels
@@ -87,7 +93,9 @@ export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
               pre_trial_passed: "Pre-trial audit needed",
               min_rollouts: "Run requirements unmet",
               verdict_ok:
-                row.qa.status === "needs_fixes" ? "Rejected" : "QA verdict needed",
+                row.qa.status === "needs_fixes"
+                  ? "Rejected"
+                  : "QA verdict needed",
               task_exists: "Task missing",
               no_must_fix: "Finding decisions needed",
             }[check.key] ?? check.label,

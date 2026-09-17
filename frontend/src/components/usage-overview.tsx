@@ -880,17 +880,27 @@ export function UsageOverviewCard({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
-                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
+                  {formatCostWithEstimateMarks(
+                    totals.cost,
+                    totals.costEstimated
+                  )}
                 </div>
                 <div className="text-muted-foreground text-[10px]">Cost</div>
               </div>
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
-                <div className="text-base font-bold tabular-nums">
-                  {formatCompactNumber(
-                    totals.inputTokens + totals.outputTokens,
-                  )}
+                <div className="flex flex-wrap justify-center gap-x-2 text-sm font-semibold tabular-nums">
+                  <span>Input: {formatCompactNumber(totals.inputTokens)},</span>
+                  <span>
+                    Output: {formatCompactNumber(totals.outputTokens)}
+                  </span>
                 </div>
-                <div className="text-muted-foreground text-[10px]">Tokens</div>
+                <div className="text-muted-foreground text-[10px]">
+                  (Total:{" "}
+                  {formatCompactNumber(
+                    totals.inputTokens + totals.outputTokens
+                  )}{" "}
+                  tokens)
+                </div>
               </div>
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
@@ -1027,28 +1037,6 @@ export function UsageOverviewCard({
             ) : (
               <div className="text-muted-foreground py-6 text-center text-sm">
                 No job usage data yet. Worker jobs will appear here as they run.
-              </div>
-            )}
-
-            {/* Totals footer */}
-            {sortedUsageRows.length > 0 && (
-              <div className="text-muted-foreground flex flex-wrap items-center gap-3 border-t border-[#6f88b4]/15 pt-2 text-[10px]">
-                <span>
-                  In: {formatCompactNumber(totals.inputTokens)} tokens
-                </span>
-                <span>
-                  Out: {formatCompactNumber(totals.outputTokens)} tokens
-                </span>
-                {totals.cacheTokens > 0 && (
-                  <span>Cached: {formatCompactNumber(totals.cacheTokens)}</span>
-                )}
-                <span className="text-foreground font-medium">
-                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
-                </span>
-                <span>
-                  Statuses include trial and task-QA jobs; token and cost
-                  metrics come from trial runs.
-                </span>
               </div>
             )}
           </>

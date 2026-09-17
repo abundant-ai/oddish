@@ -4,6 +4,7 @@ export default defineConfig({
   testMatch: [
     "file-loading.spec.ts",
     "review-meaning.spec.ts",
+    "ui-duplication.spec.ts",
     "user-ui-layout.spec.ts",
   ],
   workers: 1,
