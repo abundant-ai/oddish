@@ -946,6 +946,56 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,subject_table,expect_trial_failed",
+    [
+        (WorkerJobKind.TRIAL, "trials", True),
+        (WorkerJobKind.TASK_EXPAND, "tasks", False),
+    ],
+)
+async def test_record_outcome_terminal_failure_settles_a_retrying_trial(
+    monkeypatch, kind, subject_table, expect_trial_failed
+):
+    # Ordinary settlement leaves a trial RETRYING while it has trial-level
+    # budget; when the job's own budget is spent here, nothing remains to run
+    # that trial, so the terminal outcome must reach the trial row too. A
+    # trial already settled SUCCESS or FAILED is left alone by the predicate.
+    connection = _FakeConnection()
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="w-test",
+        outcome=JobOutcome.fail("HTTP 503 from agent", retryable=True),
+        attempts=6,
+        max_attempts=6,
+        kind=kind,
+        subject_table=subject_table,
+        subject_id="subject-1",
+    )
+
+    assert status == WorkerJobStatus.FAILED
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert "UPDATE worker_jobs" in updates[0][0]
+    assert "status = 'FAILED'" in updates[0][0]
+    trial_updates = [(sql, args) for sql, args in updates if "UPDATE trials" in sql]
+    if expect_trial_failed:
+        assert len(trial_updates) == 1
+        trial_sql, trial_args = trial_updates[0]
+        assert "status = 'FAILED'" in trial_sql
+        assert "status::text = 'RETRYING'" in trial_sql
+        assert "finished_at = NOW()" in trial_sql
+        assert "current_worker_id = NULL" in trial_sql
+        assert trial_args == ("subject-1", "HTTP 503 from agent")
+    else:
+        assert trial_updates == []
+
+
+@pytest.mark.asyncio
 async def test_record_outcome_returns_success_only_when_guarded_update_changes_row(
     monkeypatch,
 ):
@@ -1529,10 +1579,22 @@ async def test_declined_settled_handoff_records_the_ordinary_retry(
     set_clause = job_sql.split("SET", 1)[1].split("WHERE", 1)[0]
     assert "execution_lane =" not in set_clause
     assert "reroute_from_environment" not in set_clause
-    # The settled trial is never forced FAILED by a declined budget handoff.
-    assert not any(
-        "UPDATE trials" in sql and "status = 'FAILED'" in sql for sql, _ in updates
-    )
+    trial_failures = [
+        (sql, args)
+        for sql, args in updates
+        if "UPDATE trials" in sql and "status = 'FAILED'" in sql
+    ]
+    if expected_status is WorkerJobStatus.FAILED:
+        # The job's own budget is spent, so no job remains to run the settled
+        # RETRYING trial: it is failed with the attempt's error rather than
+        # left waiting for a retry that never comes.
+        assert [args for _sql, args in trial_failures] == [
+            ("trial-1", "agent timed out on thunder")
+        ]
+        assert "status::text = 'RETRYING'" in trial_failures[0][0]
+    else:
+        # A declined handoff with budget left never forces the trial FAILED.
+        assert not trial_failures
     assert not any("UPDATE sandbox" in sql for sql, _ in updates)
 
 

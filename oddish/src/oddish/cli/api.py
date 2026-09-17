@@ -1211,6 +1211,7 @@ def build_sweep_payload(
     link: str | None = None,
     registry_auth: list[dict] | None = None,
     requires_gpu: bool = False,
+    gpu_types: list[str] | None = None,
 ) -> dict:
     from oddish.cli.closed_internet import apply_closed_internet_overrides
 
@@ -1308,6 +1309,10 @@ def build_sweep_payload(
         # The task's own GPU request, which the API cannot read from task.toml;
         # it only informs the server-side default environment choice.
         payload["requires_gpu"] = True
+        if gpu_types:
+            # The acceptable types, so the server skips a backend (Thunder)
+            # that would reject the task at launch.
+            payload["gpu_types"] = list(gpu_types)
 
     return payload
 

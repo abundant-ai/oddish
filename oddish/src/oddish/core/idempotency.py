@@ -92,6 +92,8 @@ def compute_request_hash(submission: Any) -> str:
     # honest retry of their body must keep matching its stored hash.
     if not payload.get("requires_gpu"):
         payload.pop("requires_gpu", None)
+    if not payload.get("gpu_types"):
+        payload.pop("gpu_types", None)
     # Drop an absent github_id so an honest retry that never sent it hashes the
     # same as the original (linkage idempotency guard).
     if payload.get("github_id") is None:

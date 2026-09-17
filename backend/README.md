@@ -369,8 +369,10 @@ Railway/Docker deployment path, and the Modal worker image installs it as well.
 
 Thunder is the default GPU provider on deployments that enable it: it sits
 between Daytona and Modal in the runtime registry, so a GPU submission with no
-explicit environment routes to Thunder, while plain-CPU work stays on Daytona
-and private-registry pulls stay on Modal. Deployments that leave it disabled
+explicit environment routes to Thunder when its `gpu_types` names exactly one
+accelerator Thunder offers (A6000, A100, H100), while plain-CPU work stays on
+Daytona and private-registry pulls, untyped GPU requests, and other GPU types
+stay on Modal. Deployments that leave it disabled
 keep Modal as the GPU default. A trial that has failed
 `ODDISH_THUNDER_MAX_FAILED_ATTEMPTS` attempts on Thunder (default 2; 0
 disables) has its next retry moved to `ODDISH_THUNDER_FALLBACK_PROVIDER`

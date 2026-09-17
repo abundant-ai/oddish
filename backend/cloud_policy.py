@@ -42,4 +42,5 @@ def get_default_cloud_environment(
     return default_cloud_environment(
         requires_gpu=requires_gpu,
         requires_private_registry=requires_private_registry,
+        gpu_types=submission.gpu_types if submission is not None else None,
     )

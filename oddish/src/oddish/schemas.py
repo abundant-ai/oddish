@@ -481,6 +481,15 @@ class TaskSweepSubmission(BaseModel):
             "the GPU count the trial runs with."
         ),
     )
+    gpu_types: list[str] | None = Field(
+        None,
+        description=(
+            "The task.toml `[environment].gpu_types` list (acceptable GPU "
+            "types; omitted means any). Reported by the CLI with `requires_gpu` "
+            "so the default environment choice skips a backend that would "
+            "reject the task at launch. Never changes what the trial runs with."
+        ),
+    )
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",

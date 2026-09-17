@@ -56,6 +56,7 @@ from oddish.runtime.ec2_policy import (
     validate_ec2_environment_config,
 )
 from oddish.runtime.sandbox_lifecycle import SandboxLaunchContext
+from oddish.runtime.ports import accelerator_family
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -1632,14 +1633,6 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
     )
 
 
-def _accelerator_family(value: str) -> str:
-    normalized = value.strip().upper().replace("_", "-").rstrip("!")
-    normalized = normalized.split(":", 1)[0].rstrip("!")
-    if normalized in {"A100", "A100XL", "A100-40", "A100-80", "A100-40GB", "A100-80GB"}:
-        return "A100"
-    return normalized
-
-
 def _fallback_gpu_types(
     *,
     task_path: Path,
@@ -1713,12 +1706,12 @@ def _fallback_gpu_types(
         ]
 
     supported_families = {
-        _accelerator_family(accelerator) for accelerator in support.accelerators
+        accelerator_family(accelerator) for accelerator in support.accelerators
     }
     compatible = [
         accelerator
         for accelerator in requested
-        if _accelerator_family(accelerator) in supported_families
+        if accelerator_family(accelerator) in supported_families
     ]
     if exact_gpu_type is not None and not compatible:
         compatible = []

@@ -49,6 +49,9 @@ class ThunderBackend:
             gpu=GpuSupport(
                 accelerators=("A6000", "A100", "H100"),
                 max_count=8,
+                # Harbor's Thunder environment refuses a task that does not
+                # name exactly one of these; there is no "any GPU" pool.
+                requires_named_accelerator=True,
             ),
             private_registry_pull=False,
             network_egress="configurable",

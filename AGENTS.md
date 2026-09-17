@@ -1184,12 +1184,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   on a Thunder-enabled deployment (and to Modal elsewhere), while a
   submission carrying `registry_auth` (a private-registry pull, which Thunder
   cannot serve) stays on Modal. The CLI never names a GPU backend itself: it
-  sends `requires_gpu` for a task.toml GPU request and lets
-  `backend/cloud_policy.py` negotiate against the deployment's own registry.
-  Plain CPU work must keep defaulting to Daytona. Harbor's Thunder environment requires exactly one
-  `[environment].gpu_types` entry (or a `gpu_type` kwarg) and a GPU count of
-  1, 2, 4, or 8; GPU tasks that need something else must pass
-  `--env modal` explicitly.
+  sends `requires_gpu` and the task.toml `gpu_types` list for a GPU request
+  and lets `backend/cloud_policy.py` negotiate against the deployment's own
+  registry. Plain CPU work must keep defaulting to Daytona. Harbor's Thunder
+  environment requires exactly one `[environment].gpu_types` entry (or a
+  `gpu_type` kwarg) and a GPU count of 1, 2, 4, or 8, which `ThunderBackend`
+  declares as `GpuSupport.requires_named_accelerator`; negotiation therefore
+  sends a task naming no type, several types, or one Thunder lacks to Modal
+  directly. GPU tasks with another count must pass `--env modal` explicitly.
   Oddish forces each Thunder sandbox name to its durable `sandbox_runs.id`.
   The reconciler inventories Thunder through a credential-scoped Modal
   function and treats that exact name match as the ownership proof needed to

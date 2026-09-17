@@ -42,8 +42,9 @@ from oddish.runtime.registry import ordered_backends
 print(json.dumps({
     "registered": [backend.name for backend in ordered_backends()],
     "allowed": sorted(environment.value for environment in allowed_cloud_environments()),
-    "gpu_selection": select_backend(requires_gpu=True).name,
-    "gpu_default": default_cloud_environment(requires_gpu=True).value,
+    "gpu_selection": select_backend(requires_gpu=True, gpu_types=["H100"]).name,
+    "gpu_default": default_cloud_environment(requires_gpu=True, gpu_types=["H100"]).value,
+    "untyped_gpu_default": default_cloud_environment(requires_gpu=True).value,
     "cpu_default": default_cloud_environment().value,
 }))
 """
@@ -65,4 +66,7 @@ print(json.dumps({
     assert "thunder" in resolved["allowed"]
     assert resolved["gpu_selection"] == "thunder"
     assert resolved["gpu_default"] == "thunder"
+    # A task naming no GPU type would be rejected by Harbor's Thunder
+    # environment, so it still defaults to Modal.
+    assert resolved["untyped_gpu_default"] == "modal"
     assert resolved["cpu_default"] == "daytona"

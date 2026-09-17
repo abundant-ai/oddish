@@ -99,6 +99,16 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     return (task_config.environment.gpus or 0) > 0
 
 
+def _task_config_gpu_types(task_path: Path) -> list[str] | None:
+    """The task's ``[environment].gpu_types`` list, or ``None`` for any type."""
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return None
+    return task_config.environment.gpu_types or None
+
+
 def _task_config_requests_tpu(task_path: Path) -> bool:
     config_path = task_path / "task.toml"
     try:
@@ -982,9 +992,12 @@ def run(
         task_configs = copy.deepcopy(configs)
         task_environment = environment
         requires_gpu = False
+        gpu_types: list[str] | None = None
         _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
             requires_gpu = _task_requires_gpu(task_path, override_gpus=override_gpus)
+            if requires_gpu:
+                gpu_types = _task_config_gpu_types(task_path)
             task_environment = _default_cloud_environment_for_task(
                 task_path,
                 override_gpus=override_gpus,
@@ -994,6 +1007,7 @@ def run(
             configs=task_configs,
             environment=task_environment,
             requires_gpu=requires_gpu,
+            gpu_types=gpu_types,
             user=user,
             priority=priority,
             experiment_id=experiment_id,

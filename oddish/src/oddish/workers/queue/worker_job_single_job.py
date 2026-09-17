@@ -1325,6 +1325,30 @@ async def _record_failure_outcome(
             f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
         )
         return None
+    if kind == WorkerJobKind.TRIAL and subject_table == "trials" and subject_id:
+        # Ordinary settlement may have left the trial RETRYING (it still had
+        # trial-level budget) while the job's own budget just ran out, or a
+        # declined attempt-budget handoff landed here after that settlement.
+        # No job remains to run it, so mirror the terminal outcome onto the
+        # trial; a trial already settled SUCCESS or FAILED is left alone.
+        await connection.execute(
+            """
+            UPDATE trials
+            SET    status = 'FAILED',
+                   error_message = $2,
+                   finished_at = NOW(),
+                   next_retry_at = NULL,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   heartbeat_at = NOW()
+            WHERE  id = $1
+              AND  status::text = 'RETRYING'
+              AND  deleted_at IS NULL
+              AND  superseded_by_trial_id IS NULL
+            """,
+            subject_id,
+            failure.error_message,
+        )
     return WorkerJobStatus.FAILED
 
 
