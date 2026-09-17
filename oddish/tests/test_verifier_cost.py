@@ -182,6 +182,51 @@ def test_loop_model_falls_back_to_trajectory_agent(tmp_path: Path) -> None:
     assert loop.cost_usd == 0.5
 
 
+def test_loop_estimate_includes_step_cache_writes(tmp_path: Path) -> None:
+    """Computer-1 often omits total_cost_usd; estimate must include step writes."""
+    from oddish.model_pricing import estimate_cost_usd
+
+    ux = tmp_path / "verifier" / "ux"
+    ux.mkdir(parents=True)
+    (ux / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "agent": {"name": "computer-1", "model_name": "anthropic/claude-opus-4-7"},
+                "final_metrics": {
+                    "total_prompt_tokens": 400,
+                    "total_completion_tokens": 20,
+                    "total_cached_tokens": 0,
+                },
+                "steps": [
+                    {"metrics": {"extra": {"cache_creation_input_tokens": 100}}},
+                    {"metrics": {"extra": {"cache_creation_input_tokens": 200}}},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "verdicts": {"a": "PASS"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    drafts = build_verifier_cost_drafts(tmp_path)
+    loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
+    assert loop.cache_write_tokens == 300
+    assert loop.cost_source == COST_ESTIMATED
+    assert loop.cost_usd == estimate_cost_usd(
+        "anthropic/claude-opus-4-7", 400, 20, 0, 300
+    )
+    without_writes = estimate_cost_usd("anthropic/claude-opus-4-7", 400, 20, 0, 0)
+    assert loop.cost_usd is not None
+    assert without_writes is not None
+    assert loop.cost_usd > without_writes
+
+
 def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
     """Harbor writes artifacts under a trial-name subdirectory."""
     ux = tmp_path / "task__abc123" / "verifier" / "ux"

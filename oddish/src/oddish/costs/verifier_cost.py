@@ -25,6 +25,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db import VerifierCostModel, generate_id, get_session, utcnow
 from oddish.model_pricing import estimate_cost_usd
@@ -149,25 +150,20 @@ def _load_json(path: Path) -> dict[str, Any] | None:
 def _metrics_from_atif(data: dict[str, Any]) -> tuple[
     int | None, int | None, int | None, int | None, float | None
 ]:
-    """Return input, output, cache_read, cache_write, cost from an ATIF object."""
+    """Return input, output, cache_read, cache_write, cost from an ATIF object.
+
+    Cache writes use the shared Harbor reader: sum ATIF steps first, then
+    ``final_metrics.extra``. Computer-1 often omits ``total_cost_usd`` and
+    only records ``cache_creation_input_tokens`` per step.
+    """
     final_metrics = data.get("final_metrics")
-    input_tokens = output_tokens = cache_tokens = cache_write = cost = None
+    input_tokens = output_tokens = cache_tokens = cost = None
     if isinstance(final_metrics, dict):
         input_tokens = _as_int(final_metrics.get("total_prompt_tokens"))
         output_tokens = _as_int(final_metrics.get("total_completion_tokens"))
         cache_tokens = _as_int(final_metrics.get("total_cached_tokens"))
         cost = _as_float(final_metrics.get("total_cost_usd"))
-        extra = final_metrics.get("extra")
-        if isinstance(extra, dict):
-            for key in (
-                "cache_creation_input_tokens",
-                "input_cache_creation",
-                "cacheWriteTokens",
-                "cache_write_tokens",
-            ):
-                if extra.get(key) is not None:
-                    cache_write = _as_int(extra.get(key))
-                    break
+    cache_write = cache_write_tokens_from_trajectory(data)
     return input_tokens, output_tokens, cache_tokens, cache_write, cost
 
 
