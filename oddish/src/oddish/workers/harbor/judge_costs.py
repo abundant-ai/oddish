@@ -42,6 +42,13 @@ def _identity(trial_id: str, attempt: int, component: str, model: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def _marker_identity(
+    trial_id: str, attempt: int, worker_id: str | None, worker_job_id: str | None
+) -> str:
+    owner = json.dumps([worker_id, worker_job_id])
+    return _identity(trial_id, attempt, "$accounting", owner)
+
+
 def _row(trial: TrialModel, attempt: int, component: str, model: str) -> dict:
     return {
         "id": _identity(trial.id, attempt, component, model),
@@ -58,10 +65,16 @@ def _row(trial: TrialModel, attempt: int, component: str, model: str) -> dict:
 
 
 async def begin_judge_costs(
-    session: AsyncSession, trial: TrialModel, attempt: int
+    session: AsyncSession,
+    trial: TrialModel,
+    attempt: int,
+    *,
+    worker_id: str | None,
+    worker_job_id: str | None,
 ) -> None:
     """Caller holds the trial lock and has verified the current worker/attempt."""
     row = _row(trial, attempt, "$accounting", "")
+    row["id"] = _marker_identity(trial.id, attempt, worker_id, worker_job_id)
     row["cost_source"] = "pending"
     await session.execute(
         insert(AnalysisCostModel).values(row).on_conflict_do_nothing()
@@ -210,21 +223,46 @@ def extract_judge_costs(job_dir: Path | None, result_path: Path | None) -> dict:
 
 
 async def settle_judge_costs(
-    session: AsyncSession, trial: TrialModel, attempt: int, extracted: dict
+    session: AsyncSession,
+    trial: TrialModel,
+    attempt: int,
+    extracted: dict,
+    *,
+    worker_id: str | None,
+    worker_job_id: str | None,
 ) -> dict | None:
-    """Settle one declared attempt under its verified trial ownership lock."""
+    """Settle only the attempt marker created for this verified worker.
+
+    A retry or cancellation can remove current ownership after money was spent.
+    The saved marker permits that worker to settle its own historical costs,
+    without permission to change the trial's current result or another attempt.
+    """
     marker = await session.scalar(
         select(AnalysisCostModel)
-        .where(AnalysisCostModel.id == _identity(trial.id, attempt, "$accounting", ""))
+        .where(
+            AnalysisCostModel.id
+            == _marker_identity(trial.id, attempt, worker_id, worker_job_id)
+        )
         .with_for_update()
     )
     if marker is None:
         return None
     if marker.cost_source != "pending":
         # Repeated settlement must neither charge again nor replace its evidence.
-        return (trial.result or {}).get("_verifier_judges")
+        summary = (trial.result or {}).get("_verifier_judges")
+        return summary if summary and summary.get("attempt") == attempt else None
     for item in extracted["rows"]:
         row = _row(trial, attempt, item["component"], item["model"])
+        # Attribution was fixed when the worker owned this attempt. Never take
+        # a newer attempt's payer or any task-authored report identity.
+        for field in (
+            "trial_id",
+            "task_id",
+            "experiment_id",
+            "org_id",
+            "billed_user_id",
+        ):
+            row[field] = getattr(marker, field)
         tokens = item["tokens"]
         row.update(
             input_tokens=tokens["input_tokens"],

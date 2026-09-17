@@ -752,8 +752,11 @@ list and labels this cost `estimated`; it is not a provider invoice.
 
 Each component and actual model has a stable ledger ID derived from the saved
 trial ID and attempt. The worker takes org, task, experiment, and payer identity
-from the locked trial row, never from the report. Repeated settlement does not
-charge twice. Retry attempts remain separate charges. These records use
+from the locked trial row at the start, never from the report. The pending record
+also binds the worker and queue job. That worker can settle its own attempt's
+cost after cancellation, replacement, or loss of current ownership. The existing
+result guards still prevent it from changing the current trial result. Repeated
+settlement does not charge twice. Retry attempts remain separate charges. These records use
 `analysis_costs.job_kind = verifier_judge`; the solver's `trials.cost_usd` keeps
 its old meaning. No database migration or credential change is needed.
 

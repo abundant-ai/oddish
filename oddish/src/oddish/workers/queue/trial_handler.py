@@ -1024,6 +1024,19 @@ async def _store_trial_results(
     ):
         if not trial:
             return False, False
+        # Result ownership can end before paid verifier usage reaches us. The
+        # pre-execution marker authorizes only this worker's original attempt;
+        # settle that ledger even when all result updates below are forbidden.
+        judge_summary = None
+        if judge_costs is not None:
+            judge_summary = await settle_judge_costs(
+                session,
+                trial,
+                trial_attempt,
+                judge_costs,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+            )
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
@@ -1043,12 +1056,8 @@ async def _store_trial_results(
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
         if user_cancelled:
-            if judge_costs is not None:
-                summary = await settle_judge_costs(
-                    session, trial, trial_attempt, judge_costs
-                )
-                if summary is not None:
-                    trial.result = {**(trial.result or {}), "_verifier_judges": summary}
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
                     trial, outcome, preserve_checkpointed_cost=True
@@ -1076,13 +1085,8 @@ async def _store_trial_results(
             )
             return False, False
 
-        judge_summary = None
-        if judge_costs is not None:
-            judge_summary = await settle_judge_costs(
-                session, trial, trial_attempt, judge_costs
-            )
-            if judge_summary is not None:
-                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
+        if judge_summary is not None:
+            trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -2057,7 +2061,13 @@ async def _prepare_claimed_trial_attempt(
                     )
                 ):
                     raise RuntimeError("Verifier judge attempt is no longer owned")
-                await begin_judge_costs(session, trial, prepared_trial.trial_attempt)
+                await begin_judge_costs(
+                    session,
+                    trial,
+                    prepared_trial.trial_attempt,
+                    worker_id=worker_id,
+                    worker_job_id=worker_job_id,
+                )
         os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
         span_provider = (
