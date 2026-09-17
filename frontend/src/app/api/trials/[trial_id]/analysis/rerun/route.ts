@@ -6,8 +6,9 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-// Queue analysis for one trial. Classifies only this trial. Does not
-// touch other trials, the task verdict, or the pre-trial audit.
+// Queue analysis for one trial. Resets this trial's analysis and reruns
+// task QA: every eligible trial is re-analyzed and the verdict is
+// regenerated. Does not rerun the pre-trial audit.
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
