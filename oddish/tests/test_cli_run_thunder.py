@@ -98,6 +98,13 @@ def test_task_gpu_types_come_from_task_toml(tmp_path) -> None:
     task_toml = tmp_path / "task.toml"
     task_toml.write_text('[environment]\ngpus = 1\ngpu_types = ["H100", "A100"]\n')
     assert run_module._task_config_gpu_types(tmp_path) == ["H100", "A100"]
+    # An exact ``gpu_type`` environment kwarg overrides the list at launch, so
+    # it is what routing must see.
+    task_toml.write_text(
+        '[environment]\ngpus = 1\ngpu_types = ["H100", "A100"]\n'
+        '[environment.kwargs]\ngpu_type = "A6000"\n'
+    )
+    assert run_module._task_config_gpu_types(tmp_path) == ["A6000"]
     task_toml.write_text("[environment]\ngpus = 1\n")
     assert run_module._task_config_gpu_types(tmp_path) is None
     task_toml.write_text("[environment]\ngpus = 1\ngpu_types = []\n")

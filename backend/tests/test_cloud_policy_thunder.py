@@ -55,7 +55,12 @@ def _cloud_policy_values(*, thunder_enabled: bool) -> tuple[set[str], str, str]:
         "untyped_submission=TaskSweepSubmission.model_validate({"
         "'task_id':'t','configs':[{'agent':'nop','n_trials':1}],"
         "'requires_gpu':True});"
-        "print(cloud_policy.get_default_cloud_environment(untyped_submission).value)"
+        "print(cloud_policy.get_default_cloud_environment(untyped_submission).value);"
+        "kwarg_submission=TaskSweepSubmission.model_validate({"
+        "'task_id':'t','configs':[{'agent':'nop','n_trials':1}],"
+        "'requires_gpu':True,'gpu_types':['L4'],"
+        "'harbor':{'environment':{'kwargs':{'gpu_type':'H100'}}}});"
+        "print(cloud_policy.get_default_cloud_environment(kwarg_submission).value)"
     )
     env = {
         key: value
@@ -97,10 +102,12 @@ def test_thunder_is_accepted_only_when_enabled() -> None:
     assert disabled_decision == "rejected:400"
     assert enabled_decision == "accepted"
     # (override_gpus naming no type, task GPUs naming H100, H100 plus a
-    # private registry, task GPUs naming no type): a Thunder-less deployment
-    # negotiates Modal instead of rejecting. With Thunder, only the request
-    # naming one accelerator Thunder offers lands there; a private-registry
-    # pull stays on Modal, and a request naming no type goes to Modal because
-    # Harbor's Thunder environment would reject it at launch.
-    assert disabled_defaults == ("modal", "modal", "modal", "modal")
-    assert enabled_defaults == ("modal", "thunder", "modal", "modal")
+    # private registry, task GPUs naming no type, an exact ``gpu_type``
+    # environment kwarg naming H100 over a list naming L4): a Thunder-less
+    # deployment negotiates Modal instead of rejecting. With Thunder, only the
+    # request naming one accelerator Thunder offers lands there; a
+    # private-registry pull stays on Modal, a request naming no type goes to
+    # Modal because Harbor's Thunder environment would reject it at launch,
+    # and the exact kwarg wins over the list as it does at launch.
+    assert disabled_defaults == ("modal", "modal", "modal", "modal", "modal")
+    assert enabled_defaults == ("modal", "thunder", "modal", "modal", "thunder")

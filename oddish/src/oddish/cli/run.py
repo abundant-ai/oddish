@@ -100,13 +100,22 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
 
 
 def _task_config_gpu_types(task_path: Path) -> list[str] | None:
-    """The task's ``[environment].gpu_types`` list, or ``None`` for any type."""
+    """The task's requested GPU types, or ``None`` for any type.
+
+    An exact ``gpu_type`` environment kwarg wins over the
+    ``[environment].gpu_types`` list, as it does when Harbor launches the
+    environment and in the Thunder handoff remap.
+    """
     config_path = task_path / "task.toml"
     try:
         task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
     except Exception:
         return None
-    return task_config.environment.gpu_types or None
+    environment = task_config.environment
+    exact_gpu_type = (environment.kwargs or {}).get("gpu_type")
+    if exact_gpu_type is not None:
+        return [str(exact_gpu_type)]
+    return environment.gpu_types or None
 
 
 def _task_config_requests_tpu(task_path: Path) -> bool:

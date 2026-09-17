@@ -39,8 +39,19 @@ def get_default_cloud_environment(
     requires_private_registry = submission is not None and bool(
         submission.registry_auth
     )
+    gpu_types = submission.gpu_types if submission is not None else None
+    # An exact ``gpu_type`` environment kwarg in the request (for example
+    # ``oddish run --environment-kwarg gpu_type=H100``) wins over the task's
+    # list, as it does at launch and in the Thunder handoff remap.
+    exact_gpu_type = (
+        (submission.harbor.environment.kwargs or {}).get("gpu_type")
+        if submission is not None
+        else None
+    )
+    if exact_gpu_type is not None:
+        gpu_types = [str(exact_gpu_type)]
     return default_cloud_environment(
         requires_gpu=requires_gpu,
         requires_private_registry=requires_private_registry,
-        gpu_types=submission.gpu_types if submission is not None else None,
+        gpu_types=gpu_types,
     )

@@ -205,7 +205,8 @@ oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
 The hosted API rejects `thunder` unless its operator enabled the backend.
 Harbor's Thunder environment needs exactly one `[environment].gpu_types` entry
 (A6000, A100, or H100) and a GPU count of 1, 2, 4, or 8. `oddish run` reports
-the task's `gpu_types` with its GPU request, so a task naming no type, several
+the task's GPU type with its GPU request (an exact `gpu_type` environment kwarg,
+else its `gpu_types` list), so a task naming no type, several
 types, or one Thunder lacks is routed to Modal instead of failing on Thunder
 first; an unsupported GPU count still needs `--env modal`. A trial that fails twice on Thunder (the
 deployment's `ODDISH_THUNDER_MAX_FAILED_ATTEMPTS`) has its next retry run on
