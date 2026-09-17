@@ -53,6 +53,7 @@ import type {
 } from "@/lib/types";
 import { useTaskOpenReader } from "@/lib/use-task-open-reader";
 import { markOpenIntent } from "@/lib/open-intent";
+import { taskReviewStatus } from "@/lib/review";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
@@ -1144,7 +1145,7 @@ export function TaskDetailClient({
           drawer &&
           activeTaskPane === "overview" &&
           (drawer.mode === "task" || drawerShowTask) &&
-          !["queued", "running"].includes(task.verdict_status ?? "") &&
+          !["queued", "running"].includes(taskReviewStatus(task)) &&
           !isRunningJudge
         ) ? (
           <TaskVerdictBadge
