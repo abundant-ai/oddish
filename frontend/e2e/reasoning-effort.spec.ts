@@ -1,4 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+// The "Avg score" KPI tile prints the same percentage as a single grouped
+// leaderboard row, so an unscoped getByText matches one element before the
+// leaderboard renders and two afterwards (a strict-mode violation).
+const leaderboard = (page: Page) =>
+  page.getByRole("region", { name: "Leaderboard" });
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/skills", (route) =>
@@ -257,7 +263,9 @@ test("grouping efforts combines cells and charts, survives reload, and restores 
   await expect(
     page.getByText("n = 20 · 3 tasks · 1 configurations")
   ).toBeVisible();
-  await expect(page.getByText("65.0%", { exact: true })).toBeVisible();
+  await expect(
+    leaderboard(page).getByText("65.0%", { exact: true })
+  ).toBeVisible();
   await firstRow.locator("td").nth(1).getByRole("button").nth(10).click();
   await expect(page.getByLabel("Selected effort")).toHaveText(
     "high: 20 trials"
@@ -287,7 +295,9 @@ test("mixed unspecified and high trials share totals and row filtering", async (
   await filter.getByRole("button", { name: "All", exact: true }).click();
   await expect(row.locator("td")).toHaveCount(2);
   await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
-  await expect(page.getByText("20.0%", { exact: true })).toBeVisible();
+  await expect(
+    leaderboard(page).getByText("20.0%", { exact: true })
+  ).toBeVisible();
   await row.locator("td").nth(1).getByRole("button").nth(2).click();
   await expect(page.getByLabel("Selected effort")).toHaveText("high: 5 trials");
   await expect(page).toHaveURL(/sample=mixed/);
@@ -325,7 +335,9 @@ test("public experiments always group efforts and hide the grouping control", as
   await expect(row.locator("td")).toHaveCount(2);
   await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
   await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);
-  await expect(page.getByText("20.0%", { exact: true })).toBeVisible();
+  await expect(
+    leaderboard(page).getByText("20.0%", { exact: true })
+  ).toBeVisible();
   await page.goto("/effort?sample=mixed&detail=1&public=1");
   await expect(row.locator("td")).toHaveCount(2);
   await expect(page.getByRole("checkbox", { name: "Group effort levels" })).toHaveCount(0);

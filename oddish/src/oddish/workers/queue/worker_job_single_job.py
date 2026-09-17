@@ -630,7 +630,9 @@ async def _record_reroute_outcome(
     the attempt's sandbox ledger and capacity lease are inspected, and the
     trial and job rows move together. A provisioned sandbox that is not yet
     confirmed terminated leaves the job claim-blocked
-    (``reroute_pending_teardown``) until cleanup confirms teardown.
+    (``reroute_pending_teardown``) until cleanup confirms teardown. An attempt
+    that failed before its ledger row existed has nothing to tear down and
+    moves immediately, provided the job carries no provider handle either.
 
     Returns the recorded job status, or ``None`` when the handoff was declined
     without writing anything; the caller then records the attempt's ordinary
@@ -772,9 +774,17 @@ async def _record_reroute_outcome(
                 job_id,
                 attempts,
             )
-            if (
-                sandbox_run is None
-                or sandbox_run["provider"] != "thunder"
+            # An attempt that failed before ``create_thunder_sandbox_run`` ran
+            # (credential resolution, task preparation, or the ledger insert
+            # itself) has no ledger row. The Harbor runner refuses to launch a
+            # Thunder sandbox without that ledger context, so nothing was
+            # provisioned and there is nothing to tear down; the handle check
+            # below still demands that the job agrees.
+            never_provisioned = sandbox_run is None
+            if never_provisioned:
+                sandbox_external_id = None
+            elif (
+                sandbox_run["provider"] != "thunder"
                 or int(sandbox_run["worker_job_attempt"]) != attempts
                 or sandbox_run["trial_id"] != subject_id
                 or sandbox_run["deleted_at"] is not None
@@ -789,8 +799,9 @@ async def _record_reroute_outcome(
             ):
                 _rejected("sandbox_ownership_changed")
                 return None
+            else:
+                sandbox_external_id = sandbox_run["external_id"]
 
-            sandbox_external_id = sandbox_run["external_id"]
             if sandbox_external_id is None:
                 handle_matches = job["provider"] is None and job["external_id"] is None
             else:
@@ -819,10 +830,12 @@ async def _record_reroute_outcome(
                 return None
             capacity_lease = capacity_leases[0]
             teardown_pending = bool(
-                sandbox_external_id is not None and sandbox_run["state"] != "TERMINATED"
+                not never_provisioned
+                and sandbox_external_id is not None
+                and sandbox_run["state"] != "TERMINATED"
             )
 
-            if sandbox_external_id is None:
+            if not never_provisioned and sandbox_external_id is None:
                 run_update = await connection.execute(
                     """
             UPDATE sandbox_runs
@@ -962,7 +975,11 @@ async def _record_reroute_outcome(
             trial_id=subject_id,
             target=reroute.target_environment,
             handoff=reroute.reason,
-            reason="source_sandbox_finalized",
+            reason=(
+                "attempt_never_provisioned"
+                if never_provisioned
+                else "source_sandbox_finalized"
+            ),
         )
     else:
         _emit_thunder_handoff_event(
