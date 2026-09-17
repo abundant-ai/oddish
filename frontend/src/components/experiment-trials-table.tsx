@@ -381,7 +381,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "QA verdict in progress",
+    label: "Analyzing",
     dotClass: "bg-blue-400",
     animate: true,
   },
@@ -397,7 +397,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: "QA failed / Harness error",
+    label: "Analysis failed / Harness error",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -522,7 +522,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-blue-400",
       animate: true,
-      title: "QA verdict in progress",
+      title: "Analyzing…",
     };
   }
 
