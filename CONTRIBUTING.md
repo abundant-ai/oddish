@@ -86,8 +86,8 @@ part of `staging` by giving the promotion workflow the commit to stop at.
 
 ## Compatibility with installed clients
 
-The `oddish` CLI is installed from PyPI and Homebrew and upgrades only when
-the user runs `oddish update` or `brew upgrade`. The live server therefore
+The `oddish` CLI is installed from Homebrew and upgrades only when the user
+runs `brew upgrade abundant-ai/tap/oddish`. The live server therefore
 always serves clients one or more releases old. Before changing anything
 under `oddish/` that a client reads (response fields, status vocabularies,
 CLI options, queue payloads, storage keys), find what depends on it: search

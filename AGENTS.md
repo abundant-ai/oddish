@@ -1462,8 +1462,8 @@ from oddish.workers import run_polling_worker
 
 ### Installed clients are always behind the server
 
-The `oddish` CLI is installed from PyPI and Homebrew and upgrades only when
-the user runs `oddish update` or `brew upgrade`, so the live server always
+The `oddish` CLI is installed from Homebrew and upgrades only when the user
+runs `brew upgrade abundant-ai/tap/oddish`, so the live server always
 serves clients one or more releases old. There is no server-side minimum
 client version check; an incompatible change does not reject old clients, it
 fails their tasks. Before editing a response schema, status enum, CLI
