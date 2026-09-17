@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openFor, tasks } from "./review-app/records";
+import { openFor, tasks, versionFor } from "./review-app/records";
 
 test("single group statistics only collapse when their trial scope matches", async ({
   page,
@@ -59,6 +59,47 @@ test("drawer keeps one verdict count and generation control, restoring the page 
       exact: true,
     })
   ).toBeVisible();
+});
+
+test("drawer overview leaves one Cancel QA control while QA runs", async ({
+  page,
+}) => {
+  // Both the task record and the drawer's panel resource report a live QA
+  // run. The drawer header carries Cancel QA, so the page badge must stay
+  // hidden rather than show a second one. Responses are built up front so
+  // no handler is mid-fetch when the cancel's revalidation outlives the test.
+  const open = openFor(tasks[0], 7);
+  open.task.verdict_status = "running";
+  const panel = {
+    task: open.task,
+    version: versionFor(tasks[0], 7),
+    can_retry: false,
+    cancel: "qa",
+    active_trials: 0,
+    qa_active: true,
+    can_run_qa: false,
+    has_analysis: true,
+  };
+  let cancelCount = 0;
+  await page.route("**/api/tasks/task-a/open**", (route) =>
+    route.fulfill({ json: open })
+  );
+  await page.route("**/api/tasks/task-a/panel**", (route) =>
+    route.fulfill({ json: panel })
+  );
+  await page.route("**/api/tasks/task-a/qa/cancel", (route) => {
+    cancelCount += 1;
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/tasks/task-a?version=7&drawer=task&taskPane=overview");
+  await expect(
+    page.getByRole("heading", { name: "Findings", exact: true })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Cancel QA", exact: true })
+  ).toHaveCount(1);
+  await page.getByRole("button", { name: "Cancel QA", exact: true }).click();
+  await expect.poll(() => cancelCount).toBe(1);
 });
 
 test("usage, action counts and experiment groups retain their meaning at desktop and narrow widths", async ({
