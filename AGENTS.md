@@ -766,6 +766,8 @@ verifier_judge_costs = true
 
 The worker saves a pending cost record before it starts the task. It then reads
 `verifier/reward-details.json` from the exact Harbor trial in the result manifest.
+Uploaded local artifacts stay in place until result and judge cost settlement
+finish. This keeps the usage report available after the S3 upload succeeds.
 The read is limited to 2 MiB, 128 agent/LLM components, and 16 models per component.
 Reward Kit 0.2.1 agent judges report input, output, cache-read, cache-write, and
 per-model token counts. Input includes cache tokens. Oddish uses its model price
