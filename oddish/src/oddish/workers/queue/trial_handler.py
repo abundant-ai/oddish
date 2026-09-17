@@ -2470,10 +2470,6 @@ async def run_trial_job(
                 reward=execution.outcome.reward,
             )
 
-        # Cleanup local Harbor artifacts AFTER both uploads complete.
-        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
-            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
-
         trial_terminal = await _settle_trial_attempt(
             trial_id=trial_id,
             prepared_trial=prepared_trial,
@@ -2484,6 +2480,10 @@ async def run_trial_job(
             artifact_upload_error=artifact_upload_error,
             probe_analysis=probe_analysis,
         )
+        # Settlement reads verifier usage and contract errors from these files.
+        # Remove them only after both uploads and result settlement complete.
+        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
+            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
     finally:
         heartbeat_stop.set()
         if not heartbeat_interrupt.done():

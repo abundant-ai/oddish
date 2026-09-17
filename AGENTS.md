@@ -736,6 +736,30 @@ no public, read, update, triage, snapshot, or notification paths.
 
 ### Reward Kit agent-judge costs
 
+Tasks can opt into a worker-supplied record for a separate verifier with
+`metadata.oddish.verifier_trusted_trajectory = true`. This also requires
+`verifier_judge_costs = true`, one task step, and a separate Linux verifier.
+It uses Oddish's bundled Harbor runtime. Ephemeral Harbor variants fail before
+the child engine starts; they cannot silently omit the trusted input transfer.
+The worker selects a fixed core verifier class. It rejects custom verifier
+imports, kwargs, and disabled verification for this option. No task file can
+supply a host import path or input path through this option.
+
+After Harbor restores artifacts, the worker copies only the current trial's
+host `agent/trajectory.json` into `/logs/verifier/input-trajectory.json` and
+writes its SHA-256 to `/logs/verifier/input-trajectory.json.sha256`. The input
+must be a regular, non-linked ATIF file of at most 20,000,000 bytes. The separate
+image retains its own `/tests`; the worker does not upload replacement tests.
+The hash identifies the supplied bytes. It does not establish the truth of
+the tool output or other claims within the record.
+
+If the host record is missing, invalid, or cannot be transferred, verification
+returns reward zero before a judge starts. The worker writes a fixed error in
+`verifier/step-judge-error.txt` and a programmatic failure to that trial's
+`verifier/reward-details.json`, which establishes zero judge spend for this
+failure. After standard verification starts, missing usage stays incomplete;
+the worker does not replace it with a zero-cost report.
+
 A task that uses paid Reward Kit agent judges must set this before submission:
 
 ```toml
@@ -745,6 +769,8 @@ verifier_judge_costs = true
 
 The worker saves a pending cost record before it starts the task. It then reads
 `verifier/reward-details.json` from the exact Harbor trial in the result manifest.
+Uploaded local artifacts stay in place until result and judge cost settlement
+finish. This keeps the usage report available after the S3 upload succeeds.
 The read is limited to 2 MiB, 128 agent/LLM components, and 16 models per component.
 Reward Kit 0.2.1 agent judges report input, output, cache-read, cache-write, and
 per-model token counts. Input includes cache tokens. Oddish uses its model price
