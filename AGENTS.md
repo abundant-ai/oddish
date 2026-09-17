@@ -1053,6 +1053,35 @@ Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call
 `ensure_builtin_handlers_registered()` at startup.
 
+### Trace context across queued work
+
+The API's active W3C trace context is saved in the existing
+`worker_jobs.payload._oddish_trace_context` field. This field contains only
+`traceparent` and optional `tracestate`, never baggage, credentials, or task
+contents. The shared enqueue helper adds it after handler validation and
+preserves it when a saved payload is requeued. The runner removes it from the
+in-memory projection passed to handlers; the saved row keeps it for retries.
+It is not part of sweep identity
+or a deduplication key; no database migration is needed.
+
+Hosted and core Logfire configuration explicitly enable `distributed_tracing`
+so incoming request parents are accepted without the SDK's default warning.
+Each claimed attempt creates an `oddish.worker_job.execute` consumer span from
+that saved parent. The span covers the handler, outcome write, and completion
+hooks. It records the job and subject IDs, attempt, retry decision, and queue
+outcome without raw failure messages. Context is detached before the worker
+claims another job. Older rows without a parent still run and start a new trace.
+Jobs created by a separate recovery pass use that pass's active trace; this
+change does not infer a missing historical parent from task or trial IDs.
+
+Controllers that invoke the CLI can set `ODDISH_TRACE_CONTEXT` to a JSON object
+with W3C `traceparent` and optional `tracestate`. The CLI forwards validated
+headers only through its authenticated API clients. Direct presigned storage
+uploads and downloads use separate clients and do not receive these headers.
+Missing or malformed context is ignored. This input needs a CLI release that
+contains the change; API-to-worker propagation needs matching API and worker
+deployments with tracing enabled. Neither path forwards a Logfire token.
+
 ### Local Development
 
 You need a running Postgres instance. Start one however you prefer (e.g.

@@ -22,6 +22,11 @@ from oddish.db import (
     generate_id,
     utcnow,
 )
+from oddish.observability import (
+    TRACE_CONTEXT_PAYLOAD_KEY,
+    inject_trace_context,
+    validated_trace_context,
+)
 
 
 @dataclass
@@ -51,6 +56,11 @@ class EnqueueRequest:
 def _validated_payload(request: EnqueueRequest, validate: bool) -> dict[str, Any]:
     """Resolve a request's payload, running the kind's validate_payload hook."""
     payload = dict(request.payload or {})
+    # Keep metadata out of a handler's business-field validation. Requeues
+    # retain the original parent, rather than the retry caller's current trace.
+    saved_trace = validated_trace_context(
+        payload.pop(TRACE_CONTEXT_PAYLOAD_KEY, None)
+    )
     if validate:
         try:
             from oddish.workers.jobs.registry import get_handler
@@ -60,6 +70,9 @@ def _validated_payload(request: EnqueueRequest, validate: bool) -> dict[str, Any
             handler = None
         if handler is not None:
             payload = handler.validate_payload(payload)
+    trace_context = saved_trace or inject_trace_context()
+    if trace_context:
+        payload = {**payload, TRACE_CONTEXT_PAYLOAD_KEY: trace_context}
     return payload
 
 

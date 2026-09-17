@@ -22,6 +22,10 @@ return its value. `oddish version` and `oddish update` are local. The API
 target resolves in this order: `ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then
 hosted Oddish.
 
+An existing controller trace can be passed as `ODDISH_TRACE_CONTEXT` JSON with
+only `traceparent` and optional `tracestate`. API requests carry these headers;
+presigned storage requests do not. Never put tokens or task contents there.
+
 Run `oddish <command> --help` before relying on an option not shown here.
 `--json` exists on many operational commands, but it is not a global option.
 `oddish logs`, `oddish link`, and `oddish probe` do not provide JSON output.

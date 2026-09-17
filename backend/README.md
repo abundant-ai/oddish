@@ -291,6 +291,11 @@ Common optional settings:
 
 ### Observability (Pydantic Logfire)
 
+Tracing explicitly accepts incoming W3C parent context. New queued jobs save
+only the trace headers and restore that parent for each worker attempt. Retries
+and provider reroutes retain the saved parent; handlers do not receive the
+reserved trace field. API and worker code must both include this support.
+
 Optional. Provision a write token in Logfire, then create the dedicated
 `oddish-logfire` secret in Modal's `main` environment so the API containers and
 workers both pick it up without modifying the `oddish-prod` secret:

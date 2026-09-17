@@ -22,6 +22,11 @@ Ensure your API key is set:
 export ODDISH_API_KEY="ok_..."
 ```
 
+A controller can set `ODDISH_TRACE_CONTEXT` to JSON containing a W3C
+`traceparent` and optional `tracestate`. API calls then join the controller's
+trace. Other fields, malformed headers, and storage upload/download requests
+are excluded. This does not enable trace export or replace `ODDISH_API_KEY`.
+
 ## Usage
 
 **Commands:**
