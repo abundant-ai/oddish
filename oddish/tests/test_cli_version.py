@@ -138,3 +138,16 @@ def test_version_check(monkeypatch):
     monkeypatch.setattr("oddish.cli.version.fetch_pypi_latest", _fail_pypi)
     failed = runner.invoke(app, ["version", "--check", "--json"])
     assert failed.exit_code == 1 and '"action": "error"' in failed.stdout
+
+
+def test_homebrew_version_check_does_not_consult_pypi(monkeypatch):
+    import importlib
+    from oddish.cli._package import InstallInfo
+    module = importlib.import_module('oddish.cli.version')
+    monkeypatch.setattr(module, 'inspect_install', lambda: InstallInfo('0.1.13', 'homebrew', 'brew'))
+    def unexpected():
+        raise AssertionError('Homebrew must not query PyPI')
+    monkeypatch.setattr(module, 'fetch_pypi_latest', unexpected)
+    result = runner.invoke(app, ['version', '--check', '--json'])
+    assert result.exit_code == 0
+    assert 'brew outdated' in result.stdout

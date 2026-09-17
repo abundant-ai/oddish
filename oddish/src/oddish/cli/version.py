@@ -40,6 +40,13 @@ def version_cmd(
     payload = info.as_dict()
     outdated = False
     latest: str | None = None
+    if check and info.source == "homebrew":
+        message = "Run `brew update && brew outdated abundant-ai/tap/oddish` to check Homebrew releases."
+        if json_output:
+            typer.echo(json.dumps({**payload, "update_available": None, "message": message}, indent=2))
+        else:
+            typer.echo(f"oddish {info.version} (Homebrew)\n{message}")
+        return
     if check:
         try:
             latest = fetch_pypi_latest()
