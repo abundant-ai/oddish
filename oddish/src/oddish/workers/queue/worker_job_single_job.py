@@ -36,8 +36,11 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.observability import (
+    TRACE_CONTEXT_PAYLOAD_KEY,
     ThunderHandoffOutcome,
+    record_worker_job_trace_outcome,
     record_worker_job_transition,
+    worker_job_trace,
 )
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
@@ -1409,122 +1412,146 @@ async def run_single_worker_job(
     if job is None:
         return False
 
-    logger.info(
-        "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
-        job.id,
-        job.attempts,
-        worker_billing_spec.configuration if worker_billing_spec else "unreported",
-        modal_function_call_id,
-        worker_billing_spec.cpu_cores if worker_billing_spec else None,
-        worker_billing_spec.memory_mb if worker_billing_spec else None,
-    )
-    attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
-    attempt_started_monotonic = time.monotonic()
-
-    await open_worker_span(
-        job,
-        worker_billing_spec,
-        started_at=attempt_started_at,
-    )
-
-    console.print(
-        f"[cyan]Processing worker_job id={job.id} kind={job.kind.value} "
-        f"(queue_key={queue_key}, attempt={job.attempts}/{job.max_attempts})[/cyan]"
-    )
-
-    try:
-        handler = get_handler(job.kind)
-    except NoHandlerRegisteredError as exc:
-        # Fail the row instead of leaving it in RUNNING so cleanup
-        # doesn't have to reap it via the stale-heartbeat sweep.
-        outcome = JobOutcome.fail(
-            f"No handler registered for kind={job.kind.value!r}: {exc}",
-            retryable=False,
-        )
-    else:
-        try:
-            # Handlers receive the claimed projection; they can hydrate a
-            # full ORM row if they need more columns.
-            outcome = await run_authorized_handler(job, handler, authorize_job)
-        except JobAccessDenied as exc:
-            outcome = JobOutcome.fail(str(exc), retryable=False)
-        except asyncio.CancelledError:
-            console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
-            # This attempt's compute is over; close its worker span at cancel time
-            # so the reconciler doesn't later close it at the job's (much later)
-            # terminal finished_at. CAS close, so any other close path is a no-op.
-            await close_worker_span(
-                job.id, job.attempts, finished_at=datetime.now(timezone.utc)
-            )
-            raise
-        except Exception as exc:  # handler-raised exceptions retry by default
-            logger.exception(
-                "worker_job %s (%s, subject=%s) handler error",
-                job.id,
-                job.kind.value,
-                job.subject_id,
-            )
-            outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
-
-    disposition_count = sum(
-        value is not None
-        for value in (outcome.success, outcome.failure, outcome.reroute)
-    )
-    if disposition_count != 1:
-        # A handler can mutate the dataclass after construction. Keep an invalid
-        # result from leaving its claimed worker_jobs row RUNNING indefinitely.
-        outcome = JobOutcome.fail(
-            "handler returned an invalid JobOutcome",
-            retryable=False,
-        )
-
-    outcome_at = datetime.now(timezone.utc)
-    persisted_status = await _record_outcome(
+    with worker_job_trace(
+        (job.payload or {}).get(TRACE_CONTEXT_PAYLOAD_KEY),
         job_id=job.id,
-        worker_id=worker_id,
-        outcome=outcome,
-        attempts=job.attempts,
-        max_attempts=job.max_attempts,
-        kind=job.kind,
+        kind=job.kind.value,
+        attempt=job.attempts,
         subject_table=job.subject_table,
         subject_id=job.subject_id,
-    )
-    attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
-    outcome_recorded = bool(persisted_status)
-    if isinstance(persisted_status, WorkerJobStatus):
+    ) as attempt_span:
+        logger.info(
+            "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
+            job.id,
+            job.attempts,
+            worker_billing_spec.configuration if worker_billing_spec else "unreported",
+            modal_function_call_id,
+            worker_billing_spec.cpu_cores if worker_billing_spec else None,
+            worker_billing_spec.memory_mb if worker_billing_spec else None,
+        )
+        attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
+        attempt_started_monotonic = time.monotonic()
+
+        await open_worker_span(
+            job,
+            worker_billing_spec,
+            started_at=attempt_started_at,
+        )
+
         console.print(
-            f"[dim]worker_job {job.id} -> {persisted_status.value} "
-            f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
-        )
-        record_worker_job_transition(
-            kind=job.kind,
-            outcome=persisted_status,
-            queue_key=job.queue_key,
-            execution_lane=job.execution_lane,
-            duration_seconds=attempt_duration_seconds,
+            f"[cyan]Processing worker_job id={job.id} kind={job.kind.value} "
+            f"(queue_key={queue_key}, attempt={job.attempts}/{job.max_attempts})[/cyan]"
         )
 
-    if outcome_recorded:
-        await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
-
-    if (
-        outcome_recorded
-        and outcome.success is not None
-        and post_success_hooks
-        and job.subject_id
-    ):
-        hook = post_success_hooks.get(job.kind)
-        if hook is not None:
+        try:
+            handler = get_handler(job.kind)
+        except NoHandlerRegisteredError as exc:
+            if attempt_span is not None:
+                attempt_span.set_attribute("error.type", type(exc).__name__)
+            # Fail the row instead of leaving it in RUNNING so cleanup
+            # doesn't have to reap it via the stale-heartbeat sweep.
+            outcome = JobOutcome.fail(
+                f"No handler registered for kind={job.kind.value!r}: {exc}",
+                retryable=False,
+            )
+        else:
             try:
-                await hook(job.subject_id)
-            except Exception:
-                logger.exception(
-                    "post-success hook for kind=%s job=%s failed",
-                    job.kind.value,
-                    job.id,
+                # Handlers receive the claimed projection; they can hydrate a
+                # full ORM row if they need more columns.
+                outcome = await run_authorized_handler(job, handler, authorize_job)
+            except JobAccessDenied as exc:
+                if attempt_span is not None:
+                    attempt_span.set_attribute("error.type", type(exc).__name__)
+                outcome = JobOutcome.fail(str(exc), retryable=False)
+            except asyncio.CancelledError:
+                console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
+                # This attempt's compute is over; close its worker span at cancel time
+                # so the reconciler doesn't later close it at the job's (much later)
+                # terminal finished_at. CAS close, so any other close path is a no-op.
+                await close_worker_span(
+                    job.id, job.attempts, finished_at=datetime.now(timezone.utc)
                 )
+                raise
+            except Exception as exc:  # handler-raised exceptions retry by default
+                if attempt_span is not None:
+                    attempt_span.set_attribute("error.type", type(exc).__name__)
+                logger.exception(
+                    "worker_job %s (%s, subject=%s) handler error",
+                    job.id,
+                    job.kind.value,
+                    job.subject_id,
+                )
+                outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
-    return True
+        disposition_count = sum(
+            value is not None
+            for value in (outcome.success, outcome.failure, outcome.reroute)
+        )
+        if disposition_count != 1:
+            # A handler can mutate the dataclass after construction. Keep an invalid
+            # result from leaving its claimed worker_jobs row RUNNING indefinitely.
+            outcome = JobOutcome.fail(
+                "handler returned an invalid JobOutcome",
+                retryable=False,
+            )
+
+        outcome_at = datetime.now(timezone.utc)
+        persisted_status = await _record_outcome(
+            job_id=job.id,
+            worker_id=worker_id,
+            outcome=outcome,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+            kind=job.kind,
+            subject_table=job.subject_table,
+            subject_id=job.subject_id,
+        )
+        record_worker_job_trace_outcome(
+            attempt_span,
+            status=(
+                persisted_status.value
+                if isinstance(persisted_status, WorkerJobStatus)
+                else "not_recorded"
+            ),
+            failed=outcome.failure is not None,
+            retryable=outcome.failure.retryable if outcome.failure is not None else None,
+        )
+        attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
+        outcome_recorded = bool(persisted_status)
+        if isinstance(persisted_status, WorkerJobStatus):
+            console.print(
+                f"[dim]worker_job {job.id} -> {persisted_status.value} "
+                f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
+            )
+            record_worker_job_transition(
+                kind=job.kind,
+                outcome=persisted_status,
+                queue_key=job.queue_key,
+                execution_lane=job.execution_lane,
+                duration_seconds=attempt_duration_seconds,
+            )
+
+        if outcome_recorded:
+            await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
+
+        if (
+            outcome_recorded
+            and outcome.success is not None
+            and post_success_hooks
+            and job.subject_id
+        ):
+            hook = post_success_hooks.get(job.kind)
+            if hook is not None:
+                try:
+                    await hook(job.subject_id)
+                except Exception:
+                    logger.exception(
+                        "post-success hook for kind=%s job=%s failed",
+                        job.kind.value,
+                        job.id,
+                    )
+
+        return True
 
 
 async def drain_worker_jobs(
