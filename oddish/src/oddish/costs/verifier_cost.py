@@ -56,6 +56,11 @@ _TRAJECTORY_NAMES = ("trajectory.json",)
 # Known CUA output roots (Harbor + SWE-M). Prefer these over rglob.
 _CUA_OUTPUT_RELS = ("verifier/ux", "verifier")
 UNPRICED_NO_CUA_ARTIFACTS = "no_cua_artifacts"
+UNPRICED_NO_CUA_CHECKED = "no_cua_checked"
+_REPLACEABLE_SENTINEL_REASONS = (
+    UNPRICED_NO_CUA_ARTIFACTS,
+    UNPRICED_NO_CUA_CHECKED,
+)
 
 
 @dataclass(frozen=True)
@@ -575,9 +580,8 @@ async def upsert_verifier_cost_rows(
                 index_elements=["trial_id", "attempt", "component"],
                 index_where=VerifierCostModel.deleted_at.is_(None),
                 set_=update_cols,
-                where=(
-                    VerifierCostModel.unpriced_reason
-                    == UNPRICED_NO_CUA_ARTIFACTS
+                where=VerifierCostModel.unpriced_reason.in_(
+                    _REPLACEABLE_SENTINEL_REASONS
                 ),
             )
         )
@@ -654,8 +658,13 @@ _BACKFILL_ARTIFACT_CANDIDATES = (
 _ATTEMPT_PREFIX = re.compile(r"^(?P<root>.*/)attempt-(?P<n>[1-9]\d*)$")
 
 
-def _no_artifacts_sentinel() -> VerifierCostDraft:
-    """Placeholder so a missed download can be replaced later."""
+def _no_artifacts_sentinel(*, checked: bool = False) -> VerifierCostDraft:
+    """Placeholder so a missed download can be replaced later.
+
+    Historical ``no_cua_artifacts`` rows stay incomplete so they can be
+    selected for Harbor-subdirectory repair. A miss after that lookup writes
+    ``no_cua_checked``, which graduates the attempt but remains replaceable.
+    """
     return VerifierCostDraft(
         component=COMPONENT_LOOP,
         model=None,
@@ -667,7 +676,11 @@ def _no_artifacts_sentinel() -> VerifierCostDraft:
         cache_write_tokens=None,
         cost_usd=None,
         cost_source=COST_BACKFILL,
-        unpriced_reason=UNPRICED_NO_CUA_ARTIFACTS,
+        unpriced_reason=(
+            UNPRICED_NO_CUA_CHECKED
+            if checked
+            else UNPRICED_NO_CUA_ARTIFACTS
+        ),
     )
 
 
@@ -708,9 +721,10 @@ def trial_needs_verifier_backfill(
     """Whether a finished agent trial belongs in a backfill batch.
 
     Non-CUA trials are excluded so recent ordinary agent runs cannot fill
-    the 200-trial cap. ``covered_attempts`` counts only non-sentinel rows:
-    a ``no_cua_artifacts`` sentinel is incomplete so a false miss can still
-    get the Harbor-subdirectory repair. Priced rows graduate the attempt.
+    the 200-trial cap. ``covered_attempts`` counts priced rows and
+    Harbor-confirmed ``no_cua_checked`` misses. A historical
+    ``no_cua_artifacts`` sentinel is incomplete so that attempt can still
+    get the Harbor-subdirectory repair, then graduates.
     """
     if not has_cua_result_signal:
         return False
@@ -772,7 +786,7 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
         if sibling is None and attempt != max_attempt:
             n = await upsert_verifier_cost_rows(
                 session,
-                drafts=[_no_artifacts_sentinel()],
+                drafts=[_no_artifacts_sentinel(checked=True)],
                 trial_id=trial.id,
                 attempt=attempt,
                 experiment_id=trial.experiment_id,
@@ -795,7 +809,7 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
         if layout.mode is TrialArtifactMode.UNAVAILABLE or not layout.artifact_prefix:
             n = await upsert_verifier_cost_rows(
                 session,
-                drafts=[_no_artifacts_sentinel()],
+                drafts=[_no_artifacts_sentinel(checked=True)],
                 trial_id=trial.id,
                 attempt=attempt,
                 experiment_id=trial.experiment_id,
@@ -826,7 +840,7 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
             if not found_any:
                 n = await upsert_verifier_cost_rows(
                     session,
-                    drafts=[_no_artifacts_sentinel()],
+                    drafts=[_no_artifacts_sentinel(checked=True)],
                     trial_id=trial.id,
                     attempt=attempt,
                     experiment_id=trial.experiment_id,
@@ -859,10 +873,11 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
 async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
     """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
 
-    Only CUA-signaled finished agent trials with at least one attempt that
-    has no non-sentinel ``verifier_costs`` row are selected, so a false
-    ``no_cua_artifacts`` miss can still be repaired. Uncovered trials fill
-    the 200-trial cap before sentinel-only leftovers. Each trial uses its
+    Only CUA-signaled finished agent trials with an attempt that still
+    lacks priced or Harbor-confirmed coverage are selected, so a false
+    ``no_cua_artifacts`` miss can be repaired once. Uncovered trials fill
+    the 200-trial cap before those leftovers. A Harbor-subdirectory miss
+    writes ``no_cua_checked`` and leaves the pool. Each trial uses its
     own write session so one IntegrityError cannot roll back the sweep.
     Artifacts are read from the Harbor trial subdirectory, not the bare
     ``attempt-N/`` root.

@@ -27,6 +27,7 @@ from oddish.costs.verifier_cost import (
     attempt_s3_prefix,
     _no_artifacts_sentinel,
     UNPRICED_NO_CUA_ARTIFACTS,
+    UNPRICED_NO_CUA_CHECKED,
     backfill_batch_rank,
     trial_needs_verifier_backfill,
     upsert_verifier_cost_rows,
@@ -354,11 +355,29 @@ def test_backfill_sentinel_only_coverage_is_incomplete() -> None:
     )
 
 
+def test_backfill_checked_sentinel_graduates() -> None:
+    """A Harbor-subdirectory miss leaves the 200-trial pool."""
+    checked = _no_artifacts_sentinel(checked=True)
+    assert checked.unpriced_reason == UNPRICED_NO_CUA_CHECKED
+    assert checked.unpriced_reason != UNPRICED_NO_CUA_ARTIFACTS
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=True,
+            covered_attempts=1,
+            attempts=1,
+        )
+        is False
+    )
+
+
 def test_no_artifacts_sentinel_is_replaceable() -> None:
     draft = _no_artifacts_sentinel()
     assert draft.cost_usd is None
     assert draft.unpriced_reason == UNPRICED_NO_CUA_ARTIFACTS
     assert draft.cost_source == COST_BACKFILL
+    checked = _no_artifacts_sentinel(checked=True)
+    assert checked.unpriced_reason == UNPRICED_NO_CUA_CHECKED
+    assert checked.cost_source == COST_BACKFILL
 
 
 def test_nop_shell_without_artifacts_writes_nothing(tmp_path: Path) -> None:
