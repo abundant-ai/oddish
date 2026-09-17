@@ -347,7 +347,7 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "analysisClassifications",
-    label: "QA Verdict Results",
+    label: "Trial analysis",
     group: "Trial",
     control: "multiselect",
     facet: "analysis_classifications",
@@ -576,7 +576,7 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
   },
   {
     id: "analysisClassifications",
-    label: "QA Verdict Results",
+    label: "Trial analysis",
     control: "multiselect",
     facet: "analysis_classifications",
     keys: ["analysis_classifications"],

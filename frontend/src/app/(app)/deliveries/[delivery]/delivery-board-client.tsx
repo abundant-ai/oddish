@@ -978,7 +978,7 @@ function TaskRow({
                           <p className="text-muted-foreground text-sm sm:col-start-1">
                             {defect.source === "pre_trial"
                               ? "Pre-trial audit"
-                              : "QA verdict"}
+                              : "Trial analysis"}
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>

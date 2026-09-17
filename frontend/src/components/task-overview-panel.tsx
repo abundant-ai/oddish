@@ -560,7 +560,7 @@ export function TaskOverviewPanel({
           })}
           {unanalyzedCount > 0 ? (
             <span className="text-muted-foreground font-mono text-[10px]">
-              {unanalyzedCount} awaiting QA
+              {unanalyzedCount} awaiting analysis
             </span>
           ) : null}
         </div>
@@ -752,14 +752,14 @@ function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
         )}
       >
         {running
-          ? "QA RUNNING"
+          ? "ANALYZING"
           : failed
-            ? "QA FAILED"
+            ? "ANALYSIS FAILED"
             : analysis
               ? gradingError
                 ? "GRADING ERROR"
                 : EXECUTION_LABELS[analysis.classification].toUpperCase()
-              : "NO QA VERDICT YET"}
+              : "NOT ANALYZED"}
       </span>
       {analysis?.subtype && !gradingError ? (
         <span

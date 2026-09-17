@@ -157,8 +157,9 @@ async def rerun_trial_analysis(
 ) -> dict:
     """Queue analysis for one trial.
 
-    Classifies only this trial. Does not touch other trials, the task
-    verdict, or the pre-trial audit.
+    Resets this trial's analysis and reruns task QA: every eligible trial
+    is re-analyzed and the verdict is regenerated. Does not rerun the
+    pre-trial audit.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 

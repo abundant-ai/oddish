@@ -1155,7 +1155,7 @@ export function TaskDetailClient({
               (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
                 ? "Pre-trial audit"
                 : (task.must_fix_count ?? 0) > 0
-                  ? "Run QA Verdict"
+                  ? "Trial analysis"
                   : undefined
             }
             onViewFindings={() => {

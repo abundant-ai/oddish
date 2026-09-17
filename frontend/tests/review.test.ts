@@ -108,7 +108,7 @@ const badge: {
     task: Task;
     variant: "card" | "inline" | "summary";
     mustFixCount?: number;
-    rejectionSource?: "Pre-trial audit" | "Run QA Verdict";
+    rejectionSource?: "Pre-trial audit" | "Trial analysis";
   }>;
   present?: (
     task: Task,
