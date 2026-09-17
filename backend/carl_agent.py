@@ -25,10 +25,19 @@ carl_image = (
         "asyncpg==0.31.0",
         "pglast==8.4",
     )
+    # carl_tools imports oddish.timing; the slim Carl image does not uv_sync the
+    # worker pyproject, so copy the package onto PYTHONPATH.
+    .add_local_dir(
+        local_path="../oddish/src",
+        remote_path="/oddish-src",
+        copy=True,
+        ignore=["**/__pycache__/"],
+    )
     .env(
         {
             "MODAL_APP_NAME": os.environ.get("MODAL_APP_NAME", "oddish"),
             "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+            "PYTHONPATH": "/oddish-src",
         }
     )
     .add_local_python_source(
