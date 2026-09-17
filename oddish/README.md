@@ -22,7 +22,8 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Explicitly use an operator-enabled ephemeral EC2 backend
 # oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
 
-# Explicitly use an operator-enabled Thunder GPU sandbox
+# GPU tasks default to Thunder on a Thunder-enabled deployment; --env thunder
+# selects it explicitly, --env modal opts a GPU task back onto Modal
 # oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
 
 # Append trials to a task an experiment already runs; add
@@ -62,6 +63,10 @@ export ODDISH_API_KEY="ok_..."
 # export ODDISH_DASHBOARD_URL="https://www.oddish.app"
 ```
 
+Controllers may pass W3C headers in `ODDISH_TRACE_CONTEXT` JSON to link CLI API
+calls to a parent trace. See [`../DOCS.md`](../DOCS.md). Storage requests do not
+receive this context.
+
 Need to deploy your own stack? See [`../SELF_HOSTING.md`](../SELF_HOSTING.md).
 Need package internals, architecture, or development notes? See [`AGENTS.md`](../AGENTS.md).
 
@@ -76,10 +81,12 @@ reference. The main commands are:
   task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
   `gke`, `archil`, `thunder`, and `numinous`; Archil, EC2, and Numinous are controlled by
   deployment settings. When Numinous is enabled it is the first CPU candidate;
-  otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
+  otherwise Daytona is the hosted CPU default. GPU tasks are placed by the
+  deployment: Thunder when it enables it, otherwise Modal, and Modal whenever
+  the run needs a private-registry pull. Numinous GPU registration has a
   separate deployment flag.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
-- `oddish preflight` — run the local task integrity checks that also gate `run` and `upload` (pass `--force` there to submit anyway).
+- `oddish preflight` — check task name, internet/reward declarations, optional GPU types, and task integrity before `run` or `upload` (pass `--force` there to submit anyway).
 - `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
@@ -133,3 +140,16 @@ See [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0). Third-party code keeps its own lic
 Delivery sign-off requires a fix or individual acknowledgment for every reported
 task defect, including historical lower-severity findings. The CLI sends the
 reviewed version; new versions require a new decision. See `../DOCS.md`.
+
+### Homebrew installation
+
+The private Homebrew tap requires GitHub read access to `abundant-ai/homebrew-tap`.
+Install `gh` with `brew install gh`, then run `gh auth login` and
+`gh auth setup-git`. Install with `brew install abundant-ai/tap/oddish`.
+Set `ODDISH_API_KEY` for your Oddish organization before making API requests.
+Update with `brew update && brew upgrade abundant-ai/tap/oddish`. Homebrew owns
+this installation; `oddish update` directs you to Homebrew instead of replacing
+it from PyPI. `oddish version --check` prints the Homebrew check command.
+The Homebrew package includes CLI and shared client helpers, not the Oddish
+server, database, or worker implementations. Releases are maintained in
+https://github.com/abundant-ai/homebrew-tap.

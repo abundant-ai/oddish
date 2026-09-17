@@ -24,7 +24,7 @@ class _Session:
         self.rows = rows
         self.sql = ""
 
-    async def execute(self, statement, _params):
+    async def execute(self, statement, _params=None):
         self.sql = str(statement)
         return _MappingsResult(self.rows)
 
@@ -132,7 +132,7 @@ async def test_confirmed_teardown_makes_pending_fallback_dispatchable():
         def __init__(self):
             self.calls: list[tuple[str, dict[str, Any]]] = []
 
-        async def execute(self, statement, params):
+        async def execute(self, statement, params=None):
             sql = str(statement)
             self.calls.append((sql, params))
             if len(self.calls) == 1:
@@ -142,22 +142,30 @@ async def test_confirmed_teardown_makes_pending_fallback_dispatchable():
                             "job_id": "job-1",
                             "trial_id": "trial-1",
                             "target_environment": "modal",
+                            "handoff": "thunder_attempt_budget_exhausted",
                         }
                     ]
                 )
             return UpdateResult()
 
     session = Session()
-    completed = await cleanup._complete_pending_thunder_capacity_handoffs(session)
+    completed = await cleanup._complete_pending_thunder_handoffs(session)
 
-    assert completed == [("job-1", "trial-1", "modal")]
+    assert completed == [
+        ("job-1", "trial-1", "modal", "thunder_attempt_budget_exhausted")
+    ]
     select_sql = session.calls[0][0]
     assert "wj.reroute_pending_teardown" in select_sql
+    # The teardown gate covers every handoff reason, not only capacity misses.
+    assert "reroute_reason =" not in select_sql
     assert "wj.external_id = run.external_id" in select_sql
     assert "run.state = 'TERMINATED'" in select_sql
     job_sql = session.calls[1][0]
     assert "reroute_pending_teardown = false" in job_sql
-    assert "available_after = NOW()" in job_sql
+    # A handoff scheduled with a retry delay must not become claimable early.
+    assert "available_after = GREATEST(" in job_sql
+    assert "COALESCE(next_retry_at, NOW())" in job_sql
+    assert "next_retry_at = NULL" not in job_sql
     lease_sql = session.calls[2][0]
     assert "UPDATE sandbox_capacity_leases" in lease_sql
     assert "active.terminated_at IS NULL" in lease_sql
@@ -167,7 +175,7 @@ async def test_confirmed_teardown_makes_pending_fallback_dispatchable():
 async def test_uncertain_teardown_keeps_pending_fallback_blocked():
     session = _Session([])
 
-    completed = await cleanup._complete_pending_thunder_capacity_handoffs(session)
+    completed = await cleanup._complete_pending_thunder_handoffs(session)
 
     assert completed == []
     assert "run.state = 'TERMINATED'" in session.sql

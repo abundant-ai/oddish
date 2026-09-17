@@ -20,6 +20,7 @@ Use this order unless the user requests another format. Retain required reposito
 
 - Scope: <Affected behavior in ordinary words>. Changes span <N> files: <counts by purpose>.
 - Size: app +<N>/-<N>; tests +<N>/-<N>; docs +<N>/-<N> lines.
+- Compatibility: <nothing a client reads changes | older CLI keeps working because <reason> | breaks CLI < x.y.z; see below>
 
 <Existing situation and concrete problem. Define a new feature or necessary
 project term before using it. Explain who does what and what happens.>
@@ -28,6 +29,11 @@ project term before using it. Explain who does what and what happens.>
 
 <Only when needed: another distinct behavior, an important limitation,
 or a required deployment action.>
+
+### Screenshot or preview
+
+<Required when a user can see the change: an image, or the PR preview link
+with the page and state named. Otherwise "No user-visible change.">
 
 ### Local testing
 
@@ -40,7 +46,7 @@ Include important failures or untested behavior.>
   previously explained behavior it affects.>
 ```
 
-Keep Scope and Size as the only TL;DR bullets. Put the explanation directly below them in connected paragraphs, without another summary or separate Problem/Fix/Tested bullets. A small change may need two sentences. A large PR needs enough explanation to cover its distinct behaviors, not one paragraph per file.
+Keep Scope, Size, and Compatibility as the only TL;DR bullets. Compatibility states whether anything an installed CLI, `backend/`, or `frontend/` reads changes shape or meaning, and if so which readers were checked (`CONTRIBUTING.md` explains why: installed clients upgrade lazily). Application additions above 500 lines break the repository limit; say so and name the split rather than hiding it in the count. Put the explanation directly below them in connected paragraphs, without another summary or separate Problem/Fix/Tested bullets. A small change may need two sentences. A large PR needs enough explanation to cover its distinct behaviors, not one paragraph per file.
 
 Count application code separately from tests, docs, migrations, configuration, generated files, and assets where present. Omit absent categories; report binary files without invented line counts. File counts cover the whole diff. The final file list is selective, usually two to five bullets.
 
@@ -71,6 +77,7 @@ This example sets the level of detail and language. Its numbers and test results
 
 - Scope: Require Abundant approval before an organization can use the API or run tasks. Also fix failures during organization creation.
 - Size: app +480/-296; tests +807/-362; docs +84/-4; configuration +2/-0 lines.
+- Compatibility: existing API keys keep working; requests from unapproved organizations are now rejected, which older CLIs report as a plain request failure.
 
 Previously, someone could sign up, create an organization, and run tasks
 at Abundant's expense. Being an administrator of their own organization
@@ -88,6 +95,10 @@ longer cause duplicate-record errors.
 The database update approves only Abundant, Abundant CyberMasters, and
 Oddish-onsite. Every other organization needs manual approval. Apply
 the database update before deploying the application.
+
+### Screenshot or preview
+
+No user-visible change.
 
 ### Local testing
 
@@ -117,4 +128,4 @@ End with files that help the reviewer locate the explained behavior. Describe ea
 
 ## Drafting and publishing
 
-Make the title describe concrete behavior; follow the repository's required title conventions. When asked for an example, provide Markdown in chat. When asked to update a PR, preserve the approved wording and format. With `gh`, write multiline text to a file and use `--body-file`; read the saved body back to verify it. A request for wording suggestions does not authorize changing a remote PR.
+Make the title describe concrete behavior; never add co-author trailers, attribution lines, or tool signatures to the body or the commits; follow the repository's required title conventions. When asked for an example, provide Markdown in chat. When asked to update a PR, preserve the approved wording and format. With `gh`, write multiline text to a file and use `--body-file`; read the saved body back to verify it. A request for wording suggestions does not authorize changing a remote PR.

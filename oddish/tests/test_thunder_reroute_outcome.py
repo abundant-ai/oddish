@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.queue import worker_job_single_job as runner
 
@@ -69,7 +70,7 @@ async def test_provisioned_handoff_waits_for_teardown(monkeypatch, sandbox_state
         reroute=runner.JobReroute(
             target_environment="modal",
             target_execution_lane="default",
-            reason=runner.THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            reason=THUNDER_CAPACITY_UNAVAILABLE_CODE,
             subject_attempt=3,
         ),
     )

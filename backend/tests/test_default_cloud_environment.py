@@ -36,3 +36,19 @@ def test_plain_submission_does_not_default_to_gke() -> None:
 
 def test_no_submission_does_not_default_to_gke() -> None:
     assert get_default_cloud_environment(None) != EnvironmentType.GKE
+
+
+def test_task_declared_gpu_need_is_negotiated_like_an_override() -> None:
+    # The CLI reports a task.toml GPU request as ``requires_gpu``; it must
+    # land on the same GPU-capable backend an explicit override would.
+    from oddish.schemas import TaskSweepSubmission
+
+    flagged = TaskSweepSubmission(
+        task_id="t1", configs=[AgentModelPair(agent="oracle")], requires_gpu=True
+    )
+    assert get_default_cloud_environment(flagged) == get_default_cloud_environment(
+        _submission(override_gpus=1)
+    )
+    assert get_default_cloud_environment(flagged) != get_default_cloud_environment(
+        _submission()
+    )

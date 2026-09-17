@@ -18,9 +18,13 @@ export function isAnalysisStatusActive(
 // already have.
 const TRIAL_FETCH_TIMEOUT_MS = 15_000;
 
+// No `cache: "no-store"` here: the backend decides per row how the browser
+// may treat the response (`backend/api/trial_cache.py`). A finished trial is
+// kept but revalidated on every use, so a reopen after reload is a
+// conditional request answered 304 rather than the full payload; a live
+// trial is never stored. `no-store` on the fetch would override all of that.
 async function trialFetcher(url: string): Promise<Trial> {
   return fetcher<Trial>(url, {
-    cache: "no-store",
     signal: AbortSignal.timeout(TRIAL_FETCH_TIMEOUT_MS),
   });
 }

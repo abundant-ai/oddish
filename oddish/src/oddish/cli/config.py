@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import typer
 from rich.console import Console
@@ -90,12 +91,55 @@ def require_api_key(api_url: str | None = None) -> str:
     return api_key
 
 
+def _parent_trace_headers() -> dict[str, str]:
+    """Read trace-only controller context without adding an optional SDK dependency."""
+    raw = os.environ.get("ODDISH_TRACE_CONTEXT", "")
+    if not raw or len(raw) > 2048:
+        return {}
+    try:
+        carrier = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(carrier, dict):
+        return {}
+    parent = carrier.get("traceparent")
+    if not isinstance(parent, str) or not re.fullmatch(
+        r"00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}", parent
+    ):
+        return {}
+    if parent[3:35] == "0" * 32 or parent[36:52] == "0" * 16:
+        return {}
+    headers = {"traceparent": parent}
+    state = carrier.get("tracestate")
+    if not isinstance(state, str) or not state or len(state) > 512:
+        return headers
+    members = [member.strip() for member in state.split(",")]
+    keys = set()
+    for member in members:
+        key, separator, value = member.partition("=")
+        if (
+            not separator
+            or not re.fullmatch(
+                r"(?:[a-z][a-z0-9_*/-]{0,255}|[a-z0-9][a-z0-9_*/-]{0,240}@[a-z][a-z0-9_*/-]{0,13})",
+                key,
+            )
+            or not re.fullmatch(r"[\x20-\x2b\x2d-\x3c\x3e-\x7e]{1,256}", value)
+            or value.endswith(" ")
+            or key in keys
+            or len(members) > 32
+        ):
+            return headers
+        keys.add(key)
+    headers["tracestate"] = ",".join(members)
+    return headers
+
+
 def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
     """Build auth headers for API requests."""
     api_key = require_api_key(api_url)
     if not api_key:
         return {}
-    return {"Authorization": f"Bearer {api_key}"}
+    return {"Authorization": f"Bearer {api_key}", **_parent_trace_headers()}
 
 
 # =============================================================================

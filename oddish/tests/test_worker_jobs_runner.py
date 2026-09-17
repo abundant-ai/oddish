@@ -42,6 +42,9 @@ from oddish.core.harbor_artifacts import (  # noqa: E402
     THUNDER_CAPACITY_UNAVAILABLE_CODE,
 )
 from oddish.config import settings  # noqa: E402
+from oddish.workers.queue.thunder_fallback import (  # noqa: E402
+    THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+)
 from oddish.workers.queue import worker_job_single_job  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     ClaimedWorkerJob,
@@ -375,6 +378,7 @@ class _RerouteConnection:
         job_overrides: dict[str, Any] | None = None,
         trial_overrides: dict[str, Any] | None = None,
         run_overrides: dict[str, Any] | None = None,
+        run_missing: bool = False,
         leases: list[dict[str, Any]] | None = None,
         failed_update: str | None = None,
     ) -> None:
@@ -403,16 +407,22 @@ class _RerouteConnection:
             "superseded_by_trial_id": None,
             **(trial_overrides or {}),
         }
-        self.run = {
-            "id": "sandbox-run-1",
-            "state": "FAILED",
-            "provider": "thunder",
-            "external_id": None,
-            "worker_job_attempt": 3,
-            "trial_id": "trial-1",
-            "deleted_at": None,
-            **(run_overrides or {}),
-        }
+        # ``run_missing`` models an attempt that failed before
+        # ``create_thunder_sandbox_run`` inserted its ledger row.
+        self.run: dict[str, Any] | None = (
+            None
+            if run_missing
+            else {
+                "id": "sandbox-run-1",
+                "state": "FAILED",
+                "provider": "thunder",
+                "external_id": None,
+                "worker_job_attempt": 3,
+                "trial_id": "trial-1",
+                "deleted_at": None,
+                **(run_overrides or {}),
+            }
+        )
         self.leases = (
             leases
             if leases is not None
@@ -542,10 +552,12 @@ async def test_record_outcome_atomically_reroutes_unprovisioned_thunder_attempt(
         3,
         False,
         THUNDER_CAPACITY_UNAVAILABLE_CODE,
+        None,
     )
     assert "execution_lane = $2" in job_sql
     assert "status = 'RETRYING'" in job_sql
-    assert "available_after = NOW()" in job_sql
+    # A capacity handoff carries no retry delay: claimable immediately.
+    assert "available_after = COALESCE($7::timestamptz, NOW())" in job_sql
     assert "reroute_from_environment = 'thunder'" in job_sql
     assert "reroute_pending_teardown = $5" in job_sql
     job_set_clause = job_sql.split("SET", 1)[1].split("WHERE", 1)[0]
@@ -604,7 +616,7 @@ async def test_reroute_waits_for_confirmed_external_sandbox_teardown(monkeypatch
     job_args = next(
         args for sql, args in connection.calls if "UPDATE worker_jobs" in sql
     )
-    assert job_args[-2:] == (True, THUNDER_CAPACITY_UNAVAILABLE_CODE)
+    assert job_args[4:6] == (True, THUNDER_CAPACITY_UNAVAILABLE_CODE)
     assert "CASE WHEN $5 THEN provider ELSE NULL END" in updates[1]
     assert handoff_events == [("pending", "teardown_pending")]
 
@@ -642,7 +654,7 @@ async def test_reroute_releases_confirmed_external_sandbox(monkeypatch):
     job_args = next(
         args for sql, args in connection.calls if "UPDATE worker_jobs" in sql
     )
-    assert job_args[-2:] == (False, THUNDER_CAPACITY_UNAVAILABLE_CODE)
+    assert job_args[4:6] == (False, THUNDER_CAPACITY_UNAVAILABLE_CODE)
 
 
 @pytest.mark.asyncio
@@ -931,6 +943,56 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     assert "current_worker_id = NULL" in trial_sql
     assert "current_queue_slot = NULL" in trial_sql
     assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,subject_table,expect_trial_failed",
+    [
+        (WorkerJobKind.TRIAL, "trials", True),
+        (WorkerJobKind.TASK_EXPAND, "tasks", False),
+    ],
+)
+async def test_record_outcome_terminal_failure_settles_a_retrying_trial(
+    monkeypatch, kind, subject_table, expect_trial_failed
+):
+    # Ordinary settlement leaves a trial RETRYING while it has trial-level
+    # budget; when the job's own budget is spent here, nothing remains to run
+    # that trial, so the terminal outcome must reach the trial row too. A
+    # trial already settled SUCCESS or FAILED is left alone by the predicate.
+    connection = _FakeConnection()
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="w-test",
+        outcome=JobOutcome.fail("HTTP 503 from agent", retryable=True),
+        attempts=6,
+        max_attempts=6,
+        kind=kind,
+        subject_table=subject_table,
+        subject_id="subject-1",
+    )
+
+    assert status == WorkerJobStatus.FAILED
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert "UPDATE worker_jobs" in updates[0][0]
+    assert "status = 'FAILED'" in updates[0][0]
+    trial_updates = [(sql, args) for sql, args in updates if "UPDATE trials" in sql]
+    if expect_trial_failed:
+        assert len(trial_updates) == 1
+        trial_sql, trial_args = trial_updates[0]
+        assert "status = 'FAILED'" in trial_sql
+        assert "status::text = 'RETRYING'" in trial_sql
+        assert "finished_at = NOW()" in trial_sql
+        assert "current_worker_id = NULL" in trial_sql
+        assert trial_args == ("subject-1", "HTTP 503 from agent")
+    else:
+        assert trial_updates == []
 
 
 @pytest.mark.asyncio
@@ -1296,3 +1358,374 @@ async def test_host_denial_records_permanent_failure_without_running_handler(
     assert handler.run_calls == []
     assert captured[0]["outcome"].failure.retryable is False
     assert "approval revoked" in captured[0]["outcome"].failure.error_message
+
+
+# --- attempt-budget handoff: a settled retry that changes provider ----------
+
+
+def _budget_reroute_outcome(*, target: str = "modal") -> JobOutcome:
+    return JobOutcome.reroute_to(
+        target_environment=target,
+        target_execution_lane="default",
+        reason=THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+        retry_after_seconds=None,
+        subject_attempt=2,
+        error_message="agent timed out on thunder",
+    )
+
+
+def _settled_budget_connection(**overrides: Any) -> _RerouteConnection:
+    """A trial ordinary settlement already marked RETRYING and released."""
+    trial_overrides = {
+        "status": "RETRYING",
+        "current_worker_id": None,
+        "attempts": 2,
+        "max_attempts": 6,
+        **(overrides.pop("trial_overrides", None) or {}),
+    }
+    job_overrides = {"attempts": 2, **(overrides.pop("job_overrides", None) or {})}
+    run_overrides = {
+        "worker_job_attempt": 2,
+        **(overrides.pop("run_overrides", None) or {}),
+    }
+    return _RerouteConnection(
+        job_overrides=job_overrides,
+        trial_overrides=trial_overrides,
+        run_overrides=run_overrides,
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_moves_settled_thunder_retry_to_fallback(monkeypatch):
+    connection = _settled_budget_connection()
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 2)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "calculate_trial_retry_delay_seconds",
+        lambda **_kwargs: 45.0,
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    before = datetime.now(timezone.utc)
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_budget_reroute_outcome(),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    assert connection.transaction_state.committed is True
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert [
+        next(
+            table
+            for table in (
+                "sandbox_runs",
+                "trials",
+                "worker_jobs",
+                "sandbox_capacity_leases",
+            )
+            if f"UPDATE {table}" in sql
+        )
+        for sql, _args in updates
+    ] == ["sandbox_runs", "trials", "worker_jobs", "sandbox_capacity_leases"]
+
+    trial_sql, trial_args = updates[1]
+    # Settlement already ran: only the provider and the retry schedule move.
+    # Status, attempts, error text and worker fields are left exactly as
+    # settlement wrote them, and the WHERE demands that settled shape.
+    assert trial_args[:3] == ("trial-1", "modal", 2)
+    retry_at = trial_args[3]
+    assert before + timedelta(seconds=44) <= retry_at <= before + timedelta(seconds=46)
+    trial_set_clause = trial_sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert "environment = $2" in trial_set_clause
+    assert "next_retry_at = $4" in trial_set_clause
+    for untouched in ("status", "attempts", "error_message", "finished_at"):
+        assert f"{untouched} =" not in trial_set_clause
+    assert "status::text = 'RETRYING'" in trial_sql
+    assert "current_worker_id IS NULL" in trial_sql
+    assert "attempts = $3" in trial_sql
+
+    job_sql, job_args = updates[2]
+    assert job_args == (
+        "wj-1",
+        "default",
+        "worker-1",
+        2,
+        False,
+        THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+        retry_at,
+    )
+    assert "next_retry_at = $7" in job_sql
+    assert "available_after = COALESCE($7::timestamptz, NOW())" in job_sql
+    assert "reroute_from_environment = 'thunder'" in job_sql
+
+
+@pytest.mark.asyncio
+async def test_settled_handoff_waits_for_source_sandbox_teardown(monkeypatch):
+    connection = _settled_budget_connection(
+        job_overrides={"provider": "thunder", "external_id": "sandbox-9"},
+        run_overrides={"state": "TERMINATING", "external_id": "sandbox-9"},
+    )
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 2)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda outcome, **kwargs: handoff_events.append(
+            (outcome, kwargs["handoff"], kwargs["reason"])
+        ),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_budget_reroute_outcome(),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert [sql.split("UPDATE ", 1)[1].split()[0] for sql, _ in updates] == [
+        "trials",
+        "worker_jobs",
+    ]
+    assert updates[1][1][4:6] == (True, THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON)
+    assert handoff_events == [
+        ("pending", THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON, "teardown_pending")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connection,limit,expected_status",
+    [
+        # Job budget spent: the ordinary failure recording fails the job, as
+        # it would have without the handoff policy.
+        (
+            _settled_budget_connection(job_overrides={"max_attempts": 2}),
+            2,
+            WorkerJobStatus.FAILED,
+        ),
+        # The gate is off at recording time: plain retry stays on Thunder.
+        (_settled_budget_connection(), 0, WorkerJobStatus.RETRYING),
+        # The trial is not in the settled shape (a worker still owns it):
+        # plain retry, never a forced FAILED trial.
+        (
+            _settled_budget_connection(
+                trial_overrides={"current_worker_id": "worker-1"}
+            ),
+            2,
+            WorkerJobStatus.RETRYING,
+        ),
+        # The source sandbox ledger no longer matches this attempt.
+        (
+            _settled_budget_connection(run_overrides={"trial_id": "other"}),
+            2,
+            WorkerJobStatus.RETRYING,
+        ),
+    ],
+)
+async def test_declined_settled_handoff_records_the_ordinary_retry(
+    monkeypatch, connection, limit, expected_status
+):
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", limit)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_budget_reroute_outcome(),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == expected_status
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert updates, "a declined settled handoff must still record the attempt"
+    job_sql, job_args = updates[0]
+    assert "UPDATE worker_jobs" in job_sql
+    assert f"status = '{expected_status.value}'" in job_sql
+    assert job_args[1] == "agent timed out on thunder"
+    set_clause = job_sql.split("SET", 1)[1].split("WHERE", 1)[0]
+    assert "execution_lane =" not in set_clause
+    assert "reroute_from_environment" not in set_clause
+    trial_failures = [
+        (sql, args)
+        for sql, args in updates
+        if "UPDATE trials" in sql and "status = 'FAILED'" in sql
+    ]
+    if expected_status is WorkerJobStatus.FAILED:
+        # The job's own budget is spent, so no job remains to run the settled
+        # RETRYING trial: it is failed with the attempt's error rather than
+        # left waiting for a retry that never comes.
+        assert [args for _sql, args in trial_failures] == [
+            ("trial-1", "agent timed out on thunder")
+        ]
+        assert "status::text = 'RETRYING'" in trial_failures[0][0]
+    else:
+        # A declined handoff with budget left never forces the trial FAILED.
+        assert not trial_failures
+    assert not any("UPDATE sandbox" in sql for sql, _ in updates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connection,outcome,limit,capacity_gate",
+    [
+        # Settled attempt-budget handoff: task preparation failed twice
+        # without ever inserting a ledger row.
+        (
+            _settled_budget_connection(run_missing=True),
+            _budget_reroute_outcome(),
+            2,
+            False,
+        ),
+        # Capacity handoff with the same shape, for symmetry.
+        (
+            _RerouteConnection(run_missing=True),
+            _reroute_outcome(),
+            0,
+            True,
+        ),
+    ],
+)
+async def test_handoff_moves_attempt_that_never_reached_the_sandbox_ledger(
+    monkeypatch, connection, outcome, limit, capacity_gate
+):
+    """No ledger row plus no provider handle means nothing was launched."""
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", limit)
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", capacity_gate)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "calculate_trial_retry_delay_seconds",
+        lambda **_kwargs: 45.0,
+    )
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda event, **kwargs: handoff_events.append(
+            (event, kwargs["handoff"], kwargs["reason"])
+        ),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=outcome,
+        attempts=int(connection.job["attempts"]),
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    assert connection.transaction_state.committed is True
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    # There is no ledger row to finalize, so the trial, job and lease move
+    # together and nothing touches ``sandbox_runs``.
+    assert [sql.split("UPDATE ", 1)[1].split()[0] for sql, _ in updates] == [
+        "trials",
+        "worker_jobs",
+        "sandbox_capacity_leases",
+    ]
+    trial_sql, trial_args = updates[0]
+    assert "environment = $2" in trial_sql
+    assert trial_args[1] == "modal"
+    job_sql, job_args = updates[1]
+    assert "execution_lane = $2" in job_sql
+    assert job_args[1] == "default"
+    assert job_args[4] is False, "nothing was provisioned, so no teardown gate"
+    assert handoff_events == [
+        ("completed", outcome.reroute.reason, "attempt_never_provisioned")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handoff_declines_missing_ledger_when_job_still_holds_a_handle(
+    monkeypatch,
+):
+    """A provider handle without a ledger row is not provably unlaunched."""
+    connection = _settled_budget_connection(
+        run_missing=True,
+        job_overrides={"provider": "thunder", "external_id": "sandbox-9"},
+    )
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 2)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda event, **kwargs: handoff_events.append(
+            (event, kwargs["handoff"], kwargs["reason"])
+        ),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_budget_reroute_outcome(),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    # Declined: the ordinary Thunder retry is recorded instead.
+    assert status == WorkerJobStatus.RETRYING
+    assert handoff_events == [
+        (
+            "rejected",
+            THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+            "provider_handle_mismatch",
+        )
+    ]
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert updates and "UPDATE worker_jobs" in updates[0][0]
+    assert (
+        "execution_lane =" not in updates[0][0].split("SET", 1)[1].split("WHERE", 1)[0]
+    )
+    assert not any("environment = $2" in sql for sql, _ in updates)

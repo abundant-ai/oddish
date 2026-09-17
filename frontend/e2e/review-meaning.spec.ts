@@ -5,6 +5,7 @@ import {
   EXECUTION_LABELS,
 } from "../src/lib/review";
 import { board, tasks, records } from "./review-app/records";
+import { pageFixture } from "./delivery-page-fixtures";
 
 for (const record of records) {
   test(`review meaning: ${record.name}`, () => {
@@ -62,6 +63,12 @@ test.describe("real components with local fixture API", () => {
       ).toBe(0);
       if (count === 25)
         await expect(page.locator("tbody tr[data-index]")).toHaveCount(25);
+      // The server renders every row; scrolling before hydration targets that
+      // page height, which the virtualizer then replaces with its estimate.
+      else
+        await expect
+          .poll(() => page.locator("tbody tr[data-index]").count())
+          .toBeLessThan(count);
       await page.evaluate(() =>
         window.scrollTo(0, document.documentElement.scrollHeight)
       );
@@ -169,9 +176,13 @@ test.describe("real components with local fixture API", () => {
       });
       await expect
         .poll(() =>
-          header.evaluate((element) => element.getBoundingClientRect().bottom)
+          header.evaluate((element) =>
+            Math.abs(element.getBoundingClientRect().bottom - 30)
+          )
         )
-        .toBeCloseTo(30, 0);
+        // Scrolling rounds document coordinates to device pixels; the taller
+        // summary can put the table on a fractional CSS pixel.
+        .toBeLessThan(1);
       await page.evaluate(() => window.scrollTo(0, 0));
       await expect
         .poll(() =>
@@ -328,12 +339,17 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(page.getByText("1/1 analyzed", { exact: true })).toBeVisible();
     const otherExperiments = page.locator("section").filter({
-      has: page.getByRole("heading", { name: "Other experiments", exact: true }),
+      has: page.getByRole("heading", {
+        name: "Other experiments",
+        exact: true,
+      }),
     });
     await expect(
-      otherExperiments.getByText("Other experiment · other-ex", { exact: true })
-    ).toHaveAttribute("title", "other-experiment");
-    await expect(otherExperiments.getByRole("link")).toHaveCount(0);
+      otherExperiments.getByRole("link", {
+        name: "other-experiment",
+        exact: true,
+      })
+    ).toHaveAttribute("href", "/experiments/other-experiment");
     await expect(
       page.getByText("1 good failure", { exact: true })
     ).toBeVisible();
@@ -397,7 +413,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByText(
-        /couldn’t be evaluated|COULD NOT EVALUATE RUN|QA FAILED|^misgrade$/
+        /couldn’t be evaluated|COULD NOT EVALUATE RUN|ANALYSIS FAILED|^misgrade$/
       )
     ).toHaveCount(0);
   });
@@ -423,9 +439,7 @@ test.describe("real components with local fixture API", () => {
         exact: true,
       })
     ).toBeVisible();
-    await expect(
-      page.getByText("QA FAILED", { exact: true })
-    ).toBeVisible();
+    await expect(page.getByText("ANALYSIS FAILED", { exact: true })).toBeVisible();
     await expect(
       page.getByText(
         "Trajectory analysis worker stopped before saving its report.",
@@ -488,6 +502,9 @@ test.describe("real components with local fixture API", () => {
           .locator("..");
         await expect(
           checks.getByText("1 Must fix", { exact: true })
+        ).toHaveCount(0);
+        await expect(
+          checks.locator("../..").getByText("1 Must fix", { exact: true })
         ).toBeVisible();
         await expect(
           checks.getByText("No required fixes", { exact: true })
@@ -497,7 +514,7 @@ test.describe("real components with local fixture API", () => {
         ).toBeVisible();
         if (origin === "another experiment")
           await expect(
-            page.getByText("Other experiment · another-", { exact: true })
+            page.getByRole("link", { name: "another-experiment", exact: true })
           ).toBeVisible();
       });
     }
@@ -550,10 +567,13 @@ test.describe("real components with local fixture API", () => {
         .getByRole("heading", { name: "Findings", exact: true })
         .locator("..");
       await expect(
-        checks.getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
-          exact: true,
-        })
+        checks
+          .locator("../..")
+          .getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
+            exact: true,
+          })
       ).toBeVisible();
+      await expect(checks.getByText(/Must fix/)).toHaveCount(0);
       await expect(
         page.getByText("RECORDED OPTIONAL", { exact: true })
       ).toHaveCount(2);
@@ -755,10 +775,10 @@ test.describe("real components with local fixture API", () => {
     await expect(
       page.getByText("Signed off on v1", { exact: true })
     ).toBeVisible();
-    await page.getByRole("combobox").filter({ hasText: "All tasks" }).click();
+    await page.getByRole("combobox", { name: "State filter" }).click();
     await page
       .getByRole("option", {
-        name: "Blockers and outstanding sign-offs",
+        name: "Needs work",
         exact: true,
       })
       .click();
@@ -788,9 +808,12 @@ test.describe("real components with local fixture API", () => {
       await expect(
         page.getByText("Signed off on v1", { exact: true })
       ).toBeVisible();
-      await expect(
-        page.getByText(/linked task is shown even though/)
-      ).toBeVisible();
+      const warning = page.getByText(
+        "Linked task is outside the current filters.",
+        { exact: true }
+      );
+      if (query.includes("filter=blocked")) await expect(warning).toBeVisible();
+      else await expect(warning).toHaveCount(0);
       await page.reload();
       await expect(
         page.getByText("Signed off on v1", { exact: true })
@@ -953,19 +976,27 @@ test.describe("real components with local fixture API", () => {
   }) => {
     let signed = false;
     const writes: unknown[] = [];
-    await page.route("**/api/deliveries/review-demo", async (route) => {
-      const next = structuredClone(board);
-      if (signed) {
-        const task = next.tasks.find(
-          (task) => task.task_id === "awaiting-signoff"
-        )!;
-        task.ready = true;
-        task.checks.find((check) => check.key === "signoff")!.status = "pass";
-        task.checks.find((check) => check.key === "signoff")!.detail =
-          "Signed off on v1";
+    await page.route(
+      /\/api\/deliveries\/review-demo\/(view|tasks\/awaiting-signoff)(?:\?|$)/,
+      async (route) => {
+        const next = structuredClone(board);
+        if (signed) {
+          const task = next.tasks.find(
+            (task) => task.task_id === "awaiting-signoff"
+          )!;
+          task.ready = true;
+          task.checks.find((check) => check.key === "signoff")!.status = "pass";
+          task.checks.find((check) => check.key === "signoff")!.detail =
+            "Signed off on v1";
+        }
+        const url = new URL(route.request().url());
+        await route.fulfill({
+          json: url.pathname.endsWith("/view")
+            ? pageFixture(next, url.searchParams)
+            : next.tasks.find((task) => task.task_id === "awaiting-signoff"),
+        });
       }
-      await route.fulfill({ json: next });
-    });
+    );
     await page.route("**/api/deliveries/review-demo/checks", async (route) => {
       writes.push(route.request().postDataJSON());
       signed = true;
@@ -978,10 +1009,18 @@ test.describe("real components with local fixture API", () => {
         exact: true,
       }),
     });
-    await expect(row.getByText("Accepted", { exact: true })).toBeVisible();
+    await expect(
+      row.getByText("Needs sign-off", { exact: true })
+    ).toBeVisible();
     await row
-      .getByRole("button", { name: "Awaiting sign-off", exact: true })
+      .getByRole("button", {
+        name: "Review Completed review awaiting sign-off",
+        exact: true,
+      })
       .click();
+    await expect(
+      page.getByText("Accepted", { exact: true }).first()
+    ).toBeVisible();
     await expect(
       page.getByText("Awaiting sign-off on v1", { exact: true })
     ).toBeVisible();
@@ -1000,9 +1039,12 @@ test.describe("real components with local fixture API", () => {
         },
       ]);
     await expect(row).toBeVisible();
+    await expect(row.getByText("Ready", { exact: true })).toBeVisible();
     await expect(
-      page.getByText(/linked task is shown even though/)
-    ).toBeVisible();
+      page.getByText("Linked task is outside the current filters.", {
+        exact: true,
+      })
+    ).toHaveCount(0);
     await page.goto("/deliveries/review-demo?filter=all&task=awaiting-signoff");
     await expect(
       page.getByText("Signed off on v1", { exact: true })
@@ -1117,7 +1159,10 @@ test("linked retained must-fix survives a historical optional audit finding", as
   const findings = page
     .getByRole("heading", { name: "Findings", exact: true })
     .locator("..");
-  await expect(findings.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await expect(findings.getByText("1 Must fix", { exact: true })).toHaveCount(
+    0
+  );
+  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await expect(
     page.locator('details[data-finding="retained-fix"]')
   ).toBeVisible();
@@ -1213,7 +1258,7 @@ test("a first run-review finding is counted without detailed findings in open", 
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Run QA Verdict", { exact: true })
+    page.getByText("Rejected · Trial analysis", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page

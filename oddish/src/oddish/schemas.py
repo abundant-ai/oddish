@@ -472,6 +472,24 @@ class TaskSweepSubmission(BaseModel):
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
     )
+    requires_gpu: bool = Field(
+        False,
+        description=(
+            "The task's task.toml requests GPUs. The API never sees the task "
+            "content, so the CLI reports this; it only informs the default "
+            "environment choice when `environment` is omitted and never changes "
+            "the GPU count the trial runs with."
+        ),
+    )
+    gpu_types: list[str] | None = Field(
+        None,
+        description=(
+            "The task.toml `[environment].gpu_types` list (acceptable GPU "
+            "types; omitted means any). Reported by the CLI with `requires_gpu` "
+            "so the default environment choice skips a backend that would "
+            "reject the task at launch. Never changes what the trial runs with."
+        ),
+    )
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
@@ -1065,6 +1083,14 @@ class ExperimentCostTotals(BaseModel):
     qa_cost_usd: float = 0.0
     owned_qa_cost_usd: float = 0.0
     qa_has_estimated: bool = False
+    # Completeness of recorded judge/analysis usage, not a promise that all
+    # trials or future QA have finished. Unpriced rows are never free work.
+    qa_cost_complete: bool = True
+    qa_unpriced_count: int = 0
+    qa_pending_count: int = 0
+    owned_qa_cost_complete: bool = True
+    owned_qa_unpriced_count: int = 0
+    owned_qa_pending_count: int = 0
     # CUA / verifier LLM spend (``verifier_costs``). Same membership scopes as
     # QA. Never folded into ``cost_usd``, ``billed_*``, or user quotas.
     verifier_cost_usd: float = 0.0

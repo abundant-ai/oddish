@@ -1236,7 +1236,7 @@ async def test_delivery_agent_count_normalizes_case_and_spacing(session):
     )
     check = _checks(board, task.id)["min_rollouts"]
     # 5 trials, but only 3 distinct agents after normalization.
-    assert "5/5 trials, 3/3 agents" in check.detail
+    assert check.detail == "5/5 runs and 3/3 agents for verdict required."
     assert check.status == "pass"
 
 
@@ -1282,7 +1282,7 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
         [] if custom_minimum else [f"Runs: {run_count}/5", "Agents: 1/3"]
     )
     if not custom_minimum:
-        assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
+        assert checks["min_rollouts"].detail == f"{run_count}/5 runs and 1/3 agents for verdict required."
         assert not board.ready
 
 @pytest.mark.asyncio
@@ -1340,11 +1340,14 @@ async def test_completed_source_review_can_block_a_fair_agent_failure(session):
 
 @pytest.mark.asyncio
 async def test_review_failure_is_unknown_quality_not_a_defect(session):
-    task, version, _ = await _green_task(session, "review-meaning-error")
+    task, version, experiment = await _green_task(session, "review-meaning-error")
     version.pre_trial_status = VerdictStatus.FAILED
     version.pre_trial_error = "Evidence unavailable; cause not established"
     task.verdict = None
     task.verdict_status = VerdictStatus.FAILED
+    failed_qa = _trial(task, experiment, version.id, kind="qa", status=TrialStatus.FAILED)
+    failed_qa.error_message = "Insufficient evidence: no eligible solver trials"
+    session.add(failed_qa)
     await session.flush()
     delivery = await create_delivery_core(
         session,
@@ -1359,7 +1362,8 @@ async def test_review_failure_is_unknown_quality_not_a_defect(session):
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     checks = _checks(board, task.id)
     assert checks["pre_trial_passed"].status == "fail"
-    assert "task quality not established" in checks["pre_trial_passed"].detail
+    assert checks["pre_trial_passed"].detail == "Evidence unavailable; cause not established"
+    assert checks["verdict_ok"].detail == failed_qa.error_message
     assert "no reported task defects" in checks["no_must_fix"].detail
     assert board.tasks[0].defects == []
     assert not board.tasks[0].ready

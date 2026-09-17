@@ -42,6 +42,12 @@ modal setup
 
 ## Configure environment
 
+For a traced controller that invokes the CLI, optional `ODDISH_TRACE_CONTEXT`
+JSON carries W3C `traceparent` and `tracestate` to API requests. With tracing
+configured on both API and workers, new queue rows retain that parent through
+worker attempts. Existing rows need no migration. Invalid context is ignored,
+and storage requests do not receive it.
+
 ### Backend (`backend/.env`)
 
 ```bash

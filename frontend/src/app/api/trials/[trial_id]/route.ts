@@ -6,13 +6,19 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 import {
+  attachUpstreamCacheHeaders,
   attachUpstreamServerTiming,
   backendFetchHeaders,
+  notModifiedResponse,
 } from "@/lib/proxy-headers";
 
 // Full single-trial detail for direct links, active-analysis polling, and
 // drawer fields omitted from compact list responses. Trial controls preload
-// this route so opening a drawer can consume the same cached request.
+// this route so opening a drawer can consume the same cached request. The
+// browser's If-None-Match goes upstream and the backend's Cache-Control,
+// ETag, and 304 come back unchanged, so a finished trial is kept by the
+// browser and revalidated cheaply; the upstream fetch itself stays
+// `no-store` because the browser, not this function, is the cache.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
@@ -38,6 +44,10 @@ export async function GET(
       headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
 
+    if (res.status === 304) {
+      return notModifiedResponse(res);
+    }
+
     if (!res.ok) {
       const text = await res.text();
       return attachUpstreamServerTiming(
@@ -49,7 +59,10 @@ export async function GET(
       );
     }
 
-    return attachUpstreamServerTiming(NextResponse.json(await res.json()), res);
+    return attachUpstreamServerTiming(
+      attachUpstreamCacheHeaders(NextResponse.json(await res.json()), res),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

@@ -35,6 +35,16 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
+from api.trial_cache import (
+    IMMUTABLE_CACHE_CONTROL,
+    LIVE_CACHE_CONTROL,
+    TrialCacheIdentity,
+    cache_headers,
+    load_trial_cache_identity,
+    matches_if_none_match,
+    trial_etag,
+    trial_execution_is_final,
+)
 from auth import (
     APIKeyScope,
     AuthContext,
@@ -94,19 +104,50 @@ async def get_trial(
 @router.get("/trials/{trial_id}", response_model=TrialResponse)
 async def get_trial_full(
     request: Request,
+    response: Response,
     trial_id: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> TrialResponse:
+) -> TrialResponse | Response:
     """Full detail for a single trial by id.
 
     The experiment grid loads only slim trials; clicking a cell fetches the
     full trial here (timing, harbor, tokens, full analysis, etc.).
+
+    Once execution and analysis are both terminal the browser may keep the
+    body but must revalidate it on every use (see ``api.trial_cache``): a
+    task-level QA run can rewrite the analysis in place. A matching
+    ``If-None-Match`` is answered ``304`` from one slim row read, before the
+    full response is built. Until then the payload is ``no-store``.
     """
     async with authorized_read_session(request, auth) as session:
         auth.require_scope(APIKeyScope.READ)
-        return await get_trial_response_for_org_core(
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match:
+            identity = await load_trial_cache_identity(
+                session, trial_id=trial_id, org_id=auth.org_id
+            )
+            if (
+                identity is not None
+                and identity.final
+                and matches_if_none_match(if_none_match, identity.etag)
+            ):
+                return Response(
+                    status_code=304,
+                    headers=cache_headers(policy=identity.policy, etag=identity.etag),
+                )
+        detail = await get_trial_response_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
+    identity = TrialCacheIdentity(
+        trial_id=detail.id,
+        attempts=detail.attempts,
+        status=detail.status,
+        finished_at=detail.finished_at,
+        analysis_status=detail.analysis_status,
+        analysis_finished_at=detail.analysis_finished_at,
+    )
+    response.headers.update(cache_headers(policy=identity.policy, etag=identity.etag))
+    return detail
 
 
 @router.post("/trials/{trial_id}/analysis/rerun")
@@ -116,8 +157,9 @@ async def rerun_trial_analysis(
 ) -> dict:
     """Queue analysis for one trial.
 
-    Classifies only this trial. Does not touch other trials, the task
-    verdict, or the pre-trial audit.
+    Resets this trial's analysis and reruns task QA: every eligible trial
+    is re-analyzed and the verdict is regenerated. Does not rerun the
+    pre-trial audit.
     """
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
@@ -318,8 +360,15 @@ async def list_trial_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    attempt: int | None = Query(None, ge=1),
 ) -> dict:
-    """List all files in S3 for a trial, with presigned URLs for direct access."""
+    """List all files in S3 for a trial, with presigned URLs for direct access.
+
+    ``attempt`` names one retry directory explicitly. A retried trial with no
+    stored ``trial_s3_key`` leaves sibling attempt directories that the server
+    refuses to choose between, which makes its artifacts unreadable; naming the
+    attempt supplies the choice the server will not make for itself.
+    """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
     return await list_trial_files_s3(
@@ -329,6 +378,7 @@ async def list_trial_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        attempt=attempt,
     )
 
 
@@ -353,20 +403,24 @@ async def get_trial_file(
     trial_id: str,
     file_path: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
+    attempt: int | None = Query(None, ge=1),
 ) -> Response:
     """Get a file from a trial's S3 directory by relative path.
 
     Tries the general S3 path first (any file in the trial directory),
     then falls back to the agent/ subdirectory for backward compatibility.
+    ``attempt`` selects one retry directory; see ``list_trial_files``.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
     try:
-        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        content, media_type = await get_trial_file_content_s3(
+            trial, file_path, attempt=attempt
+        )
         return Response(content=content, media_type=media_type)
     except HTTPException:
         pass
-    content, media_type = await read_trial_agent_file(trial, file_path)
+    content, media_type = await read_trial_agent_file(trial, file_path, attempt=attempt)
     return Response(content=content, media_type=media_type)
 
 
@@ -392,11 +446,37 @@ async def get_trial_trajectory(
     request: Request,
     trial_id: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict | None:
-    """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
+) -> Response:
+    """Get ATIF trajectory.json for a trial (step-by-step agent actions).
+
+    A finished trial's trajectory is immutable (a retry is a new row), so it
+    is cacheable for a day and answers ``If-None-Match`` with ``304`` before
+    touching S3. Unfinished trials stay ``no-store``, and so does a ``null``
+    body: a transient storage miss must not be pinned for a day, and a
+    ``304`` is only trusted when the row itself records a trajectory.
+    """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
-    return await read_trial_trajectory(trial)
+    final = trial_execution_is_final(
+        status=trial.status, finished_at=trial.finished_at
+    ) and bool(trial.has_trajectory)
+    etag = trial_etag(
+        trial_id=trial.id, attempts=trial.attempts, finished_at=trial.finished_at
+    )
+    if final and matches_if_none_match(request.headers.get("if-none-match"), etag):
+        return Response(
+            status_code=304,
+            headers=cache_headers(policy=IMMUTABLE_CACHE_CONTROL, etag=etag),
+        )
+    trajectory = await read_trial_trajectory(trial)
+    policy = (
+        IMMUTABLE_CACHE_CONTROL
+        if final and trajectory is not None
+        else LIVE_CACHE_CONTROL
+    )
+    return JSONResponse(
+        content=trajectory, headers=cache_headers(policy=policy, etag=etag)
+    )
 
 
 # Trial statuses the summary poller understands, mapped from TrialStatus
