@@ -85,6 +85,32 @@ def test_sweep_payload_carries_the_gpu_requirement_only_when_present() -> None:
     assert build_sweep_payload(**common, requires_gpu=True)["requires_gpu"] is True
     assert "requires_gpu" not in build_sweep_payload(**common)
     assert "environment" not in build_sweep_payload(**common, requires_gpu=True)
+    # The acceptable types ride along with the requirement, never alone.
+    typed = build_sweep_payload(**common, requires_gpu=True, gpu_types=["H100"])
+    assert typed["gpu_types"] == ["H100"]
+    assert "gpu_types" not in build_sweep_payload(**common, requires_gpu=True)
+    assert "gpu_types" not in build_sweep_payload(**common, gpu_types=["H100"])
+
+
+def test_task_gpu_types_come_from_task_toml(tmp_path) -> None:
+    # Read straight from task.toml like the GPU count; absent or empty means
+    # any type, and an unreadable task never blocks the submit.
+    task_toml = tmp_path / "task.toml"
+    task_toml.write_text('[environment]\ngpus = 1\ngpu_types = ["H100", "A100"]\n')
+    assert run_module._task_config_gpu_types(tmp_path) == ["H100", "A100"]
+    # An exact ``gpu_type`` environment kwarg overrides the list at launch, so
+    # it is what routing must see.
+    task_toml.write_text(
+        '[environment]\ngpus = 1\ngpu_types = ["H100", "A100"]\n'
+        '[environment.kwargs]\ngpu_type = "A6000"\n'
+    )
+    assert run_module._task_config_gpu_types(tmp_path) == ["A6000"]
+    task_toml.write_text("[environment]\ngpus = 1\n")
+    assert run_module._task_config_gpu_types(tmp_path) is None
+    task_toml.write_text("[environment]\ngpus = 1\ngpu_types = []\n")
+    assert run_module._task_config_gpu_types(tmp_path) is None
+    task_toml.unlink()
+    assert run_module._task_config_gpu_types(tmp_path) is None
 
 
 def test_explicit_numinous_gpu_opt_in_keeps_its_priority(monkeypatch):
