@@ -413,7 +413,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByText(
-        /couldn’t be evaluated|COULD NOT EVALUATE RUN|QA FAILED|^misgrade$/
+        /couldn’t be evaluated|COULD NOT EVALUATE RUN|ANALYSIS FAILED|^misgrade$/
       )
     ).toHaveCount(0);
   });
@@ -439,7 +439,7 @@ test.describe("real components with local fixture API", () => {
         exact: true,
       })
     ).toBeVisible();
-    await expect(page.getByText("QA FAILED", { exact: true })).toBeVisible();
+    await expect(page.getByText("ANALYSIS FAILED", { exact: true })).toBeVisible();
     await expect(
       page.getByText(
         "Trajectory analysis worker stopped before saving its report.",
@@ -826,7 +826,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=live-review");
     await page
-      .getByRole("button", { name: "4 QA verdict in progress", exact: true })
+      .getByRole("button", { name: "4 Analyzing", exact: true })
       .click();
     for (const name of [
       "Unreviewed version",
@@ -854,7 +854,7 @@ test.describe("real components with local fixture API", () => {
     await page.reload();
     await expect(
       page.getByRole("button", {
-        name: "4 QA verdict in progress",
+        name: "4 Analyzing",
         exact: true,
       })
     ).toHaveAttribute("aria-pressed", "true");
@@ -878,7 +878,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "0 QA verdict in progress",
+        name: "0 Analyzing",
         exact: true,
       })
     ).toHaveCount(0);
@@ -1258,7 +1258,7 @@ test("a first run-review finding is counted without detailed findings in open", 
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Run QA Verdict", { exact: true })
+    page.getByText("Rejected · Trial analysis", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page

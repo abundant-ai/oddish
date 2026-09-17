@@ -116,3 +116,32 @@ All changed user-visible labels, headings, tooltips, accessible action names, no
 - Direct calls to delivery QA presentation cover version mismatch, queued, running, failed with retained evidence error, and missing completion time.
 - The local fixture UI shows the new task-verdict labels and retains the original failure explanation. It uses fixture data, not live QA executions.
 - Twelve targeted browser tests passed: six delivery scenarios and six QA scenarios. They retain checks for request counts, selected versions, history refresh, requirement links, failure explanations, finding links, filtered rows, and Back/reload pressed-state persistence.
+
+## Reverted on 2026-09-16: per-trial analysis surfaces
+
+The rows below were reverted after the rename was found to have swept
+per-trial classification surfaces (one trial's Good/Bad success/failure
+state) into verdict wording. The task-level verdict wording above is
+unchanged. Vocabulary: Pre-trial audit (static checks before trials),
+Trial analysis (per-trial classification), QA verdict (combined result),
+QA (the whole pipeline).
+
+| Renamed by this change | Now | Surfaces |
+| --- | --- | --- |
+| Regenerate QA verdict | Re-run Trajectory analysis | `components/trial-detail-panel.tsx` |
+| Generate QA verdict (trial panel only) | Run analysis | `components/trial-detail-panel.tsx` |
+| Reanalyzes all eligible trials to generate this task’s QA verdict. | Reruns task QA: re-analyzes every eligible trial and regenerates verdict. | `components/trial-detail-panel.tsx` |
+| QA running / QA queued / QA verdict running | Analyzing / Analysis queued / Task QA running | `components/trial-detail-panel.tsx` |
+| Run QA Verdict (card title) | Analysis | `components/trial-detail-panel.tsx` |
+| No QA verdict yet | No analysis yet | `components/trial-detail-panel.tsx` |
+| QA failed: [error] | Analysis failed: [error] | `components/trial-detail-panel.tsx` |
+| QA verdict is running | Task QA is already running | `components/trial-detail-panel.tsx` |
+| Failed to queue QA verdict generation (trial panel only) | Failed to queue analysis | `components/trial-detail-panel.tsx` |
+| QA RUNNING / QA FAILED / NO QA VERDICT YET | ANALYZING / ANALYSIS FAILED / NOT ANALYZED | `components/task-overview-panel.tsx` |
+| [count] awaiting QA | [count] awaiting analysis | `components/task-overview-panel.tsx` |
+| Rejected · Run QA Verdict | Rejected · Trial analysis | `components/task-verdict-badge.tsx`, `app/(app)/tasks/[task_id]/task-detail-client.tsx` |
+| QA verdict in progress (legend) | Analyzing | `components/experiment-trials-table.tsx` |
+| QA failed / Harness error (legend) | Analysis failed / Harness error | `components/experiment-trials-table.tsx` |
+| QA Verdict Results (filter) | Trial analysis | `lib/tasks-filters.ts` |
+| Unable to load the static checks state. | Unable to load the pre-trial audit state. | `components/task-files-panel.tsx` |
+| Failed to queue static checks | Failed to queue pre-trial audit | `components/task-files-panel.tsx` |
