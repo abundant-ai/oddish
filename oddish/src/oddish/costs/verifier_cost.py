@@ -21,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -708,15 +708,23 @@ def trial_needs_verifier_backfill(
     """Whether a finished agent trial belongs in a backfill batch.
 
     Non-CUA trials are excluded so recent ordinary agent runs cannot fill
-    the 200-trial cap. Any row — priced or ``no_cua_artifacts`` sentinel —
-    counts as coverage so a correct-path miss cannot pin the newest-first
-    batch. Sentinel replacement still happens when a later selected trial
-    or live write finds real drafts.
+    the 200-trial cap. ``covered_attempts`` counts only non-sentinel rows:
+    a ``no_cua_artifacts`` sentinel is incomplete so a false miss can still
+    get the Harbor-subdirectory repair. Priced rows graduate the attempt.
     """
     if not has_cua_result_signal:
         return False
     max_attempt = max(int(attempts or 1), 1)
     return covered_attempts < max_attempt
+
+
+def backfill_batch_rank(*, has_any_verifier_row: bool) -> int:
+    """Lower ranks fill the 200-trial cap first.
+
+    Trials with no ``verifier_costs`` row outrank sentinel-only leftovers so
+    a re-opened miss cannot starve uncovered CUA work.
+    """
+    return 1 if has_any_verifier_row else 0
 
 
 async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -> int:
@@ -852,23 +860,37 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
     """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
 
     Only CUA-signaled finished agent trials with at least one attempt that
-    has no ``verifier_costs`` row are selected, so recent ordinary agent
-    runs and already-sentinel-covered misses cannot starve the batch. Each
-    trial uses its own write session so one IntegrityError cannot roll back
-    the sweep. Artifacts are read from the Harbor trial subdirectory, not
-    the bare ``attempt-N/`` root.
+    has no non-sentinel ``verifier_costs`` row are selected, so a false
+    ``no_cua_artifacts`` miss can still be repaired. Uncovered trials fill
+    the 200-trial cap before sentinel-only leftovers. Each trial uses its
+    own write session so one IntegrityError cannot roll back the sweep.
+    Artifacts are read from the Harbor trial subdirectory, not the bare
+    ``attempt-N/`` root.
     """
     from oddish.db import TrialModel, TrialStatus
     from oddish.db.storage import StorageClient
 
     async with get_session() as session:
-        all_covered = (
+        real_covered = (
             select(
                 VerifierCostModel.trial_id.label("trial_id"),
                 func.count(func.distinct(VerifierCostModel.attempt)).label(
                     "covered"
                 ),
             )
+            .where(
+                VerifierCostModel.deleted_at.is_(None),
+                or_(
+                    VerifierCostModel.unpriced_reason.is_(None),
+                    VerifierCostModel.unpriced_reason
+                    != UNPRICED_NO_CUA_ARTIFACTS,
+                ),
+            )
+            .group_by(VerifierCostModel.trial_id)
+            .subquery()
+        )
+        any_row = (
+            select(VerifierCostModel.trial_id.label("trial_id"))
             .where(VerifierCostModel.deleted_at.is_(None))
             .group_by(VerifierCostModel.trial_id)
             .subquery()
@@ -886,7 +908,10 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
         candidates = (
             await session.execute(
                 select(TrialModel)
-                .outerjoin(all_covered, all_covered.c.trial_id == TrialModel.id)
+                .outerjoin(
+                    real_covered, real_covered.c.trial_id == TrialModel.id
+                )
+                .outerjoin(any_row, any_row.c.trial_id == TrialModel.id)
                 .where(
                     TrialModel.kind == "agent",
                     TrialModel.finished_at.isnot(None),
@@ -900,11 +925,20 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
                     ),
                     cua_signal,
                     or_(
-                        all_covered.c.trial_id.is_(None),
-                        all_covered.c.covered < TrialModel.attempts,
+                        real_covered.c.trial_id.is_(None),
+                        real_covered.c.covered < TrialModel.attempts,
                     ),
                 )
-                .order_by(TrialModel.finished_at.desc())
+                .order_by(
+                    case(
+                        (
+                            any_row.c.trial_id.is_(None),
+                            backfill_batch_rank(has_any_verifier_row=False),
+                        ),
+                        else_=backfill_batch_rank(has_any_verifier_row=True),
+                    ),
+                    TrialModel.finished_at.desc(),
+                )
                 .limit(limit)
             )
         ).scalars().all()

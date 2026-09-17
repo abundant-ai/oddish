@@ -27,6 +27,7 @@ from oddish.costs.verifier_cost import (
     attempt_s3_prefix,
     _no_artifacts_sentinel,
     UNPRICED_NO_CUA_ARTIFACTS,
+    backfill_batch_rank,
     trial_needs_verifier_backfill,
     upsert_verifier_cost_rows,
 )
@@ -309,7 +310,7 @@ def test_backfill_skips_non_cua_even_when_uncovered() -> None:
     )
 
 
-def test_backfill_graduates_sentinel_covered_trials() -> None:
+def test_backfill_needs_uncovered_cua_attempts() -> None:
     assert (
         trial_needs_verifier_backfill(
             has_cua_result_signal=True,
@@ -333,6 +334,23 @@ def test_backfill_graduates_sentinel_covered_trials() -> None:
             attempts=1,
         )
         is False
+    )
+
+
+def test_backfill_sentinel_only_coverage_is_incomplete() -> None:
+    """A no_cua_artifacts row is not real coverage, so the trial stays eligible."""
+    assert (
+        trial_needs_verifier_backfill(
+            has_cua_result_signal=True,
+            covered_attempts=0,
+            attempts=1,
+        )
+        is True
+    )
+    assert backfill_batch_rank(has_any_verifier_row=False) == 0
+    assert backfill_batch_rank(has_any_verifier_row=True) == 1
+    assert backfill_batch_rank(has_any_verifier_row=False) < backfill_batch_rank(
+        has_any_verifier_row=True
     )
 
 
