@@ -1221,10 +1221,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   environment config: Thunder-only kwargs are removed from both override and
   task config, an exact Thunder `gpu_type` is transferred to the task's native
   GPU field, and backend capabilities are checked before provisioning. Modal
-  must reject A6000 rather than remap it. A no-ID ledger is fast-finalized; a
-  provisioned `RUNNING` run is eligible for handoff, but any run with an
-  external ID remains claim-blocked and retains its Thunder capacity
-  lease until cleanup confirms teardown and clears
+  must reject A6000 rather than remap it. A no-ID ledger is fast-finalized, and
+  an attempt that failed before its ledger row existed (credential or task
+  preparation) moves with nothing to tear down as long as the job carries no
+  provider handle either; a provisioned `RUNNING` run is eligible for handoff,
+  but any run with an external ID remains claim-blocked and retains its Thunder
+  capacity lease until cleanup confirms teardown and clears
   `reroute_pending_teardown`.
   Rejected capacity handoffs settle a still-owned worker attempt and its
   still-owned RUNNING trial as FAILED, preserving provider handles and capacity

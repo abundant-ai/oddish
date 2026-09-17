@@ -378,6 +378,7 @@ class _RerouteConnection:
         job_overrides: dict[str, Any] | None = None,
         trial_overrides: dict[str, Any] | None = None,
         run_overrides: dict[str, Any] | None = None,
+        run_missing: bool = False,
         leases: list[dict[str, Any]] | None = None,
         failed_update: str | None = None,
     ) -> None:
@@ -406,16 +407,22 @@ class _RerouteConnection:
             "superseded_by_trial_id": None,
             **(trial_overrides or {}),
         }
-        self.run = {
-            "id": "sandbox-run-1",
-            "state": "FAILED",
-            "provider": "thunder",
-            "external_id": None,
-            "worker_job_attempt": 3,
-            "trial_id": "trial-1",
-            "deleted_at": None,
-            **(run_overrides or {}),
-        }
+        # ``run_missing`` models an attempt that failed before
+        # ``create_thunder_sandbox_run`` inserted its ledger row.
+        self.run: dict[str, Any] | None = (
+            None
+            if run_missing
+            else {
+                "id": "sandbox-run-1",
+                "state": "FAILED",
+                "provider": "thunder",
+                "external_id": None,
+                "worker_job_attempt": 3,
+                "trial_id": "trial-1",
+                "deleted_at": None,
+                **(run_overrides or {}),
+            }
+        )
         self.leases = (
             leases
             if leases is not None
@@ -1527,3 +1534,136 @@ async def test_declined_settled_handoff_records_the_ordinary_retry(
         "UPDATE trials" in sql and "status = 'FAILED'" in sql for sql, _ in updates
     )
     assert not any("UPDATE sandbox" in sql for sql, _ in updates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connection,outcome,limit,capacity_gate",
+    [
+        # Settled attempt-budget handoff: task preparation failed twice
+        # without ever inserting a ledger row.
+        (
+            _settled_budget_connection(run_missing=True),
+            _budget_reroute_outcome(),
+            2,
+            False,
+        ),
+        # Capacity handoff with the same shape, for symmetry.
+        (
+            _RerouteConnection(run_missing=True),
+            _reroute_outcome(),
+            0,
+            True,
+        ),
+    ],
+)
+async def test_handoff_moves_attempt_that_never_reached_the_sandbox_ledger(
+    monkeypatch, connection, outcome, limit, capacity_gate
+):
+    """No ledger row plus no provider handle means nothing was launched."""
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", limit)
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", capacity_gate)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "calculate_trial_retry_delay_seconds",
+        lambda **_kwargs: 45.0,
+    )
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda event, **kwargs: handoff_events.append(
+            (event, kwargs["handoff"], kwargs["reason"])
+        ),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=outcome,
+        attempts=int(connection.job["attempts"]),
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    assert status == WorkerJobStatus.RETRYING
+    assert connection.transaction_state.committed is True
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    # There is no ledger row to finalize, so the trial, job and lease move
+    # together and nothing touches ``sandbox_runs``.
+    assert [sql.split("UPDATE ", 1)[1].split()[0] for sql, _ in updates] == [
+        "trials",
+        "worker_jobs",
+        "sandbox_capacity_leases",
+    ]
+    trial_sql, trial_args = updates[0]
+    assert "environment = $2" in trial_sql
+    assert trial_args[1] == "modal"
+    job_sql, job_args = updates[1]
+    assert "execution_lane = $2" in job_sql
+    assert job_args[1] == "default"
+    assert job_args[4] is False, "nothing was provisioned, so no teardown gate"
+    assert handoff_events == [
+        ("completed", outcome.reroute.reason, "attempt_never_provisioned")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handoff_declines_missing_ledger_when_job_still_holds_a_handle(
+    monkeypatch,
+):
+    """A provider handle without a ledger row is not provably unlaunched."""
+    connection = _settled_budget_connection(
+        run_missing=True,
+        job_overrides={"provider": "thunder", "external_id": "sandbox-9"},
+    )
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 2)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    handoff_events = []
+    monkeypatch.setattr(
+        worker_job_single_job,
+        "_emit_thunder_handoff_event",
+        lambda event, **kwargs: handoff_events.append(
+            (event, kwargs["handoff"], kwargs["reason"])
+        ),
+    )
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+
+    status = await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        worker_id="worker-1",
+        outcome=_budget_reroute_outcome(),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+
+    # Declined: the ordinary Thunder retry is recorded instead.
+    assert status == WorkerJobStatus.RETRYING
+    assert handoff_events == [
+        (
+            "rejected",
+            THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+            "provider_handle_mismatch",
+        )
+    ]
+    updates = [(sql, args) for sql, args in connection.calls if "UPDATE " in sql]
+    assert updates and "UPDATE worker_jobs" in updates[0][0]
+    assert (
+        "execution_lane =" not in updates[0][0].split("SET", 1)[1].split("WHERE", 1)[0]
+    )
+    assert not any("environment = $2" in sql for sql, _ in updates)
