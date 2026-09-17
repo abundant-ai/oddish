@@ -18,8 +18,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +56,11 @@ _TRAJECTORY_NAMES = ("trajectory.json",)
 # Known CUA output roots (Harbor + SWE-M). Prefer these over rglob.
 _CUA_OUTPUT_RELS = ("verifier/ux", "verifier")
 UNPRICED_NO_CUA_ARTIFACTS = "no_cua_artifacts"
+UNPRICED_NO_CUA_CHECKED = "no_cua_checked"
+_REPLACEABLE_SENTINEL_REASONS = (
+    UNPRICED_NO_CUA_ARTIFACTS,
+    UNPRICED_NO_CUA_CHECKED,
+)
 
 
 @dataclass(frozen=True)
@@ -573,9 +580,8 @@ async def upsert_verifier_cost_rows(
                 index_elements=["trial_id", "attempt", "component"],
                 index_where=VerifierCostModel.deleted_at.is_(None),
                 set_=update_cols,
-                where=(
-                    VerifierCostModel.unpriced_reason
-                    == UNPRICED_NO_CUA_ARTIFACTS
+                where=VerifierCostModel.unpriced_reason.in_(
+                    _REPLACEABLE_SENTINEL_REASONS
                 ),
             )
         )
@@ -637,3 +643,363 @@ async def record_verifier_llm_costs(
             attempt,
         )
         return 0
+
+
+_BACKFILL_BATCH = 200
+
+# Attempt-relative keys to try (Harbor CUA + SWE-M ux layout).
+_BACKFILL_ARTIFACT_CANDIDATES = (
+    ("verifier/ux/cua_judge_report.json", "cua_judge_report.json"),
+    ("verifier/cua_judge_report.json", "cua_judge_report.json"),
+    ("verifier/ux/trajectory.json", "trajectory.json"),
+    ("verifier/trajectory.json", "trajectory.json"),
+)
+
+_ATTEMPT_PREFIX = re.compile(r"^(?P<root>.*/)attempt-(?P<n>[1-9]\d*)$")
+
+
+def should_graduate_backfill_miss(*, harbor_child_searched: bool) -> bool:
+    """Only a searched Harbor trial subdirectory may leave the repair pool."""
+    return bool(harbor_child_searched)
+
+
+def _no_artifacts_sentinel(*, checked: bool = False) -> VerifierCostDraft:
+    """Placeholder so a missed download can be replaced later.
+
+    Historical ``no_cua_artifacts`` rows stay incomplete so they can be
+    selected for Harbor-subdirectory repair. A miss after an EXACT Harbor
+    child prefix was searched writes ``no_cua_checked``, which graduates
+    the attempt but remains replaceable. LEGACY attempt-root and missing
+    prefixes stay unchecked.
+    """
+    return VerifierCostDraft(
+        component=COMPONENT_LOOP,
+        model=None,
+        route=ROUTE_OTHER,
+        llm_key_hash=None,
+        input_tokens=None,
+        output_tokens=None,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        cost_usd=None,
+        cost_source=COST_BACKFILL,
+        unpriced_reason=(
+            UNPRICED_NO_CUA_CHECKED
+            if checked
+            else UNPRICED_NO_CUA_ARTIFACTS
+        ),
+    )
+
+
+def attempt_s3_prefix(trial_s3_key: str | None, attempt: int) -> str | None:
+    """Sibling ``attempt-N/`` prefix derived from the stored attempt pointer."""
+    if not trial_s3_key or attempt < 1:
+        return None
+    key = trial_s3_key.rstrip("/")
+    match = _ATTEMPT_PREFIX.match(key)
+    if match is None:
+        return None
+    return f"{match.group('root')}attempt-{attempt}/"
+
+
+def _trial_result_has_cua_signal(result: Any) -> bool:
+    """True when stored trial.result looks like a CUA/UX verifier ran."""
+    if not isinstance(result, dict):
+        return False
+    return any(
+        key in result
+        for key in (
+            "cua_criteria",
+            "cua_rubric_score",
+            "cua_passed_count",
+            "cua_failed_count",
+            "cua_passed_ids",
+            "cua_partial_count",
+        )
+    )
+
+
+def trial_needs_verifier_backfill(
+    *,
+    has_cua_result_signal: bool,
+    covered_attempts: int,
+    attempts: int,
+) -> bool:
+    """Whether a finished agent trial belongs in a backfill batch.
+
+    Non-CUA trials are excluded so recent ordinary agent runs cannot fill
+    the 200-trial cap. ``covered_attempts`` counts priced rows and
+    Harbor-confirmed ``no_cua_checked`` misses. A historical
+    ``no_cua_artifacts`` sentinel is incomplete so that attempt can still
+    get the Harbor-subdirectory repair, then graduates.
+    """
+    if not has_cua_result_signal:
+        return False
+    max_attempt = max(int(attempts or 1), 1)
+    return covered_attempts < max_attempt
+
+
+def backfill_batch_rank(*, has_any_verifier_row: bool) -> int:
+    """Lower ranks fill the 200-trial cap first.
+
+    Trials with no ``verifier_costs`` row outrank sentinel-only leftovers so
+    a re-opened miss cannot starve uncovered CUA work.
+    """
+    return 1 if has_any_verifier_row else 0
+
+
+async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -> int:
+    """Price missing attempts for one trial. Caller owns the session."""
+    import tempfile
+
+    from oddish.core.trial_artifacts import (
+        TrialArtifactMode,
+        resolve_trial_artifact_layout,
+    )
+    from oddish.db.storage import is_missing_object
+
+    try:
+        from botocore.exceptions import ClientError
+    except ImportError:  # pragma: no cover
+        ClientError = Exception  # type: ignore[misc, assignment]
+
+    reopen_sentinels = _trial_result_has_cua_signal(trial.result)
+    row_meta = (
+        await session.execute(
+            select(
+                VerifierCostModel.attempt,
+                VerifierCostModel.unpriced_reason,
+            ).where(
+                VerifierCostModel.trial_id == trial.id,
+                VerifierCostModel.deleted_at.is_(None),
+            )
+        )
+    ).all()
+    have_real: set[int] = set()
+    have_any: set[int] = set()
+    for attempt_num, reason in row_meta:
+        n = int(attempt_num)
+        have_any.add(n)
+        if reason != UNPRICED_NO_CUA_ARTIFACTS:
+            have_real.add(n)
+    max_attempt = max(int(trial.attempts or 1), 1)
+    inserted_total = 0
+    for attempt in range(1, max_attempt + 1):
+        if attempt in have_real:
+            continue
+        if attempt in have_any and not reopen_sentinels:
+            continue
+        sibling = attempt_s3_prefix(trial.trial_s3_key, attempt)
+        if sibling is None and attempt != max_attempt:
+            n = await upsert_verifier_cost_rows(
+                session,
+                drafts=[_no_artifacts_sentinel()],
+                trial_id=trial.id,
+                attempt=attempt,
+                experiment_id=trial.experiment_id,
+                org_id=trial.org_id,
+                task_id=trial.task_id,
+                task_version_id=trial.task_version_id,
+                created_at=trial.finished_at,
+            )
+            inserted_total += n
+            have_any.add(attempt)
+            continue
+        pointer = SimpleNamespace(
+            id=trial.id,
+            trial_s3_key=sibling or trial.trial_s3_key,
+            kind=getattr(trial, "kind", "agent") or "agent",
+            attempts=attempt if sibling else (trial.attempts or 1),
+            finished_at=trial.finished_at,
+        )
+        layout = await resolve_trial_artifact_layout(pointer, storage)
+        if layout.mode is TrialArtifactMode.UNAVAILABLE or not layout.artifact_prefix:
+            n = await upsert_verifier_cost_rows(
+                session,
+                drafts=[_no_artifacts_sentinel()],
+                trial_id=trial.id,
+                attempt=attempt,
+                experiment_id=trial.experiment_id,
+                org_id=trial.org_id,
+                task_id=trial.task_id,
+                task_version_id=trial.task_version_id,
+                created_at=trial.finished_at,
+            )
+            inserted_total += n
+            have_any.add(attempt)
+            continue
+        prefix = layout.artifact_prefix.rstrip("/") + "/"
+        with tempfile.TemporaryDirectory(prefix="cua-backfill-") as tmp:
+            tmp_path = Path(tmp)
+            verifier_dir = tmp_path / "verifier" / "ux"
+            verifier_dir.mkdir(parents=True, exist_ok=True)
+            found_any = False
+            for relative, local_name in _BACKFILL_ARTIFACT_CANDIDATES:
+                key = f"{prefix}{relative}"
+                try:
+                    body = await storage.download_bytes(key)
+                except ClientError as exc:
+                    if is_missing_object(exc):
+                        continue
+                    raise
+                (verifier_dir / local_name).write_bytes(body)
+                found_any = True
+            if not found_any:
+                n = await upsert_verifier_cost_rows(
+                    session,
+                    drafts=[
+                        _no_artifacts_sentinel(
+                            checked=should_graduate_backfill_miss(
+                                harbor_child_searched=(
+                                    layout.mode is TrialArtifactMode.EXACT
+                                )
+                            )
+                        )
+                    ],
+                    trial_id=trial.id,
+                    attempt=attempt,
+                    experiment_id=trial.experiment_id,
+                    org_id=trial.org_id,
+                    task_id=trial.task_id,
+                    task_version_id=trial.task_version_id,
+                    created_at=trial.finished_at,
+                )
+            else:
+                n = await record_verifier_llm_costs(
+                    job_dir=tmp_path,
+                    task_path=None,
+                    trial_id=trial.id,
+                    attempt=attempt,
+                    experiment_id=trial.experiment_id,
+                    org_id=trial.org_id,
+                    task_id=trial.task_id,
+                    task_version_id=trial.task_version_id,
+                    cost_source_override=COST_BACKFILL,
+                    created_at=trial.finished_at,
+                    session=session,
+                )
+            inserted_total += n
+            have_any.add(attempt)
+            if found_any:
+                have_real.add(attempt)
+    return inserted_total
+
+
+async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> int:
+    """Best-effort historical CUA spend import. Cap ``limit`` trials per call.
+
+    Only CUA-signaled finished agent trials with an attempt that still
+    lacks priced or Harbor-confirmed coverage are selected, so a false
+    ``no_cua_artifacts`` miss can be repaired once. Uncovered trials fill
+    the 200-trial cap before those leftovers. A Harbor-subdirectory miss
+    writes ``no_cua_checked`` only after that Harbor child was searched,
+    and leaves the pool. LEGACY attempt-root misses stay unchecked. Each
+    trial uses its
+    own write session so one IntegrityError cannot roll back the sweep.
+    Artifacts are read from the Harbor trial subdirectory, not the bare
+    ``attempt-N/`` root.
+    """
+    from oddish.db import TrialModel, TrialStatus
+    from oddish.db.storage import StorageClient
+
+    async with get_session() as session:
+        real_covered = (
+            select(
+                VerifierCostModel.trial_id.label("trial_id"),
+                func.count(func.distinct(VerifierCostModel.attempt)).label(
+                    "covered"
+                ),
+            )
+            .where(
+                VerifierCostModel.deleted_at.is_(None),
+                or_(
+                    VerifierCostModel.unpriced_reason.is_(None),
+                    VerifierCostModel.unpriced_reason
+                    != UNPRICED_NO_CUA_ARTIFACTS,
+                ),
+            )
+            .group_by(VerifierCostModel.trial_id)
+            .subquery()
+        )
+        any_row = (
+            select(VerifierCostModel.trial_id.label("trial_id"))
+            .where(VerifierCostModel.deleted_at.is_(None))
+            .group_by(VerifierCostModel.trial_id)
+            .subquery()
+        )
+        cua_signal = or_(
+            TrialModel.result.has_key("cua_criteria"),
+            TrialModel.result.has_key("cua_rubric_score"),
+            TrialModel.result.has_key("cua_passed_count"),
+            TrialModel.result.has_key("cua_failed_count"),
+            TrialModel.result.has_key("cua_passed_ids"),
+            TrialModel.result.has_key("cua_partial_count"),
+        )
+        # No load_only: this is a worker sweep, not a compact FE response path,
+        # and a stray load_only trips the CI load_only_guard tripwire.
+        candidates = (
+            await session.execute(
+                select(TrialModel)
+                .outerjoin(
+                    real_covered, real_covered.c.trial_id == TrialModel.id
+                )
+                .outerjoin(any_row, any_row.c.trial_id == TrialModel.id)
+                .where(
+                    TrialModel.kind == "agent",
+                    TrialModel.finished_at.isnot(None),
+                    TrialModel.trial_s3_key.isnot(None),
+                    TrialModel.status.in_(
+                        (
+                            TrialStatus.SUCCESS,
+                            TrialStatus.FAILED,
+                            TrialStatus.SKIPPED,
+                        )
+                    ),
+                    cua_signal,
+                    or_(
+                        real_covered.c.trial_id.is_(None),
+                        real_covered.c.covered < TrialModel.attempts,
+                    ),
+                )
+                .order_by(
+                    case(
+                        (
+                            any_row.c.trial_id.is_(None),
+                            backfill_batch_rank(has_any_verifier_row=False),
+                        ),
+                        else_=backfill_batch_rank(has_any_verifier_row=True),
+                    ),
+                    TrialModel.finished_at.desc(),
+                )
+                .limit(limit)
+            )
+        ).scalars().all()
+        trial_ids = [trial.id for trial in candidates]
+
+    if not trial_ids:
+        return 0
+
+    storage = StorageClient()
+    inserted_total = 0
+    failures = 0
+    for trial_id in trial_ids:
+        try:
+            async with get_session() as session:
+                trial = await session.get(TrialModel, trial_id)
+                if trial is None:
+                    continue
+                inserted_total += await _backfill_one_trial(session, trial, storage)
+        except Exception:
+            failures += 1
+            if failures <= 3:
+                log.exception(
+                    "verifier cost backfill failed trial_id=%s",
+                    trial_id,
+                )
+            continue
+    if failures > 3:
+        log.warning(
+            "verifier cost backfill: %s additional trial failures suppressed",
+            failures - 3,
+        )
+    return inserted_total
