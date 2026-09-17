@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import time
+import tomllib
 import uuid
 from dataclasses import replace
 from decimal import Decimal
@@ -2006,6 +2007,9 @@ async def _run_harbor_trial_async_impl(
                     "Trusted verifier input requires Oddish's bundled Harbor "
                     "runtime; ephemeral Harbor variants are not supported."
                 )
+        except (OSError, tomllib.TOMLDecodeError):
+            # Leave invalid task files to the selected engine's normal validation.
+            pass
         except ValueError as exc:
             return HarborOutcome(
                 reward=None,

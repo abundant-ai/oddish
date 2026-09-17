@@ -753,8 +753,9 @@ image retains its own `/tests`; the worker does not upload replacement tests.
 The hash identifies the supplied bytes. It does not establish the truth of
 the tool output or other claims within the record.
 
-If the host record is missing or invalid, verification fails before a judge
-starts. The worker writes a fixed programmatic failure to that trial's
+If the host record is missing, invalid, or cannot be transferred, verification
+returns reward zero before a judge starts. The worker writes a fixed error in
+`verifier/step-judge-error.txt` and a programmatic failure to that trial's
 `verifier/reward-details.json`, which establishes zero judge spend for this
 failure. After standard verification starts, missing usage stays incomplete;
 the worker does not replace it with a zero-cost report.

@@ -98,26 +98,32 @@ def _record_input_failure(trial_paths: Any) -> None:
         trial_paths.trial_dir.resolve()
     ):
         raise ValueError("The worker verifier path is invalid.")
+    message = "The worker could not supply the trial trajectory. No judge started."
     report = {
         "worker_trajectory": {
             "kind": "programmatic",
             "score": 0,
             "passed": False,
-            "feedback": "The worker trajectory is missing or invalid. No judge started.",
+            "feedback": message,
         }
     }
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=directory, delete=False
-        ) as output:
-            temporary = Path(output.name)
-            json.dump(report, output)
-        # Replace an old file or link; never open a task-supplied destination.
-        os.replace(temporary, directory / "reward-details.json")
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    for name, text in {
+        "reward-details.json": json.dumps(report),
+        "reward.txt": "0\n",
+        "step-judge-error.txt": message + "\n",
+    }.items():
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=directory, delete=False
+            ) as output:
+                temporary = Path(output.name)
+                output.write(text)
+            # Replace an old file or link; never open a task-supplied destination.
+            os.replace(temporary, directory / name)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 class TrustedTrajectoryVerifier(Verifier):
@@ -146,31 +152,34 @@ class TrustedTrajectoryVerifier(Verifier):
     async def verify(self) -> VerifierResult:
         try:
             body = _read_trajectory(self.trial_paths)
-        except ValueError:
+            # Harbor has restored artifacts and made /logs/verifier writable.
+            # Remove conflicting files and links before uploading the fixed inputs.
+            prepared = await self.environment.exec(
+                command=(
+                    "test ! -L /logs && test ! -L /logs/verifier && "
+                    "mkdir -p /logs/verifier && "
+                    "rm -f -- /logs/verifier/input-trajectory.json "
+                    "/logs/verifier/input-trajectory.json.sha256"
+                ),
+                user="root",
+            )
+            if prepared.return_code != 0:
+                raise ValueError("The verifier input directory is not available.")
+            with tempfile.TemporaryDirectory(prefix="oddish-verifier-input-") as name:
+                local = Path(name) / "trajectory.json"
+                digest = Path(name) / "trajectory.json.sha256"
+                local.write_bytes(body)
+                digest.write_text(
+                    hashlib.sha256(body).hexdigest() + "\n", encoding="ascii"
+                )
+                await self.environment.upload_file(
+                    source_path=local, target_path=_INPUT_PATH
+                )
+                await self.environment.upload_file(
+                    source_path=digest, target_path=_HASH_PATH
+                )
+        except Exception:
+            # This boundary is before standard verification: no judge has started.
             _record_input_failure(self.trial_paths)
-            raise
-        # Harbor has already restored agent artifacts into the separate image.
-        # Remove conflicting files and links before uploading the fixed inputs.
-        prepared = await self.environment.exec(
-            command=(
-                "test ! -L /logs && test ! -L /logs/verifier && "
-                "mkdir -p /logs/verifier && "
-                "rm -f -- /logs/verifier/input-trajectory.json "
-                "/logs/verifier/input-trajectory.json.sha256"
-            ),
-            user="root",
-        )
-        if prepared.return_code != 0:
-            raise ValueError("The verifier input directory is not available.")
-        with tempfile.TemporaryDirectory(prefix="oddish-verifier-input-") as name:
-            local = Path(name) / "trajectory.json"
-            digest = Path(name) / "trajectory.json.sha256"
-            local.write_bytes(body)
-            digest.write_text(hashlib.sha256(body).hexdigest() + "\n", encoding="ascii")
-            await self.environment.upload_file(
-                source_path=local, target_path=_INPUT_PATH
-            )
-            await self.environment.upload_file(
-                source_path=digest, target_path=_HASH_PATH
-            )
+            return VerifierResult(rewards={"reward": 0})
         return await super().verify()
