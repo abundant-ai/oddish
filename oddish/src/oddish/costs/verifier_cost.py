@@ -472,17 +472,17 @@ def build_verifier_cost_drafts(
 ) -> list[VerifierCostDraft]:
     """Return loop (+ judge) drafts when CUA artifacts are present.
 
-    A missing or deleted ``task_path`` is treated like ``None``: still scan
-    ``job_dir``. Live settlement often passes the prepared task copy that
-    ``_execute_trial`` already removed. Only an *existing* bundle without CUA
-    signals is a negative filter.
+    A missing or unreadable ``task_path`` is not a negative signal: live
+    settlement may pass a downloaded copy the worker already deleted. Only
+    skip when we can inspect the bundle and it is clearly not CUA.
     """
-    usable_task_path = (
-        task_path if task_path is not None and task_path.exists() else None
-    )
-    if usable_task_path is not None and not task_has_cua_signals(usable_task_path):
+    if (
+        task_path is not None
+        and task_path.exists()
+        and not task_has_cua_signals(task_path)
+    ):
         return []
-    bundle = resolve_cua_bundle(job_dir, task_path=usable_task_path)
+    bundle = resolve_cua_bundle(job_dir, task_path=task_path)
     if bundle is None:
         return []
     drafts = [draft_loop_cost(bundle)]
