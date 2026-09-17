@@ -224,12 +224,12 @@ jobs:
           CLERK_JWT_TEMPLATE: oddish
         run: pnpm exec playwright test
 
-      - name: Run file loading and account layout fixture tests
+      - name: Run file, review, duplication, and account layout fixture tests
         if: steps.gate.outputs.have_clerk == 'true'
         working-directory: frontend
         env:
           E2E_REVIEW_FIXTURES: "1"
-        run: pnpm exec playwright test --config playwright.files.config.ts file-loading.spec.ts user-ui-layout.spec.ts --output fixture-test-results
+        run: pnpm exec playwright test --config playwright.files.config.ts --output fixture-test-results
 
       - name: Run delivery page and URL fixture tests
         if: steps.gate.outputs.have_clerk == 'true'

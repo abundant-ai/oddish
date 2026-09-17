@@ -17,20 +17,34 @@ dashboard at oddish.app.
 
 ## Git workflow
 
+Read `CONTRIBUTING.md` first; it is the process guide. Summary:
+
+| Stage | Base branch | Completes by |
+|---|---|---|
+| Feature PR | `staging` | Merge button, squash only |
+| Staging deploy | automatic on every push to `staging` | Nothing to do |
+| Promotion PR (`staging` -> `main`) | `main` | `/promote` comment. Never the merge button |
+
+If your branch is not literally `staging`, you are opening a feature PR.
+
 Never directly commit or push to `main` or `staging`. Check out a feature
-branch, commit there, push that branch, and open a PR for review — PRs target
-`staging` (the default branch). `main` is release-only: it advances solely via
-fast-forward promotion by a maintainer with push access to `main`, who runs
-the `Promotion Preflight` workflow (it verifies the promotion PR, the staging
-deploy, and the fast-forward condition, then prints the push command) and
-executes that push themselves; never merge, squash, or push to `main` directly.
-An organization member with `write`, `maintain`, or `admin` access can instead
-comment `/promote` on the promotion pull request; the workflow runs the same
-checks and, when the promote token is set, does the push. Bare `/promote`
-promotes the sha pinned in the pull request body (the template's
-`promotion-target` marker), so commits that reach `staging` after the
-promotion pull request was written do not ride along; `/promote <sha>`
-overrides the pin, and a body without one promotes the staging tip.
+branch, commit there, push that branch, and open a PR into `staging` (the
+default branch). Write every PR body with the `write-pr` skill; the default
+template in `.github/PULL_REQUEST_TEMPLATE.md` has the same sections. Keep
+application code under 500 added lines per PR, include a screenshot or
+preview link for anything a user can see, and fill in the `Compatibility`
+line (see the "Installed clients are always behind the server" gotcha in
+`AGENTS.md`). Do not add co-author trailers or attribution lines to commits
+or PR bodies.
+
+`main` is release-only: it advances solely via fast-forward promotion, either
+by a maintainer running the `Promotion Preflight` workflow and executing the
+push command it prints, or by an organization member with `write`,
+`maintain`, or `admin` access commenting `/promote` on the promotion pull
+request. Bare `/promote` promotes the sha pinned in the pull request body
+(the template's `promotion-target` marker), so commits that reach `staging`
+after the promotion pull request was written do not ride along; `/promote
+<sha>` overrides the pin, and a body without one promotes the staging tip.
 
 **Never complete a promotion pull request with the merge button.** The button
 squashes, which puts a new commit on `main` and breaks the fast-forward
@@ -46,38 +60,16 @@ with this block, marker comment included:
 The marker comment is what marks the body as warned. The `Promotion warning`
 workflow looks for it, and adds the same block to a promotion pull request
 that opens without it. Agents use the template at
-`.github/PULL_REQUEST_TEMPLATE/promotion.md` as the body skeleton for every
-promotion pull request; humans get it with
-`?quick_pull=1&template=promotion.md` on the compare URL.
+`.github/PULL_REQUEST_TEMPLATE/release-promotion.md` as the body skeleton for
+every promotion pull request; humans get it with
+`?quick_pull=1&template=release-promotion.md` on the compare URL.
 
 ## Hotfixes
 
-Branch the fix from `main`, not from `staging`. `main` is always an ancestor of
-`staging`, so a fix based on it carries no unreleased work and still
-fast-forwards cleanly:
-
-```bash
-git fetch origin main && git checkout -b fix/<name> origin/main
-```
-
-Open it as a normal PR into `staging`, get an expedited review, squash-merge,
-then promote immediately. This is the standard path — use it whenever the
-pipeline is fast enough for the incident.
-
-Break-glass (landing a fix on `main` directly) is only for two cases: the
-pipeline is too slow for the incident, or `staging` holds work that cannot
-ship. It breaks the fast-forward invariant on purpose, so it needs an incident
-ticket, a second person's approval, and an immediate repair afterwards —
-fast-forward `staging` up to `main`, or rebuild `staging` on the new `main` if
-it carries unpromoted commits. Never cherry-pick the fix into `staging`: the
-copy gets a different commit id, so the branches stay diverged.
-
-Not every change has to be releasable to merge. Land unfinished work behind a
-flag that is off by default (as `ODDISH_GKE_ENABLED` does), or promote only
-part of `staging` by giving
-the promotion workflow the commit to stop at (the `target_sha` input on
-Promotion Preflight, `/promote <sha>` on the promotion pull request, or the
-`promotion-target` pin in its body).
+Branch the fix from `main`, open it as a normal PR into `staging`, squash,
+then promote immediately. `CONTRIBUTING.md` has the full procedure and the
+break-glass rules for landing on `main` directly. Never cherry-pick a fix
+into `staging`.
 
 ## Useful pointers
 

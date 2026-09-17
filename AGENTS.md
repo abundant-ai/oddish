@@ -14,6 +14,9 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 
 ## Maintenance Notes
 
+Process rules (the three PR stages, PR hygiene, the documents-to-update
+table, and the compatibility rule) live in `CONTRIBUTING.md`. In short:
+
 - Keep `DOCS.md` focused on end-user CLI workflows; keep `oddish/README.md` as a short package quick start.
 - Put `oddish` implementation details, architecture notes, and local development guidance here.
 - If you change the CLI surface in `oddish/src/oddish/cli/`, update `DOCS.md`,
@@ -26,6 +29,9 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
   CLI and standalone server; hosted product concerns (auth, org membership,
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
   cloud-only policy) belong in `backend/`.
+- Before changing anything a client or another package reads, find its
+  readers first; see "Installed clients are always behind the server" under
+  Repo-wide Gotchas.
 
 ## Pruning files and operational knowledge
 
@@ -1454,6 +1460,24 @@ from oddish.workers import run_polling_worker
 
 ## Repo-wide Gotchas
 
+### Installed clients are always behind the server
+
+The `oddish` CLI is installed from Homebrew and upgrades only when the user
+runs `brew upgrade abundant-ai/tap/oddish`, so the live server always
+serves clients one or more releases old. There is no server-side minimum
+client version check; an incompatible change does not reject old clients, it
+fails their tasks. Before editing a response schema, status enum, CLI
+option, queue payload, or storage key under `oddish/`, search
+`oddish/src/oddish/cli/`, the packaged skill references under
+`oddish/src/oddish/assets/skills/oddish/references/`, `backend/`, and
+`frontend/` for readers of it, and list them in the PR body under
+`Compatibility`. Add fields rather than renaming them, keep old values
+accepted for at least one release, and never change the meaning of an
+existing value. The previously released CLI must keep working against the
+new server; if it cannot, the PR body names the first client version that
+breaks. The same applies to helpers other packages or open PRs import: check
+callers before removing or re-signaturing them.
+
 ### Never expose probes in public/share views
 
 Probes are an **experimental, internal-only** feature. They must never appear in
@@ -2398,6 +2422,16 @@ review does not establish a task defect, and favorable automation does not sign
 off a delivery. `pre_trial_passed` means the source review completed; the
 existing verdict and must-fix checks still decide whether defects block delivery.
 Do not change severity policy as part of presentation changes.
+
+Task panel responses populate the existing version `experiments` list with
+source experiment names for that version's non-deleted, non-superseded trials,
+restricted to the authorized organization. The overview uses those names for
+the linked groups under Other experiments. This stays within the panel's two
+SQL statements. Delivery check `detail` includes stored failed-audit and failed-QA
+reasons; run coverage includes both configured thresholds. The short
+`failure_labels` remain status labels, ordered QA verdict, pre-trial audit, runs
+in the UI. Acknowledgement undo uses the existing version-checked `checked: false`
+request for both `ack:` findings and `waive:` check exceptions.
 
 Task open/panel and experiment task rows carry `review_version_matches`, derived
 from the saved verdict's QA trial and the displayed version. An older verdict
