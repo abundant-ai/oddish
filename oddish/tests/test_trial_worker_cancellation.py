@@ -47,3 +47,51 @@ async def test_execute_trial_propagates_worker_cancellation(
 
     assert shutdown_trials == ["trial-1"]
     assert not temp_task_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_execute_trial_keeps_temp_task_dir_after_outcome(
+    monkeypatch, tmp_path
+) -> None:
+    from oddish.workers.harbor.outcome import HarborOutcome
+
+    async def succeed(**kwargs):
+        return HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=1.0,
+            job_result_path=None,
+            job_dir=tmp_path / "job",
+        )
+
+    async def shutdown(_trial_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(trial_handler, "run_harbor_trial_async", succeed)
+    monkeypatch.setattr(trial_handler.live_tail, "shutdown", shutdown)
+
+    temp_task_dir = tmp_path / "download"
+    task_dir = temp_task_dir / "task"
+    task_dir.mkdir(parents=True)
+    prepared = trial_handler.PreparedTrialRun(
+        task_path=str(task_dir),
+        task_s3_key=None,
+        task_id="task-1",
+        trial_agent="codex",
+        trial_model="openai/gpt-5.5",
+        trial_environment="archil",
+        trial_harbor_config=None,
+    )
+
+    result = await trial_handler._execute_trial(
+        trial_id="trial-1",
+        task_path_to_run=task_dir,
+        temp_task_dir=temp_task_dir,
+        prepared_trial=prepared,
+        worker_id="worker-1",
+    )
+
+    assert result.outcome is not None
+    assert result.execution_error is None
+    assert temp_task_dir.exists()

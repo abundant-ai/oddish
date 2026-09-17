@@ -1412,6 +1412,76 @@ class AnalysisCostModel(TimestampedMixin, Base):
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class VerifierCostModel(TimestampedMixin, Base):
+    """Append-only ledger of verifier LLM spend (CUA loop + judge).
+
+    Distinct from ``trials.cost_usd`` (the solving agent's run) and from
+    ``analysis_costs`` / ``analysis_spend`` (QA/audit). One row per
+    ``(trial_id, attempt, component)``. ``billed_user_id`` stays NULL: CUA
+    bills the platform key and must not enter user quotas or the people
+    leaderboard. Soft-delete is filtered explicitly at read sites (same as
+    ``analysis_costs``); this model is not registered for session auto-filter.
+    """
+
+    __tablename__ = "verifier_costs"
+    __table_args__ = (
+        Index(
+            "uq_verifier_costs_trial_attempt_component",
+            "trial_id",
+            "attempt",
+            "component",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_verifier_costs_trial_id", "trial_id"),
+        Index("ix_verifier_costs_experiment_id", "experiment_id"),
+        Index("ix_verifier_costs_org_id", "org_id"),
+        Index("ix_verifier_costs_task_id", "task_id"),
+        Index("ix_verifier_costs_task_version_id", "task_version_id"),
+        Index("ix_verifier_costs_component", "component"),
+        Index("ix_verifier_costs_route", "route"),
+        CheckConstraint(
+            "component IN ('cua_loop', 'cua_judge')",
+            name="ck_verifier_costs_component",
+        ),
+        CheckConstraint(
+            "route IN ('anthropic', 'bedrock', 'other')",
+            name="ck_verifier_costs_route",
+        ),
+        CheckConstraint(
+            "cost_source IN ('native', 'estimated', 'backfill')",
+            name="ck_verifier_costs_cost_source",
+        ),
+        CheckConstraint("attempt >= 0", name="ck_verifier_costs_attempt_nonneg"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``cua_loop`` (Computer1) or ``cua_judge`` (per-criterion LiteLLM judge).
+    component: Mapped[str] = mapped_column(String(32), nullable=False)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Always NULL for v1: platform-funded, quota-inert.
+    billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ``anthropic`` | ``bedrock`` | ``other`` — Claude-console recon filter.
+    route: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Hash of the CUA key, never a copy of ``trials.llm_key_hash``.
+    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ``native`` | ``estimated`` | ``backfill``
+    cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Set when cost_usd is NULL: e.g. ``missing_trajectory``.
+    unpriced_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 # The ``analysis_spend`` VIEW: the ``analysis_costs`` ledger unioned
 # with QA/audit trial spend -- the single home of the analysis-cost cutover
 # seam. Created by migration ``analysisspend01`` on migrated databases and by

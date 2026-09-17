@@ -42,6 +42,7 @@ from oddish.costs.recorder import (
     record_verifier_span,
     transition_agent_sandbox,
 )
+from oddish.costs.verifier_cost import record_verifier_llm_costs
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -306,6 +307,7 @@ class PreparedTrialRun:
     fallback_from_environment: str | None = None
     trial_kind: str = "agent"
     task_version: int | None = None
+    task_version_id: str | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -365,6 +367,9 @@ class SandboxCostState:
     billed_user_id: str | None
     worker_job_id: str | None
     worker_job_attempt: int | None
+    task_id: str | None = None
+    task_version_id: str | None = None
+    task_path: Path | None = None
     terminal_at: datetime | None = None
 
 
@@ -797,6 +802,7 @@ async def _prepare_trial_run(
             fallback_from_environment=fallback_from_environment,
             trial_kind=trial.kind or "agent",
             task_version=task_version,
+            task_version_id=trial.task_version_id,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -1744,6 +1750,7 @@ async def _execute_trial(
     execution_error: str | None = None
     retryable = True
     tailed_attempt: int | None = None
+    outcome: HarborOutcome | None = None
     try:
         try:
             env_type = EnvironmentType(
@@ -1801,8 +1808,12 @@ async def _execute_trial(
         # live transcript while polling clients still observe the trial as
         # running (read_trial_live reports done via finished_at).
         tailed_attempt = await live_tail.shutdown(trial_id)
-        # Clean up temp task directory
-        if temp_task_dir and temp_task_dir.exists():
+        # Settlement still reads CUA signals and model names from the
+        # downloaded/overlay task copy. Keep it when Harbor produced an
+        # outcome; run_trial_job's _release_prepared_trial_attempt removes
+        # it after _settle_compute_costs. Cancel and pre-outcome failures
+        # never settle, so they still clean up here.
+        if outcome is None and temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     return TrialExecutionResult(
@@ -1826,6 +1837,24 @@ def _phase_timestamp(value: object) -> datetime | None:
 async def _settle_compute_costs(
     state: SandboxCostState, outcome: HarborOutcome | None
 ) -> None:
+    # CUA LLM spend is independent of Modal compute spans: record it even when
+    # this attempt has no worker_job_id (e.g. local runner).
+    job_dir = getattr(outcome, "job_dir", None) if outcome is not None else None
+    if job_dir is not None:
+        task_path = state.task_path
+        if task_path is not None and not task_path.exists():
+            task_path = None
+        await record_verifier_llm_costs(
+            job_dir=job_dir,
+            task_path=task_path,
+            trial_id=state.trial_id,
+            attempt=state.attempt,
+            experiment_id=state.experiment_id,
+            org_id=state.org_id,
+            task_id=state.task_id,
+            task_version_id=state.task_version_id,
+        )
+
     if state.worker_job_id is None or state.worker_job_attempt is None:
         return
     try:
@@ -2107,6 +2136,9 @@ async def _prepare_claimed_trial_attempt(
             experiment_id=prepared_trial.experiment_id or None,
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
+            task_id=prepared_trial.task_id,
+            task_version_id=prepared_trial.task_version_id,
+            task_path=prepared_task.task_path,
             worker_job_id=worker_job_id,
             worker_job_attempt=worker_job_attempt,
         )
