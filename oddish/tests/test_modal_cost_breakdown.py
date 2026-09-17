@@ -104,6 +104,7 @@ async def test_compute_cost_breakdown_empty_table_returns_zero_and_empty_lists()
             "inference",
             "qa",
             "compute",
+            "verifier",
         }
         await savepoint.rollback()
 

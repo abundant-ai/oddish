@@ -171,11 +171,16 @@ async def get_public_experiment_cost_totals(
         experiment = await get_public_experiment(session, public_token)
         if experiment is None:
             raise HTTPException(status_code=404, detail="Experiment not found")
-        return await get_experiment_cost_totals(
+        totals = await get_experiment_cost_totals(
             session,
             experiment_id=experiment.id,
             org_id=experiment.org_id,
         )
+        # CUA / verifier LLM spend is internal recon only — never on share pages.
+        totals.verifier_cost_usd = 0.0
+        totals.owned_verifier_cost_usd = 0.0
+        totals.verifier_has_estimated = False
+        return totals
 
 
 @router.get("/public/experiments/{public_token}/results")

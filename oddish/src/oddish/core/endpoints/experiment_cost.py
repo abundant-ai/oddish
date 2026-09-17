@@ -83,6 +83,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import settings
 from oddish.core.cost_exclusions import excluded_spend_filter, load_cost_exclusions
 from oddish.core.endpoints.qa_cost import get_experiment_qa_cost_totals
+from oddish.core.endpoints.verifier_cost import get_experiment_verifier_cost_totals
 from oddish.core.experiment_membership import experiment_trial_scope
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
@@ -304,6 +305,13 @@ async def get_experiment_cost_totals(
     totals.owned_qa_cost_complete = qa.owned_qa_cost_complete
     totals.owned_qa_unpriced_count = qa.owned_qa_unpriced_count
     totals.owned_qa_pending_count = qa.owned_qa_pending_count
+
+    verifier = await get_experiment_verifier_cost_totals(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    totals.verifier_cost_usd = verifier.verifier_cost_usd
+    totals.owned_verifier_cost_usd = verifier.owned_verifier_cost_usd
+    totals.verifier_has_estimated = verifier.verifier_has_estimated
 
     exclusions = await load_cost_exclusions(session)
     totals.experiment_cost_excluded = exclusions.excludes(experiment_id=experiment_id)

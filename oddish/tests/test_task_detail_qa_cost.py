@@ -55,3 +55,17 @@ def test_qa_cost_defaults_to_zero_when_absent():
     )
 
     assert totals.qa_cost_usd == 0.0
+    assert totals.verifier_cost_usd == 0.0
+
+
+def test_verifier_cost_lands_without_touching_agent_cost():
+    totals, _versions = _aggregate_task_detail_rollups(
+        trials=[_trial()],
+        version_rows=[],
+        current_version_id=None,
+        verifier_cost_usd=2.25,
+    )
+
+    assert totals.verifier_cost_usd == pytest.approx(2.25)
+    assert totals.cost_usd == pytest.approx(1.50)
+    assert totals.qa_cost_usd == 0.0
