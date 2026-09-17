@@ -1750,6 +1750,7 @@ async def _execute_trial(
     execution_error: str | None = None
     retryable = True
     tailed_attempt: int | None = None
+    outcome: HarborOutcome | None = None
     try:
         try:
             env_type = EnvironmentType(
@@ -1807,8 +1808,12 @@ async def _execute_trial(
         # live transcript while polling clients still observe the trial as
         # running (read_trial_live reports done via finished_at).
         tailed_attempt = await live_tail.shutdown(trial_id)
-        # Clean up temp task directory
-        if temp_task_dir and temp_task_dir.exists():
+        # Settlement still reads CUA signals and model names from the
+        # downloaded/overlay task copy. Keep it when Harbor produced an
+        # outcome; run_trial_job's _release_prepared_trial_attempt removes
+        # it after _settle_compute_costs. Cancel and pre-outcome failures
+        # never settle, so they still clean up here.
+        if outcome is None and temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     return TrialExecutionResult(
@@ -1836,9 +1841,12 @@ async def _settle_compute_costs(
     # this attempt has no worker_job_id (e.g. local runner).
     job_dir = getattr(outcome, "job_dir", None) if outcome is not None else None
     if job_dir is not None:
+        task_path = state.task_path
+        if task_path is not None and not task_path.exists():
+            task_path = None
         await record_verifier_llm_costs(
             job_dir=job_dir,
-            task_path=state.task_path,
+            task_path=task_path,
             trial_id=state.trial_id,
             attempt=state.attempt,
             experiment_id=state.experiment_id,

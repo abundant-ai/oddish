@@ -194,6 +194,38 @@ def test_build_drafts_under_harbor_trial_subdir(tmp_path: Path) -> None:
     assert loop.cost_usd == 1.5
 
 
+def test_build_drafts_missing_task_path_still_reads_artifacts(tmp_path: Path) -> None:
+    """A deleted download is unknown, not 'not CUA' — still price job artifacts."""
+    job = tmp_path / "job"
+    ux = job / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=2.5, prompt=200, completion=80)
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "judge_model": "anthropic/claude-opus-4-7",
+                "verdicts": [{"criterion": "a"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    drafts = build_verifier_cost_drafts(job, task_path=tmp_path / "deleted" / "task")
+    assert len(drafts) == 2
+    loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
+    assert loop.cost_usd == 2.5
+
+
+def test_build_drafts_skips_existing_non_cua_task(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    ux = job / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=2.5)
+    (ux / "cua_judge_report.json").write_text("{}", encoding="utf-8")
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text("[agent]\nname = 'nop'\n", encoding="utf-8")
+    assert build_verifier_cost_drafts(job, task_path=task) == []
+
+
 def test_nop_shell_without_artifacts_writes_nothing(tmp_path: Path) -> None:
     (tmp_path / "agent").mkdir()
     assert build_verifier_cost_drafts(tmp_path) == []
