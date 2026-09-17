@@ -972,6 +972,15 @@ export function TaskFilesPanel({
         !panel?.qa_active
       : panel?.can_run_qa);
   const qaActionLabel = `Generate QA verdict${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
+  // The drawer header carries Cancel QA while a run is live. A content-only
+  // caller that supplies filesUrl gets the panes without that header (see the
+  // return below), so its overview badge carries Cancel QA instead.
+  const headerless = contentOnly && Boolean(filesUrl);
+  const badgeCarriesCancel =
+    headerless &&
+    !cancelExperimentId &&
+    canCancelTask &&
+    panel?.cancel === "qa";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -2150,7 +2159,24 @@ export function TaskFilesPanel({
                   }}
                   executionReviewAction={
                     showAnalysis &&
-                    task && (
+                    task &&
+                    (badgeCarriesCancel ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleCancelTask}
+                        disabled={isCancelling}
+                        className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                      >
+                        {isCancelling ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <OctagonX className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {isCancelling ? "Cancelling..." : "Cancel QA"}
+                      </Button>
+                    ) : (
                       <Button
                         type="button"
                         variant="outline"
@@ -2166,9 +2192,11 @@ export function TaskFilesPanel({
                         )}
                         {isRunningQA ? "Queueing..." : qaActionLabel}
                       </Button>
-                    )
+                    ))
                   }
-                  executionReviewError={qaActionError}
+                  executionReviewError={
+                    qaActionError ?? (badgeCarriesCancel ? cancelError : null)
+                  }
                 />
               ) : (
                 renderFileContent()
