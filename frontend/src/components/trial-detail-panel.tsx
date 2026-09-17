@@ -101,6 +101,7 @@ import {
 import {
   isAnalysisStatusActive,
   preloadTrial,
+  refetchTrialFromServer,
   useTrial,
 } from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
@@ -303,6 +304,10 @@ function TrialAnalysisCard({
           data.detail || data.error || "Failed to queue QA verdict generation"
         );
       }
+      // The rerun reset this trial's analysis in place. Its finished copy may
+      // sit in the browser's HTTP cache for a day, so refetch past it; the
+      // live row then reports the queued analysis and useTrial resumes polling.
+      await refetchTrialFromServer(apiBaseUrl, trial.id);
       // The server created one task-level QA trial. Refresh the task-open
       // resource so its active_qa_trial becomes the source of truth.
       await onQueued?.();
@@ -778,7 +783,8 @@ export function TrialDetailPanel({
 
   // A task-level QA trial writes analysis onto the selected agent trial when
   // it settles. The agent trial is already terminal, so its own status cannot
-  // keep useTrial polling. Refetch it once when the task QA lifecycle ends;
+  // keep useTrial polling. Refetch it once when the task QA lifecycle ends,
+  // past the browser's HTTP cache (a finished trial is held there for a day);
   // SWR still owns the request, cache key, deduplication, and retry policy.
   useEffect(() => {
     const previous = previousTaskQaRef.current;
@@ -796,12 +802,12 @@ export function TrialDetailPanel({
       previous.inProgress &&
       !current.inProgress
     ) {
-      void revalidateTrial();
+      void refetchTrialFromServer(apiBaseUrl, selectedTrial.id);
     }
   }, [
+    apiBaseUrl,
     isOpen,
     requireTrialDetail,
-    revalidateTrial,
     selectedTrial?.id,
     task?.id,
     taskQaInProgress,

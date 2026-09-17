@@ -1,8 +1,9 @@
 "use client";
 
-import useSWR, { preload, type SWRResponse } from "swr";
+import useSWR, { mutate, preload, type SWRResponse } from "swr";
 import { fetcher } from "@/lib/api";
 import { isActiveTrialStatus } from "@/lib/job-status";
+import { markTrialForReload, trialRequestInit } from "@/lib/trial-fetch";
 import type { Trial } from "@/lib/types";
 
 /** Returns true while the trial's analysis is queued or running on the server. */
@@ -12,17 +13,11 @@ export function isAnalysisStatusActive(
   return status === "pending" || status === "queued" || status === "running";
 }
 
-// If a fetch hangs forever, the components using this hook would show a
-// loading state forever. This timeout makes a hung fetch fail like a
-// normal error, and the components then fall back to the trial data they
-// already have.
-const TRIAL_FETCH_TIMEOUT_MS = 15_000;
-
+// No `cache: "no-store"` here: the backend decides per row whether the
+// browser may keep the response (finished trials, a day) or must not (live
+// ones). See `@/lib/trial-fetch` for the timeout and the reload marks.
 async function trialFetcher(url: string): Promise<Trial> {
-  return fetcher<Trial>(url, {
-    cache: "no-store",
-    signal: AbortSignal.timeout(TRIAL_FETCH_TIMEOUT_MS),
-  });
+  return fetcher<Trial>(url, trialRequestInit(url));
 }
 
 /**
@@ -37,6 +32,18 @@ export function trialKey(apiBaseUrl: string, trialId: string): string {
 
 export function preloadTrial(apiBaseUrl: string, trialId: string) {
   return preload(trialKey(apiBaseUrl, trialId), trialFetcher);
+}
+
+/**
+ * Refetches one trial from the server, replacing any copy the browser's
+ * HTTP cache holds. Use after an action that changes a finished trial in
+ * place (re-running its analysis, a task-level QA run settling onto it);
+ * a plain SWR revalidate would read the cached copy back.
+ */
+export function refetchTrialFromServer(apiBaseUrl: string, trialId: string) {
+  const key = trialKey(apiBaseUrl, trialId);
+  markTrialForReload(key);
+  return mutate<Trial>(key);
 }
 
 /**

@@ -35,6 +35,13 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
+from api.trial_cache import (
+    cache_headers,
+    matches_if_none_match,
+    trial_detail_is_final,
+    trial_etag,
+    trial_execution_is_final,
+)
 from auth import (
     APIKeyScope,
     AuthContext,
@@ -94,6 +101,7 @@ async def get_trial(
 @router.get("/trials/{trial_id}", response_model=TrialResponse)
 async def get_trial_full(
     request: Request,
+    response: Response,
     trial_id: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> TrialResponse:
@@ -101,12 +109,31 @@ async def get_trial_full(
 
     The experiment grid loads only slim trials; clicking a cell fetches the
     full trial here (timing, harbor, tokens, full analysis, etc.).
+
+    Once execution and analysis are both terminal the payload is cacheable
+    for a day (see ``api.trial_cache``); until then it is ``no-store``.
     """
     async with authorized_read_session(request, auth) as session:
         auth.require_scope(APIKeyScope.READ)
-        return await get_trial_response_for_org_core(
+        detail = await get_trial_response_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
+    response.headers.update(
+        cache_headers(
+            final=trial_detail_is_final(
+                status=detail.status,
+                finished_at=detail.finished_at,
+                analysis_status=detail.analysis_status,
+            ),
+            etag=trial_etag(
+                trial_id=detail.id,
+                attempts=detail.attempts,
+                finished_at=detail.finished_at,
+                analysis_finished_at=detail.analysis_finished_at,
+            ),
+        )
+    )
+    return detail
 
 
 @router.post("/trials/{trial_id}/analysis/rerun")
@@ -404,11 +431,26 @@ async def get_trial_trajectory(
     request: Request,
     trial_id: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> dict | None:
-    """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
+) -> Response:
+    """Get ATIF trajectory.json for a trial (step-by-step agent actions).
+
+    A finished trial's trajectory is immutable (a retry is a new row), so it
+    is cacheable for a day and answers ``If-None-Match`` with ``304`` before
+    touching S3. Unfinished trials stay ``no-store``.
+    """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
-    return await read_trial_trajectory(trial)
+    final = trial_execution_is_final(
+        status=trial.status, finished_at=trial.finished_at
+    )
+    etag = trial_etag(
+        trial_id=trial.id, attempts=trial.attempts, finished_at=trial.finished_at
+    )
+    headers = cache_headers(final=final, etag=etag)
+    if final and matches_if_none_match(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    trajectory = await read_trial_trajectory(trial)
+    return JSONResponse(content=trajectory, headers=headers)
 
 
 # Trial statuses the summary poller understands, mapped from TrialStatus
