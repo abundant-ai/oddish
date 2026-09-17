@@ -1,4 +1,5 @@
-"""Hosted Thunder availability follows its opt-in runtime registration."""
+"""Hosted Thunder availability and the GPU default follow its opt-in
+runtime registration."""
 
 from __future__ import annotations
 
@@ -83,4 +84,4 @@ def test_thunder_is_accepted_only_when_enabled() -> None:
     assert disabled_decision == "rejected:400"
     assert enabled_decision == "accepted"
     assert disabled_gpu_default == "modal"
-    assert enabled_gpu_default == "modal"
+    assert enabled_gpu_default == "thunder"

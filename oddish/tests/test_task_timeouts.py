@@ -132,7 +132,7 @@ gpus = 0
     )
 
 
-def test_default_cloud_environment_uses_modal_for_gpu_task(tmp_path):
+def test_default_cloud_environment_uses_thunder_for_gpu_task(tmp_path):
     (tmp_path / "task.toml").write_text(
         """
 [agent]
@@ -149,14 +149,14 @@ gpus = 1
 
     assert (
         _default_cloud_environment_for_task(tmp_path, override_gpus=None)
-        == EnvironmentType.MODAL
+        == EnvironmentType.THUNDER
     )
 
 
 def test_default_cloud_environment_honors_gpu_override(tmp_path):
     assert (
         _default_cloud_environment_for_task(tmp_path, override_gpus=1)
-        == EnvironmentType.MODAL
+        == EnvironmentType.THUNDER
     )
     assert (
         _default_cloud_environment_for_task(tmp_path, override_gpus=0)

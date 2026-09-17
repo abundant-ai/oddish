@@ -190,7 +190,11 @@ def _default_cloud_environment_for_task(
     if settings.numinous_enabled and (not requires_gpu or settings.numinous_gpu_enabled):
         return EnvironmentType.NUMINOUS
     if requires_gpu:
-        return EnvironmentType.MODAL
+        # Mirrors the hosted registry order (oddish.runtime.registry), where
+        # Thunder precedes Modal, so GPU work defaults to Thunder. Public
+        # Harbor releases may lack the fork-only THUNDER member; keep Modal
+        # there so the CLI still resolves a GPU default.
+        return getattr(EnvironmentType, "THUNDER", EnvironmentType.MODAL)
     return EnvironmentType.DAYTONA
 
 

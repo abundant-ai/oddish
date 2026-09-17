@@ -1,19 +1,18 @@
 """Capability negotiation + the cloud-environment default.
 
-The negotiation reproduces today's outcome (GPU/private-registry → Modal,
-plain CPU → Daytona) by iterating ``automatic_backends()`` (cheap-first) and
-returning the first backend whose capabilities satisfy the requirements.
-Explicit-only providers such as Thunder remain valid named environments but
-never participate in default selection.
-``default_cloud_environment`` is the behavior-preserving facade the CLI and
-the backend cloud policy call."""
+The negotiation iterates ``ordered_backends()`` (cheap-first) and returns the
+first backend whose capabilities satisfy the requirements: plain CPU →
+Daytona, GPU → Thunder when the deployment enables it (otherwise Modal),
+private registry → Modal. ``default_cloud_environment`` is the facade the
+backend cloud policy calls; ``oddish.cli.run`` mirrors the same order without
+importing the registry."""
 
 from __future__ import annotations
 
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.runtime.ports import ExecutionBackend
-from oddish.runtime.registry import automatic_backends, ordered_backends
+from oddish.runtime.registry import ordered_backends
 
 
 class NoEligibleBackendError(RuntimeError):
@@ -30,7 +29,7 @@ def select_backend(
     requires_private_registry: bool = False,
     requires_tpu: bool = False,
 ) -> ExecutionBackend:
-    for backend in automatic_backends(ordered_backends()):
+    for backend in ordered_backends():
         caps = backend.capabilities()
         if requires_gpu and caps.gpu is None:
             continue
@@ -49,8 +48,8 @@ def select_backend(
 def default_cloud_environment(
     *, requires_gpu: bool = False, requires_tpu: bool = False
 ) -> EnvironmentType:
-    """The cloud default via capability negotiation: TPU → GKE, GPU → Modal,
-    else Daytona."""
+    """The cloud default via capability negotiation: TPU → GKE, GPU → Thunder
+    when enabled (else Modal), else Daytona."""
     return EnvironmentType(
         select_backend(requires_gpu=requires_gpu, requires_tpu=requires_tpu).name
     )

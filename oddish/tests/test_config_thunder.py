@@ -18,6 +18,9 @@ def test_thunder_defaults_disabled_with_capacity_128() -> None:
     assert settings.thunder_max_capacity == 128
     assert settings.thunder_capacity_fallback is False
     assert settings.thunder_fallback_provider == "modal"
+    # The attempt-budget handoff is on by default: two failed Thunder attempts
+    # move a trial's next retry to the fallback provider.
+    assert settings.thunder_max_failed_attempts == 2
 
 
 def test_thunder_capacity_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,6 +28,7 @@ def test_thunder_capacity_reads_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("ODDISH_THUNDER_MAX_CAPACITY", "7")
     monkeypatch.setenv("ODDISH_THUNDER_CAPACITY_FALLBACK", "T")
     monkeypatch.setenv("ODDISH_THUNDER_FALLBACK_PROVIDER", "modal")
+    monkeypatch.setenv("ODDISH_THUNDER_MAX_FAILED_ATTEMPTS", "0")
 
     settings = Settings(_env_file=None)
 
@@ -32,12 +36,18 @@ def test_thunder_capacity_reads_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.thunder_max_capacity == 7
     assert settings.thunder_capacity_fallback is True
     assert settings.thunder_fallback_provider == "modal"
+    assert settings.thunder_max_failed_attempts == 0
 
 
 @pytest.mark.parametrize("capacity", [0, -1])
 def test_thunder_capacity_must_be_positive(capacity: int) -> None:
     with pytest.raises(ValidationError, match="thunder_max_capacity"):
         Settings(_env_file=None, thunder_max_capacity=capacity)
+
+
+def test_thunder_max_failed_attempts_cannot_be_negative() -> None:
+    with pytest.raises(ValidationError, match="thunder_max_failed_attempts"):
+        Settings(_env_file=None, thunder_max_failed_attempts=-1)
 
 
 def test_thunder_fallback_provider_is_normalized() -> None:
