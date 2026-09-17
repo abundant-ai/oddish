@@ -1436,6 +1436,9 @@ export function TaskDetailClient({
                 task={task}
                 staticChecksTaskId={task.id}
                 onOpenTrial={handleOpenTrialFromOverview}
+                // This pane's overview badge can cancel the task's QA run, and
+                // the page's own verdict badge reads the task record behind it.
+                onRetryComplete={revalidateReaderResources}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
                 taskVersion={selectedVersion?.version}
