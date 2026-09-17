@@ -25,6 +25,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.config import looks_like_bedrock_model_id
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db import VerifierCostModel, generate_id, get_session, utcnow
@@ -88,8 +89,9 @@ def infer_verifier_route(model: str | None) -> str:
     """Map a verifier model id to a billing recon bucket.
 
     ``anthropic/…`` and bare Claude ids → Anthropic (Claude console).
-    Explicit ``bedrock/…`` or Bedrock inference-profile ids
-    (``us.anthropic.*`` / ``global.anthropic.*``) → Bedrock.
+    Explicit ``bedrock/…`` or Bedrock-shaped ids (geo inference profiles
+    such as ``eu.anthropic.*``, foundation ids such as ``anthropic.claude-*``,
+    and ARNs) → Bedrock.
     """
     raw = (model or "").strip().lower()
     if not raw:
@@ -97,8 +99,7 @@ def infer_verifier_route(model: str | None) -> str:
     if (
         raw.startswith("bedrock/")
         or raw.startswith("bedrock.")
-        or raw.startswith("us.anthropic.")
-        or raw.startswith("global.anthropic.")
+        or looks_like_bedrock_model_id(raw)
     ):
         return ROUTE_BEDROCK
     if (

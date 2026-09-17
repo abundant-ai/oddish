@@ -13,6 +13,7 @@ from oddish.core.harbor_artifacts import extract_trajectory_metrics
 from oddish.costs.verifier_cost import (
     COMPONENT_JUDGE,
     COMPONENT_LOOP,
+    COST_BACKFILL,
     COST_ESTIMATED,
     COST_NATIVE,
     ROUTE_ANTHROPIC,
@@ -26,7 +27,6 @@ from oddish.costs.verifier_cost import (
     attempt_s3_prefix,
     _no_artifacts_sentinel,
     UNPRICED_NO_CUA_ARTIFACTS,
-    COST_BACKFILL,
     trial_needs_verifier_backfill,
     upsert_verifier_cost_rows,
 )
@@ -55,6 +55,9 @@ def test_infer_route_prefers_anthropic_prefix() -> None:
     assert infer_verifier_route("bedrock/anthropic.claude-opus") == ROUTE_BEDROCK
     assert infer_verifier_route("us.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
     assert infer_verifier_route("global.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+    assert infer_verifier_route("eu.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+    assert infer_verifier_route("apac.anthropic.claude-sonnet-4-6") == ROUTE_BEDROCK
+    assert infer_verifier_route("anthropic.claude-opus-4-7") == ROUTE_BEDROCK
 
 
 def test_extract_trajectory_metrics_skips_verifier_tree(tmp_path: Path) -> None:
