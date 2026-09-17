@@ -14,6 +14,9 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 
 ## Maintenance Notes
 
+Process rules (the three PR stages, PR hygiene, the documents-to-update
+table, and the compatibility rule) live in `CONTRIBUTING.md`. In short:
+
 - Keep `DOCS.md` focused on end-user CLI workflows; keep `oddish/README.md` as a short package quick start.
 - Put `oddish` implementation details, architecture notes, and local development guidance here.
 - If you change the CLI surface in `oddish/src/oddish/cli/`, update `DOCS.md`,
@@ -26,6 +29,9 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
   CLI and standalone server; hosted product concerns (auth, org membership,
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
   cloud-only policy) belong in `backend/`.
+- Before changing anything a client or another package reads, find its
+  readers first; see "Installed clients are always behind the server" under
+  Repo-wide Gotchas.
 
 ## Pruning files and operational knowledge
 
@@ -1170,23 +1176,44 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   limit enforced by durable leases across every organization, model, queue key,
   and Harbor variant. The `oddish-thunder` Modal secret contains only
   `TNR_API_URL` and `TNR_API_TOKEN` and is attached only to dedicated Thunder
-  workers and teardown control. Thunder targets `thunder-sandbox==0.6.1` and
+  workers and teardown control. Thunder targets `thunder-sandbox==0.7.3` and
   its native async Python transport; never add subprocess probes or package
   requirements for `ssh`, `scp`, or `ssh-keygen` on its behalf. Registration
-  makes `environment=thunder` valid but must never put Thunder in
-  `automatic_backends()`; unspecified GPU work continues to default to Modal.
+  makes `environment=thunder` valid and places Thunder between Daytona and
+  Modal in `ordered_backends()`, so unspecified GPU work defaults to Thunder
+  on a Thunder-enabled deployment (and to Modal elsewhere), while a
+  submission carrying `registry_auth` (a private-registry pull, which Thunder
+  cannot serve) stays on Modal. The CLI never names a GPU backend itself: it
+  sends `requires_gpu` for a task.toml GPU request and lets
+  `backend/cloud_policy.py` negotiate against the deployment's own registry.
+  Plain CPU work must keep defaulting to Daytona. Harbor's Thunder environment requires exactly one
+  `[environment].gpu_types` entry (or a `gpu_type` kwarg) and a GPU count of
+  1, 2, 4, or 8; GPU tasks that need something else must pass
+  `--env modal` explicitly.
   Oddish forces each Thunder sandbox name to its durable `sandbox_runs.id`.
   The reconciler inventories Thunder through a credential-scoped Modal
   function and treats that exact name match as the ownership proof needed to
   recover a handle lost before Harbor's `environment-provisioned` event. Never
   make the name task-configurable or terminate unmatched inventory entries.
-  Capacity fallback remains off unless `ODDISH_THUNDER_CAPACITY_FALLBACK=true`;
-  its destination defaults to `ODDISH_THUNDER_FALLBACK_PROVIDER=modal`. An
-  exact SDK `sandbox_capacity_unavailable` result bypasses ordinary trial
-  failure settlement. The END hook also defers terminal state for eligible
-  capacity misses. Handoffs require the same RUNNING trial and worker ownership
-  in both validation and the SQL update; settled results cannot revive ownership.
-  One ownership-checked transaction changes the trial
+  Two handoffs move a Thunder trial to `ODDISH_THUNDER_FALLBACK_PROVIDER`
+  (default `modal`); their policy lives only in
+  `oddish/workers/queue/thunder_fallback.py`, and both are expressed as
+  `JobOutcome.reroute_to` and persisted by the one atomic transaction in
+  `worker_job_single_job._record_reroute_outcome`. Capacity fallback remains
+  off unless `ODDISH_THUNDER_CAPACITY_FALLBACK=true`: an exact SDK
+  `sandbox_capacity_unavailable` result bypasses ordinary trial failure
+  settlement, the END hook defers terminal state for it, and the handoff
+  requires the same RUNNING trial and worker ownership in both validation and
+  the SQL update. The attempt-budget fallback is on by default: once a trial
+  has failed `ODDISH_THUNDER_MAX_FAILED_ATTEMPTS` (default 2; 0 disables)
+  attempts on Thunder, the retry that ordinary settlement already marked
+  (trial RETRYING, worker released) is scheduled on the fallback provider with
+  its ordinary retry delay. Every attempt of a Thunder trial ran on Thunder
+  (`trials.environment` only ever leaves Thunder), so `trials.attempts` is that
+  count; any retryable failure counts, so the worst case is the pre-Thunder
+  routing. A declined attempt-budget handoff records the plain retryable
+  failure (the trial keeps retrying on Thunder) and must never force a settled
+  trial to FAILED. One ownership-checked transaction changes the trial
   environment plus required runnable/claim state and moves the job from
   `thunder_trial` to the `default` execution lane. Payload, queue key, Harbor
   variant, priority, attempt identifiers and limits, and stored trial config
@@ -1199,18 +1226,19 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   external ID remains claim-blocked and retains its Thunder capacity
   lease until cleanup confirms teardown and clears
   `reroute_pending_teardown`.
-  Rejected handoffs settle a still-owned worker attempt and its still-owned
-  RUNNING trial as FAILED, preserving provider handles and capacity leases for
-  cleanup; cancellation and newer attempts are never overwritten. Modal fallback
+  Rejected capacity handoffs settle a still-owned worker attempt and its
+  still-owned RUNNING trial as FAILED, preserving provider handles and capacity
+  leases for cleanup; cancellation and newer attempts are never overwritten. Modal fallback
   translates Thunder A100XL to A100-80GB and SDK A100 to A100-40GB only when
   Modal is the destination. Both the trial and worker-job attempt budgets are
   checked from locked current rows before a handoff. If either is exhausted,
   the owned attempt fails without scheduling a destination retry; source handles
   and leases remain available to cleanup.
-  Requested/completed/rejected/failed handoffs emit structured
-  `metric=thunder_capacity_handoff` logs and the bounded
-  `oddish.thunder.capacity_handoffs` counter. Apply the
-  `thunder_fallback_001` core migration before enabling the gate.
+  Requested/pending/completed/rejected/failed handoffs of either kind emit
+  structured `metric=thunder_handoff` logs (with `handoff=<reason code>`) and
+  the bounded `oddish.thunder.handoffs` counter, whose `handoff` attribute is
+  the reason code. Both handoffs need the `thunder_fallback_001` core
+  migration.
 - EC2 is an explicit, opt-in Harbor backend: `ODDISH_EC2_ENABLED=true` registers
   it and permits hosted `environment=ec2`, but capability ordering keeps Daytona
   as the CPU default. V1 launches one ephemeral CPU instance per trial and uses
@@ -1453,6 +1481,24 @@ from oddish.workers import run_polling_worker
 ---
 
 ## Repo-wide Gotchas
+
+### Installed clients are always behind the server
+
+The `oddish` CLI is installed from Homebrew and upgrades only when the user
+runs `brew upgrade abundant-ai/tap/oddish`, so the live server always
+serves clients one or more releases old. There is no server-side minimum
+client version check; an incompatible change does not reject old clients, it
+fails their tasks. Before editing a response schema, status enum, CLI
+option, queue payload, or storage key under `oddish/`, search
+`oddish/src/oddish/cli/`, the packaged skill references under
+`oddish/src/oddish/assets/skills/oddish/references/`, `backend/`, and
+`frontend/` for readers of it, and list them in the PR body under
+`Compatibility`. Add fields rather than renaming them, keep old values
+accepted for at least one release, and never change the meaning of an
+existing value. The previously released CLI must keep working against the
+new server; if it cannot, the PR body names the first client version that
+breaks. The same applies to helpers other packages or open PRs import: check
+callers before removing or re-signaturing them.
 
 ### Never expose probes in public/share views
 

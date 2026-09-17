@@ -524,7 +524,7 @@ export function TaskFilesPanel({
   const checksLoading = overviewAvailable && !panel && !checksLoadError;
   const checksLoadFailure =
     checksLoadError && !panel
-      ? "Unable to load the static checks state."
+      ? "Unable to load the pre-trial audit state."
       : null;
   const checksFindings = [
     ...(checksVersion?.retained_findings ?? []),
@@ -1189,7 +1189,7 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks"
+          data.detail || data.error || "Failed to queue pre-trial audit"
         );
       }
       await mutateChecks();

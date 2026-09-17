@@ -1490,19 +1490,26 @@ class Settings(BaseSettings):
     numinous_enabled: bool = False
 
     # Thunder GPU backend (opt-in). Registration is gated so deployments that
-    # do not carry TNR_API_TOKEN never advertise or route Thunder trials.
+    # do not carry TNR_API_TOKEN never advertise or route Thunder trials. Once
+    # enabled it precedes Modal in the registry and is the default GPU backend.
     thunder_enabled: bool = False
     thunder_max_capacity: int = 128
     # Capacity fallback is opt-in. Its non-Thunder target is dispatched on the
     # default lane after the source sandbox ledger is safely finalized.
     thunder_capacity_fallback: bool = False
     thunder_fallback_provider: str = "modal"
+    # Attempt-budget fallback: once a trial has failed this many attempts on
+    # Thunder, its next ordinary retry is scheduled on
+    # ``thunder_fallback_provider`` instead. 0 disables the handoff. Unlike the
+    # capacity gate this needs no Harbor error code: any retryable failure of
+    # a Thunder attempt counts, so the worst case is the pre-Thunder routing.
+    thunder_max_failed_attempts: int = 2
 
     # Numinous GPU lane (opt-in, separate flag). When enabled the backend
     # advertises a GpuSupport(accelerators=("H100", "H200", "A100", "L40S",
     # "A10", "RTX_4090"), max_count=8), so capability negotiation routes
     # GPU trials (SWE-marathon H100, terminal-bench GPU tasks) to Numinous
-    # ahead of Modal. GPU trials still require ``numinous_enabled=1``
+    # ahead of Thunder and Modal. GPU trials still require ``numinous_enabled=1``
     # underneath. Requires the Numinous control plane to have a GPU
     # provider wired (RunPod SECURE for dedicated, or gpu_mux for shared).
     numinous_gpu_enabled: bool = False
@@ -1875,6 +1882,8 @@ class Settings(BaseSettings):
     def validate_thunder_configuration(self) -> "Settings":
         if self.thunder_max_capacity <= 0:
             raise ValueError("thunder_max_capacity must be greater than zero")
+        if self.thunder_max_failed_attempts < 0:
+            raise ValueError("thunder_max_failed_attempts cannot be negative")
         fallback_provider = self.thunder_fallback_provider.strip().lower()
         if not fallback_provider:
             raise ValueError("thunder_fallback_provider cannot be blank")

@@ -860,6 +860,7 @@ _THUNDER_PUBLIC_ENV_NAMES = {
     "ODDISH_THUNDER_ENABLED",
     "ODDISH_THUNDER_FALLBACK_PROVIDER",
     "ODDISH_THUNDER_MAX_CAPACITY",
+    "ODDISH_THUNDER_MAX_FAILED_ATTEMPTS",
     "ODDISH_THUNDER_SECRET_NAME",
 }
 
@@ -977,6 +978,16 @@ ENV_VARS = {
                 "ODDISH_THUNDER_MAX_CAPACITY", os.environ, LOCAL_DOTENV_VARS
             )
             or "128"
+        )
+    ),
+    # Baked like the capacity limit so the worker-side Settings that decide
+    # the attempt-budget handoff read the same value the deploy declared.
+    "ODDISH_THUNDER_MAX_FAILED_ATTEMPTS": str(
+        int(
+            _deploy_value(
+                "ODDISH_THUNDER_MAX_FAILED_ATTEMPTS", os.environ, LOCAL_DOTENV_VARS
+            )
+            or "2"
         )
     ),
     _THUNDER_SECRET_NAME_ENV: _THUNDER_SECRET_NAME,

@@ -44,13 +44,20 @@ class JobFailure:
 
 @dataclass
 class JobReroute:
-    """Non-failure request to move a job onto another execution lane."""
+    """Non-failure request to move a job onto another execution lane.
+
+    ``error_message`` carries the settled attempt's failure text for handoffs
+    that follow ordinary settlement: if the dispatcher declines the move, it
+    records that text as the ordinary retryable failure the attempt already
+    was, so the trial keeps retrying where it is instead of being failed.
+    """
 
     target_environment: str
     target_execution_lane: str
     reason: str
     retry_after_seconds: float | None = None
     subject_attempt: int | None = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -105,6 +112,7 @@ class JobOutcome:
         reason: str,
         retry_after_seconds: float | None = None,
         subject_attempt: int | None = None,
+        error_message: str | None = None,
     ) -> "JobOutcome":
         return cls(
             reroute=JobReroute(
@@ -113,6 +121,7 @@ class JobOutcome:
                 reason=reason,
                 retry_after_seconds=retry_after_seconds,
                 subject_attempt=subject_attempt,
+                error_message=error_message,
             )
         )
 

@@ -51,8 +51,41 @@ def test_archil_is_a_hosted_passthrough_environment() -> None:
     assert EnvironmentType.ARCHIL in run_module._HOSTED_PASSTHROUGH_ENVIRONMENTS
 
 
-def test_default_cloud_environment_gpu_routes_to_modal() -> None:
+def test_default_cloud_environment_gpu_routes_to_modal_without_thunder() -> None:
+    # Thunder is not registered in the test environment, so Modal remains the
+    # only GPU-capable backend in the default registry.
     assert default_cloud_environment(requires_gpu=True) == EnvironmentType.MODAL
+
+
+def test_registered_thunder_wins_gpu_negotiation_but_not_cpu_or_registry(
+    monkeypatch,
+) -> None:
+    # The registry places Thunder between Daytona and Modal; cheap-first
+    # negotiation must hand GPU work to it while plain CPU stays on Daytona
+    # and private-registry pulls (which Thunder lacks) still go to Modal.
+    import oddish.runtime.routing as routing
+    from oddish.runtime.backends.daytona import DaytonaBackend
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.runtime.backends.thunder import ThunderBackend
+
+    monkeypatch.setattr(
+        routing,
+        "ordered_backends",
+        lambda: [DaytonaBackend(), ThunderBackend(), ModalBackend()],
+    )
+    assert routing.select_backend().name == "daytona"
+    assert routing.select_backend(requires_gpu=True).name == "thunder"
+    assert routing.select_backend(requires_private_registry=True).name == "modal"
+    assert (
+        routing.default_cloud_environment(requires_gpu=True) == EnvironmentType.THUNDER
+    )
+    # A GPU task that must pull from a private registry cannot run on Thunder.
+    assert (
+        routing.default_cloud_environment(
+            requires_gpu=True, requires_private_registry=True
+        )
+        == EnvironmentType.MODAL
+    )
 
 
 def test_default_cloud_environment_cpu_routes_to_daytona() -> None:
