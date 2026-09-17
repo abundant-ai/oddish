@@ -63,6 +63,12 @@ test.describe("real components with local fixture API", () => {
       ).toBe(0);
       if (count === 25)
         await expect(page.locator("tbody tr[data-index]")).toHaveCount(25);
+      // The server renders every row; scrolling before hydration targets that
+      // page height, which the virtualizer then replaces with its estimate.
+      else
+        await expect
+          .poll(() => page.locator("tbody tr[data-index]").count())
+          .toBeLessThan(count);
       await page.evaluate(() =>
         window.scrollTo(0, document.documentElement.scrollHeight)
       );
