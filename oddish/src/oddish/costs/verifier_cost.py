@@ -470,10 +470,19 @@ def draft_judge_cost(bundle: CuaArtifactBundle) -> VerifierCostDraft | None:
 def build_verifier_cost_drafts(
     job_dir: Path, task_path: Path | None = None
 ) -> list[VerifierCostDraft]:
-    """Return loop (+ judge) drafts when CUA artifacts are present."""
-    if task_path is not None and not task_has_cua_signals(task_path):
+    """Return loop (+ judge) drafts when CUA artifacts are present.
+
+    A missing or deleted ``task_path`` is treated like ``None``: still scan
+    ``job_dir``. Live settlement often passes the prepared task copy that
+    ``_execute_trial`` already removed. Only an *existing* bundle without CUA
+    signals is a negative filter.
+    """
+    usable_task_path = (
+        task_path if task_path is not None and task_path.exists() else None
+    )
+    if usable_task_path is not None and not task_has_cua_signals(usable_task_path):
         return []
-    bundle = resolve_cua_bundle(job_dir, task_path=task_path)
+    bundle = resolve_cua_bundle(job_dir, task_path=usable_task_path)
     if bundle is None:
         return []
     drafts = [draft_loop_cost(bundle)]

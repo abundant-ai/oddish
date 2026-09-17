@@ -263,6 +263,39 @@ def test_no_artifacts_sentinel_is_replaceable() -> None:
     assert draft.cost_source == COST_BACKFILL
 
 
+def test_build_drafts_scans_artifacts_when_task_path_missing(tmp_path: Path) -> None:
+    """A deleted prepared-task copy must not suppress CUA artifact settlement."""
+    job = tmp_path / "job"
+    ux = job / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=1.25, prompt=80, completion=20)
+    (ux / "cua_judge_report.json").write_text(
+        json.dumps(
+            {
+                "verifier_model": "anthropic/claude-opus-4-7",
+                "judge_model": "anthropic/claude-opus-4-7",
+                "verdicts": [{"criterion": "a"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing = tmp_path / "prepared-task-already-deleted"
+    assert missing.exists() is False
+    drafts = build_verifier_cost_drafts(job, task_path=missing)
+    assert len(drafts) >= 1
+    loop = next(d for d in drafts if d.component == COMPONENT_LOOP)
+    assert loop.cost_usd == 1.25
+
+
+def test_build_drafts_skips_existing_non_cua_task(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    ux = job / "verifier" / "ux"
+    _write_atif(ux / "trajectory.json", cost=1.25)
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('[metadata]\nname = "plain"\n', encoding="utf-8")
+    assert build_verifier_cost_drafts(job, task_path=task) == []
+
+
 def test_nop_shell_without_artifacts_writes_nothing(tmp_path: Path) -> None:
     (tmp_path / "agent").mkdir()
     assert build_verifier_cost_drafts(tmp_path) == []
