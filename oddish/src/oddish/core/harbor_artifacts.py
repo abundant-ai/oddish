@@ -122,6 +122,7 @@ def sanitize_task_result(result: dict[str, Any] | None) -> dict[str, Any] | None
     """Copy task-authored result data without Oddish-owned verifier fields."""
     sanitized = dict(result or {})
     sanitized.pop("_verifier", None)
+    sanitized.pop("_verifier_judges", None)
     return sanitized or None
 
 

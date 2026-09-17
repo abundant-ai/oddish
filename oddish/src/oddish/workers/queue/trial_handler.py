@@ -89,6 +89,12 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.judge_costs import (
+    begin_judge_costs,
+    extract_judge_costs,
+    judge_costs_enabled,
+    settle_judge_costs,
+)
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     FallbackEnvironmentCompatibilityError,
@@ -1009,6 +1015,7 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     trial_attempt: int,
+    judge_costs: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
@@ -1017,6 +1024,19 @@ async def _store_trial_results(
     ):
         if not trial:
             return False, False
+        # Result ownership can end before paid verifier usage reaches us. The
+        # pre-execution marker authorizes only this worker's original attempt;
+        # settle that ledger even when all result updates below are forbidden.
+        judge_summary = None
+        if judge_costs is not None:
+            judge_summary = await settle_judge_costs(
+                session,
+                trial,
+                trial_attempt,
+                judge_costs,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+            )
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
@@ -1036,6 +1056,8 @@ async def _store_trial_results(
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
         if user_cancelled:
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
                     trial, outcome, preserve_checkpointed_cost=True
@@ -1062,6 +1084,9 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
             return False, False
+
+        if judge_summary is not None:
+            trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -1134,6 +1159,8 @@ async def _store_trial_results(
                 retry_after_seconds=outcome.retry_after_seconds,
             )
 
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             trial.has_trajectory = outcome.has_trajectory
 
             if derived_reward is not None:
@@ -2022,6 +2049,25 @@ async def _prepare_claimed_trial_attempt(
         prepared_task = await _prepare_trial_task(
             trial_id=trial_id, prepared_trial=prepared_trial
         )
+        if judge_costs_enabled(prepared_task.task_path):
+            async with _trial_session(trial_id, with_for_update=True) as (
+                session, trial
+            ):
+                if (
+                    trial is None
+                    or trial.attempts != prepared_trial.trial_attempt
+                    or not await _worker_still_owns_trial(
+                        session, trial, worker_id=worker_id, worker_job_id=worker_job_id
+                    )
+                ):
+                    raise RuntimeError("Verifier judge attempt is no longer owned")
+                await begin_judge_costs(
+                    session,
+                    trial,
+                    prepared_trial.trial_attempt,
+                    worker_id=worker_id,
+                    worker_job_id=worker_job_id,
+                )
         os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
         span_provider = (
@@ -2092,6 +2138,10 @@ async def _settle_trial_attempt(
     probe_analysis: dict | None = None,
 ) -> bool:
     """Persist one attempt result and run its terminal lifecycle exactly once."""
+    judge_costs = extract_judge_costs(
+        execution.outcome.job_dir if execution.outcome else None,
+        execution.outcome.job_result_path if execution.outcome else None,
+    )
     trial_terminal, run_post_trial_hooks = await asyncio.shield(
         _store_trial_results(
             trial_id=trial_id,
@@ -2104,6 +2154,7 @@ async def _settle_trial_attempt(
             worker_id=worker_id,
             worker_job_id=worker_job_id,
             trial_attempt=prepared_trial.trial_attempt,
+            judge_costs=judge_costs,
         )
     )
     await _finish_trial_settlement(

@@ -1080,6 +1080,14 @@ class ExperimentCostTotals(BaseModel):
     qa_cost_usd: float = 0.0
     owned_qa_cost_usd: float = 0.0
     qa_has_estimated: bool = False
+    # Completeness of recorded judge/analysis usage, not a promise that all
+    # trials or future QA have finished. Unpriced rows are never free work.
+    qa_cost_complete: bool = True
+    qa_unpriced_count: int = 0
+    qa_pending_count: int = 0
+    owned_qa_cost_complete: bool = True
+    owned_qa_unpriced_count: int = 0
+    owned_qa_pending_count: int = 0
 
 
 class ExperimentPageVerdict(BaseModel):
