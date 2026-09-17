@@ -16,16 +16,23 @@ export const TRIAL_FETCH_TIMEOUT_MS = 15_000;
 
 const reloadNext = new Set<string>();
 
-/** The next fetch for `key` bypasses the browser cache and refreshes it. */
+/** The next successful fetch for `key` bypasses the browser cache and
+ * refreshes it. The mark stays until `clearTrialReload` confirms that
+ * fetch completed: a timeout or network error must not consume it, or
+ * SWR's retry would read the stale cached copy back as a success. */
 export function markTrialForReload(key: string): void {
   reloadNext.add(key);
 }
 
-/** Request options for `key`, consuming a pending reload mark if present. */
+/** Request options for `key`; a pending reload mark is honoured, not consumed. */
 export function trialRequestInit(key: string): RequestInit {
-  const reload = reloadNext.delete(key);
   return {
-    ...(reload ? { cache: "reload" as const } : {}),
+    ...(reloadNext.has(key) ? { cache: "reload" as const } : {}),
     signal: AbortSignal.timeout(TRIAL_FETCH_TIMEOUT_MS),
   };
+}
+
+/** Call once a fetch for `key` has succeeded, so the mark is spent. */
+export function clearTrialReload(key: string): void {
+  reloadNext.delete(key);
 }

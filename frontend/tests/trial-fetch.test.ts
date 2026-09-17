@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clearTrialReload,
   markTrialForReload,
   trialRequestInit,
 } from "../src/lib/trial-fetch.ts";
@@ -16,11 +17,14 @@ test("a plain trial fetch lets the browser honour the backend's cache policy", (
   assert.ok(init.signal instanceof AbortSignal);
 });
 
-test("a reload mark is consumed by exactly one fetch of that key", () => {
+test("a reload mark survives failed fetches and is spent only on success", () => {
   markTrialForReload("/api/trials/t2");
+  // Two attempts (say a timeout, then SWR's retry) both bypass the cache.
   assert.equal(trialRequestInit("/api/trials/t2").cache, "reload");
-  assert.equal(trialRequestInit("/api/trials/t2").cache, undefined);
+  assert.equal(trialRequestInit("/api/trials/t2").cache, "reload");
   assert.equal(trialRequestInit("/api/trials/other").cache, undefined);
+  clearTrialReload("/api/trials/t2");
+  assert.equal(trialRequestInit("/api/trials/t2").cache, undefined);
 });
 
 test("the proxy forwards the browser's validator and the backend's cache headers", () => {

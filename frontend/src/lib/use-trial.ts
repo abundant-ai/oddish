@@ -3,7 +3,11 @@
 import useSWR, { mutate, preload, type SWRResponse } from "swr";
 import { fetcher } from "@/lib/api";
 import { isActiveTrialStatus } from "@/lib/job-status";
-import { markTrialForReload, trialRequestInit } from "@/lib/trial-fetch";
+import {
+  clearTrialReload,
+  markTrialForReload,
+  trialRequestInit,
+} from "@/lib/trial-fetch";
 import type { Trial } from "@/lib/types";
 
 /** Returns true while the trial's analysis is queued or running on the server. */
@@ -17,7 +21,9 @@ export function isAnalysisStatusActive(
 // browser may keep the response (finished trials, a day) or must not (live
 // ones). See `@/lib/trial-fetch` for the timeout and the reload marks.
 async function trialFetcher(url: string): Promise<Trial> {
-  return fetcher<Trial>(url, trialRequestInit(url));
+  const trial = await fetcher<Trial>(url, trialRequestInit(url));
+  clearTrialReload(url);
+  return trial;
 }
 
 /**

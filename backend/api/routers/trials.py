@@ -436,21 +436,25 @@ async def get_trial_trajectory(
 
     A finished trial's trajectory is immutable (a retry is a new row), so it
     is cacheable for a day and answers ``If-None-Match`` with ``304`` before
-    touching S3. Unfinished trials stay ``no-store``.
+    touching S3. Unfinished trials stay ``no-store``, and so does a ``null``
+    body: a transient storage miss must not be pinned for a day, and a
+    ``304`` is only trusted when the row itself records a trajectory.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
     final = trial_execution_is_final(
         status=trial.status, finished_at=trial.finished_at
-    )
+    ) and bool(trial.has_trajectory)
     etag = trial_etag(
         trial_id=trial.id, attempts=trial.attempts, finished_at=trial.finished_at
     )
-    headers = cache_headers(final=final, etag=etag)
     if final and matches_if_none_match(request.headers.get("if-none-match"), etag):
-        return Response(status_code=304, headers=headers)
+        return Response(status_code=304, headers=cache_headers(final=True, etag=etag))
     trajectory = await read_trial_trajectory(trial)
-    return JSONResponse(content=trajectory, headers=headers)
+    return JSONResponse(
+        content=trajectory,
+        headers=cache_headers(final=final and trajectory is not None, etag=etag),
+    )
 
 
 # Trial statuses the summary poller understands, mapped from TrialStatus
