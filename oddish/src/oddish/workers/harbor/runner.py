@@ -1029,10 +1029,10 @@ def _supports_auto_restricted_agent_network(
     ):
         return False
 
-    # Thunder enforces phase policies on the managed VM rather than inside the
-    # task container. Its boundary therefore works for both Dockerfile and
-    # Compose tasks; the container topology is immaterial to host injection.
-    if environment_config.type == EnvironmentType.THUNDER:
+    # Thunder and Archil enforce phase policies on the VM rather than inside
+    # the task container, so the container topology is immaterial to host
+    # injection and Dockerfile and Compose tasks are treated alike.
+    if environment_config.type in (EnvironmentType.THUNDER, EnvironmentType.ARCHIL):
         return _task_has_dynamic_restricted_agent_phase(task_path)
 
     environment_dir = task_path / "environment"

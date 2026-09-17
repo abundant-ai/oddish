@@ -199,9 +199,14 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     }
 
 
-def test_inject_restricted_agent_model_hosts_for_thunder_compose(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "environment_type", [EnvironmentType.THUNDER, EnvironmentType.ARCHIL]
+)
+def test_inject_restricted_agent_model_hosts_for_vm_boundary_compose(
+    monkeypatch, tmp_path, environment_type
+):
     task_path = _write_network_policy_task(tmp_path, compose=True)
-    environment_config = HarborEnvironmentConfig(type=EnvironmentType.THUNDER)
+    environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
         name="codex",
         model_name="openai/gpt-5.5",
