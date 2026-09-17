@@ -318,8 +318,15 @@ async def list_trial_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    attempt: int | None = Query(None, ge=1),
 ) -> dict:
-    """List all files in S3 for a trial, with presigned URLs for direct access."""
+    """List all files in S3 for a trial, with presigned URLs for direct access.
+
+    ``attempt`` names one retry directory explicitly. A retried trial with no
+    stored ``trial_s3_key`` leaves sibling attempt directories that the server
+    refuses to choose between, which makes its artifacts unreadable; naming the
+    attempt supplies the choice the server will not make for itself.
+    """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
     return await list_trial_files_s3(
@@ -329,6 +336,7 @@ async def list_trial_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        attempt=attempt,
     )
 
 
@@ -353,20 +361,24 @@ async def get_trial_file(
     trial_id: str,
     file_path: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
+    attempt: int | None = Query(None, ge=1),
 ) -> Response:
     """Get a file from a trial's S3 directory by relative path.
 
     Tries the general S3 path first (any file in the trial directory),
     then falls back to the agent/ subdirectory for backward compatibility.
+    ``attempt`` selects one retry directory; see ``list_trial_files``.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth, request)
     try:
-        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        content, media_type = await get_trial_file_content_s3(
+            trial, file_path, attempt=attempt
+        )
         return Response(content=content, media_type=media_type)
     except HTTPException:
         pass
-    content, media_type = await read_trial_agent_file(trial, file_path)
+    content, media_type = await read_trial_agent_file(trial, file_path, attempt=attempt)
     return Response(content=content, media_type=media_type)
 
 
