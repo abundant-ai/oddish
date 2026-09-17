@@ -134,7 +134,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, `thunder`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator. A task that requests GPUs (`[environment].gpus` or `--override-gpus`) defaults to `thunder`; pass `--env modal` for GPU types Thunder does not offer.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, `thunder`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator. A task that requests GPUs (`[environment].gpus` or `--override-gpus`) is placed by the deployment on its GPU backend: Thunder where the operator enabled it, otherwise Modal, and always Modal when the run pulls from a private registry (`--registry-login`). Pass `--env modal` for GPU types Thunder does not offer.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -195,7 +195,8 @@ trial or cancellation.
 
 A Thunder-enabled deployment runs GPU trials in disposable Thunder sandboxes.
 Any task whose `task.toml` requests GPUs (or any run with `--override-gpus`)
-routes there without an `--env` flag; the flag also selects it explicitly:
+routes there without an `--env` flag unless it needs a private-registry pull;
+the flag also selects it explicitly:
 
 ```bash
 oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1

@@ -153,7 +153,7 @@ def test_online_cpu_task_keeps_the_cheap_default(tmp_path) -> None:
     )
 
 
-def test_gpu_task_still_routes_to_thunder(tmp_path) -> None:
+def test_gpu_task_is_still_left_to_the_deployment(tmp_path) -> None:
     # The GPU rule is untouched by the revert.
     task_dir = _write_task(
         tmp_path,
@@ -164,7 +164,4 @@ def test_gpu_task_still_routes_to_thunder(tmp_path) -> None:
         gpus = 1
         """,
     )
-    assert (
-        _default_cloud_environment_for_task(task_dir, override_gpus=None)
-        == EnvironmentType.THUNDER
-    )
+    assert _default_cloud_environment_for_task(task_dir, override_gpus=None) is None

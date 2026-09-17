@@ -4,8 +4,8 @@ The negotiation iterates ``ordered_backends()`` (cheap-first) and returns the
 first backend whose capabilities satisfy the requirements: plain CPU →
 Daytona, GPU → Thunder when the deployment enables it (otherwise Modal),
 private registry → Modal. ``default_cloud_environment`` is the facade the
-backend cloud policy calls; ``oddish.cli.run`` mirrors the same order without
-importing the registry."""
+backend cloud policy calls; the CLI sends what the task needs (``requires_gpu``,
+``registry_auth``) and leaves this choice to the deployment."""
 
 from __future__ import annotations
 
@@ -46,10 +46,17 @@ def select_backend(
 
 
 def default_cloud_environment(
-    *, requires_gpu: bool = False, requires_tpu: bool = False
+    *,
+    requires_gpu: bool = False,
+    requires_private_registry: bool = False,
+    requires_tpu: bool = False,
 ) -> EnvironmentType:
     """The cloud default via capability negotiation: TPU → GKE, GPU → Thunder
-    when enabled (else Modal), else Daytona."""
+    when enabled (else Modal), private-registry pull → Modal, else Daytona."""
     return EnvironmentType(
-        select_backend(requires_gpu=requires_gpu, requires_tpu=requires_tpu).name
+        select_backend(
+            requires_gpu=requires_gpu,
+            requires_private_registry=requires_private_registry,
+            requires_tpu=requires_tpu,
+        ).name
     )

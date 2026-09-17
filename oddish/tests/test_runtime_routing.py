@@ -79,6 +79,13 @@ def test_registered_thunder_wins_gpu_negotiation_but_not_cpu_or_registry(
     assert (
         routing.default_cloud_environment(requires_gpu=True) == EnvironmentType.THUNDER
     )
+    # A GPU task that must pull from a private registry cannot run on Thunder.
+    assert (
+        routing.default_cloud_environment(
+            requires_gpu=True, requires_private_registry=True
+        )
+        == EnvironmentType.MODAL
+    )
 
 
 def test_default_cloud_environment_cpu_routes_to_daytona() -> None:

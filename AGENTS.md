@@ -1181,9 +1181,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   requirements for `ssh`, `scp`, or `ssh-keygen` on its behalf. Registration
   makes `environment=thunder` valid and places Thunder between Daytona and
   Modal in `ordered_backends()`, so unspecified GPU work defaults to Thunder
-  on a Thunder-enabled deployment (and to Modal elsewhere); the CLI mirrors
-  this in `_default_cloud_environment_for_task`. Plain CPU work must keep
-  defaulting to Daytona. Harbor's Thunder environment requires exactly one
+  on a Thunder-enabled deployment (and to Modal elsewhere), while a
+  submission carrying `registry_auth` (a private-registry pull, which Thunder
+  cannot serve) stays on Modal. The CLI never names a GPU backend itself: it
+  sends `requires_gpu` for a task.toml GPU request and lets
+  `backend/cloud_policy.py` negotiate against the deployment's own registry.
+  Plain CPU work must keep defaulting to Daytona. Harbor's Thunder environment requires exactly one
   `[environment].gpu_types` entry (or a `gpu_type` kwarg) and a GPU count of
   1, 2, 4, or 8; GPU tasks that need something else must pass
   `--env modal` explicitly.
