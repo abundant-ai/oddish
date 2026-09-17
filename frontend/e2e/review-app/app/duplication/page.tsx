@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import {
   UsageOverviewCard,
   type TimeRangeKey,
@@ -74,21 +74,23 @@ export default function DuplicationPreview() {
           onFeedback={async () => {}}
         />
       </section>
-      <TaskOverviewPanel
-        taskId="task-a"
-        apiBaseUrl="/api/duplication"
-        version={7}
-        scopeTrials={[]}
-        verdictTask={tasks[0]}
-        checksFindings={[]}
-        checksStatus="success"
-        experiments={[
-          { id: "source-a", name: "Dependency baseline" },
-          { id: "source-b", name: "Verifier comparison" },
-        ]}
-        onRerunChecks={() => {}}
-        checksRerunning={false}
-      />
+      <Suspense fallback={<p>Loading task review…</p>}>
+        <TaskOverviewPanel
+          taskId="task-a"
+          apiBaseUrl="/api/duplication"
+          version={7}
+          scopeTrials={[]}
+          verdictTask={tasks[0]}
+          checksFindings={[]}
+          checksStatus="success"
+          experiments={[
+            { id: "source-a", name: "Dependency baseline" },
+            { id: "source-b", name: "Verifier comparison" },
+          ]}
+          onRerunChecks={() => {}}
+          checksRerunning={false}
+        />
+      </Suspense>
     </div>
   );
 }

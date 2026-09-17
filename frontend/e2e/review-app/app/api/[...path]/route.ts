@@ -71,6 +71,15 @@ export async function GET(request: NextRequest) {
     );
   }
   if (parts[0] === "deliveries") {
+    if (parts[2] === "tasks") {
+      const row = board.tasks.find((task) => task.task_id === parts[3]);
+      return row
+        ? NextResponse.json(row)
+        : NextResponse.json(
+            { detail: "Not a delivery member" },
+            { status: 404 }
+          );
+    }
     return NextResponse.json(
       parts[2] === "selection"
         ? selectionFixture(board, request.nextUrl.searchParams)
@@ -192,7 +201,10 @@ export async function PUT(request: NextRequest) {
     }
     return NextResponse.json({});
   }
-  return NextResponse.json({ detail: "Mutation outside fixture scope" }, { status: 405 });
+  return NextResponse.json(
+    { detail: "Mutation outside fixture scope" },
+    { status: 405 }
+  );
 }
 export async function POST(request: NextRequest) {
   if (/\/qa\/(retry|pre-trial)$/.test(request.nextUrl.pathname))

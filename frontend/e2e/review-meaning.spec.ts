@@ -5,6 +5,7 @@ import {
   EXECUTION_LABELS,
 } from "../src/lib/review";
 import { board, tasks, records } from "./review-app/records";
+import { pageFixture } from "./delivery-page-fixtures";
 
 for (const record of records) {
   test(`review meaning: ${record.name}`, () => {
@@ -768,10 +769,10 @@ test.describe("real components with local fixture API", () => {
     await expect(
       page.getByText("Signed off on v1", { exact: true })
     ).toBeVisible();
-    await page.getByRole("combobox").filter({ hasText: "All tasks" }).click();
+    await page.getByRole("combobox", { name: "State filter" }).click();
     await page
       .getByRole("option", {
-        name: "Blockers and outstanding sign-offs",
+        name: "Needs work",
         exact: true,
       })
       .click();
@@ -801,9 +802,12 @@ test.describe("real components with local fixture API", () => {
       await expect(
         page.getByText("Signed off on v1", { exact: true })
       ).toBeVisible();
-      await expect(
-        page.getByText(/linked task is shown even though/)
-      ).toBeVisible();
+      const warning = page.getByText(
+        "Linked task is outside the current filters.",
+        { exact: true }
+      );
+      if (query.includes("filter=blocked")) await expect(warning).toBeVisible();
+      else await expect(warning).toHaveCount(0);
       await page.reload();
       await expect(
         page.getByText("Signed off on v1", { exact: true })
@@ -966,19 +970,27 @@ test.describe("real components with local fixture API", () => {
   }) => {
     let signed = false;
     const writes: unknown[] = [];
-    await page.route("**/api/deliveries/review-demo", async (route) => {
-      const next = structuredClone(board);
-      if (signed) {
-        const task = next.tasks.find(
-          (task) => task.task_id === "awaiting-signoff"
-        )!;
-        task.ready = true;
-        task.checks.find((check) => check.key === "signoff")!.status = "pass";
-        task.checks.find((check) => check.key === "signoff")!.detail =
-          "Signed off on v1";
+    await page.route(
+      /\/api\/deliveries\/review-demo\/(view|tasks\/awaiting-signoff)(?:\?|$)/,
+      async (route) => {
+        const next = structuredClone(board);
+        if (signed) {
+          const task = next.tasks.find(
+            (task) => task.task_id === "awaiting-signoff"
+          )!;
+          task.ready = true;
+          task.checks.find((check) => check.key === "signoff")!.status = "pass";
+          task.checks.find((check) => check.key === "signoff")!.detail =
+            "Signed off on v1";
+        }
+        const url = new URL(route.request().url());
+        await route.fulfill({
+          json: url.pathname.endsWith("/view")
+            ? pageFixture(next, url.searchParams)
+            : next.tasks.find((task) => task.task_id === "awaiting-signoff"),
+        });
       }
-      await route.fulfill({ json: next });
-    });
+    );
     await page.route("**/api/deliveries/review-demo/checks", async (route) => {
       writes.push(route.request().postDataJSON());
       signed = true;
@@ -991,10 +1003,18 @@ test.describe("real components with local fixture API", () => {
         exact: true,
       }),
     });
-    await expect(row.getByText("Accepted", { exact: true })).toBeVisible();
+    await expect(
+      row.getByText("Needs sign-off", { exact: true })
+    ).toBeVisible();
     await row
-      .getByRole("button", { name: "Awaiting sign-off", exact: true })
+      .getByRole("button", {
+        name: "Review Completed review awaiting sign-off",
+        exact: true,
+      })
       .click();
+    await expect(
+      page.getByText("Accepted", { exact: true }).first()
+    ).toBeVisible();
     await expect(
       page.getByText("Awaiting sign-off on v1", { exact: true })
     ).toBeVisible();
@@ -1013,9 +1033,12 @@ test.describe("real components with local fixture API", () => {
         },
       ]);
     await expect(row).toBeVisible();
+    await expect(row.getByText("Ready", { exact: true })).toBeVisible();
     await expect(
-      page.getByText(/linked task is shown even though/)
-    ).toBeVisible();
+      page.getByText("Linked task is outside the current filters.", {
+        exact: true,
+      })
+    ).toHaveCount(0);
     await page.goto("/deliveries/review-demo?filter=all&task=awaiting-signoff");
     await expect(
       page.getByText("Signed off on v1", { exact: true })
