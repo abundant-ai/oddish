@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,15 +13,18 @@ from oddish.core.harbor_artifacts import extract_trajectory_metrics
 from oddish.costs.verifier_cost import (
     COMPONENT_JUDGE,
     COMPONENT_LOOP,
+    COST_BACKFILL,
     COST_ESTIMATED,
     COST_NATIVE,
     ROUTE_ANTHROPIC,
     ROUTE_BEDROCK,
+    VerifierCostDraft,
     build_verifier_cost_drafts,
     infer_verifier_route,
     load_cua_model_config,
     record_verifier_llm_costs,
     task_has_cua_signals,
+    upsert_verifier_cost_rows,
 )
 
 
@@ -47,6 +51,9 @@ def test_infer_route_prefers_anthropic_prefix() -> None:
     assert infer_verifier_route("bedrock/anthropic.claude-opus") == ROUTE_BEDROCK
     assert infer_verifier_route("us.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
     assert infer_verifier_route("global.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+    assert infer_verifier_route("eu.anthropic.claude-opus-4-7") == ROUTE_BEDROCK
+    assert infer_verifier_route("apac.anthropic.claude-sonnet-4-6") == ROUTE_BEDROCK
+    assert infer_verifier_route("anthropic.claude-opus-4-7") == ROUTE_BEDROCK
 
 
 def test_extract_trajectory_metrics_skips_verifier_tree(tmp_path: Path) -> None:
@@ -344,6 +351,42 @@ async def test_record_writes_one_row_per_draft(tmp_path: Path) -> None:
     )
     assert written == 2
     assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_upsert_restamps_created_at_when_replacing_sentinel() -> None:
+    finished = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
+    draft = VerifierCostDraft(
+        component=COMPONENT_LOOP,
+        model="anthropic/claude-opus-4-7",
+        route=ROUTE_ANTHROPIC,
+        llm_key_hash=None,
+        input_tokens=10,
+        output_tokens=4,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost_usd=1.25,
+        cost_source=COST_BACKFILL,
+    )
+
+    written = await upsert_verifier_cost_rows(
+        session,
+        drafts=[draft],
+        trial_id="t-1",
+        attempt=1,
+        experiment_id="e-1",
+        org_id="o-1",
+        task_id="task-1",
+        task_version_id="tv-1",
+        created_at=finished,
+    )
+
+    assert written == 1
+    stmt = session.execute.await_args.args[0]
+    update = dict(stmt._post_values_clause.update_values_to_set)
+    assert update["created_at"] == finished
 
 
 @pytest.mark.asyncio
