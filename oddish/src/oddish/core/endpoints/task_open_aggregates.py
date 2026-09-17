@@ -95,10 +95,13 @@ def _finalize(target: Any) -> None:
 
 
 def fold_task_open_groups(
-    rows: list[Mapping[str, Any]], identity: Mapping[str, Any], qa_cost: float
+    rows: list[Mapping[str, Any]],
+    identity: Mapping[str, Any],
+    qa_cost: float,
+    verifier_cost: float = 0.0,
 ) -> tuple[TaskOpenTotals, TaskOpenVersionSummary | None, tuple[int, int]]:
     """Return task totals, selected-version rollups, and current status counts."""
-    totals = TaskOpenTotals(qa_cost_usd=qa_cost)
+    totals = TaskOpenTotals(qa_cost_usd=qa_cost, verifier_cost_usd=verifier_cost)
     selected = None
     if identity["selected_version_id"] is not None:
         selected = TaskOpenVersionSummary(

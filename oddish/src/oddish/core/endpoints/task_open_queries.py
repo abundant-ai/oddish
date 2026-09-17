@@ -163,6 +163,14 @@ AGGREGATE_SQL = text(f"""
       WHERE qat.task_id = :task_id AND a.deleted_at IS NULL
         AND a.task_id IS DISTINCT FROM CAST(:task_id AS text)
         AND (CAST(:org_id AS text) IS NULL OR a.org_id = :org_id)
+    ), verifier_rows AS (
+      -- Every verifier_costs row has a trial_id. Walk trials so spend still
+      -- counts when the ledger task_id is missing or points elsewhere.
+      SELECT COALESCE(v.cost_usd, 0.0) AS cost
+      FROM trials vt JOIN verifier_costs v ON v.trial_id = vt.id
+      WHERE vt.task_id = :task_id AND v.deleted_at IS NULL
+        AND v.cost_usd IS NOT NULL
+        AND (CAST(:org_id AS text) IS NULL OR v.org_id = :org_id)
     ), eligible AS (
       SELECT tr.task_version_id, tr.billed_user_id, tr.is_probe,
         tr.agent, tr.provider, tr.model, {_EFFORT_SQL} AS reasoning_effort, tr.status, tr.reward,
@@ -236,6 +244,7 @@ AGGREGATE_SQL = text(f"""
              SELECT id, name FROM selected_experiments ORDER BY name, id
            ) e), '[]'::jsonb) AS experiments,
            (SELECT COALESCE(sum(cost), 0.0) FROM qa_rows) AS qa_cost_usd,
+           (SELECT COALESCE(sum(cost), 0.0) FROM verifier_rows) AS verifier_cost_usd,
            (SELECT to_jsonb(q) FROM active_qa q) AS active_qa_trial
     """)
 
