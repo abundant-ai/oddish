@@ -12,6 +12,10 @@ import time
 from pathlib import Path
 
 import pytest
+from oddish.workers.harbor.model_hosts import (
+    KNOWN_TRANSPORT_BASE_URL_KEYS,
+    TBH_BASE_URL_KEYS,
+)
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import EnvironmentConfig
@@ -1851,3 +1855,27 @@ def test_payload_hdo_key_wins_over_worker_and_user_keys(
     assert all(child_agent.env[name] == "" for name in BEDROCK_ENV_VARS)
     if environment == EnvironmentType.THUNDER:
         assert "api.anthropic.com" in child_agent.extra_allowed_hosts
+
+
+def test_payload_declares_gateway_hosts_to_the_pause_proxy(monkeypatch):
+    for key in (*KNOWN_TRANSPORT_BASE_URL_KEYS, *TBH_BASE_URL_KEYS):
+        monkeypatch.delenv(key, raising=False)
+    resolved = EnvironmentConfig(
+        type=EnvironmentType.ARCHIL, kwargs={"pause_http_proxy": True}
+    )
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="claude-sonnet-4-5",
+        environment_config=resolved,
+        raw_harbor_config={},
+        is_probe=False,
+        extra_agent_env={"ANTHROPIC_BASE_URL": "https://gateway.test/anthropic"},
+    )
+
+    assert payload["environment_config"]["kwargs"]["pause_http_proxy_hosts"] == [
+        "gateway.test"
+    ]
+    assert "pause_http_proxy_hosts" not in resolved.kwargs

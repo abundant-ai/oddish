@@ -13,6 +13,10 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
+from oddish.workers.harbor.model_hosts import (
+    KNOWN_TRANSPORT_BASE_URL_KEYS,
+    TBH_BASE_URL_KEYS,
+)
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.config import (
     AgentConfig as HarborAgentConfig,
@@ -199,9 +203,14 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     }
 
 
-def test_inject_restricted_agent_model_hosts_for_thunder_compose(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "environment_type", [EnvironmentType.THUNDER, EnvironmentType.ARCHIL]
+)
+def test_inject_restricted_agent_model_hosts_for_vm_boundary_compose(
+    monkeypatch, tmp_path, environment_type
+):
     task_path = _write_network_policy_task(tmp_path, compose=True)
-    environment_config = HarborEnvironmentConfig(type=EnvironmentType.THUNDER)
+    environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
         name="codex",
         model_name="openai/gpt-5.5",
@@ -222,6 +231,31 @@ def test_inject_restricted_agent_model_hosts_for_thunder_compose(monkeypatch, tm
         "api.openai.com",
         "ab.chatgpt.com",
     ]
+
+
+@pytest.mark.parametrize("compose", [False, True])
+def test_inject_restricted_agent_model_hosts_includes_worker_routes(tmp_path, compose):
+    task_path = _write_network_policy_task(tmp_path, compose=compose)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.ARCHIL)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="gpt-5-mini",
+        env={"OPENAI_BASE_URL": "https://agent-side.test/v1"},
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+        runtime_transport_env={
+            "OPENAI_API_KEY": "sk-azure",
+            "OPENAI_BASE_URL": "https://review-example.openai.azure.com/openai/v1",
+        },
+    )
+
+    assert {"agent-side.test", "review-example.openai.azure.com"} <= set(
+        agent_config.extra_allowed_hosts
+    )
 
 
 def test_kube_chart_model_hosts_merge_into_helm_contract(monkeypatch, tmp_path):
@@ -5786,3 +5820,77 @@ def test_thunder_fallback_rejects_gpu_on_cpu_only_destination(tmp_path):
             environment=EnvironmentType.DAYTONA,
             backend=DaytonaBackend(),
         )
+
+
+@pytest.fixture
+def no_ambient_gateways(monkeypatch):
+    for key in (*KNOWN_TRANSPORT_BASE_URL_KEYS, *TBH_BASE_URL_KEYS):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_pause_proxy_gateway_hosts_follow_the_agent_base_urls(no_ambient_gateways):
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.ARCHIL,
+        kwargs={"pause_http_proxy": True, "pause_http_proxy_hosts": "llm-gw.internal"},
+    )
+
+    harbor_runner.declare_pause_proxy_gateway_hosts(
+        environment_config,
+        {
+            "OPENAI_API_KEY": "sk-azure",
+            "OPENAI_BASE_URL": "https://review-example.openai.azure.com/openai/v1",
+            "AZURE_OPENAI_ENDPOINT": "https://review-example.openai.azure.com",
+        },
+        None,
+        {
+            "ANTHROPIC_BASE_URL": "https://gateway.test/anthropic",
+            "OPENAI_BASE_URL": "https://agent-side.test/v1",
+        },
+        "not-a-mapping",
+        {"OPENAI_BASE_URL": "https://kwargs-extra-env.test/v1"},
+    )
+
+    assert environment_config.kwargs["pause_http_proxy_hosts"] == [
+        "llm-gw.internal",
+        "review-example.openai.azure.com",
+        "gateway.test",
+        "agent-side.test",
+        "kwargs-extra-env.test",
+    ]
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"pause_http_proxy": False}, {"pause_http_proxy": True}]
+)
+def test_pause_proxy_gateway_hosts_leave_untouched_kwargs_alone(
+    kwargs, no_ambient_gateways
+):
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.ARCHIL, kwargs=dict(kwargs)
+    )
+
+    harbor_runner.declare_pause_proxy_gateway_hosts(
+        environment_config, {"OPENAI_API_KEY": "sk", "UNRELATED_URL": "https://x.test"}
+    )
+
+    assert environment_config.kwargs == kwargs
+
+
+def test_pause_proxy_gateway_hosts_include_the_worker_environment(
+    monkeypatch, no_ambient_gateways
+):
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ambient-gw.internal/v1")
+    environment_config = HarborEnvironmentConfig(
+        type=EnvironmentType.ARCHIL, kwargs={"pause_http_proxy": True}
+    )
+
+    harbor_runner.declare_pause_proxy_gateway_hosts(
+        environment_config,
+        {"OPENAI_BASE_URL": "https://azure.test/openai/v1"},
+        os.environ,
+    )
+
+    assert environment_config.kwargs["pause_http_proxy_hosts"] == [
+        "azure.test",
+        "ambient-gw.internal",
+    ]
