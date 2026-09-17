@@ -22,7 +22,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -1458,7 +1458,19 @@ async def run_single_worker_job(
             try:
                 # Handlers receive the claimed projection; they can hydrate a
                 # full ORM row if they need more columns.
-                outcome = await run_authorized_handler(job, handler, authorize_job)
+                handler_job = job
+                if TRACE_CONTEXT_PAYLOAD_KEY in (job.payload or {}):
+                    handler_job = replace(
+                        job,
+                        payload={
+                            key: value
+                            for key, value in job.payload.items()
+                            if key != TRACE_CONTEXT_PAYLOAD_KEY
+                        },
+                    )
+                outcome = await run_authorized_handler(
+                    handler_job, handler, authorize_job
+                )
             except JobAccessDenied as exc:
                 if attempt_span is not None:
                     attempt_span.set_attribute("error.type", type(exc).__name__)

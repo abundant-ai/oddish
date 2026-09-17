@@ -131,6 +131,8 @@ def configure_logfire(service_name: str) -> bool:
             environment=_resolve_environment(),
             send_to_logfire="if-token-present",
             console=False,
+            # API and queue requests intentionally share the incoming parent.
+            distributed_tracing=True,
         )
         try:
             configure_kwargs["advanced"] = logfire.AdvancedOptions(

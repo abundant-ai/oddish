@@ -1059,9 +1059,13 @@ The API's active W3C trace context is saved in the existing
 `worker_jobs.payload._oddish_trace_context` field. This field contains only
 `traceparent` and optional `tracestate`, never baggage, credentials, or task
 contents. The shared enqueue helper adds it after handler validation and
-preserves it when a saved payload is requeued. It is not part of sweep identity
+preserves it when a saved payload is requeued. The runner removes it from the
+in-memory projection passed to handlers; the saved row keeps it for retries.
+It is not part of sweep identity
 or a deduplication key; no database migration is needed.
 
+Hosted and core Logfire configuration explicitly enable `distributed_tracing`
+so incoming request parents are accepted without the SDK's default warning.
 Each claimed attempt creates an `oddish.worker_job.execute` consumer span from
 that saved parent. The span covers the handler, outcome write, and completion
 hooks. It records the job and subject IDs, attempt, retry decision, and queue

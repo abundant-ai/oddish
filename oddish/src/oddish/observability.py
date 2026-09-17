@@ -72,6 +72,8 @@ def configure_observability(service_name: str) -> bool:
             or os.environ.get("GIT_COMMIT_SHA"),
             send_to_logfire="if-token-present",
             console=False,
+            # API and queue requests intentionally share the incoming parent.
+            distributed_tracing=True,
         )
         try:
             configure_kwargs["advanced"] = logfire.AdvancedOptions(
