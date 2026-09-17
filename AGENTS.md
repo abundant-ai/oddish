@@ -736,6 +736,27 @@ no public, read, update, triage, snapshot, or notification paths.
 
 ### Reward Kit agent-judge costs
 
+Tasks can opt into a worker-supplied record for a separate verifier with
+`metadata.oddish.verifier_trusted_trajectory = true`. This also requires
+`verifier_judge_costs = true`, one task step, and a separate Linux verifier.
+The worker selects a fixed core verifier class. It rejects custom verifier
+imports, kwargs, and disabled verification for this option. No task file can
+supply a host import path or input path through this option.
+
+After Harbor restores artifacts, the worker copies only the current trial's
+host `agent/trajectory.json` into `/logs/verifier/input-trajectory.json` and
+writes its SHA-256 to `/logs/verifier/input-trajectory.json.sha256`. The input
+must be a regular, non-linked ATIF file of at most 20,000,000 bytes. The separate
+image retains its own `/tests`; the worker does not upload replacement tests.
+The hash identifies the supplied bytes. It does not establish the truth of
+the tool output or other claims within the record.
+
+If the host record is missing or invalid, verification fails before a judge
+starts. The worker writes a fixed programmatic failure to that trial's
+`verifier/reward-details.json`, which establishes zero judge spend for this
+failure. After standard verification starts, missing usage stays incomplete;
+the worker does not replace it with a zero-cost report.
+
 A task that uses paid Reward Kit agent judges must set this before submission:
 
 ```toml

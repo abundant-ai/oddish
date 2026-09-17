@@ -2345,11 +2345,14 @@ async def _run_harbor_trial_async_impl(
             if n_skills:
                 agent_config.skills = [*agent_config.skills, skills_root]
 
+        from .trusted_trajectory import configure_trusted_trajectory
+
+        verifier_config = configure_trusted_trajectory(effective_task_path, hc.verifier)
         job_config_kwargs: dict[str, Any] = {
             "tasks": [TaskConfig(path=effective_task_path)],
             "agents": [agent_config],
             "environment": env_config,
-            "verifier": hc.verifier,
+            "verifier": verifier_config,
             "artifacts": hc.artifacts,
             "jobs_dir": unique_parent,
         }
