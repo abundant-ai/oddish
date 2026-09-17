@@ -22,7 +22,8 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Explicitly use an operator-enabled ephemeral EC2 backend
 # oddish run ./my-task --env ec2 -a codex -m openai/gpt-5.2
 
-# Explicitly use an operator-enabled Thunder GPU sandbox
+# GPU tasks default to Thunder on a Thunder-enabled deployment; --env thunder
+# selects it explicitly, --env modal opts a GPU task back onto Modal
 # oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
 
 # Append trials to a task an experiment already runs; add
@@ -76,7 +77,9 @@ reference. The main commands are:
   task-level QA retries. Hosted environments are `modal`, `daytona`, `ec2`,
   `gke`, `archil`, `thunder`, and `numinous`; Archil, EC2, and Numinous are controlled by
   deployment settings. When Numinous is enabled it is the first CPU candidate;
-  otherwise Daytona is the hosted CPU default. Numinous GPU registration has a
+  otherwise Daytona is the hosted CPU default. GPU tasks are placed by the
+  deployment: Thunder when it enables it, otherwise Modal, and Modal whenever
+  the run needs a private-registry pull. Numinous GPU registration has a
   separate deployment flag.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results; `--overwrite-current-version` corrects the selected version in place.
 - `oddish preflight` — check task name, internet/reward declarations, optional GPU types, and task integrity before `run` or `upload` (pass `--force` there to submit anyway).

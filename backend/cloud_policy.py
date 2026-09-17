@@ -27,8 +27,19 @@ def get_default_cloud_environment(
         and submission.harbor.environment.override_tpu is not None
     ):
         return EnvironmentType.GKE
-    requires_gpu = (
-        submission is not None
-        and (submission.harbor.environment.override_gpus or 0) > 0
+    # GPU need arrives two ways: an explicit override in the request body, or
+    # the CLI's ``requires_gpu`` flag for a count declared only in task.toml.
+    # A private-registry pull is visible from the credentials the submission
+    # carries. Both are negotiated here, against THIS deployment's registry,
+    # so a Thunder-less deployment picks Modal instead of rejecting the run.
+    requires_gpu = submission is not None and (
+        (submission.harbor.environment.override_gpus or 0) > 0
+        or submission.requires_gpu
     )
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    requires_private_registry = submission is not None and bool(
+        submission.registry_auth
+    )
+    return default_cloud_environment(
+        requires_gpu=requires_gpu,
+        requires_private_registry=requires_private_registry,
+    )

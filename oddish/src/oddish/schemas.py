@@ -472,6 +472,15 @@ class TaskSweepSubmission(BaseModel):
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
     )
+    requires_gpu: bool = Field(
+        False,
+        description=(
+            "The task's task.toml requests GPUs. The API never sees the task "
+            "content, so the CLI reports this; it only informs the default "
+            "environment choice when `environment` is omitted and never changes "
+            "the GPU count the trial runs with."
+        ),
+    )
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",

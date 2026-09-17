@@ -32,7 +32,10 @@ from oddish.core.trial_artifacts import (
 )
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
-from oddish.observability import record_thunder_capacity_handoff
+from oddish.workers.queue.thunder_fallback import (
+    emit_thunder_handoff_event,
+    thunder_capacity_fallback_provider,
+)
 from oddish.costs.recorder import (
     close_agent_sandboxes,
     price_unpriced_spans,
@@ -395,23 +398,6 @@ def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> b
     return not RetryConfig.model_validate(retry or {}).should_retry(
         outcome.exception_type
     )
-
-
-def thunder_capacity_fallback_provider(
-    environment: str | None,
-    outcome: HarborOutcome | None,
-) -> str | None:
-    """Return the configured destination for an exact Thunder capacity miss."""
-    if not settings.thunder_capacity_fallback:
-        return None
-    if (environment or "").strip().lower() != EnvironmentType.THUNDER.value:
-        return None
-    if (
-        outcome is None
-        or outcome.provider_error_code != THUNDER_CAPACITY_UNAVAILABLE_CODE
-    ):
-        return None
-    return settings.thunder_fallback_provider
 
 
 def _is_thunder_capacity_hook_error(
@@ -2308,16 +2294,13 @@ async def run_trial_job(
             execution.outcome,
         )
         if fallback_provider is not None:
-            message = (
-                "metric=thunder_capacity_handoff outcome=requested "
-                f"job_id={worker_job_id or 'unknown'} trial_id={trial_id} "
-                f"target={fallback_provider} "
-                f"reason={THUNDER_CAPACITY_UNAVAILABLE_CODE}"
-            )
-            console.print(message)
-            logger.info(message)
-            record_thunder_capacity_handoff(
-                outcome="requested", target_environment=fallback_provider
+            emit_thunder_handoff_event(
+                "requested",
+                job_id=worker_job_id,
+                trial_id=trial_id,
+                target=fallback_provider,
+                handoff=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+                reason="provider_capacity_unavailable",
             )
             # Do not run ordinary failure settlement: the worker outcome layer
             # owns the atomic trial/job/ledger/lease transition. Returning from

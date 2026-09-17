@@ -23,6 +23,7 @@ def test_thunder_public_image_env_excludes_credentials() -> None:
         "ODDISH_THUNDER_ENABLED",
         "ODDISH_THUNDER_FALLBACK_PROVIDER",
         "ODDISH_THUNDER_MAX_CAPACITY",
+        "ODDISH_THUNDER_MAX_FAILED_ATTEMPTS",
         "ODDISH_THUNDER_SECRET_NAME",
     }
     assert "TNR_API_URL" not in modal_app.ENV_VARS
@@ -52,6 +53,7 @@ print(json.dumps({
     "capacity": modal_app.ENV_VARS["ODDISH_THUNDER_MAX_CAPACITY"],
     "capacity_fallback": modal_app.ENV_VARS["ODDISH_THUNDER_CAPACITY_FALLBACK"],
     "fallback_provider": modal_app.ENV_VARS["ODDISH_THUNDER_FALLBACK_PROVIDER"],
+    "max_failed_attempts": modal_app.ENV_VARS["ODDISH_THUNDER_MAX_FAILED_ATTEMPTS"],
 }))
 """
     env = {
@@ -63,6 +65,7 @@ print(json.dumps({
         "ODDISH_SAURON_AWS_SECRET_NAME": "",
     }
     env.pop("ODDISH_THUNDER_MAX_CAPACITY", None)
+    env.pop("ODDISH_THUNDER_MAX_FAILED_ATTEMPTS", None)
     result = subprocess.run(
         [sys.executable, "-c", code],
         cwd=Path(modal_app.__file__).parent,
@@ -81,6 +84,7 @@ print(json.dumps({
         "capacity": "128",
         "capacity_fallback": "true",
         "fallback_provider": "modal",
+        "max_failed_attempts": "2",
     }
 
 

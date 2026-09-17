@@ -1210,6 +1210,7 @@ def build_sweep_payload(
     evaluation_metric: str | None = None,
     link: str | None = None,
     registry_auth: list[dict] | None = None,
+    requires_gpu: bool = False,
 ) -> dict:
     from oddish.cli.closed_internet import apply_closed_internet_overrides
 
@@ -1303,6 +1304,10 @@ def build_sweep_payload(
         payload["link"] = link
     if registry_auth:
         payload["registry_auth"] = registry_auth
+    if requires_gpu:
+        # The task's own GPU request, which the API cannot read from task.toml;
+        # it only informs the server-side default environment choice.
+        payload["requires_gpu"] = True
 
     return payload
 
