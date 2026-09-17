@@ -1,14 +1,21 @@
-"""Browser cache policy for reads of one finished trial.
+"""Browser cache policy for reads of one trial.
 
 ``/trials/{trial_id}`` and ``/trials/{trial_id}/trajectory`` are fetched
-every time a trial drawer opens. A trial whose execution *and* analysis
-have both reached a terminal state never changes again by itself: the only
-writers after that point are an explicit "re-run analysis" (which the
-dashboard follows with a cache-bypassing refetch, see
-``frontend/src/lib/trial-fetch.ts``) and a retry, which creates a new row
-under a new id. Such trials may be held by the browser for a day. Every
-other trial, and every non-2xx response, stays ``no-store`` so status,
-cost, and analysis polling keep seeing the live row.
+every time a trial drawer opens. Two different guarantees apply:
+
+* A finished trial's **trajectory** never changes (a retry is a new row), so
+  once the row records one and storage returns it, the browser may keep it
+  for a day without asking.
+
+* A finished trial's **detail** is mostly stable but not immutable: a
+  task-level QA run rewrites the per-trial analysis in place, on trials that
+  already carried a terminal one, while no drawer is open to notice. So the
+  browser may keep the body but must revalidate on every use
+  (``private, no-cache`` plus an ETag). The revalidation is answered from
+  one slim row read, before the five-query response build, so a reopen
+  costs a round trip and a ``304`` rather than the full payload.
+
+Anything still running, and every non-2xx, stays ``no-store``.
 
 Keyed on row state rather than the route template, which is why this lives
 next to the handlers instead of in ``api.cache_headers`` (that middleware
@@ -17,13 +24,18 @@ only knows the matched route and defers to any header a handler set).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha1
 
-from oddish.db.models import AnalysisStatus, TrialStatus
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-FINISHED_TRIAL_CACHE_CONTROL = "private, max-age=86400"
-LIVE_TRIAL_CACHE_CONTROL = "no-store"
+from oddish.db.models import AnalysisStatus, TaskModel, TrialModel, TrialStatus
+
+IMMUTABLE_CACHE_CONTROL = "private, max-age=86400"
+REVALIDATE_CACHE_CONTROL = "private, no-cache"
+LIVE_CACHE_CONTROL = "no-store"
 
 _TERMINAL_TRIAL = frozenset(
     {TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED}
@@ -54,11 +66,13 @@ def trial_detail_is_final(
     finished_at: datetime | None,
     analysis_status: object,
 ) -> bool:
-    """Execution is final and the per-trial analysis is too.
+    """Execution is final and the per-trial analysis has settled.
 
-    A finished trial with no analysis yet (``analysis_status`` ``None``) is
-    deliberately not final: a later task-level QA run can still write one
-    onto it while no drawer is open to notice.
+    "Final" here means the body is worth keeping and revalidating, not that
+    it can never change: task-level QA may still rewrite the analysis, which
+    the ETag (built on ``analysis_finished_at``) exposes on the next use.
+    A finished trial with no analysis yet stays live so polling sees the
+    first analysis land.
     """
     return trial_execution_is_final(
         status=status, finished_at=finished_at
@@ -86,12 +100,86 @@ def matches_if_none_match(header: str | None, etag: str) -> bool:
     return etag in candidates or "*" in candidates
 
 
-def cache_headers(*, final: bool, etag: str) -> dict[str, str]:
-    """Headers for a 2xx trial read. ``no-store`` still carries the ETag so a
-    client can tell whether a later final response is the same payload."""
-    return {
-        "Cache-Control": FINISHED_TRIAL_CACHE_CONTROL
-        if final
-        else LIVE_TRIAL_CACHE_CONTROL,
-        "ETag": etag,
-    }
+def cache_headers(*, policy: str, etag: str) -> dict[str, str]:
+    """Headers for a 2xx or 304 trial read. ``no-store`` still carries the
+    ETag so a client can tell whether a later response is the same payload."""
+    return {"Cache-Control": policy, "ETag": etag}
+
+
+@dataclass(frozen=True)
+class TrialCacheIdentity:
+    """The few columns the detail ETag and policy are built from."""
+
+    trial_id: str
+    attempts: int
+    status: object
+    finished_at: datetime | None
+    analysis_status: object
+    analysis_finished_at: datetime | None
+
+    @property
+    def final(self) -> bool:
+        return trial_detail_is_final(
+            status=self.status,
+            finished_at=self.finished_at,
+            analysis_status=self.analysis_status,
+        )
+
+    @property
+    def etag(self) -> str:
+        return trial_etag(
+            trial_id=self.trial_id,
+            attempts=self.attempts,
+            finished_at=self.finished_at,
+            analysis_finished_at=self.analysis_finished_at,
+        )
+
+    @property
+    def policy(self) -> str:
+        return REVALIDATE_CACHE_CONTROL if self.final else LIVE_CACHE_CONTROL
+
+
+async def load_trial_cache_identity(
+    session: AsyncSession, *, trial_id: str, org_id: str | None
+) -> TrialCacheIdentity | None:
+    """One slim, org-scoped read of the columns behind the detail ETag.
+
+    Returns ``None`` when the trial does not exist for this org; the caller
+    then falls through to the full read, which raises the proper 404.
+    """
+    row = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                TrialModel.attempts,
+                TrialModel.status,
+                TrialModel.finished_at,
+                TrialModel.analysis_status,
+                TrialModel.analysis_finished_at,
+                TaskModel.org_id,
+            )
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(TrialModel.id == trial_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    (
+        found_id,
+        attempts,
+        status,
+        finished_at,
+        analysis_status,
+        analysis_finished_at,
+        task_org_id,
+    ) = row
+    if org_id is not None and task_org_id != org_id:
+        return None
+    return TrialCacheIdentity(
+        trial_id=str(found_id),
+        attempts=int(attempts),
+        status=status,
+        finished_at=finished_at,
+        analysis_status=analysis_status,
+        analysis_finished_at=analysis_finished_at,
+    )

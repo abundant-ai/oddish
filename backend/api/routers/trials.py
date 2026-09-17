@@ -36,9 +36,12 @@ from oddish.core.sharing.helpers import (
 from oddish.db.storage import delete_s3_prefixes
 from oddish.workers.analysis_trials import get_or_create_summarize_trial
 from api.trial_cache import (
+    IMMUTABLE_CACHE_CONTROL,
+    LIVE_CACHE_CONTROL,
+    TrialCacheIdentity,
     cache_headers,
+    load_trial_cache_identity,
     matches_if_none_match,
-    trial_detail_is_final,
     trial_etag,
     trial_execution_is_final,
 )
@@ -104,35 +107,46 @@ async def get_trial_full(
     response: Response,
     trial_id: str,
     auth: Annotated[AuthContext, Depends(get_auth_context)],
-) -> TrialResponse:
+) -> TrialResponse | Response:
     """Full detail for a single trial by id.
 
     The experiment grid loads only slim trials; clicking a cell fetches the
     full trial here (timing, harbor, tokens, full analysis, etc.).
 
-    Once execution and analysis are both terminal the payload is cacheable
-    for a day (see ``api.trial_cache``); until then it is ``no-store``.
+    Once execution and analysis are both terminal the browser may keep the
+    body but must revalidate it on every use (see ``api.trial_cache``): a
+    task-level QA run can rewrite the analysis in place. A matching
+    ``If-None-Match`` is answered ``304`` from one slim row read, before the
+    full response is built. Until then the payload is ``no-store``.
     """
     async with authorized_read_session(request, auth) as session:
         auth.require_scope(APIKeyScope.READ)
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match:
+            identity = await load_trial_cache_identity(
+                session, trial_id=trial_id, org_id=auth.org_id
+            )
+            if (
+                identity is not None
+                and identity.final
+                and matches_if_none_match(if_none_match, identity.etag)
+            ):
+                return Response(
+                    status_code=304,
+                    headers=cache_headers(policy=identity.policy, etag=identity.etag),
+                )
         detail = await get_trial_response_for_org_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
-    response.headers.update(
-        cache_headers(
-            final=trial_detail_is_final(
-                status=detail.status,
-                finished_at=detail.finished_at,
-                analysis_status=detail.analysis_status,
-            ),
-            etag=trial_etag(
-                trial_id=detail.id,
-                attempts=detail.attempts,
-                finished_at=detail.finished_at,
-                analysis_finished_at=detail.analysis_finished_at,
-            ),
-        )
+    identity = TrialCacheIdentity(
+        trial_id=detail.id,
+        attempts=detail.attempts,
+        status=detail.status,
+        finished_at=detail.finished_at,
+        analysis_status=detail.analysis_status,
+        analysis_finished_at=detail.analysis_finished_at,
     )
+    response.headers.update(cache_headers(policy=identity.policy, etag=identity.etag))
     return detail
 
 
@@ -449,11 +463,18 @@ async def get_trial_trajectory(
         trial_id=trial.id, attempts=trial.attempts, finished_at=trial.finished_at
     )
     if final and matches_if_none_match(request.headers.get("if-none-match"), etag):
-        return Response(status_code=304, headers=cache_headers(final=True, etag=etag))
+        return Response(
+            status_code=304,
+            headers=cache_headers(policy=IMMUTABLE_CACHE_CONTROL, etag=etag),
+        )
     trajectory = await read_trial_trajectory(trial)
+    policy = (
+        IMMUTABLE_CACHE_CONTROL
+        if final and trajectory is not None
+        else LIVE_CACHE_CONTROL
+    )
     return JSONResponse(
-        content=trajectory,
-        headers=cache_headers(final=final and trajectory is not None, etag=etag),
+        content=trajectory, headers=cache_headers(policy=policy, etag=etag)
     )
 
 

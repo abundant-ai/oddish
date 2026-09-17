@@ -9,14 +9,16 @@ import {
   attachUpstreamCacheHeaders,
   attachUpstreamServerTiming,
   backendFetchHeaders,
+  notModifiedResponse,
 } from "@/lib/proxy-headers";
 
 // Full single-trial detail for direct links, active-analysis polling, and
 // drawer fields omitted from compact list responses. Trial controls preload
 // this route so opening a drawer can consume the same cached request. The
-// backend's Cache-Control/ETag pass through so a finished trial can be kept
-// by the browser; the upstream fetch itself stays `no-store` because the
-// browser, not this function, is the cache that should hold it.
+// browser's If-None-Match goes upstream and the backend's Cache-Control,
+// ETag, and 304 come back unchanged, so a finished trial is kept by the
+// browser and revalidated cheaply; the upstream fetch itself stays
+// `no-store` because the browser, not this function, is the cache.
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
@@ -41,6 +43,10 @@ export async function GET(
       cache: "no-store",
       headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
+
+    if (res.status === 304) {
+      return notModifiedResponse(res);
+    }
 
     if (!res.ok) {
       const text = await res.text();

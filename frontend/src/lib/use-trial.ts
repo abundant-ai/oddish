@@ -1,13 +1,8 @@
 "use client";
 
-import useSWR, { mutate, preload, type SWRResponse } from "swr";
+import useSWR, { preload, type SWRResponse } from "swr";
 import { fetcher } from "@/lib/api";
 import { isActiveTrialStatus } from "@/lib/job-status";
-import {
-  clearTrialReload,
-  markTrialForReload,
-  trialRequestInit,
-} from "@/lib/trial-fetch";
 import type { Trial } from "@/lib/types";
 
 /** Returns true while the trial's analysis is queued or running on the server. */
@@ -17,13 +12,21 @@ export function isAnalysisStatusActive(
   return status === "pending" || status === "queued" || status === "running";
 }
 
-// No `cache: "no-store"` here: the backend decides per row whether the
-// browser may keep the response (finished trials, a day) or must not (live
-// ones). See `@/lib/trial-fetch` for the timeout and the reload marks.
+// If a fetch hangs forever, the components using this hook would show a
+// loading state forever. This timeout makes a hung fetch fail like a
+// normal error, and the components then fall back to the trial data they
+// already have.
+const TRIAL_FETCH_TIMEOUT_MS = 15_000;
+
+// No `cache: "no-store"` here: the backend decides per row how the browser
+// may treat the response (`backend/api/trial_cache.py`). A finished trial is
+// kept but revalidated on every use, so a reopen after reload is a
+// conditional request answered 304 rather than the full payload; a live
+// trial is never stored. `no-store` on the fetch would override all of that.
 async function trialFetcher(url: string): Promise<Trial> {
-  const trial = await fetcher<Trial>(url, trialRequestInit(url));
-  clearTrialReload(url);
-  return trial;
+  return fetcher<Trial>(url, {
+    signal: AbortSignal.timeout(TRIAL_FETCH_TIMEOUT_MS),
+  });
 }
 
 /**
@@ -38,18 +41,6 @@ export function trialKey(apiBaseUrl: string, trialId: string): string {
 
 export function preloadTrial(apiBaseUrl: string, trialId: string) {
   return preload(trialKey(apiBaseUrl, trialId), trialFetcher);
-}
-
-/**
- * Refetches one trial from the server, replacing any copy the browser's
- * HTTP cache holds. Use after an action that changes a finished trial in
- * place (re-running its analysis, a task-level QA run settling onto it);
- * a plain SWR revalidate would read the cached copy back.
- */
-export function refetchTrialFromServer(apiBaseUrl: string, trialId: string) {
-  const key = trialKey(apiBaseUrl, trialId);
-  markTrialForReload(key);
-  return mutate<Trial>(key);
 }
 
 /**
