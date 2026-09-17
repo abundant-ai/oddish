@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import sys
 import types
+from pathlib import Path
 
 import carl
 import pytest
@@ -136,6 +138,41 @@ def test_partial_overflow_delivery_reports_failure(monkeypatch):
     )
     assert updates[-1][2].endswith(carl._PARTIAL_SUFFIX)
     assert updates[-1][2].startswith("x")
+
+
+def test_carl_image_copies_oddish_package_for_timing_import():
+    tree = ast.parse(
+        Path(__file__).resolve().parents[1].joinpath("carl_agent.py").read_text()
+    )
+    copied_src = False
+    pythonpath = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "add_local_dir":
+                kwargs = {
+                    kw.arg: kw.value.value
+                    for kw in node.keywords
+                    if kw.arg
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                }
+                if (
+                    kwargs.get("local_path") == "../oddish/src"
+                    and kwargs.get("remote_path") == "/oddish-src"
+                ):
+                    copied_src = True
+            if node.func.attr == "env":
+                for arg in node.args:
+                    if isinstance(arg, ast.Dict):
+                        for key, val in zip(arg.keys, arg.values, strict=True):
+                            if (
+                                isinstance(key, ast.Constant)
+                                and key.value == "PYTHONPATH"
+                                and isinstance(val, ast.Constant)
+                            ):
+                                pythonpath = val.value
+    assert copied_src
+    assert pythonpath == "/oddish-src"
 
 
 @pytest.mark.asyncio
