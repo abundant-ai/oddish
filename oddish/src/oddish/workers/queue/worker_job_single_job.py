@@ -20,16 +20,15 @@ import json
 import random
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
 
 from oddish.config import settings
-from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.costs.recorder import (
     WorkerBillingSpec,
     close_worker_span,
@@ -37,9 +36,11 @@ from oddish.costs.recorder import (
 )
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.observability import (
-    ThunderCapacityHandoffOutcome,
-    record_thunder_capacity_handoff,
+    TRACE_CONTEXT_PAYLOAD_KEY,
+    ThunderHandoffOutcome,
+    record_worker_job_trace_outcome,
     record_worker_job_transition,
+    worker_job_trace,
 )
 from oddish.runtime.sandbox_lifecycle import (
     DEFAULT_EXECUTION_LANE,
@@ -48,6 +49,7 @@ from oddish.runtime.sandbox_lifecycle import (
 )
 from oddish.workers.jobs.registry import (
     HANDLERS,
+    JobFailure,
     JobHandler,
     JobOutcome,
     JobReroute,
@@ -56,6 +58,11 @@ from oddish.workers.jobs.registry import (
 )
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.sandbox_capacity import SANDBOX_CAPACITY_LEASE_SECONDS
+from oddish.workers.queue.thunder_fallback import (
+    ThunderHandoff,
+    emit_thunder_handoff_event,
+    thunder_handoff_for_reason,
+)
 
 from oddish.workers.queue.resource_rollout import COHORT_SQL, load_rollout
 
@@ -562,24 +569,50 @@ def _updated_one(command: str) -> bool:
 
 
 def _emit_thunder_handoff_event(
-    outcome: ThunderCapacityHandoffOutcome,
+    outcome: ThunderHandoffOutcome,
     *,
     job_id: str,
     trial_id: str | None,
     target: str,
+    handoff: str,
     reason: str,
 ) -> None:
-    message = (
-        f"metric=thunder_capacity_handoff outcome={outcome} "
-        f"job_id={job_id} trial_id={trial_id or 'unknown'} "
-        f"target={target} reason={reason}"
+    emit_thunder_handoff_event(
+        outcome,
+        job_id=job_id,
+        trial_id=trial_id,
+        target=target,
+        handoff=handoff,
+        reason=reason,
     )
-    console.print(message)
-    logger.info(message)
-    record_thunder_capacity_handoff(
-        outcome=outcome,
-        target_environment=target,
-    )
+
+
+def _trial_eligible_for_thunder_handoff(
+    trial: Mapping[str, Any] | None,
+    *,
+    handoff: ThunderHandoff,
+    worker_id: str,
+    subject_attempt: int,
+) -> bool:
+    """Whether the locked trial row is the attempt this handoff may move.
+
+    A capacity handoff bypassed settlement, so the trial must still be RUNNING
+    under this worker. An attempt-budget handoff follows ordinary settlement,
+    which already marked the trial RETRYING and cleared its worker; there the
+    still-RUNNING, still-owned worker-job row (checked by the caller) is the
+    ownership proof, and the trial must match that settled shape exactly.
+    """
+    if (
+        trial is None
+        or (trial["environment"] or "").strip().lower() != "thunder"
+        or int(trial["attempts"]) != subject_attempt
+        or trial["deleted_at"] is not None
+        or trial["superseded_by_trial_id"] is not None
+    ):
+        return False
+    if handoff.settled:
+        return trial["status"] == "RETRYING" and trial["current_worker_id"] is None
+    return trial["status"] == "RUNNING" and trial["current_worker_id"] == worker_id
 
 
 async def _record_reroute_outcome(
@@ -593,15 +626,32 @@ async def _record_reroute_outcome(
     subject_table: str | None,
     subject_id: str | None,
 ) -> WorkerJobStatus | None:
-    """Hand a Thunder trial to a default-lane provider, gating on teardown."""
+    """Hand a Thunder trial to a default-lane provider, gating on teardown.
+
+    Both handoff kinds (see ``oddish.workers.queue.thunder_fallback``) share
+    this one transaction: ownership is proven on the RUNNING worker-job row,
+    the attempt's sandbox ledger and capacity lease are inspected, and the
+    trial and job rows move together. A provisioned sandbox that is not yet
+    confirmed terminated leaves the job claim-blocked
+    (``reroute_pending_teardown``) until cleanup confirms teardown. An attempt
+    that failed before its ledger row existed has nothing to tear down and
+    moves immediately, provided the job carries no provider handle either.
+
+    Returns the recorded job status, or ``None`` when the handoff was declined
+    without writing anything; the caller then records the attempt's ordinary
+    disposition. Raises ``ValueError`` for an unsupported reroute and
+    ``RuntimeError`` when a conditional write inside the transaction lost
+    ownership (the transaction has rolled back).
+    """
+    handoff = thunder_handoff_for_reason(reroute.reason)
     if (
-        not settings.thunder_capacity_fallback
+        handoff is None
+        or not handoff.enabled()
         or reroute.target_environment != settings.thunder_fallback_provider
         or kind != WorkerJobKind.TRIAL
         or subject_table != "trials"
         or not subject_id
         or reroute.target_execution_lane != DEFAULT_EXECUTION_LANE
-        or reroute.reason != THUNDER_CAPACITY_UNAVAILABLE_CODE
         or reroute.subject_attempt is None
     ):
         _emit_thunder_handoff_event(
@@ -609,9 +659,20 @@ async def _record_reroute_outcome(
             job_id=job_id,
             trial_id=subject_id,
             target=reroute.target_environment,
+            handoff=reroute.reason,
             reason="unsupported_disposition",
         )
         raise ValueError("unsupported worker-job reroute disposition")
+
+    def _rejected(reason: str) -> None:
+        _emit_thunder_handoff_event(
+            "rejected",
+            job_id=job_id,
+            trial_id=subject_id,
+            target=reroute.target_environment,
+            handoff=reroute.reason,
+            reason=reason,
+        )
 
     try:
         async with connection.transaction():
@@ -644,13 +705,7 @@ async def _record_reroute_outcome(
                 or job["current_worker_id"] != worker_id
                 or job["execution_lane"] != THUNDER_TRIAL_EXECUTION_LANE
             ):
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="worker_ownership_changed",
-                )
+                _rejected("worker_ownership_changed")
                 return None
 
             trial = await connection.fetchrow(
@@ -669,25 +724,16 @@ async def _record_reroute_outcome(
             """,
                 subject_id,
             )
-            # Capacity handoffs bypass settlement in run_trial_job. A settled
-            # trial no longer belongs to this handoff, even if an earlier
-            # result contains a capacity error. Match the UPDATE below.
-            if (
-                trial is None
-                or trial["status"] != "RUNNING"
-                or (trial["environment"] or "").strip().lower() != "thunder"
-                or int(trial["attempts"]) != reroute.subject_attempt
-                or trial["current_worker_id"] != worker_id
-                or trial["deleted_at"] is not None
-                or trial["superseded_by_trial_id"] is not None
+            # A settled or superseded trial no longer belongs to this handoff,
+            # even if an earlier result contains a capacity error. Match the
+            # UPDATE below.
+            if not _trial_eligible_for_thunder_handoff(
+                trial,
+                handoff=handoff,
+                worker_id=worker_id,
+                subject_attempt=reroute.subject_attempt,
             ):
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="trial_ownership_changed",
-                )
+                _rejected("trial_ownership_changed")
                 return None
 
             # The source attempt counts against both budgets. Read the limits
@@ -695,13 +741,11 @@ async def _record_reroute_outcome(
             if attempts >= int(job["max_attempts"]) or reroute.subject_attempt >= int(
                 trial["max_attempts"]
             ):
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="attempts_exhausted",
-                )
+                _rejected("attempts_exhausted")
+                if handoff.settled:
+                    # Ordinary settlement already ran; the caller records the
+                    # plain failure and the budget check there fails the job.
+                    return None
                 return await _settle_rejected_reroute(
                     connection,
                     job_id=job_id,
@@ -733,9 +777,17 @@ async def _record_reroute_outcome(
                 job_id,
                 attempts,
             )
-            if (
-                sandbox_run is None
-                or sandbox_run["provider"] != "thunder"
+            # An attempt that failed before ``create_thunder_sandbox_run`` ran
+            # (credential resolution, task preparation, or the ledger insert
+            # itself) has no ledger row. The Harbor runner refuses to launch a
+            # Thunder sandbox without that ledger context, so nothing was
+            # provisioned and there is nothing to tear down; the handle check
+            # below still demands that the job agrees.
+            never_provisioned = sandbox_run is None
+            if never_provisioned:
+                sandbox_external_id = None
+            elif (
+                sandbox_run["provider"] != "thunder"
                 or int(sandbox_run["worker_job_attempt"]) != attempts
                 or sandbox_run["trial_id"] != subject_id
                 or sandbox_run["deleted_at"] is not None
@@ -748,16 +800,11 @@ async def _record_reroute_outcome(
                     "FAILED",
                 }
             ):
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="sandbox_ownership_changed",
-                )
+                _rejected("sandbox_ownership_changed")
                 return None
+            else:
+                sandbox_external_id = sandbox_run["external_id"]
 
-            sandbox_external_id = sandbox_run["external_id"]
             if sandbox_external_id is None:
                 handle_matches = job["provider"] is None and job["external_id"] is None
             else:
@@ -766,13 +813,7 @@ async def _record_reroute_outcome(
                     and job["external_id"] == sandbox_external_id
                 )
             if not handle_matches:
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="provider_handle_mismatch",
-                )
+                _rejected("provider_handle_mismatch")
                 return None
 
             capacity_leases = await connection.fetch(
@@ -788,20 +829,16 @@ async def _record_reroute_outcome(
                 worker_id,
             )
             if len(capacity_leases) != 1:
-                _emit_thunder_handoff_event(
-                    "rejected",
-                    job_id=job_id,
-                    trial_id=subject_id,
-                    target=reroute.target_environment,
-                    reason="capacity_lease_changed",
-                )
+                _rejected("capacity_lease_changed")
                 return None
             capacity_lease = capacity_leases[0]
             teardown_pending = bool(
-                sandbox_external_id is not None and sandbox_run["state"] != "TERMINATED"
+                not never_provisioned
+                and sandbox_external_id is not None
+                and sandbox_run["state"] != "TERMINATED"
             )
 
-            if sandbox_external_id is None:
+            if not never_provisioned and sandbox_external_id is None:
                 run_update = await connection.execute(
                     """
             UPDATE sandbox_runs
@@ -817,8 +854,39 @@ async def _record_reroute_outcome(
                 if not _updated_one(run_update):
                     raise RuntimeError("Thunder reroute lost sandbox-run ownership")
 
-            trial_update = await connection.execute(
-                """
+            retry_at: datetime | None = None
+            if handoff.settled:
+                # The destination retry keeps the ordinary retry schedule the
+                # attempt would have had on Thunder; only the provider changes.
+                retry_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=calculate_trial_retry_delay_seconds(
+                        attempts=attempts,
+                        error_message=reroute.error_message,
+                        retry_after_seconds=reroute.retry_after_seconds,
+                    )
+                )
+                trial_update = await connection.execute(
+                    """
+            UPDATE trials
+            SET environment = $2,
+                next_retry_at = $4,
+                heartbeat_at = NOW()
+            WHERE id = $1
+              AND status::text = 'RETRYING'
+              AND current_worker_id IS NULL
+              AND attempts = $3
+              AND LOWER(environment) = 'thunder'
+              AND deleted_at IS NULL
+              AND superseded_by_trial_id IS NULL
+            """,
+                    subject_id,
+                    reroute.target_environment,
+                    reroute.subject_attempt,
+                    retry_at,
+                )
+            else:
+                trial_update = await connection.execute(
+                    """
             UPDATE trials
             SET environment = $2,
                 status = 'RETRYING',
@@ -833,10 +901,10 @@ async def _record_reroute_outcome(
               AND deleted_at IS NULL
               AND superseded_by_trial_id IS NULL
             """,
-                subject_id,
-                reroute.target_environment,
-                worker_id,
-            )
+                    subject_id,
+                    reroute.target_environment,
+                    worker_id,
+                )
             if not _updated_one(trial_update):
                 raise RuntimeError("Thunder reroute lost trial ownership")
 
@@ -845,8 +913,8 @@ async def _record_reroute_outcome(
             UPDATE worker_jobs
             SET execution_lane = $2,
                 status = 'RETRYING',
-                next_retry_at = NULL,
-                available_after = NOW(),
+                next_retry_at = $7,
+                available_after = COALESCE($7::timestamptz, NOW()),
                 current_worker_id = NULL,
                 current_queue_slot = NULL,
                 modal_function_call_id = NULL,
@@ -867,6 +935,7 @@ async def _record_reroute_outcome(
                 attempts,
                 teardown_pending,
                 reroute.reason,
+                retry_at,
             )
             if not _updated_one(job_update):
                 raise RuntimeError("Thunder reroute lost worker-job ownership")
@@ -897,6 +966,7 @@ async def _record_reroute_outcome(
             job_id=job_id,
             trial_id=subject_id,
             target=reroute.target_environment,
+            handoff=reroute.reason,
             reason=type(exc).__name__,
         )
         raise
@@ -907,7 +977,12 @@ async def _record_reroute_outcome(
             job_id=job_id,
             trial_id=subject_id,
             target=reroute.target_environment,
-            reason=reroute.reason,
+            handoff=reroute.reason,
+            reason=(
+                "attempt_never_provisioned"
+                if never_provisioned
+                else "source_sandbox_finalized"
+            ),
         )
     else:
         _emit_thunder_handoff_event(
@@ -915,6 +990,7 @@ async def _record_reroute_outcome(
             job_id=job_id,
             trial_id=subject_id,
             target=reroute.target_environment,
+            handoff=reroute.reason,
             reason="teardown_pending",
         )
     return WorkerJobStatus.RETRYING
@@ -1005,31 +1081,16 @@ async def _record_outcome(
     connection = await _open_connection()
     try:
         if outcome.reroute is not None:
-            try:
-                status = await _record_reroute_outcome(
-                    connection,
-                    job_id=job_id,
-                    worker_id=worker_id,
-                    reroute=outcome.reroute,
-                    attempts=attempts,
-                    kind=kind,
-                    subject_table=subject_table,
-                    subject_id=subject_id,
-                )
-            except (ValueError, RuntimeError):
-                # Any partial handoff has rolled back. Recheck ownership in a
-                # fresh transaction before settling a rejected disposition.
-                logger.exception("Thunder handoff rejected for worker job %s", job_id)
-                status = None
-            if status is not None:
-                return status
-            return await _settle_rejected_reroute(
+            return await _record_reroute_or_fallback(
                 connection,
                 job_id=job_id,
                 worker_id=worker_id,
+                reroute=outcome.reroute,
                 attempts=attempts,
+                max_attempts=max_attempts,
+                kind=kind,
+                subject_table=subject_table,
                 subject_id=subject_id,
-                subject_attempt=outcome.reroute.subject_attempt,
             )
         if outcome.success is not None:
             import json
@@ -1061,121 +1122,237 @@ async def _record_outcome(
             return WorkerJobStatus.SUCCESS
 
         assert outcome.failure is not None
-        # Decide against the CURRENT row, not the claim-time snapshot: an
-        # operator capping max_attempts (or a reaper racing) mid-attempt must
-        # bind at this decision, or a surgically-capped trial schedules yet
-        # another attempt from the worker's stale in-memory values.
-        current = await connection.fetchrow(
-            "SELECT attempts, max_attempts FROM worker_jobs WHERE id = $1",
-            job_id,
+        return await _record_failure_outcome(
+            connection,
+            job_id=job_id,
+            worker_id=worker_id,
+            failure=outcome.failure,
+            attempts=attempts,
+            max_attempts=max_attempts,
+            kind=kind,
+            subject_table=subject_table,
+            subject_id=subject_id,
         )
-        if current is not None:
-            attempts = int(current["attempts"])
-            max_attempts = int(current["max_attempts"])
-        retry = outcome.failure.retryable and attempts < max_attempts
-        if retry:
-            retry_at: datetime | None = None
-            retry_reason = classify_retry_reason(outcome.failure.error_message)
-            delay_seconds: float | None = None
-            if kind == WorkerJobKind.TRIAL:
-                delay_seconds = calculate_trial_retry_delay_seconds(
-                    attempts=attempts,
-                    error_message=outcome.failure.error_message,
-                    retry_after_seconds=outcome.failure.retry_after_seconds,
-                )
-                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    finally:
+        await connection.close()
 
-            # RETRYING is a scheduling state, not a terminal one. Leave
-            # finished_at NULL so the claim SQL can clear it on the
-            # next attempt without special-casing; the duration query
-            # already filters to SUCCESS/FAILED so it doesn't observe
-            # RETRYING rows either way.
-            command = await connection.execute(
+
+async def _record_reroute_or_fallback(
+    connection: asyncpg.Connection,
+    *,
+    job_id: str,
+    worker_id: str,
+    reroute: JobReroute,
+    attempts: int,
+    max_attempts: int,
+    kind: WorkerJobKind | None,
+    subject_table: str | None,
+    subject_id: str | None,
+) -> WorkerJobStatus | None:
+    """Persist a handoff, or the attempt's ordinary disposition if declined.
+
+    A capacity handoff bypassed settlement, so declining it must close the
+    still-owned attempt (``_settle_rejected_reroute``). An attempt-budget
+    handoff wraps an attempt ordinary settlement already marked RETRYING, so
+    declining it records exactly that retryable failure: the trial keeps
+    retrying on Thunder, as it would have without the handoff policy.
+    """
+    handoff = thunder_handoff_for_reason(reroute.reason)
+    try:
+        status = await _record_reroute_outcome(
+            connection,
+            job_id=job_id,
+            worker_id=worker_id,
+            reroute=reroute,
+            attempts=attempts,
+            kind=kind,
+            subject_table=subject_table,
+            subject_id=subject_id,
+        )
+    except (ValueError, RuntimeError):
+        # Any partial handoff has rolled back. Recheck ownership in a
+        # fresh transaction before settling a rejected disposition.
+        logger.exception("Thunder handoff rejected for worker job %s", job_id)
+        status = None
+    if status is not None:
+        return status
+    if handoff is not None and handoff.settled:
+        return await _record_failure_outcome(
+            connection,
+            job_id=job_id,
+            worker_id=worker_id,
+            failure=JobFailure(
+                error_message=(
+                    reroute.error_message
+                    or f"Trial {subject_id or 'unknown'} marked RETRYING"
+                ),
+                retryable=True,
+                retry_after_seconds=reroute.retry_after_seconds,
+            ),
+            attempts=attempts,
+            max_attempts=max_attempts,
+            kind=kind,
+            subject_table=subject_table,
+            subject_id=subject_id,
+        )
+    return await _settle_rejected_reroute(
+        connection,
+        job_id=job_id,
+        worker_id=worker_id,
+        attempts=attempts,
+        subject_id=subject_id,
+        subject_attempt=reroute.subject_attempt,
+    )
+
+
+async def _record_failure_outcome(
+    connection: asyncpg.Connection,
+    *,
+    job_id: str,
+    worker_id: str,
+    failure: JobFailure,
+    attempts: int,
+    max_attempts: int,
+    kind: WorkerJobKind | None,
+    subject_table: str | None,
+    subject_id: str | None,
+) -> WorkerJobStatus | None:
+    # Decide against the CURRENT row, not the claim-time snapshot: an
+    # operator capping max_attempts (or a reaper racing) mid-attempt must
+    # bind at this decision, or a surgically-capped trial schedules yet
+    # another attempt from the worker's stale in-memory values.
+    current = await connection.fetchrow(
+        "SELECT attempts, max_attempts FROM worker_jobs WHERE id = $1",
+        job_id,
+    )
+    if current is not None:
+        attempts = int(current["attempts"])
+        max_attempts = int(current["max_attempts"])
+    retry = failure.retryable and attempts < max_attempts
+    if retry:
+        retry_at: datetime | None = None
+        retry_reason = classify_retry_reason(failure.error_message)
+        delay_seconds: float | None = None
+        if kind == WorkerJobKind.TRIAL:
+            delay_seconds = calculate_trial_retry_delay_seconds(
+                attempts=attempts,
+                error_message=failure.error_message,
+                retry_after_seconds=failure.retry_after_seconds,
+            )
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+
+        # RETRYING is a scheduling state, not a terminal one. Leave
+        # finished_at NULL so the claim SQL can clear it on the
+        # next attempt without special-casing; the duration query
+        # already filters to SUCCESS/FAILED so it doesn't observe
+        # RETRYING rows either way.
+        command = await connection.execute(
+            """
+            UPDATE worker_jobs
+            SET    status = 'RETRYING',
+                   error_message = $2,
+                   next_retry_at = $3,
+                   available_after = COALESCE($3::timestamptz, NOW()),
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL,
+                   -- The retry starts UNLINKED (mirrors the reaper's retry
+                   -- transition): a carried-over handle can point at a pod
+                   -- that still exists, which blinds the orphan sweeper's
+                   -- live-unlinked guard while the next attempt's pod is
+                   -- unreferenced. This worker's own teardown already ran.
+                   external_id = NULL,
+                   provider = NULL
+            WHERE  id = $1
+              AND  status = 'RUNNING'::worker_job_status
+              AND  current_worker_id = $4
+            """,
+            job_id,
+            failure.error_message,
+            retry_at,
+            worker_id,
+        )
+        if not _updated_one(command):
+            console.print(
+                f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
+            )
+            return None
+        if (
+            kind == WorkerJobKind.TRIAL
+            and subject_table == "trials"
+            and subject_id
+            and retry_at is not None
+        ):
+            await connection.execute(
                 """
-                UPDATE worker_jobs
+                UPDATE trials
                 SET    status = 'RETRYING',
                        error_message = $2,
                        next_retry_at = $3,
-                       available_after = COALESCE($3::timestamptz, NOW()),
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
-                       modal_function_call_id = NULL,
-                       -- The retry starts UNLINKED (mirrors the reaper's retry
-                       -- transition): a carried-over handle can point at a pod
-                       -- that still exists, which blinds the orphan sweeper's
-                       -- live-unlinked guard while the next attempt's pod is
-                       -- unreferenced. This worker's own teardown already ran.
-                       external_id = NULL,
-                       provider = NULL
+                       heartbeat_at = NOW()
                 WHERE  id = $1
-                  AND  status = 'RUNNING'::worker_job_status
-                  AND  current_worker_id = $4
+                  AND  deleted_at IS NULL
+                  AND  superseded_by_trial_id IS NULL
                 """,
-                job_id,
-                outcome.failure.error_message,
+                subject_id,
+                failure.error_message,
                 retry_at,
-                worker_id,
             )
-            if not _updated_one(command):
-                console.print(
-                    f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
-                )
-                return None
-            if (
-                kind == WorkerJobKind.TRIAL
-                and subject_table == "trials"
-                and subject_id
-                and retry_at is not None
-            ):
-                await connection.execute(
-                    """
-                    UPDATE trials
-                    SET    status = 'RETRYING',
-                           error_message = $2,
-                           next_retry_at = $3,
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           heartbeat_at = NOW()
-                    WHERE  id = $1
-                      AND  deleted_at IS NULL
-                      AND  superseded_by_trial_id IS NULL
-                    """,
-                    subject_id,
-                    outcome.failure.error_message,
-                    retry_at,
-                )
-            console.print(
-                f"metric=worker_job_retry_requeued id={job_id} "
-                f"attempts={attempts}/{max_attempts} "
-                f"retry_reason={retry_reason} "
-                f"retry_delay_seconds={delay_seconds or 0:.2f}"
-            )
-            return WorkerJobStatus.RETRYING
-        else:
-            command = await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'FAILED',
-                       error_message = $2,
-                       finished_at = NOW(),
-                       next_retry_at = NULL,
-                       payload = payload - 'registry_auth_enc'
-                WHERE  id = $1
-                  AND  status = 'RUNNING'::worker_job_status
-                  AND  current_worker_id = $3
-                """,
-                job_id,
-                outcome.failure.error_message,
-                worker_id,
-            )
-            if not _updated_one(command):
-                console.print(
-                    f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
-                )
-                return None
-            return WorkerJobStatus.FAILED
-    finally:
-        await connection.close()
+        console.print(
+            f"metric=worker_job_retry_requeued id={job_id} "
+            f"attempts={attempts}/{max_attempts} "
+            f"retry_reason={retry_reason} "
+            f"retry_delay_seconds={delay_seconds or 0:.2f}"
+        )
+        return WorkerJobStatus.RETRYING
+    command = await connection.execute(
+        """
+        UPDATE worker_jobs
+        SET    status = 'FAILED',
+               error_message = $2,
+               finished_at = NOW(),
+               next_retry_at = NULL,
+               payload = payload - 'registry_auth_enc'
+        WHERE  id = $1
+          AND  status = 'RUNNING'::worker_job_status
+          AND  current_worker_id = $3
+        """,
+        job_id,
+        failure.error_message,
+        worker_id,
+    )
+    if not _updated_one(command):
+        console.print(
+            f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
+        )
+        return None
+    if kind == WorkerJobKind.TRIAL and subject_table == "trials" and subject_id:
+        # Ordinary settlement may have left the trial RETRYING (it still had
+        # trial-level budget) while the job's own budget just ran out, or a
+        # declined attempt-budget handoff landed here after that settlement.
+        # No job remains to run it, so mirror the terminal outcome onto the
+        # trial; a trial already settled SUCCESS or FAILED is left alone.
+        await connection.execute(
+            """
+            UPDATE trials
+            SET    status = 'FAILED',
+                   error_message = $2,
+                   finished_at = NOW(),
+                   next_retry_at = NULL,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   heartbeat_at = NOW()
+            WHERE  id = $1
+              AND  status::text = 'RETRYING'
+              AND  deleted_at IS NULL
+              AND  superseded_by_trial_id IS NULL
+            """,
+            subject_id,
+            failure.error_message,
+        )
+    return WorkerJobStatus.FAILED
 
 
 async def run_single_worker_job(
@@ -1235,122 +1412,158 @@ async def run_single_worker_job(
     if job is None:
         return False
 
-    logger.info(
-        "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
-        job.id,
-        job.attempts,
-        worker_billing_spec.configuration if worker_billing_spec else "unreported",
-        modal_function_call_id,
-        worker_billing_spec.cpu_cores if worker_billing_spec else None,
-        worker_billing_spec.memory_mb if worker_billing_spec else None,
-    )
-    attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
-    attempt_started_monotonic = time.monotonic()
-
-    await open_worker_span(
-        job,
-        worker_billing_spec,
-        started_at=attempt_started_at,
-    )
-
-    console.print(
-        f"[cyan]Processing worker_job id={job.id} kind={job.kind.value} "
-        f"(queue_key={queue_key}, attempt={job.attempts}/{job.max_attempts})[/cyan]"
-    )
-
-    try:
-        handler = get_handler(job.kind)
-    except NoHandlerRegisteredError as exc:
-        # Fail the row instead of leaving it in RUNNING so cleanup
-        # doesn't have to reap it via the stale-heartbeat sweep.
-        outcome = JobOutcome.fail(
-            f"No handler registered for kind={job.kind.value!r}: {exc}",
-            retryable=False,
-        )
-    else:
-        try:
-            # Handlers receive the claimed projection; they can hydrate a
-            # full ORM row if they need more columns.
-            outcome = await run_authorized_handler(job, handler, authorize_job)
-        except JobAccessDenied as exc:
-            outcome = JobOutcome.fail(str(exc), retryable=False)
-        except asyncio.CancelledError:
-            console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
-            # This attempt's compute is over; close its worker span at cancel time
-            # so the reconciler doesn't later close it at the job's (much later)
-            # terminal finished_at. CAS close, so any other close path is a no-op.
-            await close_worker_span(
-                job.id, job.attempts, finished_at=datetime.now(timezone.utc)
-            )
-            raise
-        except Exception as exc:  # handler-raised exceptions retry by default
-            logger.exception(
-                "worker_job %s (%s, subject=%s) handler error",
-                job.id,
-                job.kind.value,
-                job.subject_id,
-            )
-            outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
-
-    disposition_count = sum(
-        value is not None
-        for value in (outcome.success, outcome.failure, outcome.reroute)
-    )
-    if disposition_count != 1:
-        # A handler can mutate the dataclass after construction. Keep an invalid
-        # result from leaving its claimed worker_jobs row RUNNING indefinitely.
-        outcome = JobOutcome.fail(
-            "handler returned an invalid JobOutcome",
-            retryable=False,
-        )
-
-    outcome_at = datetime.now(timezone.utc)
-    persisted_status = await _record_outcome(
+    with worker_job_trace(
+        (job.payload or {}).get(TRACE_CONTEXT_PAYLOAD_KEY),
         job_id=job.id,
-        worker_id=worker_id,
-        outcome=outcome,
-        attempts=job.attempts,
-        max_attempts=job.max_attempts,
-        kind=job.kind,
+        kind=job.kind.value,
+        attempt=job.attempts,
         subject_table=job.subject_table,
         subject_id=job.subject_id,
-    )
-    attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
-    outcome_recorded = bool(persisted_status)
-    if isinstance(persisted_status, WorkerJobStatus):
+    ) as attempt_span:
+        logger.info(
+            "worker_job attempt job=%s attempt=%s configuration=%s modal_function_call_id=%s cpu=%s memory_mb=%s",
+            job.id,
+            job.attempts,
+            worker_billing_spec.configuration if worker_billing_spec else "unreported",
+            modal_function_call_id,
+            worker_billing_spec.cpu_cores if worker_billing_spec else None,
+            worker_billing_spec.memory_mb if worker_billing_spec else None,
+        )
+        attempt_started_at = job.claimed_at or datetime.now(timezone.utc)
+        attempt_started_monotonic = time.monotonic()
+
+        await open_worker_span(
+            job,
+            worker_billing_spec,
+            started_at=attempt_started_at,
+        )
+
         console.print(
-            f"[dim]worker_job {job.id} -> {persisted_status.value} "
-            f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
-        )
-        record_worker_job_transition(
-            kind=job.kind,
-            outcome=persisted_status,
-            queue_key=job.queue_key,
-            execution_lane=job.execution_lane,
-            duration_seconds=attempt_duration_seconds,
+            f"[cyan]Processing worker_job id={job.id} kind={job.kind.value} "
+            f"(queue_key={queue_key}, attempt={job.attempts}/{job.max_attempts})[/cyan]"
         )
 
-    if outcome_recorded:
-        await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
-
-    if (
-        outcome_recorded
-        and outcome.success is not None
-        and post_success_hooks
-        and job.subject_id
-    ):
-        hook = post_success_hooks.get(job.kind)
-        if hook is not None:
+        try:
+            handler = get_handler(job.kind)
+        except NoHandlerRegisteredError as exc:
+            if attempt_span is not None:
+                attempt_span.set_attribute("error.type", type(exc).__name__)
+            # Fail the row instead of leaving it in RUNNING so cleanup
+            # doesn't have to reap it via the stale-heartbeat sweep.
+            outcome = JobOutcome.fail(
+                f"No handler registered for kind={job.kind.value!r}: {exc}",
+                retryable=False,
+            )
+        else:
             try:
-                await hook(job.subject_id)
-            except Exception:
-                logger.exception(
-                    "post-success hook for kind=%s job=%s failed",
-                    job.kind.value,
-                    job.id,
+                # Handlers receive the claimed projection; they can hydrate a
+                # full ORM row if they need more columns.
+                handler_job = job
+                if TRACE_CONTEXT_PAYLOAD_KEY in (job.payload or {}):
+                    handler_job = replace(
+                        job,
+                        payload={
+                            key: value
+                            for key, value in job.payload.items()
+                            if key != TRACE_CONTEXT_PAYLOAD_KEY
+                        },
+                    )
+                outcome = await run_authorized_handler(
+                    handler_job, handler, authorize_job
                 )
+            except JobAccessDenied as exc:
+                if attempt_span is not None:
+                    attempt_span.set_attribute("error.type", type(exc).__name__)
+                outcome = JobOutcome.fail(str(exc), retryable=False)
+            except asyncio.CancelledError:
+                console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
+                # This attempt's compute is over; close its worker span at cancel time
+                # so the reconciler doesn't later close it at the job's (much later)
+                # terminal finished_at. CAS close, so any other close path is a no-op.
+                await close_worker_span(
+                    job.id, job.attempts, finished_at=datetime.now(timezone.utc)
+                )
+                raise
+            except Exception as exc:  # handler-raised exceptions retry by default
+                if attempt_span is not None:
+                    attempt_span.set_attribute("error.type", type(exc).__name__)
+                logger.exception(
+                    "worker_job %s (%s, subject=%s) handler error",
+                    job.id,
+                    job.kind.value,
+                    job.subject_id,
+                )
+                outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
-    return True
+        disposition_count = sum(
+            value is not None
+            for value in (outcome.success, outcome.failure, outcome.reroute)
+        )
+        if disposition_count != 1:
+            # A handler can mutate the dataclass after construction. Keep an invalid
+            # result from leaving its claimed worker_jobs row RUNNING indefinitely.
+            outcome = JobOutcome.fail(
+                "handler returned an invalid JobOutcome",
+                retryable=False,
+            )
+
+        outcome_at = datetime.now(timezone.utc)
+        persisted_status = await _record_outcome(
+            job_id=job.id,
+            worker_id=worker_id,
+            outcome=outcome,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+            kind=job.kind,
+            subject_table=job.subject_table,
+            subject_id=job.subject_id,
+        )
+        record_worker_job_trace_outcome(
+            attempt_span,
+            status=(
+                persisted_status.value
+                if isinstance(persisted_status, WorkerJobStatus)
+                else "not_recorded"
+            ),
+            failed=outcome.failure is not None,
+            retryable=outcome.failure.retryable if outcome.failure is not None else None,
+        )
+        attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
+        outcome_recorded = bool(persisted_status)
+        if isinstance(persisted_status, WorkerJobStatus):
+            console.print(
+                f"[dim]worker_job {job.id} -> {persisted_status.value} "
+                f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
+            )
+            record_worker_job_transition(
+                kind=job.kind,
+                outcome=persisted_status,
+                queue_key=job.queue_key,
+                execution_lane=job.execution_lane,
+                duration_seconds=attempt_duration_seconds,
+            )
+
+        if outcome_recorded:
+            await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
+
+        if (
+            outcome_recorded
+            and outcome.success is not None
+            and post_success_hooks
+            and job.subject_id
+        ):
+            hook = post_success_hooks.get(job.kind)
+            if hook is not None:
+                try:
+                    await hook(job.subject_id)
+                except Exception:
+                    logger.exception(
+                        "post-success hook for kind=%s job=%s failed",
+                        job.kind.value,
+                        job.id,
+                    )
+
+        return True
 
 
 async def drain_worker_jobs(

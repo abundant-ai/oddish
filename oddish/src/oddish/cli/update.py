@@ -34,8 +34,10 @@ def update_cmd(
         bool, typer.Option("--force", help="Reinstall even when the PyPI version already matches.")
     ] = False,
 ) -> None:
-    """Upgrade this CLI from PyPI (`uv pip install oddish`). No API key required."""
+    """Upgrade PyPI installs; Homebrew installs use `brew upgrade`. No API key required."""
     info = inspect_install()
+    if info.source == "homebrew":
+        _fail("This install is managed by Homebrew. Run `brew upgrade abundant-ai/tap/oddish`.", json_output=json_output, info=info)
     try:
         latest = fetch_pypi_latest()
         pypi_error = None

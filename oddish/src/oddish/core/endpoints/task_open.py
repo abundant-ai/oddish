@@ -70,6 +70,7 @@ async def get_task_open_core(
         list(aggregate["groups"] or []),
         identity,
         float(aggregate["qa_cost_usd"] or 0.0),
+        float(aggregate.get("verifier_cost_usd") or 0.0),
     )
     if selected is not None:
         selected.user_tags = tags(identity["selected_version_tags"])

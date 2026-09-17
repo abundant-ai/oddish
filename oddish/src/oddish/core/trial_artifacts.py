@@ -109,6 +109,7 @@ def _is_attempt_scoped_prefix(prefix: str) -> bool:
 async def resolve_trial_artifact_layout(
     trial: TrialArtifactPointer,
     storage: StorageClient,
+    attempt: int | None = None,
 ) -> TrialArtifactLayout:
     """Resolve the exact Harbor child directory for the current attempt.
 
@@ -116,6 +117,17 @@ async def resolve_trial_artifact_layout(
     Harbor root summary predates Oddish's trial selector. Attempt-scoped
     manifests fail closed when malformed or selectorless so a missing selected
     artifact cannot expose a sibling retry directory.
+
+    ``attempt`` names one retry explicitly. Without a stored ``trial_s3_key``
+    this resolver only *infers* a directory when exactly one attempt belongs to
+    the trial's kind and it matches ``trial.attempts``; a trial that retried
+    leaves two sibling directories and no way to tell which is authoritative,
+    so it fails closed and its artifacts become unreadable through every route.
+    Naming the attempt replaces the inference with the caller's choice, which
+    is selection rather than guessing -- the fail-closed guard exists so the
+    *server* never picks a sibling retry on its own. The candidate set is still
+    the trial's own kind-owned attempts, so an explicit value can no more reach
+    another trial's data, or a sibling analysis namespace, than inference can.
     """
     attempt_prefix = resolve_trial_s3_prefix(
         trial.id,
@@ -144,13 +156,34 @@ async def resolve_trial_artifact_layout(
                 next(iter(owned_prefixes)) if len(owned_prefixes) == 1 else None
             )
             settled = getattr(trial, "finished_at", None) is not None
-            if (
-                settled
-                and only_prefix is not None
+            if attempt is not None:
+                # Explicit selection, still confined to kind-owned attempts.
+                wanted_suffix = f"attempt-{attempt}/"
+                chosen_prefix = next(
+                    (
+                        prefix
+                        for prefix in sorted(owned_prefixes)
+                        if prefix.endswith(wanted_suffix)
+                    ),
+                    None,
+                )
+                failure_reason = f"no attempt-{attempt} directory for this trial"
+            elif (
+                only_prefix is not None
                 and expected_suffix is not None
                 and only_prefix.endswith(expected_suffix)
             ):
-                attempt_prefix = only_prefix
+                chosen_prefix = only_prefix
+                failure_reason = (
+                    "trial_s3_key is missing while attempt-scoped artifacts exist"
+                )
+            else:
+                chosen_prefix = None
+                failure_reason = (
+                    "trial_s3_key is missing while attempt-scoped artifacts exist"
+                )
+            if settled and chosen_prefix is not None:
+                attempt_prefix = chosen_prefix
                 inferred_attempt = True
             else:
                 return TrialArtifactLayout(
@@ -158,9 +191,7 @@ async def resolve_trial_artifact_layout(
                     attempt_prefix,
                     None,
                     listed_keys=listed_keys,
-                    failure_reason=(
-                        "trial_s3_key is missing while attempt-scoped artifacts exist"
-                    ),
+                    failure_reason=failure_reason,
                 )
 
     manifest_key = f"{attempt_prefix}result.json"

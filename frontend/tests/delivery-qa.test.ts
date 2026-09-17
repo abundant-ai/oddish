@@ -183,10 +183,11 @@ test("missing-version checks share one label and old snapshots do not invent cou
   );
   assert.deepEqual(deliveryTaskLabels(row), ["Task version missing"]);
   row.checks.forEach((check) => delete check.failure_labels);
+  // QA-first, matching deliveryCheckOrder: the verdict label leads.
   assert.deepEqual(deliveryTaskLabels(row), [
+    "QA verdict needed",
     "Pre-trial audit needed",
     "Run requirements unmet",
-    "QA verdict needed",
   ]);
 });
 

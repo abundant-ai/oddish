@@ -39,7 +39,6 @@ from oddish.core.task_browse_summary import refresh_task_browse_summaries
 from oddish.core.verdict_state import fail_verdict, queue_verdict
 from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.costs.verifier_cost import backfill_verifier_costs_from_s3
-from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -58,7 +57,7 @@ from oddish.runtime.ec2_orphans import (
     Ec2WorkerLiveness,
     decide_ec2_orphan,
 )
-from oddish.observability import record_thunder_capacity_handoff
+from oddish.workers.queue.thunder_fallback import emit_thunder_handoff_event
 from oddish.runtime.registry import get_backend
 from oddish.runtime.backends.thunder import (
     ThunderSandboxSnapshot,
@@ -580,7 +579,7 @@ async def cleanup_orphaned_queue_state(
                 await _recover_thunder_inventory_handles(session, thunder_inventory)
             )
         completed_thunder_handoffs.extend(
-            await _complete_pending_thunder_capacity_handoffs(session)
+            await _complete_pending_thunder_handoffs(session)
         )
         thunder_run_targets = await _find_orphaned_thunder_sandbox_runs(session)
         thunder_orphan_terminate_candidates = len(thunder_run_targets)
@@ -693,17 +692,17 @@ async def cleanup_orphaned_queue_state(
     if thunder_run_targets:
         async with get_session() as session:
             completed_thunder_handoffs.extend(
-                await _complete_pending_thunder_capacity_handoffs(session)
+                await _complete_pending_thunder_handoffs(session)
             )
-    for job_id, trial_id, target in completed_thunder_handoffs:
-        message = (
-            "metric=thunder_capacity_handoff outcome=completed "
-            f"job_id={job_id} trial_id={trial_id} target={target} "
-            "reason=teardown_confirmed"
+    for job_id, trial_id, target, handoff in completed_thunder_handoffs:
+        emit_thunder_handoff_event(
+            "completed",
+            job_id=job_id,
+            trial_id=trial_id,
+            target=target,
+            handoff=handoff,
+            reason="teardown_confirmed",
         )
-        console.print(message)
-        logger.info(message)
-        record_thunder_capacity_handoff(outcome="completed", target_environment=target)
     worker_sandboxes_terminated = (
         await _terminate_orphaned_sandboxes(worker_targets)
         + thunder_sandboxes_terminated
@@ -734,7 +733,7 @@ async def cleanup_orphaned_queue_state(
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
-        "thunder_capacity_handoffs_completed": len(completed_thunder_handoffs),
+        "thunder_handoffs_completed": len(completed_thunder_handoffs),
         "ec2_orphan_instances_seen": (
             len(ec2_inventory.instances) if ec2_inventory is not None else 0
         ),
@@ -1345,10 +1344,16 @@ async def _find_orphaned_thunder_sandbox_runs(
     return [(str(row["id"]), str(row["external_id"])) for row in rows]
 
 
-async def _complete_pending_thunder_capacity_handoffs(
+async def _complete_pending_thunder_handoffs(
     session: Any,
-) -> list[tuple[str, str, str]]:
-    """Make fallback jobs claimable only after their Thunder run is terminal."""
+) -> list[tuple[str, str, str, str]]:
+    """Make fallback jobs claimable only after their Thunder run is terminal.
+
+    Covers every Thunder handoff reason (capacity miss and attempt budget):
+    the teardown gate is about the source sandbox, not about why it moved.
+    Returns ``(job_id, trial_id, target_environment, handoff_reason)`` per
+    job released.
+    """
     rows = (
         (
             await session.execute(
@@ -1356,7 +1361,8 @@ async def _complete_pending_thunder_capacity_handoffs(
                     """
                 SELECT wj.id AS job_id,
                        wj.subject_id AS trial_id,
-                       tr.environment AS target_environment
+                       tr.environment AS target_environment,
+                       wj.reroute_reason AS handoff
                 FROM worker_jobs AS wj
                 JOIN trials AS tr
                   ON tr.id = wj.subject_id
@@ -1368,7 +1374,6 @@ async def _complete_pending_thunder_capacity_handoffs(
                   AND wj.status::text = 'RETRYING'
                   AND wj.execution_lane = 'default'
                   AND wj.reroute_from_environment = 'thunder'
-                  AND wj.reroute_reason = :reroute_reason
                   AND wj.reroute_pending_teardown
                   AND wj.provider = 'thunder'
                   AND wj.external_id = run.external_id
@@ -1383,15 +1388,14 @@ async def _complete_pending_thunder_capacity_handoffs(
                 ORDER BY wj.id
                 FOR UPDATE OF wj SKIP LOCKED
                 """
-                ),
-                {"reroute_reason": THUNDER_CAPACITY_UNAVAILABLE_CODE},
+                )
             )
         )
         .mappings()
         .all()
     )
 
-    completed: list[tuple[str, str, str]] = []
+    completed: list[tuple[str, str, str, str]] = []
     for row in rows:
         result = cast(
             CursorResult,
@@ -1402,8 +1406,11 @@ async def _complete_pending_thunder_capacity_handoffs(
                     SET reroute_pending_teardown = false,
                         provider = NULL,
                         external_id = NULL,
-                        available_after = NOW(),
-                        next_retry_at = NULL,
+                        -- An attempt-budget handoff carries its ordinary retry
+                        -- delay; never make it claimable before that.
+                        available_after = GREATEST(
+                            COALESCE(next_retry_at, NOW()), NOW()
+                        ),
                         updated_at = NOW()
                     WHERE id = :job_id
                       AND status::text = 'RETRYING'
@@ -1445,6 +1452,7 @@ async def _complete_pending_thunder_capacity_handoffs(
                 str(row["job_id"]),
                 str(row["trial_id"]),
                 str(row["target_environment"]),
+                str(row["handoff"] or ""),
             )
         )
     return completed

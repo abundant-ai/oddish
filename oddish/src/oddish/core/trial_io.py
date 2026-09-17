@@ -1101,6 +1101,7 @@ async def read_trial_summary_inputs(
 async def read_trial_agent_file(
     trial: TrialModel,
     file_path: str,
+    attempt: int | None = None,
 ) -> tuple[bytes, str]:
     """Read a file from the trial's `agent/` directory."""
     normalized_path = normalize_trial_relative_path(file_path)
@@ -1109,7 +1110,7 @@ async def read_trial_agent_file(
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    layout = await resolve_trial_artifact_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage, attempt=attempt)
 
     if layout.mode is TrialArtifactMode.EXACT:
         assert layout.artifact_prefix is not None

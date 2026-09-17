@@ -51,8 +51,71 @@ def test_archil_is_a_hosted_passthrough_environment() -> None:
     assert EnvironmentType.ARCHIL in run_module._HOSTED_PASSTHROUGH_ENVIRONMENTS
 
 
-def test_default_cloud_environment_gpu_routes_to_modal() -> None:
+def test_default_cloud_environment_gpu_routes_to_modal_without_thunder() -> None:
+    # Thunder is not registered in the test environment, so Modal remains the
+    # only GPU-capable backend in the default registry.
     assert default_cloud_environment(requires_gpu=True) == EnvironmentType.MODAL
+
+
+def test_registered_thunder_wins_gpu_negotiation_but_not_cpu_or_registry(
+    monkeypatch,
+) -> None:
+    # The registry places Thunder between Daytona and Modal; cheap-first
+    # negotiation must hand GPU work to it while plain CPU stays on Daytona
+    # and private-registry pulls (which Thunder lacks) still go to Modal.
+    import oddish.runtime.routing as routing
+    from oddish.runtime.backends.daytona import DaytonaBackend
+    from oddish.runtime.backends.modal import ModalBackend
+    from oddish.runtime.backends.thunder import ThunderBackend
+
+    monkeypatch.setattr(
+        routing,
+        "ordered_backends",
+        lambda: [DaytonaBackend(), ThunderBackend(), ModalBackend()],
+    )
+    assert routing.select_backend().name == "daytona"
+    # Thunder launches only a task naming exactly one accelerator it offers
+    # (Harbor's Thunder environment rejects anything else at construction),
+    # so those are the GPU requests it wins; A100 memory variants count as A100.
+    for gpu_types in (["H100"], ["a100-80gb"], ["A6000"]):
+        assert (
+            routing.select_backend(requires_gpu=True, gpu_types=gpu_types).name
+            == "thunder"
+        )
+    # "Any GPU", several acceptable types, or one Thunder lacks go to Modal,
+    # which takes any request and validates the name itself at launch.
+    for gpu_types in (None, [], ["H100", "A100"], ["L4"]):
+        assert (
+            routing.select_backend(requires_gpu=True, gpu_types=gpu_types).name
+            == "modal"
+        )
+    assert routing.select_backend(requires_private_registry=True).name == "modal"
+    assert (
+        routing.default_cloud_environment(requires_gpu=True, gpu_types=["H100"])
+        == EnvironmentType.THUNDER
+    )
+    # A GPU task that must pull from a private registry cannot run on Thunder.
+    assert (
+        routing.default_cloud_environment(
+            requires_gpu=True, gpu_types=["H100"], requires_private_registry=True
+        )
+        == EnvironmentType.MODAL
+    )
+
+
+def test_gpu_support_serves_any_request_unless_it_needs_a_named_accelerator() -> None:
+    from oddish.runtime.ports import GpuSupport
+
+    open_pool = GpuSupport(accelerators=("H100",), max_count=8)
+    named_only = GpuSupport(
+        accelerators=("A100", "H100"), max_count=8, requires_named_accelerator=True
+    )
+    for gpu_types in (None, [], ["L4"], ["H100", "L4"]):
+        assert open_pool.serves(gpu_types)
+    assert named_only.serves(["h100"])
+    assert named_only.serves(["A100-40GB"])
+    for gpu_types in (None, [], ["L4"], ["H100", "A100"]):
+        assert not named_only.serves(gpu_types)
 
 
 def test_default_cloud_environment_cpu_routes_to_daytona() -> None:

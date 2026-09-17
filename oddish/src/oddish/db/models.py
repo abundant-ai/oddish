@@ -1407,7 +1407,8 @@ class AnalysisCostModel(TimestampedMixin, Base):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
-    # via model_pricing. Job A is always "native".
+    # via model_pricing. "pending" is an unpriced verifier-judge attempt
+    # marker, closed once at settlement; priced charge rows stay immutable.
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
@@ -1481,7 +1482,7 @@ class VerifierCostModel(TimestampedMixin, Base):
     unpriced_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-# The ``analysis_spend`` VIEW: the frozen ``analysis_costs`` ledger unioned
+# The ``analysis_spend`` VIEW: the ``analysis_costs`` ledger unioned
 # with QA/audit trial spend -- the single home of the analysis-cost cutover
 # seam. Created by migration ``analysisspend01`` on migrated databases and by
 # the ``after_create`` listener below on ``create_all`` databases (000_initial

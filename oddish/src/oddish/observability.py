@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ _configured = False
 _lock = threading.Lock()
 _worker_job_transitions_counter = None
 _worker_job_duration_histogram = None
-_thunder_capacity_handoffs_counter = None
+_thunder_handoffs_counter = None
 _queue_jobs_gauge = None
 _queue_slots_gauge = None
 _dispatch_workers_spawned_counter = None
@@ -37,7 +38,7 @@ _last_dispatch_queue_keys: set[str] = set()
 
 _AGGREGATE_QUEUE_KEY = "__all__"
 DispatchCycleOutcome = Literal["success", "skipped", "cancelled", "error"]
-ThunderCapacityHandoffOutcome = Literal[
+ThunderHandoffOutcome = Literal[
     "requested",
     "pending",
     "completed",
@@ -71,6 +72,8 @@ def configure_observability(service_name: str) -> bool:
             or os.environ.get("GIT_COMMIT_SHA"),
             send_to_logfire="if-token-present",
             console=False,
+            # API and queue requests intentionally share the incoming parent.
+            distributed_tracing=True,
         )
         try:
             configure_kwargs["advanced"] = logfire.AdvancedOptions(
@@ -278,28 +281,33 @@ def record_worker_job_transition(
         logger.warning("failed to record worker-job duration metric", exc_info=True)
 
 
-def record_thunder_capacity_handoff(
-    *, outcome: ThunderCapacityHandoffOutcome, target_environment: str
+def record_thunder_handoff(
+    *, outcome: ThunderHandoffOutcome, target_environment: str, handoff: str
 ) -> None:
-    """Count a Thunder capacity handoff lifecycle event without record IDs."""
-    global _thunder_capacity_handoffs_counter
+    """Count a Thunder handoff lifecycle event without record IDs.
+
+    ``handoff`` is the reroute reason code (capacity miss or attempt budget),
+    a closed set defined in ``oddish.workers.queue.thunder_fallback``.
+    """
+    global _thunder_handoffs_counter
     if not _configured:
         return
     try:
         import logfire
 
         with _lock:
-            if _thunder_capacity_handoffs_counter is None:
-                _thunder_capacity_handoffs_counter = logfire.metric_counter(
-                    "oddish.thunder.capacity_handoffs",
+            if _thunder_handoffs_counter is None:
+                _thunder_handoffs_counter = logfire.metric_counter(
+                    "oddish.thunder.handoffs",
                     unit="{handoff}",
-                    description="Thunder capacity fallback lifecycle events",
+                    description="Thunder provider handoff lifecycle events",
                 )
-        _thunder_capacity_handoffs_counter.add(
+        _thunder_handoffs_counter.add(
             1,
             {
                 "outcome": outcome,
                 "target_environment": target_environment,
+                "handoff": handoff,
             },
         )
     except Exception:
@@ -491,6 +499,130 @@ def record_dispatch_cycle(
             observe(value, attributes)
         except Exception:
             logger.warning("failed to record dispatch-cycle metric", exc_info=True)
+
+
+TRACE_CONTEXT_PAYLOAD_KEY = "_oddish_trace_context"
+
+
+def validated_trace_context(carrier: object) -> dict[str, str]:
+    """Keep only bounded W3C headers, with no baggage or application fields."""
+    if not isinstance(carrier, Mapping):
+        return {}
+    parent = carrier.get("traceparent")
+    if not isinstance(parent, str) or not re.fullmatch(
+        r"00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}", parent
+    ):
+        return {}
+    if parent[3:35] == "0" * 32 or parent[36:52] == "0" * 16:
+        return {}
+    headers = {"traceparent": parent}
+    state = carrier.get("tracestate")
+    if not isinstance(state, str) or not state or len(state) > 512:
+        return headers
+    members = [member.strip() for member in state.split(",")]
+    keys = set()
+    for member in members:
+        key, separator, value = member.partition("=")
+        if (
+            not separator
+            or not re.fullmatch(
+                r"(?:[a-z][a-z0-9_*/-]{0,255}|[a-z0-9][a-z0-9_*/-]{0,240}@[a-z][a-z0-9_*/-]{0,13})",
+                key,
+            )
+            or not re.fullmatch(r"[\x20-\x2b\x2d-\x3c\x3e-\x7e]{1,256}", value)
+            or value.endswith(" ")
+            or key in keys
+            or len(members) > 32
+        ):
+            return headers
+        keys.add(key)
+    headers["tracestate"] = ",".join(members)
+    return headers
+
+
+def inject_trace_context() -> dict[str, str]:
+    """Capture the active parent when a queue row is first created."""
+    try:
+        from opentelemetry.trace.propagation.tracecontext import (
+            TraceContextTextMapPropagator,
+        )
+
+        carrier: dict[str, str] = {}
+        TraceContextTextMapPropagator().inject(carrier)
+        return validated_trace_context(carrier)
+    except Exception:
+        return {}
+
+
+@contextmanager
+def worker_job_trace(
+    carrier: object,
+    *,
+    job_id: str,
+    kind: str,
+    attempt: int,
+    subject_table: str | None,
+    subject_id: str | None,
+):
+    """Attach one saved parent for this attempt and detach it before the next job."""
+    if not _configured:
+        yield None
+        return
+    try:
+        from opentelemetry import context, trace
+        from opentelemetry.trace import SpanKind, Status, StatusCode
+        from opentelemetry.trace.propagation.tracecontext import (
+            TraceContextTextMapPropagator,
+        )
+    except ImportError:
+        yield None
+        return
+
+    # Extract into an empty context. Older jobs have no saved parent and must
+    # not inherit an unrelated job or the dispatcher's current trace.
+    parent = TraceContextTextMapPropagator().extract(
+        validated_trace_context(carrier), context=context.Context()
+    )
+    token = context.attach(parent)
+    attributes = {
+        "oddish.worker_job_id": job_id,
+        "oddish.worker_job_kind": kind,
+        "retry.attempt": attempt,
+    }
+    if subject_id and subject_table in {"trials", "tasks"}:
+        key = "oddish.trial_id" if subject_table == "trials" else "oddish.task_id"
+        attributes[key] = subject_id
+    try:
+        with trace.get_tracer("oddish.workers").start_as_current_span(
+            "oddish.worker_job.execute",
+            kind=SpanKind.CONSUMER,
+            attributes=attributes,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as active:
+            try:
+                yield active
+            except BaseException as exc:
+                active.set_attribute("error.type", type(exc).__name__)
+                active.set_status(Status(StatusCode.ERROR))
+                raise
+    finally:
+        context.detach(token)
+
+
+def record_worker_job_trace_outcome(
+    active, *, status: str, failed: bool, retryable: bool | None
+) -> None:
+    """Record queue results without a handler's raw failure message or payload."""
+    if active is None:
+        return
+    from opentelemetry.trace import Status, StatusCode
+
+    active.set_attribute("oddish.worker_job_outcome", status)
+    if retryable is not None:
+        active.set_attribute("retry.retryable", retryable)
+    if failed:
+        active.set_status(Status(StatusCode.ERROR))
 
 
 def span(name: str, /, **attributes):

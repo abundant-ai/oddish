@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harbor.models.environment_type import EnvironmentType
 
-from oddish.cli.run import _default_cloud_environment_for_task
+from oddish.cli.run import _default_cloud_environment_for_task, _task_requires_gpu
 from oddish.schemas import TaskSweepSubmission, TrialSpec
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
@@ -132,7 +132,7 @@ gpus = 0
     )
 
 
-def test_default_cloud_environment_uses_modal_for_gpu_task(tmp_path):
+def test_default_cloud_environment_defers_gpu_task_to_the_deployment(tmp_path):
     (tmp_path / "task.toml").write_text(
         """
 [agent]
@@ -147,17 +147,14 @@ gpus = 1
 """.strip()
     )
 
-    assert (
-        _default_cloud_environment_for_task(tmp_path, override_gpus=None)
-        == EnvironmentType.MODAL
-    )
+    assert _default_cloud_environment_for_task(tmp_path, override_gpus=None) is None
+    assert _task_requires_gpu(tmp_path, override_gpus=None) is True
 
 
 def test_default_cloud_environment_honors_gpu_override(tmp_path):
-    assert (
-        _default_cloud_environment_for_task(tmp_path, override_gpus=1)
-        == EnvironmentType.MODAL
-    )
+    assert _default_cloud_environment_for_task(tmp_path, override_gpus=1) is None
+    assert _task_requires_gpu(tmp_path, override_gpus=1) is True
+    assert _task_requires_gpu(tmp_path, override_gpus=0) is False
     assert (
         _default_cloud_environment_for_task(tmp_path, override_gpus=0)
         == EnvironmentType.DAYTONA

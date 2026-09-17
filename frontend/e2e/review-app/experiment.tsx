@@ -71,10 +71,10 @@ export function FixtureExperiment() {
   // Stored verdict counters omit live trial analysis and replacement QA.
   const summary: ExperimentPageSummary = {
     task_count: displayedTasks.length,
-    trial_count: 5,
+    trial_count: scenario === "duplication" ? 8 : 5,
     completed: 5,
-    failed: 0,
-    skipped: 0,
+    failed: scenario === "duplication" ? 1 : 0,
+    skipped: scenario === "duplication" ? 2 : 0,
     active: 0,
     reward_sum: 2,
     reward_total: 5,
@@ -93,7 +93,36 @@ export function FixtureExperiment() {
       experimentId="review-demo"
       tasksForExperiment={displayedTasks}
       pageSummary={summary}
-      costTotals={{ status: "idle" }}
+      costTotals={
+        scenario === "duplication"
+          ? {
+              status: "ready",
+              data: {
+                cost_usd: 12.5,
+                cost_trial_count: 7,
+                cost_has_estimated: false,
+                cost_has_native: true,
+                token_count: 1500000,
+                token_trial_count: 7,
+                owned_cost_usd: 8.5,
+                owned_trial_count: 5,
+                owned_has_estimated: false,
+                owned_has_native: true,
+                owned_token_count: 1000000,
+                owned_token_trial_count: 5,
+                billed_cost_usd: 8.5,
+                billed_trial_count: 5,
+                billed_has_estimated: false,
+                billed_has_native: true,
+                billed_token_count: 1000000,
+                billed_token_trial_count: 5,
+                total_trials: 8,
+                qa_cost_usd: 0.2,
+                owned_qa_cost_usd: 0.1,
+              },
+            }
+          : { status: "idle" }
+      }
       onRetryCostTotals={() => {}}
       isLoading={false}
       isLoadingTrials={refreshing}

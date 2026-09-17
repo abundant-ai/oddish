@@ -492,12 +492,13 @@ async def list_trial_files_s3(
     cursor: str | None = None,
     presign: bool = True,
     presign_expiration: int = 900,
+    attempt: int | None = None,
 ) -> dict:
     """List files in a trial's S3 directory with optional presigned URLs."""
     storage = get_storage_client()
 
     try:
-        layout = await resolve_trial_artifact_layout(trial, storage)
+        layout = await resolve_trial_artifact_layout(trial, storage, attempt=attempt)
         if layout.mode is TrialArtifactMode.UNAVAILABLE:
             raise HTTPException(status_code=404, detail="No authoritative trial files")
         assert layout.artifact_prefix is not None
@@ -520,6 +521,7 @@ async def list_trial_files_s3(
 async def get_trial_file_content_s3(
     trial: TrialModel,
     file_path: str,
+    attempt: int | None = None,
 ) -> tuple[bytes, str]:
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
@@ -531,7 +533,7 @@ async def get_trial_file_content_s3(
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    layout = await resolve_trial_artifact_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage, attempt=attempt)
     if layout.mode is TrialArtifactMode.UNAVAILABLE:
         raise HTTPException(status_code=404, detail="No authoritative trial files")
     assert layout.artifact_prefix is not None

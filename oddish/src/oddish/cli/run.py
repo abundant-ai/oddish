@@ -99,6 +99,25 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     return (task_config.environment.gpus or 0) > 0
 
 
+def _task_config_gpu_types(task_path: Path) -> list[str] | None:
+    """The task's requested GPU types, or ``None`` for any type.
+
+    An exact ``gpu_type`` environment kwarg wins over the
+    ``[environment].gpu_types`` list, as it does when Harbor launches the
+    environment and in the Thunder handoff remap.
+    """
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return None
+    environment = task_config.environment
+    exact_gpu_type = (environment.kwargs or {}).get("gpu_type")
+    if exact_gpu_type is not None:
+        return [str(exact_gpu_type)]
+    return environment.gpu_types or None
+
+
 def _task_config_requests_tpu(task_path: Path) -> bool:
     config_path = task_path / "task.toml"
     try:
@@ -160,18 +179,31 @@ def _validate_explicit_environment_for_task(
         )
 
 
+def _task_requires_gpu(task_path: Path | None, *, override_gpus: int | None) -> bool:
+    """Whether this run needs GPUs: the override wins, else task.toml decides."""
+    if override_gpus is not None:
+        return override_gpus > 0
+    return task_path is not None and _task_config_requests_gpu(task_path)
+
+
 def _default_cloud_environment_for_task(
     task_path: Path | None,
     *,
     override_gpus: int | None,
-) -> EnvironmentType:
-    from oddish.runtime.routing import default_cloud_environment
+) -> EnvironmentType | None:
+    """Pick the environment for a cloud run that named none, or ``None`` to let
+    the hosted API negotiate it.
+
+    The CLI resolves only what needs no knowledge of the deployment: TPU work
+    can run nowhere but GKE, and plain CPU work keeps the established Daytona
+    (or opt-in Numinous) default. Which GPU backend a deployment offers, and
+    whether a private-registry pull forces Modal, is the hosted policy's call:
+    the payload carries ``requires_gpu`` and ``registry_auth`` so it can decide.
+    """
+    from oddish.config import settings
 
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
-    if override_gpus is not None:
-        requires_gpu = override_gpus > 0
-    else:
-        requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+    requires_gpu = _task_requires_gpu(task_path, override_gpus=override_gpus)
 
     if requires_gpu and requires_tpu:
         raise typer.BadParameter(
@@ -185,7 +217,13 @@ def _default_cloud_environment_for_task(
         # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
         # hosted deployment validates the choice against its own cloud policy.
         return EnvironmentType.GKE
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    # Client defaults must not import server-side sandbox implementations.
+    # The hosted API validates the requested environment against its policy.
+    if settings.numinous_enabled and (not requires_gpu or settings.numinous_gpu_enabled):
+        return EnvironmentType.NUMINOUS
+    if requires_gpu:
+        return None
+    return EnvironmentType.DAYTONA
 
 
 def _map_batch_sweep_results(
@@ -962,8 +1000,13 @@ def run(
 
         task_configs = copy.deepcopy(configs)
         task_environment = environment
+        requires_gpu = False
+        gpu_types: list[str] | None = None
         _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
+            requires_gpu = _task_requires_gpu(task_path, override_gpus=override_gpus)
+            if requires_gpu:
+                gpu_types = _task_config_gpu_types(task_path)
             task_environment = _default_cloud_environment_for_task(
                 task_path,
                 override_gpus=override_gpus,
@@ -972,6 +1015,8 @@ def run(
             task_id=task_id,
             configs=task_configs,
             environment=task_environment,
+            requires_gpu=requires_gpu,
+            gpu_types=gpu_types,
             user=user,
             priority=priority,
             experiment_id=experiment_id,

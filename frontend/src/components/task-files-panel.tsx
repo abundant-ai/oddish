@@ -524,7 +524,7 @@ export function TaskFilesPanel({
   const checksLoading = overviewAvailable && !panel && !checksLoadError;
   const checksLoadFailure =
     checksLoadError && !panel
-      ? "Unable to load the static checks state."
+      ? "Unable to load the pre-trial audit state."
       : null;
   const checksFindings = [
     ...(checksVersion?.retained_findings ?? []),
@@ -1082,7 +1082,9 @@ export function TaskFilesPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA verdict generation");
+        throw new Error(
+          data.detail || data.error || "Failed to queue QA verdict generation"
+        );
       }
       onRetryComplete?.([task.id]);
       // The QA-active guard reads this cache; refresh it so the guard flips
@@ -1090,7 +1092,9 @@ export function TaskFilesPanel({
       void mutateChecks();
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
+        err instanceof Error
+          ? err.message
+          : "Failed to queue QA verdict generation"
       );
     } finally {
       setIsRunningQA(false);
@@ -1136,7 +1140,7 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks"
+          data.detail || data.error || "Failed to queue pre-trial audit"
         );
       }
       await mutateChecks();
@@ -2112,6 +2116,7 @@ export function TaskFilesPanel({
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.
                   verdictTask={verdictSource ?? null}
+                  experiments={checksVersion?.experiments}
                   checksFindings={checksFindings}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}

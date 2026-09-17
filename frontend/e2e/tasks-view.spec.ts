@@ -649,7 +649,11 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByText("Showing 20 most recent of 25 trials")
     ).toBeVisible();
-    await expect(page.getByText("80% (20/25)")).toBeVisible();
+    await expect(page.getByText("80.0%", { exact: true })).toHaveCount(1);
+    await expect(page.getByText("80.0%", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^avg score$/i)).toHaveCount(1);
+    await expect(page.getByText("80% (20/25)", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("20/25 pass", { exact: true })).toHaveCount(0);
     await expect(page.getByText("1m 40s")).toBeVisible();
     await expect(page.getByText("$25.00").last()).toBeVisible();
     await expect(page.getByText("$1.00")).toBeVisible();
