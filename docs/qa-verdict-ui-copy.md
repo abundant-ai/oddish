@@ -145,3 +145,10 @@ QA (the whole pipeline).
 | QA Verdict Results (filter) | Trial analysis | `lib/tasks-filters.ts` |
 | Unable to load the static checks state. | Unable to load the pre-trial audit state. | `components/task-files-panel.tsx` |
 | Failed to queue static checks | Failed to queue pre-trial audit | `components/task-files-panel.tsx` |
+| QA verdict (caption on a finding whose source is a trial) | Trial analysis | `app/(app)/deliveries/[delivery]/delivery-board-client.tsx` |
+| Agree/Disagree with the [classification] verdict (screen-reader name on one trial's report) | Agree/Disagree with the [classification] analysis | `components/qa-report/qa-assessment-report.tsx` |
+
+Unchanged on purpose: the experiment KPI tile counts tasks by verdict
+state, so its "QA verdict in progress" / "QA verdict failed" / "No current
+QA verdict" chips keep verdict wording. The trials-table legend counts
+trials by classification state and reads "Analyzing".

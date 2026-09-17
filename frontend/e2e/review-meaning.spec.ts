@@ -826,7 +826,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=live-review");
     await page
-      .getByRole("button", { name: "4 Analyzing", exact: true })
+      .getByRole("button", { name: "4 QA verdict in progress", exact: true })
       .click();
     for (const name of [
       "Unreviewed version",
@@ -854,7 +854,7 @@ test.describe("real components with local fixture API", () => {
     await page.reload();
     await expect(
       page.getByRole("button", {
-        name: "4 Analyzing",
+        name: "4 QA verdict in progress",
         exact: true,
       })
     ).toHaveAttribute("aria-pressed", "true");
@@ -878,7 +878,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "0 Analyzing",
+        name: "0 QA verdict in progress",
         exact: true,
       })
     ).toHaveCount(0);

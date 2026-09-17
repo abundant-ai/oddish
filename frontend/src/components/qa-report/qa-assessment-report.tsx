@@ -108,7 +108,7 @@ export function QaAssessmentReport({
 
         {onFeedback ? (
           <FeedbackControl
-            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} verdict`}
+            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} analysis`}
             className="mt-3"
             onSubmit={(vote, note) =>
               onFeedback({
