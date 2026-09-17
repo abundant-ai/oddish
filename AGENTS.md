@@ -739,6 +739,8 @@ no public, read, update, triage, snapshot, or notification paths.
 Tasks can opt into a worker-supplied record for a separate verifier with
 `metadata.oddish.verifier_trusted_trajectory = true`. This also requires
 `verifier_judge_costs = true`, one task step, and a separate Linux verifier.
+It uses Oddish's bundled Harbor runtime. Ephemeral Harbor variants fail before
+the child engine starts; they cannot silently omit the trusted input transfer.
 The worker selects a fixed core verifier class. It rejects custom verifier
 imports, kwargs, and disabled verification for this option. No task file can
 supply a host import path or input path through this option.

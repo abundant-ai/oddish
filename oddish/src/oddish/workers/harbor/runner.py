@@ -1997,6 +1997,25 @@ async def _run_harbor_trial_async_impl(
     # Harbor than the one baked into this container cannot be swapped in-process
     # (sys.modules caches it), so route to the child-interpreter engine.
     if hc.variant_id == "ephemeral":
+        from .trusted_trajectory import configure_trusted_trajectory
+
+        try:
+            verifier_config = configure_trusted_trajectory(task_path, hc.verifier)
+            if verifier_config is not hc.verifier:
+                raise ValueError(
+                    "Trusted verifier input requires Oddish's bundled Harbor "
+                    "runtime; ephemeral Harbor variants are not supported."
+                )
+        except ValueError as exc:
+            return HarborOutcome(
+                reward=None,
+                error=str(exc),
+                exit_code=-1,
+                duration_sec=0.0,
+                job_result_path=None,
+                job_dir=None,
+                exception_type="TrustedTrajectoryConfigurationError",
+            )
         if restricted_compose_kind != "none":
             return HarborOutcome(
                 reward=None,
