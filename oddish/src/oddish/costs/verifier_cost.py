@@ -658,12 +658,19 @@ _BACKFILL_ARTIFACT_CANDIDATES = (
 _ATTEMPT_PREFIX = re.compile(r"^(?P<root>.*/)attempt-(?P<n>[1-9]\d*)$")
 
 
+def should_graduate_backfill_miss(*, harbor_child_searched: bool) -> bool:
+    """Only a searched Harbor trial subdirectory may leave the repair pool."""
+    return bool(harbor_child_searched)
+
+
 def _no_artifacts_sentinel(*, checked: bool = False) -> VerifierCostDraft:
     """Placeholder so a missed download can be replaced later.
 
     Historical ``no_cua_artifacts`` rows stay incomplete so they can be
-    selected for Harbor-subdirectory repair. A miss after that lookup writes
-    ``no_cua_checked``, which graduates the attempt but remains replaceable.
+    selected for Harbor-subdirectory repair. A miss after an EXACT Harbor
+    child prefix was searched writes ``no_cua_checked``, which graduates
+    the attempt but remains replaceable. LEGACY attempt-root and missing
+    prefixes stay unchecked.
     """
     return VerifierCostDraft(
         component=COMPONENT_LOOP,
@@ -786,7 +793,7 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
         if sibling is None and attempt != max_attempt:
             n = await upsert_verifier_cost_rows(
                 session,
-                drafts=[_no_artifacts_sentinel(checked=True)],
+                drafts=[_no_artifacts_sentinel()],
                 trial_id=trial.id,
                 attempt=attempt,
                 experiment_id=trial.experiment_id,
@@ -809,7 +816,7 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
         if layout.mode is TrialArtifactMode.UNAVAILABLE or not layout.artifact_prefix:
             n = await upsert_verifier_cost_rows(
                 session,
-                drafts=[_no_artifacts_sentinel(checked=True)],
+                drafts=[_no_artifacts_sentinel()],
                 trial_id=trial.id,
                 attempt=attempt,
                 experiment_id=trial.experiment_id,
@@ -840,7 +847,15 @@ async def _backfill_one_trial(session: AsyncSession, trial: Any, storage: Any) -
             if not found_any:
                 n = await upsert_verifier_cost_rows(
                     session,
-                    drafts=[_no_artifacts_sentinel(checked=True)],
+                    drafts=[
+                        _no_artifacts_sentinel(
+                            checked=should_graduate_backfill_miss(
+                                harbor_child_searched=(
+                                    layout.mode is TrialArtifactMode.EXACT
+                                )
+                            )
+                        )
+                    ],
                     trial_id=trial.id,
                     attempt=attempt,
                     experiment_id=trial.experiment_id,
@@ -877,7 +892,9 @@ async def backfill_verifier_costs_from_s3(*, limit: int = _BACKFILL_BATCH) -> in
     lacks priced or Harbor-confirmed coverage are selected, so a false
     ``no_cua_artifacts`` miss can be repaired once. Uncovered trials fill
     the 200-trial cap before those leftovers. A Harbor-subdirectory miss
-    writes ``no_cua_checked`` and leaves the pool. Each trial uses its
+    writes ``no_cua_checked`` only after that Harbor child was searched,
+    and leaves the pool. LEGACY attempt-root misses stay unchecked. Each
+    trial uses its
     own write session so one IntegrityError cannot roll back the sweep.
     Artifacts are read from the Harbor trial subdirectory, not the bare
     ``attempt-N/`` root.

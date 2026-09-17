@@ -29,6 +29,7 @@ from oddish.costs.verifier_cost import (
     UNPRICED_NO_CUA_ARTIFACTS,
     UNPRICED_NO_CUA_CHECKED,
     backfill_batch_rank,
+    should_graduate_backfill_miss,
     trial_needs_verifier_backfill,
     upsert_verifier_cost_rows,
 )
@@ -357,9 +358,17 @@ def test_backfill_sentinel_only_coverage_is_incomplete() -> None:
 
 def test_backfill_checked_sentinel_graduates() -> None:
     """A Harbor-subdirectory miss leaves the 200-trial pool."""
-    checked = _no_artifacts_sentinel(checked=True)
+    assert should_graduate_backfill_miss(harbor_child_searched=True) is True
+    assert should_graduate_backfill_miss(harbor_child_searched=False) is False
+    checked = _no_artifacts_sentinel(
+        checked=should_graduate_backfill_miss(harbor_child_searched=True)
+    )
     assert checked.unpriced_reason == UNPRICED_NO_CUA_CHECKED
     assert checked.unpriced_reason != UNPRICED_NO_CUA_ARTIFACTS
+    legacy = _no_artifacts_sentinel(
+        checked=should_graduate_backfill_miss(harbor_child_searched=False)
+    )
+    assert legacy.unpriced_reason == UNPRICED_NO_CUA_ARTIFACTS
     assert (
         trial_needs_verifier_backfill(
             has_cua_result_signal=True,
