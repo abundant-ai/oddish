@@ -667,11 +667,11 @@ function ExperimentSummaryBar({
       className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
         qa
           ? showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            ? "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr_1fr]"
+            : "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr]"
           : showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
+            ? "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr]"
+            : "md:grid-cols-[1fr_1.6fr_0.7fr_1fr]"
       }`}
     >
       <KpiTile
@@ -703,17 +703,66 @@ function ExperimentSummaryBar({
         </span>
         <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
           {completionPct.toFixed(0)}%
-          {summary.skippedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-ink-3)]">
-              · {summary.skippedTrials} skipped
-            </span>
-          )}
-          {summary.failedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-fail)]">
-              · {summary.failedTrials} run errors
-            </span>
-          )}
         </span>
+        <div className="border-border mt-2 border-t pt-2 text-[10px] font-semibold tracking-wider text-[color:var(--paper-ink-3)] uppercase">
+          Outcome distribution
+        </div>
+        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
+          <span
+            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
+          />
+          <span
+            style={{
+              width: `${partialPct}%`,
+              background: "var(--paper-partial)",
+            }}
+          />
+          <span
+            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
+          />
+          <span
+            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
+          />
+          <span
+            style={{
+              width: `${skippedPct}%`,
+              background: "var(--paper-ink-3)",
+            }}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
+            {summary.passCount}
+            <span className="text-[color:var(--paper-ink-3)]">pass</span>
+          </span>
+          {summary.partialCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
+              {summary.partialCount}
+              <span className="text-[color:var(--paper-ink-3)]">partial</span>
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
+            {summary.failCount}
+            <span className="text-[color:var(--paper-ink-3)]">fail</span>
+          </span>
+          {summary.harnessErrorCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
+              {summary.harnessErrorCount}
+              <span className="text-[color:var(--paper-ink-3)]">error</span>
+            </span>
+          )}
+          {summary.skippedTrials > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
+              {summary.skippedTrials}
+              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
+            </span>
+          )}
+        </div>
       </KpiTile>
       <KpiTile label="Tasks">
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
@@ -843,8 +892,8 @@ function ExperimentSummaryBar({
       </KpiTile>
       {showNewSpend && (
         <KpiTile
-          label="Launched here"
-          labelInfo="Cost of runs launched in this experiment, across all versions. QA costs are listed separately."
+          label="This experiment's run cost"
+          labelInfo="Cost of this experiment’s own trials across all versions, excluding runs collected from other experiments. QA costs are listed separately."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -931,67 +980,6 @@ function ExperimentSummaryBar({
             )}
         </KpiTile>
       )}
-      <KpiTile
-        label="Outcome distribution"
-        className="col-span-2 md:col-span-1"
-      >
-        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
-          <span
-            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
-          />
-          <span
-            style={{
-              width: `${partialPct}%`,
-              background: "var(--paper-partial)",
-            }}
-          />
-          <span
-            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
-          />
-          <span
-            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
-          />
-          <span
-            style={{
-              width: `${skippedPct}%`,
-              background: "var(--paper-ink-3)",
-            }}
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
-            {summary.passCount}
-            <span className="text-[color:var(--paper-ink-3)]">pass</span>
-          </span>
-          {summary.partialCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
-              {summary.partialCount}
-              <span className="text-[color:var(--paper-ink-3)]">partial</span>
-            </span>
-          )}
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
-            {summary.failCount}
-            <span className="text-[color:var(--paper-ink-3)]">fail</span>
-          </span>
-          {summary.harnessErrorCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
-              {summary.harnessErrorCount}
-              <span className="text-[color:var(--paper-ink-3)]">error</span>
-            </span>
-          )}
-          {summary.skippedTrials > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
-              {summary.skippedTrials}
-              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
-            </span>
-          )}
-        </div>
-      </KpiTile>
     </div>
   );
 }
@@ -1787,6 +1775,14 @@ export function ExperimentDetailView({
     });
   };
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawerState((current) =>
+      current?.mode === "trial" && current.trial?.id === previousTrialId
+        ? { ...current, trial: replacement, trialIndex: null }
+        : current
+    );
+  };
+
   // A trial link from the task overview's aggregated QA. Always opens in
   // this drawer: the overview hands over the full trial row, so even a
   // trial the grid hasn't streamed in yet (or one gathered from another
@@ -2124,6 +2120,7 @@ export function ExperimentDetailView({
                 onNavigate={handleNavigateToTrial}
                 onNavigateToTask={handleNavigateToTask}
                 onRetry={onRerun}
+                onRetried={handleTrialRetried}
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}

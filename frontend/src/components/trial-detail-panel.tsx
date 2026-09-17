@@ -98,7 +98,11 @@ import {
   isWorkerOwnedTrialStatus,
   taskHasActiveVerdict,
 } from "@/lib/job-status";
-import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
+import {
+  isAnalysisStatusActive,
+  preloadTrial,
+  useTrial,
+} from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 import { fetcher } from "@/lib/api";
 
@@ -177,6 +181,7 @@ interface TrialDetailPanelProps {
   onNavigate?: (trial: Trial, trialIndex: number | null) => void;
   onNavigateToTask?: () => void;
   onRetry?: (taskIds?: string[]) => void | Promise<void>;
+  onRetried: (previousTrialId: string, replacement: Trial) => void;
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
@@ -241,7 +246,7 @@ function TrialAnalysisCard({
 
   // QA is task-scoped: the rerun creates one qa trial that grades every
   // trial, and never stamps this row's analysis_status. Reading that field
-  // alone showed "No QA verdict yet" while the run was live.
+  // alone showed "No analysis yet" while the run was live.
   const trialAnalysisInProgress = isAnalysisStatusActive(trial.analysis_status);
   const inProgress = trialAnalysisInProgress || taskQaInProgress;
   // Tick the elapsed timer once a second while in progress.
@@ -271,7 +276,7 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "QA verdict is running";
+    queueBlockedReason = "Task QA is already running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
@@ -295,7 +300,7 @@ function TrialAnalysisCard({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue QA verdict generation"
+          data.detail || data.error || "Failed to queue analysis"
         );
       }
       // The server created one task-level QA trial. Refresh the task-open
@@ -303,7 +308,7 @@ function TrialAnalysisCard({
       await onQueued?.();
     } catch (err) {
       setQueueError(
-        err instanceof Error ? err.message : "Failed to queue QA verdict generation"
+        err instanceof Error ? err.message : "Failed to queue analysis"
       );
     } finally {
       setQueuing(false);
@@ -364,14 +369,14 @@ function TrialAnalysisCard({
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
-                "Reanalyzes all eligible trials to generate this task’s QA verdict."
+                "Reruns task QA: re-analyzes every eligible trial and regenerates verdict."
               }
             >
               {queuing
                 ? "Queuing…"
                 : hasAnalysis
-                  ? "Regenerate QA verdict"
-                  : "Generate QA verdict"}
+                  ? "Re-run Trajectory analysis"
+                  : "Run analysis"}
             </button>
           </div>
         )}
@@ -389,7 +394,7 @@ function TrialAnalysisCard({
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
               <p className="mb-2 text-xs text-red-500">
-                QA failed: {trial.analysis_error}
+                Analysis failed: {trial.analysis_error}
               </p>
             )}
             <QaAssessmentReport
@@ -449,10 +454,10 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     {trial.analysis_status === "running"
-                      ? "QA running"
+                      ? "Analyzing"
                       : trial.analysis_status
-                        ? "QA queued"
-                        : "QA verdict running"}
+                        ? "Analysis queued"
+                        : "Task QA running"}
                   </span>
                   {progressLine && (
                     <span className="text-muted-foreground text-xs">
@@ -473,11 +478,11 @@ function TrialAnalysisCard({
                 // Analysis state exists but produced no report (e.g. failed
                 // before the classifier returned).
                 <div className="flex flex-col gap-1">
-                  <span className="font-mono text-sm font-bold">Run QA Verdict</span>
+                  <span className="font-mono text-sm font-bold">Analysis</span>
                   {trial.analysis_status === "failed" &&
                   trial.analysis_error ? (
                     <span className="text-xs text-red-500">
-                      QA failed: {trial.analysis_error}
+                      Analysis failed: {trial.analysis_error}
                     </span>
                   ) : (
                     <span className="text-muted-foreground text-xs">
@@ -488,7 +493,7 @@ function TrialAnalysisCard({
               ) : (
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
-                    No QA verdict yet
+                    No analysis yet
                   </span>
                 </div>
               )}
@@ -747,6 +752,7 @@ export function TrialDetailPanel({
   onNavigate,
   onNavigateToTask,
   onRetry,
+  onRetried,
   onDelete,
   apiBaseUrl = "/api",
   allowRetry = true,
@@ -1057,8 +1063,20 @@ export function TrialDetailPanel({
         throw new Error(data.detail || data.error || "Failed to retry trial");
       }
 
-      onRetry?.(task ? [task.id] : undefined);
-      onClose();
+      try {
+        const { trial_id: replacementId } = (await res.json()) as {
+          trial_id: string;
+        };
+        // Retry creates a new row. Load it through the drawer's shared resource
+        // so the replacement never inherits the old attempt's results or logs.
+        const replacement = await preloadTrial(apiBaseUrl, replacementId);
+        onRetried(trial.id, replacement);
+      } catch (err) {
+        onClose();
+        throw err;
+      } finally {
+        await onRetry?.(task ? [task.id] : undefined);
+      }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {

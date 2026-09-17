@@ -65,7 +65,7 @@ async def seed(session):
 
 @pytest.mark.asyncio
 async def test_panel_two_queries_versions_and_authorization(session):
-    task, versions, _ = await seed(session)
+    task, versions, trial = await seed(session)
     queries = []
     engine = session.bind.sync_engine
 
@@ -80,6 +80,9 @@ async def test_panel_two_queries_versions_and_authorization(session):
     assert len(queries) == 2
     assert panel.version.version == 1  # selected default, not numerically latest
     assert panel.version.pre_trial_findings == [{"title": "finding-1"}]
+    assert len(panel.version.experiments) == 1
+    assert panel.version.experiments[0].id == trial.experiment_id
+    assert panel.version.experiments[0].name.startswith("panel-exp-")
     assert panel.task.trials is None
     assert panel.task.reward_total == 1
     assert panel.can_retry and panel.can_run_qa and panel.cancel is None
@@ -87,6 +90,7 @@ async def test_panel_two_queries_versions_and_authorization(session):
         session, task_id=task.id, version=2, org_id=task.org_id
     )
     assert pinned.version.content_hash == "hash-2"
+    assert pinned.version.experiments == []
     assert pinned.task.current_version == 1
     for args in ({"org_id": "another-org"}, {"version": 99}):
         with pytest.raises(HTTPException) as exc:

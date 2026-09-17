@@ -28,13 +28,19 @@ async function controlledAPI(page: Page) {
           const defect = task.defects.find(
             (defect) => `ack:${defect.id}` === body.check_key
           )!;
-          defect.acknowledged = true;
+          defect.acknowledged = Boolean(body.checked);
           defect.acknowledged_by_name = "Maya";
           task.checks.find((check) => check.key === "no_must_fix")!.status =
             task.defects.every((defect) => defect.acknowledged)
               ? "pass"
               : "fail";
           task.ready = task.checks.every((check) => check.status !== "fail");
+        }
+        if (String(body.check_key).startsWith("waive:")) {
+          const waived = task.checks.find(
+            (check) => `waive:${check.key}` === body.check_key
+          )!;
+          waived.status = body.checked ? "waived" : "fail";
         }
       } else if (path.endsWith("/qa-work")) {
         state.board.tasks[0].qa_work.note = body.note;
@@ -851,7 +857,9 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
   const pending = page
     .locator("details")
     .filter({
-      has: page.locator("summary").filter({ hasText: /^Needs a decision/ }),
+      has: page
+        .locator("summary")
+        .filter({ hasText: /^View Verdict Findings/ }),
     })
     .first();
   const accepted = page
@@ -861,10 +869,10 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     })
     .first();
   await expect(pending.locator("summary").first()).toHaveText(
-    "Needs a decision · 2 findings · v1"
+    "View Verdict Findings2 findingsv1"
   );
   await expect(accepted.locator("summary").first()).toHaveText(
-    "Acknowledged · 3 findings, 2 checks · v1"
+    "Acknowledged3 findings · 2 checksv1"
   );
   await expect(
     page.getByRole("link", {
@@ -927,10 +935,10 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     .getByRole("button", { name: "Acknowledge for v1", exact: true })
     .click();
   await expect(pending.locator("summary").first()).toHaveText(
-    "Needs a decision · 1 finding · v1"
+    "View Verdict Findings1 findingv1"
   );
   await expect(accepted.locator("summary").first()).toHaveText(
-    "Acknowledged · 4 findings, 2 checks · v1"
+    "Acknowledged4 findings · 2 checksv1"
   );
   expect(state.writes[0].body).toMatchObject({
     check_key: "ack:verifier",
@@ -958,7 +966,7 @@ test("review shows outstanding decisions first and acknowledgment retains the ve
     .getByRole("button", { name: "Acknowledge for v1", exact: true })
     .click();
   await expect(
-    page.getByText("Needs a decision", { exact: false })
+    page.getByText("View Verdict Findings", { exact: false })
   ).toHaveCount(0);
   await expect(
     page.getByRole("table").getByText("Ready", { exact: true })
@@ -1691,7 +1699,9 @@ for (const count of [1, 11]) {
     await tick(page);
     await expect(signoff).toBeDisabled();
     await expect(
-      page.getByRole("button", { name: `Regenerate QA verdicts (${count - 1})` })
+      page.getByRole("button", {
+        name: `Regenerate QA verdicts (${count - 1})`,
+      })
     ).toBeVisible();
     last.checks[0].status = "pass";
     last.qa.status = "never";
@@ -1717,7 +1727,7 @@ for (const group of ["none", "state"]) {
         kind: "automated",
         status: "fail",
         label: "Audit",
-        detail: "Old verbose audit explanation",
+        detail: "Waiting for the pre-trial audit to complete.",
         failure_labels: ["Pre-trial audit running"],
       },
       {
@@ -1725,7 +1735,7 @@ for (const group of ["none", "state"]) {
         kind: "automated",
         status: "fail",
         label: "Runs",
-        detail: "Old verbose coverage explanation",
+        detail: "2/8 runs and 1/4 agents for verdict required.",
         failure_labels: ["Runs: 2/8", "Agents: 1/4"],
       },
       {
@@ -1733,7 +1743,7 @@ for (const group of ["none", "state"]) {
         kind: "automated",
         status: "fail",
         label: "Verdict",
-        detail: "Old verbose verdict explanation",
+        detail: "Insufficient eligible solver evidence.",
         failure_labels: ["QA verdict needed"],
       },
     ];
@@ -1753,18 +1763,100 @@ for (const group of ["none", "state"]) {
     );
     await row.click();
     await expect(
-      page.getByRole("link", { name: "Open pre-trial audit", exact: true })
+      page.getByRole("link", {
+        name: "Pre-trial audit running Waiting for the pre-trial audit to complete.",
+        exact: true,
+      })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "View runs", exact: true })
+      page.getByRole("link", {
+        name: "Runs 2/8 runs and 1/4 agents for verdict required.",
+        exact: true,
+      })
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Open QA verdict", exact: true })
+      page.getByRole("link", {
+        name: "QA verdict needed Insufficient eligible solver evidence.",
+        exact: true,
+      })
     ).toBeVisible();
-    await expect(page.getByText(/Old verbose/)).toHaveCount(0);
+    const checkCards = page
+      .locator("details")
+      .filter({
+        has: page
+          .locator("summary")
+          .filter({ hasText: /^View Verdict Findings/ }),
+      })
+      .getByRole("listitem");
+    await expect(checkCards).toHaveCount(3);
+    await expect(checkCards.nth(0)).toContainText("QA verdict needed");
+    await expect(checkCards.nth(1)).toContainText("Pre-trial audit running");
+    await expect(checkCards.nth(2)).toContainText("2/8 runs and 1/4 agents");
     expect(state.writes).toEqual([]);
   });
 }
+
+test("acknowledgements can be removed for the displayed version", async ({
+  page,
+}) => {
+  const state = await controlledAPI(page);
+  const task = reviewTaskRow();
+  state.board.tasks = [task];
+  task.defects[0].acknowledged = true;
+  const verdict = task.checks.find((check) => check.key === "verdict_ok")!;
+  verdict.status = "waived";
+  verdict.detail = "QA could not read the recorded evidence.";
+  await page.goto("/?task=task-a&panels=acknowledged");
+  const acknowledged = page
+    .locator("details")
+    .filter({
+      has: page.locator("summary").filter({ hasText: /^Acknowledged/ }),
+    })
+    .first();
+  await acknowledged
+    .getByRole("button", { name: "Unacknowledge for v1", exact: true })
+    .first()
+    .click();
+  await expect.poll(() => state.writes.length).toBe(1);
+  expect(state.writes[0].body).toMatchObject({
+    check_key: `ack:${task.defects[0].id}`,
+    expected_version_id: "version-1",
+    checked: false,
+  });
+  const pending = page
+    .locator("details")
+    .filter({
+      has: page
+        .locator("summary")
+        .filter({ hasText: /^View Verdict Findings/ }),
+    })
+    .first();
+  await expect(
+    pending
+      .getByRole("listitem")
+      .filter({ hasText: task.defects[0].title })
+      .getByRole("button", { name: "Acknowledge for v1", exact: true })
+  ).toBeVisible();
+  await acknowledged
+    .getByRole("listitem")
+    .filter({ hasText: "QA could not read the recorded evidence." })
+    .getByRole("button", {
+      name: "Unacknowledge exception for v1",
+      exact: true,
+    })
+    .click();
+  await expect.poll(() => state.writes.length).toBe(2);
+  expect(state.writes[1].body).toMatchObject({
+    check_key: "waive:verdict_ok",
+    expected_version_id: "version-1",
+    checked: false,
+  });
+  await expect(
+    pending.getByText("QA could not read the recorded evidence.", {
+      exact: true,
+    })
+  ).toBeVisible();
+});
 
 test("visible task expansion opens before its details without a delivery read", async ({
   page,

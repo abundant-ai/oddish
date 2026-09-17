@@ -1,14 +1,12 @@
-"""Name → ExecutionBackend resolution + explicit/default routing sets.
+"""Name → ExecutionBackend resolution + the ordered routing set.
 
-``ordered_backends()`` returns Daytona before the opt-in EC2 backend, Modal,
-and Archil, so capability negotiation keeps Daytona as the default CPU backend
-and only escalates to Modal when a capability requires it. Explicit-only
-providers remain registered and allowed by policy, but are excluded from
-``automatic_backends()`` so capability negotiation cannot select them."""
+``ordered_backends()`` returns Daytona before the opt-in Thunder and EC2
+backends, Modal, and Archil, so capability negotiation keeps Daytona as the
+default CPU backend and escalates to the first GPU-capable backend only when a
+capability requires it: Thunder on deployments that enable it, otherwise
+Modal."""
 
 from __future__ import annotations
-
-from collections.abc import Iterable
 
 from oddish.config import settings
 from oddish.runtime.backends.archil import ArchilBackend
@@ -35,8 +33,9 @@ if settings.numinous_enabled:
 
 REGISTERED_BACKENDS[_DAYTONA.name] = _DAYTONA
 
-# Thunder is explicit opt-in and intentionally follows Daytona in the ordered
-# registry, so enabling it cannot replace the established CPU default.
+# Thunder follows Daytona in the ordered registry so enabling it cannot
+# replace the CPU default, and precedes Modal so that on deployments that
+# enable it, cheap-first negotiation hands GPU work to Thunder.
 if settings.thunder_enabled:
     _THUNDER = ThunderBackend()
     REGISTERED_BACKENDS[_THUNDER.name] = _THUNDER
@@ -63,23 +62,5 @@ def get_backend(name: str | None) -> ExecutionBackend | None:
 
 
 def ordered_backends() -> list[ExecutionBackend]:
-    """All registered backends in stable policy/display order.
-
-    This includes explicit-only providers because hosted policy must accept a
-    caller's explicit environment selection when that provider is enabled."""
+    """All registered backends in stable policy/display order."""
     return list(REGISTERED_BACKENDS.values())
-
-
-_EXPLICIT_ONLY_BACKEND_NAMES = frozenset({"thunder"})
-
-
-def automatic_backends(
-    candidates: Iterable[ExecutionBackend] | None = None,
-) -> list[ExecutionBackend]:
-    """Capability-negotiated backends; never includes explicit-only providers."""
-    source = ordered_backends() if candidates is None else candidates
-    return [
-        backend
-        for backend in source
-        if backend.name not in _EXPLICIT_ONLY_BACKEND_NAMES
-    ]

@@ -2,6 +2,7 @@
 
 import { useMemo, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import useSWR from "swr";
 import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 
@@ -11,7 +12,7 @@ import {
   isReviewableTrial,
   runReviewSummary,
 } from "@/lib/review";
-import { cn } from "@/lib/utils";
+import { cn, encodeExperimentRouteParam } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
@@ -112,10 +113,12 @@ export function TaskOverviewPanel({
   onOpenSource,
   executionReviewAction,
   executionReviewError,
+  experiments = [],
   className,
 }: {
   executionReviewAction?: ReactNode;
   executionReviewError?: string | null;
+  experiments?: { id: string; name: string }[];
   taskId: string | null;
   apiBaseUrl?: string;
   /** Version the pane is scoped to: a number pins, null deliberately
@@ -324,6 +327,13 @@ export function TaskOverviewPanel({
   const additionalRuns = versionTrials.filter((trial) =>
     foreignIds?.has(trial.id)
   );
+  const runsByExperiment = new Map<string | null, Trial[]>();
+  for (const trial of additionalRuns) {
+    const id = trial.experiment_id ?? null;
+    const group = runsByExperiment.get(id);
+    if (group) group.push(trial);
+    else runsByExperiment.set(id, [trial]);
+  }
 
   const taskTrialHref = (trial: Trial): string | null => {
     if (!taskId) return null;
@@ -550,7 +560,7 @@ export function TaskOverviewPanel({
           })}
           {unanalyzedCount > 0 ? (
             <span className="text-muted-foreground font-mono text-[10px]">
-              {unanalyzedCount} awaiting QA
+              {unanalyzedCount} awaiting analysis
             </span>
           ) : null}
         </div>
@@ -574,17 +584,13 @@ export function TaskOverviewPanel({
     <div className={cn("flex flex-col", className)}>
       {verdictTask ? (
         <div className="border-border border-b p-4">
-          <div className="text-muted-foreground mb-2 text-xs">
-            QA verdict ·{" "}
-            {scopeTrials != null
-              ? "All runs for this task version"
-              : `v${version ?? "—"}`}
-          </div>
           <TaskVerdictBadge
             task={verdictTask}
             variant="inline"
             qaActive={qaActive}
             mustFixCount={mustFixCount}
+            action={executionReviewAction}
+            error={executionReviewError}
           />
         </div>
       ) : null}
@@ -606,9 +612,11 @@ export function TaskOverviewPanel({
           <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
             {findingItems.length > 0 ? "Findings" : "Pre-trial audit"}
           </h2>
-          <span className="text-muted-foreground font-mono text-[11px]">
-            {findingsSummary}
-          </span>
+          {!(verdictTask && mustFixCount > 0) && (
+            <span className="text-muted-foreground font-mono text-[11px]">
+              {findingsSummary}
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-2">
             {findingItems.length > 0 ? (
               <CopyJsonButton
@@ -638,10 +646,9 @@ export function TaskOverviewPanel({
 
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
-            Run QA Verdict
-          </h2>
-          <div className="ml-auto">{executionReviewAction}</div>
+          {!verdictTask && (
+            <div className="ml-auto">{executionReviewAction}</div>
+          )}
           <span className="text-muted-foreground font-mono text-[11px]">
             {!versionKnown
               ? checksLoadError
@@ -656,7 +663,7 @@ export function TaskOverviewPanel({
                   : `${scopeTrials != null ? "This experiment: " : ""}${runReviewSummary(experimentRuns)}${version != null ? ` · v${version}` : ""}`}
           </span>
         </div>
-        {executionReviewError && (
+        {!verdictTask && executionReviewError && (
           <p role="alert" className="text-xs text-amber-700">
             {executionReviewError}
           </p>
@@ -668,13 +675,37 @@ export function TaskOverviewPanel({
             <p className="text-muted-foreground text-xs">
               {runReviewSummary(additionalRuns)}
             </p>
-            {additionalRuns.map((trial) => (
-              <TrialQaRow
-                key={trial.id}
-                trial={trial}
-                foreign
-                onOpen={() => openTrial(trial)}
-              />
+            {Array.from(runsByExperiment, ([experimentId, runs]) => (
+              <section
+                key={experimentId ?? "unassigned"}
+                className="border-border space-y-2 rounded-lg border p-3"
+              >
+                <h4 className="text-sm font-medium">
+                  {experimentId ? (
+                    <Link
+                      className="inline-flex items-center gap-1 hover:underline"
+                      href={`/experiments/${encodeExperimentRouteParam(experimentId)}`}
+                    >
+                      {experiments.find(
+                        (experiment) => experiment.id === experimentId
+                      )?.name ?? experimentId}
+                      <ArrowUpRight
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
+                    </Link>
+                  ) : (
+                    "Unassigned runs"
+                  )}
+                </h4>
+                {runs.map((trial) => (
+                  <TrialQaRow
+                    key={trial.id}
+                    trial={trial}
+                    onOpen={() => openTrial(trial)}
+                  />
+                ))}
+              </section>
             ))}
           </section>
         )}
@@ -683,16 +714,7 @@ export function TaskOverviewPanel({
   );
 }
 
-function TrialQaRow({
-  trial,
-  foreign,
-  onOpen,
-}: {
-  trial: Trial;
-  /** From outside the host's context. */
-  foreign?: boolean;
-  onOpen: () => void;
-}) {
+function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
   const analysis = trial.analysis_status === "success" ? trial.analysis : null;
   const gradingError =
     analysis?.classification === "HARNESS_ERROR" &&
@@ -730,14 +752,14 @@ function TrialQaRow({
         )}
       >
         {running
-          ? "QA RUNNING"
+          ? "ANALYZING"
           : failed
-            ? "QA FAILED"
+            ? "ANALYSIS FAILED"
             : analysis
               ? gradingError
                 ? "GRADING ERROR"
                 : EXECUTION_LABELS[analysis.classification].toUpperCase()
-              : "NO QA VERDICT YET"}
+              : "NOT ANALYZED"}
       </span>
       {analysis?.subtype && !gradingError ? (
         <span
@@ -750,15 +772,6 @@ function TrialQaRow({
       <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px]">
         {trialLabel(trial)}
       </span>
-      {foreign ? (
-        <span
-          className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]"
-          title={trial.experiment_id ?? undefined}
-        >
-          Other experiment
-          {trial.experiment_id && ` · ${trial.experiment_id.slice(0, 8)}`}
-        </span>
-      ) : null}
       <button
         type="button"
         onClick={(event) => {
@@ -810,7 +823,7 @@ function TrialQaRow({
             />
           </div>
         ) : null}
-        {analysis?.evidence ? (
+        {analysis?.evidence && analysis.evidence !== analysis.root_cause ? (
           <div className="flex items-baseline gap-2">
             <span className="text-muted-foreground shrink-0 font-mono text-[10px] tracking-widest">
               EVIDENCE

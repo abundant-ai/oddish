@@ -1466,7 +1466,7 @@ wheels = [
 
 [[package]]
 name = "oddish"
-version = "0.1.13"
+version = "0.1.14"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -1615,7 +1615,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
-    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.7.1" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.7.3" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2618,15 +2618,15 @@ wheels = [
 
 [[package]]
 name = "thunder-sandbox"
-version = "0.7.1"
+version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/89/3b275dfb6b6d099e7eec18b98ef0b71532b5494724922d194cf37dba75d5/thunder_sandbox-0.7.1.tar.gz", hash = "sha256:3550754fd6980434feaf949ab55af4963f4a63058751b72adc5de1f259dd73ce", size = 58421, upload-time = "2026-09-10T06:29:06.349Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/ff/1ad36a9361efe14a944102c6fa2839f1b0e74ee69434ce20a2e210aa9443/thunder_sandbox-0.7.3.tar.gz", hash = "sha256:a2f540e957c99fa4f089665591e755eaed01f408924c6c25092527a5240b8b7c", size = 60886, upload-time = "2026-09-16T23:09:03.499Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/eb/7e442c8b82f638da4690fc5ca0fac67b1895ef6f39005357a64771fe92e4/thunder_sandbox-0.7.1-py3-none-any.whl", hash = "sha256:3251f24c777ce7919c7da5a050724a013d9963b17b4c24328e0ff870e1c28154", size = 63201, upload-time = "2026-09-10T06:29:04.928Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/f2/8ff4e2e0615b8f4e5989e319b70e58f0a1ce7f2d92042d5fcb6993f85a62/thunder_sandbox-0.7.3-py3-none-any.whl", hash = "sha256:9d5739e6ca8932b499a8db8d8f941b1d57799327b2be8752d1d4a549d41ddcf7", size = 65049, upload-time = "2026-09-16T23:09:01.895Z" },
 ]
 
 [[package]]

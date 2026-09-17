@@ -229,3 +229,18 @@ def test_update_help_lists_options():
     result = runner.invoke(app, ["update", "--help"])
     assert result.exit_code == 0
     assert all(flag in result.output for flag in ("--dry-run", "--check", "--force"))
+
+
+def test_homebrew_update_never_queries_or_installs_from_pypi(monkeypatch):
+    import importlib
+    module = importlib.import_module('oddish.cli.update')
+    monkeypatch.setattr(module, 'inspect_install', lambda: _info(source='homebrew', manager='brew'))
+    monkeypatch.setattr(module, 'fetch_pypi_latest', lambda: pytest.fail('Homebrew must not query PyPI'))
+    result = runner.invoke(app, ['update', '--dry-run', '--json'])
+    assert result.exit_code == 1
+    assert 'brew upgrade abundant-ai/tap/oddish' in result.stdout
+
+
+def test_homebrew_upgrade_command_refuses_to_modify_managed_environment():
+    with pytest.raises(PackageError, match='brew upgrade'):
+        upgrade_command(_info(source='homebrew', manager='brew'))

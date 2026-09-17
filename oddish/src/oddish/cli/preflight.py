@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from rich.markup import escape
 
 from oddish.cli.api import resolve_local_task_paths
 from oddish.cli.config import console, error_console, print_json
@@ -17,7 +18,7 @@ def _location(finding: Finding) -> str:
     loc = str(finding.path)
     if finding.line is not None:
         loc = f"{loc}:{finding.line}"
-    return f" [dim]{loc}[/dim]"
+    return f" [dim]{escape(loc)}[/dim]"
 
 
 def render_findings(findings: list[Finding], *, downgrade: bool = False) -> None:
@@ -31,7 +32,7 @@ def render_findings(findings: list[Finding], *, downgrade: bool = False) -> None
         by_task.setdefault(f.task_dir, []).append(f)
 
     for task_dir, items in by_task.items():
-        error_console.print(f"\n[bold]{task_dir}[/bold]")
+        error_console.print(f"\n[bold]{escape(str(task_dir))}[/bold]")
         ordered = sorted(items, key=lambda f: 0 if f.severity is Severity.ERROR else 1)
         for f in ordered:
             is_error = f.severity is Severity.ERROR and not downgrade
@@ -39,10 +40,10 @@ def render_findings(findings: list[Finding], *, downgrade: bool = False) -> None
             label = f.severity.value if not downgrade else "forced"
             error_console.print(
                 f"  [{colour}]{label}[/{colour}] "
-                f"[dim]{f.check_id}[/dim] {f.message}{_location(f)}"
+                f"[dim]{f.check_id}[/dim] {escape(f.message)}{_location(f)}"
             )
             if f.fix_hint:
-                error_console.print(f"        [dim]{f.fix_hint}[/dim]")
+                error_console.print(f"        [dim]{escape(f.fix_hint)}[/dim]")
 
 
 def gate_preflight(

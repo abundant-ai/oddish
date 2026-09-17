@@ -32,7 +32,10 @@ from oddish.core.trial_artifacts import (
 )
 from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
-from oddish.observability import record_thunder_capacity_handoff
+from oddish.workers.queue.thunder_fallback import (
+    emit_thunder_handoff_event,
+    thunder_capacity_fallback_provider,
+)
 from oddish.costs.recorder import (
     close_agent_sandboxes,
     price_unpriced_spans,
@@ -87,6 +90,12 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.judge_costs import (
+    begin_judge_costs,
+    extract_judge_costs,
+    judge_costs_enabled,
+    settle_judge_costs,
+)
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     FallbackEnvironmentCompatibilityError,
@@ -400,23 +409,6 @@ def _is_non_retryable_outcome(trial: object, outcome: HarborOutcome | None) -> b
     return not RetryConfig.model_validate(retry or {}).should_retry(
         outcome.exception_type
     )
-
-
-def thunder_capacity_fallback_provider(
-    environment: str | None,
-    outcome: HarborOutcome | None,
-) -> str | None:
-    """Return the configured destination for an exact Thunder capacity miss."""
-    if not settings.thunder_capacity_fallback:
-        return None
-    if (environment or "").strip().lower() != EnvironmentType.THUNDER.value:
-        return None
-    if (
-        outcome is None
-        or outcome.provider_error_code != THUNDER_CAPACITY_UNAVAILABLE_CODE
-    ):
-        return None
-    return settings.thunder_fallback_provider
 
 
 def _is_thunder_capacity_hook_error(
@@ -1029,6 +1021,7 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     trial_attempt: int,
+    judge_costs: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
@@ -1037,6 +1030,19 @@ async def _store_trial_results(
     ):
         if not trial:
             return False, False
+        # Result ownership can end before paid verifier usage reaches us. The
+        # pre-execution marker authorizes only this worker's original attempt;
+        # settle that ledger even when all result updates below are forbidden.
+        judge_summary = None
+        if judge_costs is not None:
+            judge_summary = await settle_judge_costs(
+                session,
+                trial,
+                trial_attempt,
+                judge_costs,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+            )
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
@@ -1056,6 +1062,8 @@ async def _store_trial_results(
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
         if user_cancelled:
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
                     trial, outcome, preserve_checkpointed_cost=True
@@ -1082,6 +1090,9 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
             return False, False
+
+        if judge_summary is not None:
+            trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -1154,6 +1165,8 @@ async def _store_trial_results(
                 retry_after_seconds=outcome.retry_after_seconds,
             )
 
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             trial.has_trajectory = outcome.has_trajectory
 
             if derived_reward is not None:
@@ -2057,6 +2070,25 @@ async def _prepare_claimed_trial_attempt(
         prepared_task = await _prepare_trial_task(
             trial_id=trial_id, prepared_trial=prepared_trial
         )
+        if judge_costs_enabled(prepared_task.task_path):
+            async with _trial_session(trial_id, with_for_update=True) as (
+                session, trial
+            ):
+                if (
+                    trial is None
+                    or trial.attempts != prepared_trial.trial_attempt
+                    or not await _worker_still_owns_trial(
+                        session, trial, worker_id=worker_id, worker_job_id=worker_job_id
+                    )
+                ):
+                    raise RuntimeError("Verifier judge attempt is no longer owned")
+                await begin_judge_costs(
+                    session,
+                    trial,
+                    prepared_trial.trial_attempt,
+                    worker_id=worker_id,
+                    worker_job_id=worker_job_id,
+                )
         os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
         span_provider = (
@@ -2130,6 +2162,10 @@ async def _settle_trial_attempt(
     probe_analysis: dict | None = None,
 ) -> bool:
     """Persist one attempt result and run its terminal lifecycle exactly once."""
+    judge_costs = extract_judge_costs(
+        execution.outcome.job_dir if execution.outcome else None,
+        execution.outcome.job_result_path if execution.outcome else None,
+    )
     trial_terminal, run_post_trial_hooks = await asyncio.shield(
         _store_trial_results(
             trial_id=trial_id,
@@ -2142,6 +2178,7 @@ async def _settle_trial_attempt(
             worker_id=worker_id,
             worker_job_id=worker_job_id,
             trial_attempt=prepared_trial.trial_attempt,
+            judge_costs=judge_costs,
         )
     )
     await _finish_trial_settlement(
@@ -2332,16 +2369,13 @@ async def run_trial_job(
             execution.outcome,
         )
         if fallback_provider is not None:
-            message = (
-                "metric=thunder_capacity_handoff outcome=requested "
-                f"job_id={worker_job_id or 'unknown'} trial_id={trial_id} "
-                f"target={fallback_provider} "
-                f"reason={THUNDER_CAPACITY_UNAVAILABLE_CODE}"
-            )
-            console.print(message)
-            logger.info(message)
-            record_thunder_capacity_handoff(
-                outcome="requested", target_environment=fallback_provider
+            emit_thunder_handoff_event(
+                "requested",
+                job_id=worker_job_id,
+                trial_id=trial_id,
+                target=fallback_provider,
+                handoff=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+                reason="provider_capacity_unavailable",
             )
             # Do not run ordinary failure settlement: the worker outcome layer
             # owns the atomic trial/job/ledger/lease transition. Returning from
@@ -2460,10 +2494,6 @@ async def run_trial_job(
                 reward=execution.outcome.reward,
             )
 
-        # Cleanup local Harbor artifacts AFTER both uploads complete.
-        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
-            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
-
         trial_terminal = await _settle_trial_attempt(
             trial_id=trial_id,
             prepared_trial=prepared_trial,
@@ -2474,6 +2504,10 @@ async def run_trial_job(
             artifact_upload_error=artifact_upload_error,
             probe_analysis=probe_analysis,
         )
+        # Settlement reads verifier usage and contract errors from these files.
+        # Remove them only after both uploads and result settlement complete.
+        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
+            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
     finally:
         heartbeat_stop.set()
         if not heartbeat_interrupt.done():

@@ -291,6 +291,11 @@ Common optional settings:
 
 ### Observability (Pydantic Logfire)
 
+Tracing explicitly accepts incoming W3C parent context. New queued jobs save
+only the trace headers and restore that parent for each worker attempt. Retries
+and provider reroutes retain the saved parent; handlers do not receive the
+reserved trace field. API and worker code must both include this support.
+
 Optional. Provision a write token in Logfire, then create the dedicated
 `oddish-logfire` secret in Modal's `main` environment so the API containers and
 workers both pick it up without modifying the `oddish-prod` secret:
@@ -367,13 +372,23 @@ Railway/Docker deployment path, and the Modal worker image installs it as well.
 
 ### Thunder Harbor backend
 
-Thunder is an explicit GPU provider; it is never selected automatically. Set
+Thunder is the default GPU provider on deployments that enable it: it sits
+between Daytona and Modal in the runtime registry, so a GPU submission with no
+explicit environment routes to Thunder when its `gpu_types` names exactly one
+accelerator Thunder offers (A6000, A100, H100), while plain-CPU work stays on
+Daytona and private-registry pulls, untyped GPU requests, and other GPU types
+stay on Modal. Deployments that leave it disabled
+keep Modal as the GPU default. A trial that has failed
+`ODDISH_THUNDER_MAX_FAILED_ATTEMPTS` attempts on Thunder (default 2; 0
+disables) has its next retry moved to `ODDISH_THUNDER_FALLBACK_PROVIDER`
+(default `modal`) by the same atomic handoff the capacity fallback uses. Set
 these non-secret deploy values in `backend/.env` or the deploy environment:
 
 ```bash
 ODDISH_THUNDER_ENABLED=true
 ODDISH_THUNDER_SECRET_NAME=oddish-thunder
 ODDISH_THUNDER_MAX_CAPACITY=128
+ODDISH_THUNDER_MAX_FAILED_ATTEMPTS=2
 ```
 
 Create `oddish-thunder` in the same Modal environment as the app with exactly
@@ -390,7 +405,7 @@ uv run modal secret create oddish-thunder \
 The global capacity is enforced with durable, atomic provider leases across
 all organizations, models, queue keys, and Harbor variants. Cancellation and
 orphan cleanup operate on the persisted sandbox ID through the provider SDK.
-Thunder uses `thunder-sandbox==0.7.1` and its Python dependencies (`aiohttp`,
+Thunder uses `thunder-sandbox==0.7.3` and its Python dependencies (`aiohttp`,
 `asyncssh`, and `cryptography`); it does not shell out to `ssh`, `scp`, or
 `ssh-keygen`.
 

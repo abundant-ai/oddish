@@ -22,6 +22,10 @@ return its value. `oddish version` and `oddish update` are local. The API
 target resolves in this order: `ODDISH_API_URL`, `ODDISH_PREVIEW_PR`, then
 hosted Oddish.
 
+An existing controller trace can be passed as `ODDISH_TRACE_CONTEXT` JSON with
+only `traceparent` and optional `tracestate`. API requests carry these headers;
+presigned storage requests do not. Never put tokens or task contents there.
+
 Run `oddish <command> --help` before relying on an option not shown here.
 `--json` exists on many operational commands, but it is not a global option.
 `oddish logs`, `oddish link`, and `oddish probe` do not provide JSON output.
@@ -148,3 +152,16 @@ predicate, response schema, endpoint, or Typer command definition over prose
 documentation. `AGENTS.md` is the architecture guide; `DOCS.md` is the end-user
 CLI guide. Plans and handoff notes describe proposed or historical work, not
 the running contract.
+
+### Homebrew installation
+
+The private Homebrew tap requires GitHub read access to `abundant-ai/homebrew-tap`.
+Install `gh` with `brew install gh`, then run `gh auth login` and
+`gh auth setup-git`. Install with `brew install abundant-ai/tap/oddish`.
+Set `ODDISH_API_KEY` for your Oddish organization before making API requests.
+Update with `brew update && brew upgrade abundant-ai/tap/oddish`. Homebrew owns
+this installation; `oddish update` directs you to Homebrew instead of replacing
+it from PyPI. `oddish version --check` prints the Homebrew check command.
+The Homebrew package includes CLI and shared client helpers, not the Oddish
+server, database, or worker implementations. Releases are maintained in
+https://github.com/abundant-ai/homebrew-tap.

@@ -5,9 +5,19 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  attachUpstreamCacheHeaders,
+  attachUpstreamServerTiming,
+  backendFetchHeaders,
+  notModifiedResponse,
+} from "@/lib/proxy-headers";
 
+// A finished trial's trajectory is immutable, so the backend marks it
+// cacheable and answers If-None-Match with 304. Both pass through here
+// unchanged; the upstream fetch stays `no-store` because the browser is
+// the cache meant to hold the body.
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ trial_id: string }> },
 ) {
   try {
@@ -19,8 +29,12 @@ export async function GET(
     const url = getBackendUrl("trials", `/${trial_id}/trajectory`);
     const res = await fetch(url, {
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: backendFetchHeaders(request, getAuthHeaders(token)),
     });
+
+    if (res.status === 304) {
+      return notModifiedResponse(res);
+    }
 
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
@@ -32,7 +46,10 @@ export async function GET(
     }
 
     // Return null as valid response if no trajectory exists
-    return NextResponse.json(data);
+    return attachUpstreamServerTiming(
+      attachUpstreamCacheHeaders(NextResponse.json(data), res),
+      res,
+    );
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

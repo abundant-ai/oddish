@@ -122,11 +122,12 @@ export function TaskVerdictBadge({
   qaActive = false,
   isCancelling,
   error,
+  action,
   mustFixCount = task.must_fix_count ?? 0,
 }: {
   task: Task;
   variant: "card" | "inline" | "summary";
-  rejectionSource?: "Pre-trial audit" | "Run QA Verdict";
+  rejectionSource?: "Pre-trial audit" | "Trial analysis";
   onViewFindings?: () => void;
   onRunJudge?: () => void;
   onCancelJudge?: () => void;
@@ -134,6 +135,7 @@ export function TaskVerdictBadge({
   qaActive?: boolean;
   isCancelling?: boolean;
   error?: string | null;
+  action?: ReactNode;
   /** Required findings for the selected version, including run reviews. */
   mustFixCount?: number;
 }) {
@@ -143,7 +145,7 @@ export function TaskVerdictBadge({
     Boolean(task.run_analysis) ||
     Boolean(task.verdict_status) ||
     Boolean(task.verdict);
-  if (!hasAny && !onRunJudge) return null;
+  if (!hasAny && !onRunJudge && !action) return null;
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize, qaActive, mustFixCount);
@@ -252,32 +254,33 @@ export function TaskVerdictBadge({
             </p>
           ) : null}
         </div>
-        {showCancelButton ? (
-          <Button
-            type="button"
-            variant="destructive"
-            onClick={onCancelJudge}
-            disabled={isCancelling}
-            className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
-          >
-            {isCancelling ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <OctagonX className="mr-1 h-3.5 w-3.5" />
-            )}
-            {isCancelling ? "Cancelling..." : "Cancel QA"}
-          </Button>
-        ) : showRunButton ? (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onRunJudge}
-            disabled={isRunning}
-            className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
-          >
-            {runLabel}
-          </Button>
-        ) : null}
+        {action ??
+          (showCancelButton ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={onCancelJudge}
+              disabled={isCancelling}
+              className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
+            >
+              {isCancelling ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <OctagonX className="mr-1 h-3.5 w-3.5" />
+              )}
+              {isCancelling ? "Cancelling..." : "Cancel QA"}
+            </Button>
+          ) : showRunButton ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onRunJudge}
+              disabled={isRunning}
+              className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
+            >
+              {runLabel}
+            </Button>
+          ) : null)}
       </div>
     );
   }

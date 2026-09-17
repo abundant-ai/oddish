@@ -298,6 +298,12 @@ async def get_experiment_cost_totals(
     totals.qa_cost_usd = qa.qa_cost_usd
     totals.owned_qa_cost_usd = qa.owned_qa_cost_usd
     totals.qa_has_estimated = qa.qa_has_estimated
+    totals.qa_cost_complete = qa.qa_cost_complete
+    totals.qa_unpriced_count = qa.qa_unpriced_count
+    totals.qa_pending_count = qa.qa_pending_count
+    totals.owned_qa_cost_complete = qa.owned_qa_cost_complete
+    totals.owned_qa_unpriced_count = qa.owned_qa_unpriced_count
+    totals.owned_qa_pending_count = qa.owned_qa_pending_count
 
     exclusions = await load_cost_exclusions(session)
     totals.experiment_cost_excluded = exclusions.excludes(experiment_id=experiment_id)

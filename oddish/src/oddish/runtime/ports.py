@@ -10,6 +10,7 @@ phase; it is intentionally NOT defined here (YAGNI).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,12 +19,35 @@ from typing import Any, Literal, Protocol, runtime_checkable
 LatencyClass = Literal["instant", "seconds", "minutes"]
 
 
+def accelerator_family(value: str) -> str:
+    """Normalize a GPU name across providers: case, ``:count`` and ``!``
+    suffixes, and the A100 memory variants all collapse to one family."""
+    normalized = value.strip().upper().replace("_", "-").rstrip("!")
+    normalized = normalized.split(":", 1)[0].rstrip("!")
+    if normalized in {"A100", "A100XL", "A100-40", "A100-80", "A100-40GB", "A100-80GB"}:
+        return "A100"
+    return normalized
+
+
 @dataclass(frozen=True)
 class GpuSupport:
     """Accelerator support — a fallback-ordered list, never a bool (spec §8)."""
 
     accelerators: tuple[str, ...]
     max_count: int
+    # True for a backend with no "any GPU" pool: it launches only a request
+    # that names exactly one of its ``accelerators`` (Thunder). Every other
+    # backend takes any request and validates the name itself at launch.
+    requires_named_accelerator: bool = False
+
+    def serves(self, gpu_types: Sequence[str] | None) -> bool:
+        """Whether a task's acceptable GPU types (``None`` = any) fit here."""
+        if not self.requires_named_accelerator:
+            return True
+        if not gpu_types or len(gpu_types) != 1:
+            return False
+        offered = {accelerator_family(name) for name in self.accelerators}
+        return accelerator_family(gpu_types[0]) in offered
 
 
 @dataclass(frozen=True)

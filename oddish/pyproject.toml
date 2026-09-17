@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oddish"
-version = "0.1.13"
+version = "0.1.14"
 description = "Run Harbor tasks in the cloud with scheduling, monitoring, and persistent state"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -93,7 +93,7 @@ worker = [
     "archil==0.12.0",
     # Hosted workers orchestrate Thunder sandboxes directly. Keep this aligned
     # with Harbor's thunder extra so cancellation can recover a sandbox by id.
-    "thunder-sandbox==0.7.1",
+    "thunder-sandbox==0.7.3",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",

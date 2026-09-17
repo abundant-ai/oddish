@@ -903,6 +903,7 @@ async def _compute_board(
                     TaskVersionModel.pre_trial,
                     TaskVersionModel.reported_findings,
                     TaskVersionModel.pre_trial_status,
+                    TaskVersionModel.pre_trial_error,
                     TaskVersionModel.content_hash,
                     TaskVersionModel.pre_trial_started_at,
                     TaskVersionModel.pre_trial_finished_at,
@@ -1085,6 +1086,8 @@ async def _compute_board(
                 audited,
                 f"pre-trial audit completed on {vlabel}; defect checks are separate"
                 if audited
+                else version.pre_trial_error
+                if version.pre_trial_status == VerdictStatus.FAILED and version.pre_trial_error
                 else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
                 [audit_label],
             )
@@ -1095,8 +1098,7 @@ async def _compute_board(
             automated(
                 "min_rollouts",
                 count >= min_trials and agents >= min_agents,
-                f"{count}/{min_trials} trials, {agents}/{min_agents} agents "
-                f"on {vlabel}",
+                f"{count}/{min_trials} runs and {agents}/{min_agents} agents for verdict required.",
                 ([f"Runs: {count}/{min_trials}"] if count < min_trials else [])
                 + ([f"Agents: {agents}/{min_agents}"] if agents < min_agents else []),
             )
@@ -1111,7 +1113,9 @@ async def _compute_board(
                 automated(
                     "verdict_ok",
                     False,
-                    f"no completed QA verdict on {vlabel}",
+                    qa_statuses[task.id].detail
+                    if qa_statuses.get(task.id, DeliveryQAStatus()).status == "error"
+                    else f"no completed QA verdict on {vlabel}",
                     [verdict_label],
                 )
             elif latest_qa_version.get(task.id) != version.id:
