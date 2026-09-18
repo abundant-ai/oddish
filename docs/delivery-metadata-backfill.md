@@ -131,6 +131,32 @@ apply operation still needs uniqueness constraints, an import receipt, and fresh
 organization/identity checks. A preview must not become an unrestricted write
 payload. Changes to identities or inventory values also need a fresh review.
 
+## Persisted tables
+
+Migration `delivery_history_001` adds the tables that reviewed facts are
+written to. They are separate from `deliveries`, `delivery_tasks`, and
+`delivery_snapshots`; nothing in them decides readiness or records a new
+shipment. Every fact row names its source records and the import receipt that
+wrote it, and task references are `ON DELETE RESTRICT`, so retiring a task
+(a soft delete) keeps its history readable.
+
+| Table | One row per | Uniqueness |
+| --- | --- | --- |
+| `metadata_import_receipts` | preview or apply run of a plan | id |
+| `task_source_records` | retained source row: allowlisted `facts`, never the verbatim row | `(org_id, record_id)` |
+| `task_aliases` | name a task has carried, with `valid_from` / `valid_until` and retraction | one live alias (`valid_until` and `retracted_at` NULL) per `(org_id, name)` |
+| `task_metadata_assertions` | source-backed `field = value` for a task, with retraction | `(org_id, task_id, field, value)`: conflicting values coexist, duplicates do not |
+| `task_delivery_history` | task membership in a customer batch, from one source row | `(org_id, source_record_id)`; `customer_acceptance` limited to unknown / accepted / rejected / returned |
+
+`task_delivery_history.customer_label` and `batch` are quoted from the source;
+`customer_id` links to a `customers` row only once an operator confirms the
+mapping. Shipped version, content hash, program, acceptance, and finalization
+stay NULL/unknown until a source establishes them.
+
+For local database tests, use a database migrated with the core stack only
+(`oddish/`): the hosted stack's migrations add a foreign key from `tasks` to
+`organizations`, which the core test fixtures do not populate.
+
 ## Verification
 
 The tests run without server dependencies or a database:
