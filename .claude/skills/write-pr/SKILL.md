@@ -40,6 +40,11 @@ with the page and state named. Otherwise "No user-visible change.">
 <What was exercised, the relevant environment, and observed results.
 Include important failures or untested behavior.>
 
+When the change touches dashboard UI under `frontend/src/`, the Local testing
+section must say whether matching Playwright specs under `frontend/e2e/` were
+updated and what was run (see CONTRIBUTING.md documents-to-update). Those
+specs are UI-dependent; do not omit them from a UI PR.
+
 ### Core files changed
 
 - **`path/file.ext`** — <What this file does differently and which
