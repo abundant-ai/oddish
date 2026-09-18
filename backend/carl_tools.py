@@ -12,6 +12,7 @@ from carl_catfish import (
     fetch_catfish_costs,
     format_catfish_breakdown,
     format_catfish_costs,
+    maybe_queue_catfish_chart,
 )
 from oddish.timing import RequestTimedAsyncClient
 from pglast.parser import ParseError as _ParseError
@@ -641,7 +642,9 @@ async def catfish_costs(args: dict) -> dict:
     data = await fetch_catfish_costs(params)
     if isinstance(data, str):
         return _text(f":warning: {data}")
-    return _text(format_catfish_costs(data))
+    text = format_catfish_costs(data)
+    await maybe_queue_catfish_chart(params, text)
+    return _text(text)
 
 
 @tool(
@@ -670,7 +673,9 @@ async def catfish_breakdown(args: dict) -> dict:
     data = await fetch_catfish_costs(params)
     if isinstance(data, str):
         return _text(f":warning: {data}")
-    return _text(format_catfish_breakdown(data))
+    text = format_catfish_breakdown(data)
+    await maybe_queue_catfish_chart(params, text)
+    return _text(text)
 
 
 SERVER_NAME = "oddish"
