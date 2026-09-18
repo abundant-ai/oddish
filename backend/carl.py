@@ -76,14 +76,15 @@ def _bot_token() -> str:
     raise RuntimeError("Carl's Slack bot token is not configured")
 
 
-def _slack_call(method: str, **payload: Any) -> dict:
+def _slack_call(method: str, *, form: dict[str, Any] | None = None, **payload: Any) -> dict:
     headers = {"Authorization": f"Bearer {_bot_token()}"}
+    body = {"data": form} if form is not None else {"json": payload}
     for attempt in range(_SLACK_RETRIES + 1):
         response = httpx.post(
             f"https://slack.com/api/{method}",
             headers=headers,
-            json=payload,
             timeout=10,
+            **body,
         )
         if response.status_code == 429 and attempt < _SLACK_RETRIES:
             time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
@@ -114,6 +115,51 @@ def _post(channel: str, thread: str, text: str) -> str:
     return _slack_call(
         "chat.postMessage", channel=channel, thread_ts=thread, text=text[:cut]
     )["ts"]
+
+
+def _upload_file(
+    channel: str,
+    thread: str,
+    content: bytes,
+    *,
+    filename: str,
+    caption: str,
+) -> dict:
+    """Slack external upload. Needs files:write on the Carl bot."""
+    ticket = _slack_call(
+        "files.getUploadURLExternal",
+        form={"filename": filename, "length": str(len(content))},
+    )
+    for attempt in range(_SLACK_RETRIES + 1):
+        response = httpx.post(ticket["upload_url"], content=content, timeout=30)
+        if response.status_code == 429 and attempt < _SLACK_RETRIES:
+            time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
+            continue
+        response.raise_for_status()
+        break
+    else:
+        raise RuntimeError("Slack file upload failed: retries exhausted")
+    escaped = _escape(caption)
+    cut = _split_at(escaped, _MAX_SLACK)
+    return _slack_call(
+        "files.completeUploadExternal",
+        files=[{"id": ticket["file_id"], "title": "Daily spend by provider"}],
+        channel_id=channel,
+        thread_ts=thread,
+        initial_comment=escaped[:cut],
+    )
+
+
+def _post_catfish_charts(channel: str, thread: str) -> None:
+    from carl_catfish import drain_catfish_charts
+
+    for png, caption, filename in drain_catfish_charts():
+        try:
+            _upload_file(
+                channel, thread, png, filename=filename, caption=caption
+            )
+        except Exception:
+            log.exception("catfish chart upload failed channel=%s", channel)
 
 
 def _update(channel: str, ts: str, text: str) -> None:

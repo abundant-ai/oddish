@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
+import re
 
 import httpx
 from oddish.timing import RequestTimedAsyncClient
+
+log = logging.getLogger("oddish.carl")
 
 _DEFAULT_URL = "https://costs.abundant.run"
 _RANGES = {
@@ -32,6 +36,9 @@ _PROVIDERS = {
 }
 _GROUPS = ("provider", "model", "project", "owner", "key")
 _COST_KINDS = ("compute", "token")
+_PNG_MAGIC = b"\x89PNG"
+_CHART_FILENAME_RE = re.compile(r'filename="([^"]+\.png)"')
+_pending_charts: list[tuple[bytes, str, str]] = []
 
 
 def _money(n: object) -> str:
@@ -104,23 +111,72 @@ def catfish_query_params(args: dict, *, default_group: str) -> dict[str, str] | 
     return params
 
 
-async def fetch_catfish_costs(params: dict[str, str]) -> dict | str:
+async def _catfish_get(path: str, params: dict[str, str]) -> httpx.Response | str:
     cfg = catfish_config()
     if isinstance(cfg, str):
         return cfg
     url, headers = cfg
     try:
         async with RequestTimedAsyncClient(timeout=60) as client:
-            response = await client.get(
-                f"{url}/api/carl/costs", headers=headers, params=params
-            )
+            response = await client.get(f"{url}{path}", headers=headers, params=params)
             response.raise_for_status()
-            return response.json()
+            return response
     except httpx.HTTPStatusError as exc:
         body = (exc.response.text or "").strip()[:300]
         return f"Catfish HTTP {exc.response.status_code}: {body or exc}"
     except httpx.HTTPError as exc:
         return f"Could not reach Catfish: {type(exc).__name__}: {exc}"
+
+
+async def fetch_catfish_costs(params: dict[str, str]) -> dict | str:
+    response = await _catfish_get("/api/carl/costs", params)
+    if isinstance(response, str):
+        return response
+    return response.json()
+
+
+def _chart_filename(response: httpx.Response) -> str:
+    header = response.headers.get("content-disposition") or ""
+    match = _CHART_FILENAME_RE.search(header)
+    name = match.group(1) if match else "catfish-mix.png"
+    if "/" in name or "\\" in name:
+        return "catfish-mix.png"
+    return name
+
+
+async def fetch_catfish_chart(params: dict[str, str]) -> tuple[bytes, str] | str:
+    """Same auth and query as costs; PNG of the daily provider mix."""
+    response = await _catfish_get("/api/carl/chart", params)
+    if isinstance(response, str):
+        return response
+    body = response.content
+    if not body.startswith(_PNG_MAGIC):
+        return "Catfish chart was not a PNG"
+    return body, _chart_filename(response)
+
+
+def queue_catfish_chart(png: bytes, caption: str, filename: str = "catfish-mix.png") -> None:
+    _pending_charts.append((png, caption, filename))
+
+
+def drain_catfish_charts() -> list[tuple[bytes, str, str]]:
+    items = list(_pending_charts)
+    _pending_charts.clear()
+    return items
+
+
+async def maybe_queue_catfish_chart(params: dict[str, str], caption: str) -> None:
+    """Proof PNG for a successful text answer. Failures stay off the Slack reply."""
+    try:
+        chart = await fetch_catfish_chart(params)
+    except Exception:
+        log.exception("catfish chart fetch failed")
+        return
+    if isinstance(chart, str):
+        log.info("catfish chart skipped: %s", chart)
+        return
+    png, filename = chart
+    queue_catfish_chart(png, caption, filename)
 
 
 def _window_label(data: dict) -> str:
@@ -150,6 +206,15 @@ def _coverage_lines(data: dict) -> list[str]:
     return lines
 
 
+def _view_lines(data: dict) -> list[str]:
+    view = data.get("view")
+    if not isinstance(view, str) or not view.startswith("https://"):
+        return []
+    # Bare URL: `_deliver` HTML-escapes the answer, so Slack `<url|label>`
+    # would render as literal angle brackets.
+    return ["", f"Open this view in Catfish: {view}"]
+
+
 def format_catfish_costs(data: dict) -> str:
     totals = data.get("totals") or {}
     lines = [
@@ -164,6 +229,7 @@ def format_catfish_costs(data: dict) -> str:
         lines += ["", "*Daily*"]
         for point in series:
             lines.append(f"• {point.get('date')}: {_money(point.get('usd'))}")
+    lines += _view_lines(data)
     return "\n".join(lines)
 
 
@@ -189,4 +255,5 @@ def format_catfish_breakdown(data: dict) -> str:
                 f"prior {_money(row.get('previousUsd'))}  "
                 f"({_delta(row.get('changePercent'))})"
             )
+    lines += _view_lines(data)
     return "\n".join(lines)
