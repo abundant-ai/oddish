@@ -1,7 +1,11 @@
 name: "E2E: CLI smoke"
 
-# Two independent pytest suites on separate runners. They share no database
-# state and used to run back-to-back in one job after a single uv sync.
+# Two independent pytest suites on separate runners. They used to run
+# back-to-back in one job after a single uv sync: e2e's session `schema`
+# fixture created tables, then the delivery suite reused that same Postgres.
+# Split into parallel jobs, each with its own Postgres service; the delivery
+# job therefore creates the schema itself (same create_all + index DDL as
+# tests/e2e/conftest.py) before collecting.
 #
 # `e2e` runs the opt-in end-to-end CLI suite (backend/tests/e2e) against a real
 # uvicorn server, the real oddish CLI subprocess, and a real Postgres. This is
@@ -129,6 +133,43 @@ jobs:
 
       - name: Sync backend dependencies
         run: uv sync --frozen
+
+      # Mirrors backend/tests/e2e/conftest.py::schema. Delivery tests insert into
+      # core/cloud tables but have no create_all of their own; when they shared
+      # the e2e job they inherited that session fixture's empty-Postgres bootstrap.
+      - name: Create database schema
+        env:
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          import os
+
+          from sqlalchemy import text
+          from sqlalchemy.ext.asyncio import create_async_engine
+
+          import models  # noqa: F401 — register cloud tables on shared Base
+          from oddish.db.models import Base
+
+          INDEX_DDL = (
+              "CREATE UNIQUE INDEX IF NOT EXISTS uq_worker_jobs_tag_project_active "
+              "ON worker_jobs (kind, subject_table, subject_id) "
+              "WHERE kind = 'TAG_PROJECT' "
+              "AND status IN ('QUEUED', 'RETRYING') "
+              "AND subject_id IS NOT NULL"
+          )
+
+          async def main() -> None:
+              engine = create_async_engine(os.environ["ODDISH_DATABASE_URL"])
+              try:
+                  async with engine.begin() as conn:
+                      await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+                      await conn.execute(text(INDEX_DDL))
+              finally:
+                  await engine.dispose()
+
+          asyncio.run(main())
+          PY
 
       - name: Check delivery pages and approval rules
         env:
