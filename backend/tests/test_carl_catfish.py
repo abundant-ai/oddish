@@ -94,6 +94,19 @@ def test_format_costs_warns_on_coverage_gaps():
     assert "Anthropic pending" in text
     assert "do not treat a missing day as $0" in text
     assert "2026-09-16: $24,556.05" in text
+    assert "Open this view" not in text
+
+
+def test_format_includes_https_view_link():
+    view = "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17&provider=anthropic&gby=line"
+    costs = format_catfish_costs({**PAYLOAD, "view": view})
+    breakdown = format_catfish_breakdown({**PAYLOAD, "view": view})
+    assert f"Open this view in Catfish: {view}" in costs
+    assert f"Open this view in Catfish: {view}" in breakdown
+    assert "<" not in costs and ">" not in breakdown
+    assert "javascript:alert(1)" not in format_catfish_costs(
+        {**PAYLOAD, "view": "javascript:alert(1)"}
+    )
 
 
 def test_format_breakdown_lists_models():
