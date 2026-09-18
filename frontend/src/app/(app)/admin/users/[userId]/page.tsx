@@ -37,6 +37,7 @@ import type {
   UserCostTaskBreakdown,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { overlayVerifierSeries } from "@/lib/cost-chart-series";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
@@ -59,9 +60,9 @@ const TASK_LIMIT = 100;
 
 // Every dimension the dashboard offers but "user" — this page is one user.
 const CHART_DIMENSIONS: ChartDimension[] = [
+  "type",
   "agent",
   "model",
-  "type",
   "analysis_type",
   "compute",
 ];
@@ -76,7 +77,10 @@ function seriesFor(
 ): CostSeries {
   switch (dimension) {
     case "agent":
-      return data.series_by_agent ?? data.series_by_model;
+      return overlayVerifierSeries(
+        data.series_by_agent ?? data.series_by_model,
+        data.series_by_type
+      );
     case "type":
       return data.series_by_type ?? data.series_by_model;
     case "analysis_type":
@@ -84,12 +88,19 @@ function seriesFor(
     case "compute":
       return data.series_compute_by_provider ?? EMPTY_SERIES;
     default:
-      return data.series_by_model;
+      return overlayVerifierSeries(data.series_by_model, data.series_by_type);
   }
 }
 
 function seriesTotal(series: CostSeries | undefined): number {
   return (series?.buckets ?? []).reduce((sum, b) => sum + b.cost_usd, 0);
+}
+
+function seriesKeyTotal(series: CostSeries | undefined, key: string): number {
+  return (series?.buckets ?? []).reduce(
+    (sum, bucket) => sum + (bucket.costs?.[key] ?? 0),
+    0
+  );
 }
 
 function estimatedPct(cost: number, estimated: number): number {
@@ -340,7 +351,7 @@ export default function AdminUserCostPage({
   const [windowDays, setWindowDays] = useState(() =>
     WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7"
   );
-  const [dimension, setDimension] = useState<ChartDimension>("model");
+  const [dimension, setDimension] = useState<ChartDimension>("type");
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
     `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}`,
@@ -352,11 +363,17 @@ export default function AdminUserCostPage({
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const status = (error as { status?: number } | undefined)?.status;
   // totals.cost_usd is inference alone; the header badge reads as this user's
-  // whole window spend, so it sums the three parts broken out below it.
+  // whole window spend, so it sums the parts broken out below it. CUA is
+  // usually platform-funded (no billed user); include it when this response
+  // actually carries a verifier stack.
+  const verifierTotal = data
+    ? seriesKeyTotal(data.series_by_type, "verifier")
+    : 0;
   const grandTotal = data
     ? data.totals.cost_usd +
       seriesTotal(data.series_qa_by_model) +
-      seriesTotal(data.series_compute_by_provider)
+      seriesTotal(data.series_compute_by_provider) +
+      verifierTotal
     : 0;
 
   return (
@@ -446,6 +463,11 @@ export default function AdminUserCostPage({
               <Badge variant="outline">
                 QA {formatCostUsd(seriesTotal(data.series_qa_by_model))}
               </Badge>
+              {verifierTotal > 0 && (
+                <Badge variant="outline">
+                  verifier {formatCostUsd(verifierTotal)}
+                </Badge>
+              )}
               <Badge variant="outline">
                 compute{" "}
                 {formatCostUsd(seriesTotal(data.series_compute_by_provider))}
