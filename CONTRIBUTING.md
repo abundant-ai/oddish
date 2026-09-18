@@ -44,7 +44,14 @@ git fetch origin main && git checkout -b fix/<name> origin/main
 
 Open it as a normal feature PR into `staging`, get an expedited review,
 squash-merge, then promote immediately. This is the standard path; use it
-whenever the pipeline is fast enough for the incident.
+whenever the pipeline is fast enough for the incident. Pin the hotfix sha
+on the staging→main promotion PR (`promotion-target` or `/promote <sha>`)
+so later staging commits do not ride along, and do not wait for an extra
+staging soak after Staging Deploy is green.
+
+For the timed checklist, required checks, rollback commands, and the dry-run
+rehearsal (`rehearse_urgent_hotfix.sh`), see
+[`docs/urgent-hotfix-release.md`](docs/urgent-hotfix-release.md).
 
 Break-glass (landing a fix on `main` directly) is only for two cases: the
 pipeline is too slow for the incident, or `staging` holds work that cannot

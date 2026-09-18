@@ -48,6 +48,18 @@ aggregation code. It does not launch evaluations. Every batch commits separately
 resume with `--after-id <last-logged-version-id>`. Without that argument a rerun
 starts at the beginning. Versions with no eligible trials do not stall paging.
 
+## Urgent hotfix release rehearsal
+
+Read-only dry-run of the promote gates (never pushes):
+
+```sh
+.github/scripts/promote/rehearse_urgent_hotfix.sh
+.github/scripts/promote/rehearse_urgent_hotfix.sh <staging_commit_sha>
+```
+
+Procedure, required checks, rollback, and the filled rehearsal record:
+[urgent-hotfix-release.md](urgent-hotfix-release.md).
+
 ## Evaluation instructions and historical material
 
 Use [the SWE-Marathon runbook](swe-marathon-eval-runbook.md) for the evaluation
