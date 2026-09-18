@@ -38,9 +38,12 @@ See [the runbook](delivery-metadata-backfill.md) for commands and output definit
 
 ## 2. Persist reviewed facts in Oddish
 
-- [ ] Add source-backed task aliases, metadata assertions, and historical delivery
+- [x] Add source-backed task aliases, metadata assertions, and historical delivery
   records with database uniqueness constraints; keep them separate from active
-  delivery checklists and finalized snapshots.
+  delivery checklists and finalized snapshots. (Migration `delivery_history_001`;
+  tables listed in the runbook. Verified September 17 on a core-only local
+  database: `6 passed` in `test_task_history_schema.py`, downgrade/upgrade
+  round-trip, and identical schema from the fresh-bootstrap path.)
 - [x] Decide how the inventory export and the import reach production.
   Decided September 17: the operator runs it from a laptop with the `oddish`
   CLI; permanent tool; `GET /deliveries/task-inventory` (tasks scope),
