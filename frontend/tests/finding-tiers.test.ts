@@ -240,3 +240,36 @@ test("hosted overview votes on audit findings, trial findings, and analyses", as
   render("/api/public/share-1");
   assert.equal(controls.length, 0);
 });
+
+test("an audit without a recorded trial id takes no finding vote", () => {
+  controls.length = 0;
+  renderToStaticMarkup(
+    React.createElement(TaskOverviewPanel, {
+      taskId: "task-1",
+      apiBaseUrl: "/api",
+      version: 2,
+      checksStatus: "success",
+      checksFindings: [{ id: "audit-1", title: "Audit finding" }],
+      scopeTrials: [
+        {
+          id: "trial-1",
+          agent: "codex",
+          task_version: 2,
+          status: "completed",
+          created_at: "2026-09-17T00:00:00Z",
+          analysis_status: "success",
+          analysis: {
+            classification: "GOOD_FAILURE",
+            action_items: [{ id: "item-1", title: "Trial finding" }],
+          },
+        } as Trial,
+      ],
+      onRerunChecks: hidden,
+      checksRerunning: false,
+    })
+  );
+  assert.deepEqual(
+    controls.map((c) => c.label).sort(),
+    ["action item: Trial finding", "the Good failure analysis of codex"]
+  );
+});

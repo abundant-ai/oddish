@@ -422,19 +422,21 @@ export function TaskOverviewPanel({
     );
   };
   // An audit finding votes against the audit trial; a trial-only finding
-  // against the first trial that reported it.
-  const handleFindingFeedback = (record: FeedbackRecord) => {
-    const sourced =
+  // against the first trial that reported it. Audits that predate the
+  // recorded trial id have nothing to vote against.
+  const findingVoteTrialId = (findingId: string) => {
+    const sourced = findingSourcesById.get(findingId);
+    return sourced?.fromAudit
+      ? (checksTrialId ?? undefined)
+      : sourced?.trials[0]?.id;
+  };
+  const handleFindingFeedback = (record: FeedbackRecord) =>
+    postFeedback(
       record.target.kind === "action_item"
-        ? findingSourcesById.get(record.target.id)
-        : undefined;
-    return postFeedback(
-      sourced?.fromAudit
-        ? (checksTrialId ?? undefined)
-        : sourced?.trials[0]?.id,
+        ? findingVoteTrialId(record.target.id)
+        : undefined,
       record
     );
-  };
 
   const mustFixCount = findingItems.filter(
     (item) => (item.tier ?? item.severity) === "must_fix"
@@ -483,6 +485,7 @@ export function TaskOverviewPanel({
           onOpenSource={onOpenSource}
           renderItemFooter={renderFindingSources}
           onFeedback={canVote ? handleFindingFeedback : undefined}
+          canVoteOn={(item) => findingVoteTrialId(item.id ?? "") != null}
         />
       ) : null;
     if (checksLoadError) {
