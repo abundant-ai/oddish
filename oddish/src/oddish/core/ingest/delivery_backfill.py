@@ -296,7 +296,9 @@ def build_plan(
                 resolution = "source_id_unverified"
             elif task_id not in tasks:
                 resolution = "source_id_absent_from_inventory"
-            elif candidate_ids - {task_id}:
+            elif any(
+                not tasks[i].get("retired_at") for i in candidate_ids - {task_id}
+            ):
                 resolution = "name_collision"
             else:
                 resolution = "resolved_explicit_id"
