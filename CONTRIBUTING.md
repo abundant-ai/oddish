@@ -119,6 +119,7 @@ procedure.
 | API contracts, queue behavior, or storage layout | `AGENTS.md` |
 | `backend/` auth, deployment, or worker orchestration | `AGENTS.md` and `backend/README.md` |
 | `frontend/` routing, API proxy structure, or auth behavior | `AGENTS.md` and `frontend/README.md` |
+| Dashboard UI under `frontend/src/` (layout, copy, selectors, or user flows) | Matching Playwright specs under `frontend/e2e/` in the **same** pull request; say what you ran under Local testing (`pnpm test:e2e` or the relevant Playwright config). The suite is UI-dependent—leaving specs stale is a common agent miss after correct UI edits. |
 | Self-hosting steps, environment variables, or migrations | `SELF_HOSTING.md` |
 | Manually invoked diagnostics or repair commands | `docs/operations-tools.md` |
 | The release process or pull request rules | this file and `CLAUDE.md` |
