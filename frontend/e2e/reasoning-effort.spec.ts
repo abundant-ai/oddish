@@ -9,11 +9,21 @@ const leaderboard = (page: Page) =>
 const taskRow = (page: Page) =>
   page.getByRole("row").filter({ hasText: "repair-queue" });
 
-// Tests that leave /effort immediately never need Recharts hydration.
-// Wait for the task row instead of role=application, which timed out after
-// earlier tests even when the table and filters were already interactive.
+// Wait for the repair-queue row instead of Recharts role=application.
+// The chart is lazy and unused by most fixtures; after earlier tests it can
+// take the full 30s even when the table, dialog, and filters are ready.
 async function expectTaskRowReady(page: Page) {
   await expect(taskRow(page)).toBeVisible({ timeout: 30_000 });
+}
+
+// Pass/k is a heading in the dynamic chart module. Once it is visible the
+// reserved chart height is in the layout, so later probes and menus do not
+// jump. Recharts role=application paints after that and is what timed out.
+async function expectEffortPageReady(page: Page) {
+  await expect(page.getByRole("heading", { name: "Pass/k" })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expectTaskRowReady(page);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -37,11 +47,7 @@ test.beforeEach(async ({ page }) => {
 test.describe("hydrated effort fixture", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/effort");
-    // The table and launch button server-render before their handlers attach.
-    // Recharts' client-rendered plot confirms the fixture has hydrated.
-    await expect(page.getByRole("application")).toBeVisible({
-      timeout: 30_000,
-    });
+    await expectEffortPageReady(page);
   });
 
   test("effort columns separate five trials and retain the model typography", async ({
