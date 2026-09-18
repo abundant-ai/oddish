@@ -81,6 +81,7 @@ from .model_hosts import (
     GEMINI_OAUTH_ENV_KEYS,
     OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
+    gateway_hosts_from_env,
     gemini_cli_transport_hosts,
     outbound_hosts_for_model,
 )
@@ -1031,10 +1032,10 @@ def _supports_auto_restricted_agent_network(
     ):
         return False
 
-    # Thunder enforces phase policies on the managed VM rather than inside the
-    # task container. Its boundary therefore works for both Dockerfile and
-    # Compose tasks; the container topology is immaterial to host injection.
-    if environment_config.type == EnvironmentType.THUNDER:
+    # Thunder and Archil enforce phase policies on the VM rather than inside
+    # the task container, so the container topology is immaterial to host
+    # injection and Dockerfile and Compose tasks are treated alike.
+    if environment_config.type in (EnvironmentType.THUNDER, EnvironmentType.ARCHIL):
         return _task_has_dynamic_restricted_agent_phase(task_path)
 
     environment_dir = task_path / "environment"
@@ -1080,11 +1081,42 @@ def _apply_restricted_agent_web_tool_defaults(
     agent_config.kwargs = kwargs
 
 
+def declare_pause_proxy_gateway_hosts(
+    environment_config: HarborEnvironmentConfig,
+    *agent_envs: Mapping[str, str] | None,
+) -> None:
+    """Widen the pause proxy to every base URL the agent was handed.
+
+    Harbor drains only the hosts its proxy intercepts: a built-in provider list
+    plus ``pause_http_proxy_hosts``. A gateway the worker routes the agent to
+    is outside that list, so its responses would not be waited for at pause.
+    The env sources are not merged: when two of them name different hosts
+    under one key, both hosts are declared.
+    """
+    if not environment_config.kwargs.get("pause_http_proxy"):
+        return
+    hosts = [
+        host
+        for env in agent_envs
+        if isinstance(env, Mapping)
+        for host in gateway_hosts_from_env(env)
+    ]
+    if not hosts:
+        return
+    declared = environment_config.kwargs.get("pause_http_proxy_hosts") or []
+    if isinstance(declared, str):
+        declared = declared.replace(",", " ").split()
+    environment_config.kwargs["pause_http_proxy_hosts"] = list(
+        dict.fromkeys([*declared, *hosts])
+    )
+
+
 def _inject_restricted_agent_model_hosts(
     *,
     task_path: Path,
     environment_config: HarborEnvironmentConfig,
     agent_config: HarborAgentConfig,
+    runtime_transport_env: Mapping[str, str] | None = None,
 ) -> None:
     """Preserve the existing single-container model-host injection."""
     if not _supports_auto_restricted_agent_network(
@@ -1113,6 +1145,7 @@ def _inject_restricted_agent_model_hosts(
                 agent_kwargs=agent_kwargs,
                 agent_env=resolved_env,
             ),
+            *gateway_hosts_from_env(runtime_transport_env),
         ]
     )
     agent_config.extra_allowed_hosts = list(
@@ -1420,6 +1453,7 @@ def _apply_restricted_agent_network_defaults(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
+        runtime_transport_env=runtime_transport_env,
     )
     _apply_restricted_agent_web_tool_defaults(agent_config)
     return None
@@ -2255,6 +2289,18 @@ async def _run_harbor_trial_async_impl(
                     **(openai_env or {}),
                     **(extra_agent_env or {}),
                 },
+            )
+            # Every layer the agent can read a base URL from: the routes the
+            # worker minted, the agent's own env and kwargs extra_env
+            # (submitted, probe, gateway), and the worker process environment
+            # Harbor agents fall back to.
+            declare_pause_proxy_gateway_hosts(
+                env_config,
+                openai_env,
+                byok_anthropic_env,
+                getattr(agent_config, "env", None),
+                (getattr(agent_config, "kwargs", None) or {}).get("extra_env"),
+                os.environ,
             )
             # Public / non-Compose trials keep the stock agent class above, which
             # ignores disable_web_tools; swap in the oddish wrapper (idempotent,
