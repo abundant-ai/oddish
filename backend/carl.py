@@ -139,12 +139,14 @@ def _upload_file(
         break
     else:
         raise RuntimeError("Slack file upload failed: retries exhausted")
+    escaped = _escape(caption)
+    cut = _split_at(escaped, _MAX_SLACK)
     return _slack_call(
         "files.completeUploadExternal",
         files=[{"id": ticket["file_id"], "title": "Daily spend by provider"}],
         channel_id=channel,
         thread_ts=thread,
-        initial_comment=caption[:_MAX_SLACK],
+        initial_comment=escaped[:cut],
     )
 
 

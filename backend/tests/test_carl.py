@@ -183,6 +183,57 @@ def test_upload_file_uses_external_upload_api(monkeypatch):
     ]
 
 
+def test_upload_file_escapes_caption_ampersands(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
+    calls = []
+
+    class Response:
+        def __init__(self, payload=None):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload or {"ok": True}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("files.getUploadURLExternal"):
+            return Response(
+                {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/XYZ",
+                    "file_id": "F123",
+                }
+            )
+        if url == "https://files.slack.com/upload/v1/XYZ":
+            return Response()
+        if url.endswith("files.completeUploadExternal"):
+            return Response({"ok": True, "files": [{"id": "F123"}]})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(carl.httpx, "post", fake_post)
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    carl._upload_file(
+        "C123",
+        "100.1",
+        b"\x89PNG\r\n\x1a\n",
+        filename="catfish-mix.png",
+        caption=f"Open this view in Catfish: {view}",
+    )
+
+    comment = calls[-1]["json"]["initial_comment"]
+    assert "&amp;" in comment
+    assert "&end=" not in comment
+    assert "https://costs.abundant.run/?start=2026-09-11&amp;end=2026-09-17" in comment
+
+
 def test_partial_overflow_delivery_reports_failure(monkeypatch):
     updates = []
     monkeypatch.setattr(carl, "_update", lambda *args: updates.append(args))
