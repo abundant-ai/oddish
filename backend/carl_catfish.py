@@ -82,6 +82,8 @@ def catfish_query_params(args: dict, *, default_group: str) -> dict[str, str] | 
 
     if not start and range_name not in _RANGES:
         return f"Unknown range `{range_name}`. Use 1d, 7d, 14d, 30d, …"
+    if end and not start:
+        return "end requires start. Use both YYYY-MM-DD dates, or a range."
     if provider not in _PROVIDERS:
         return f"Unknown provider `{provider}`."
     if group not in _GROUPS:
