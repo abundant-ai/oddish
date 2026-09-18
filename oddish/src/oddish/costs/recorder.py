@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_, and_
 
 from oddish.config import settings
 from oddish.costs.modal_cost import (
@@ -29,6 +29,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.db.pg_errors import is_missing_table
+from oddish.db.models import WorkerResourceAttemptModel
 
 log = logging.getLogger(__name__)
 _missing_table_logged = False
@@ -42,6 +43,8 @@ class WorkerBillingSpec:
     provider: str = "modal"
     cpu_limit: float | None = None
     configuration: str = "base"
+    modal_container_id: str | None = None
+    reservation_token: str | None = None
 
     def resources(self) -> SpanResources:
         return SpanResources(
@@ -467,27 +470,61 @@ async def reconcile_compute_cost_spans() -> int:
                         WorkerJobModel.finished_at,
                         WorkerJobModel.attempts,
                         TrialModel.heartbeat_at,
+                        WorkerResourceAttemptModel.finished_at,
                     )
                     .join(
                         WorkerJobModel,
                         WorkerJobModel.id == ModalCostSpanModel.worker_job_id,
                     )
                     .outerjoin(TrialModel, TrialModel.id == ModalCostSpanModel.trial_id)
+                    .outerjoin(
+                        WorkerResourceAttemptModel,
+                        and_(
+                            WorkerResourceAttemptModel.worker_job_id
+                            == ModalCostSpanModel.worker_job_id,
+                            WorkerResourceAttemptModel.attempt
+                            == ModalCostSpanModel.worker_job_attempt,
+                        ),
+                    )
                     .where(
                         ModalCostSpanModel.finished_at.is_(None),
-                        WorkerJobModel.status.in_(
-                            (
-                                WorkerJobStatus.SUCCESS,
-                                WorkerJobStatus.FAILED,
-                                WorkerJobStatus.CANCELLED,
-                                WorkerJobStatus.RETRYING,
-                            )
+                        or_(
+                            and_(
+                                ModalCostSpanModel.component_role == "worker_function",
+                                WorkerResourceAttemptModel.finished_at.is_not(None),
+                            ),
+                            WorkerJobModel.status.in_(
+                                (
+                                    WorkerJobStatus.SUCCESS,
+                                    WorkerJobStatus.FAILED,
+                                    WorkerJobStatus.CANCELLED,
+                                    WorkerJobStatus.RETRYING,
+                                )
+                            ),
                         ),
                     )
                 )
             ).all()
             closed = 0
-            for span, job_finished_at, job_attempts, trial_heartbeat_at in rows:
+            for (
+                span,
+                job_finished_at,
+                job_attempts,
+                trial_heartbeat_at,
+                attempt_finished_at,
+            ) in rows:
+                if (
+                    attempt_finished_at is not None
+                    and span.component_role == "worker_function"
+                ):
+                    closed += await _close_rows(
+                        session,
+                        [span],
+                        finished_at=attempt_finished_at,
+                        rates=rates,
+                        basis="reconciled",
+                    )
+                    continue
                 # A span left open by an EARLIER attempt (a hard-killed worker
                 # that ran no close path) has no trustworthy end: the job's
                 # finished_at belongs to a later attempt, and there is no other

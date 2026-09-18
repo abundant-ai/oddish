@@ -248,6 +248,8 @@ candidate AS (
       -- execution-lane / sandbox-capacity params above.
       AND  wj.kind::text = ANY($10::text[])
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
+      AND  NOT EXISTS (SELECT 1 FROM worker_resource_attempts ra
+                       WHERE ra.worker_job_id = wj.id AND ra.cleanup_pending)
       AND  NOT wj.reroute_pending_teardown
       AND  wj.available_after <= NOW()
       AND  ($11::boolean IS NULL OR (
@@ -288,13 +290,15 @@ claimed AS (
 recorded_resources AS (
     INSERT INTO worker_resource_attempts (
         worker_job_id, attempt, configuration, modal_function_call_id,
-        cpu_request, cpu_limit, memory_mb, nonpreemptible, claimed_at
+        cpu_request, cpu_limit, memory_mb, nonpreemptible, claimed_at,
+        worker_id, modal_container_id, reservation_token
     )
     SELECT id, attempts, $15::jsonb->>'configuration', $4,
            ($15::jsonb->>'cpu_cores')::double precision,
            ($15::jsonb->>'cpu_limit')::double precision,
            ($15::jsonb->>'memory_mb')::integer,
-           ($15::jsonb->>'nonpreemptible')::boolean, claimed_at
+           ($15::jsonb->>'nonpreemptible')::boolean, claimed_at,
+           $2, $15::jsonb->>'modal_container_id', $15::jsonb->>'reservation_token'
     FROM claimed WHERE $15::jsonb IS NOT NULL
 ),
 cleared_launch AS (
@@ -1493,7 +1497,9 @@ async def run_single_worker_job(
                     job.kind.value,
                     job.subject_id,
                 )
-                outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
+                outcome = JobOutcome.fail(
+                    f"{type(exc).__name__}: {exc}", retryable=True
+                )
 
         disposition_count = sum(
             value is not None
@@ -1526,7 +1532,9 @@ async def run_single_worker_job(
                 else "not_recorded"
             ),
             failed=outcome.failure is not None,
-            retryable=outcome.failure.retryable if outcome.failure is not None else None,
+            retryable=outcome.failure.retryable
+            if outcome.failure is not None
+            else None,
         )
         attempt_duration_seconds = time.monotonic() - attempt_started_monotonic
         outcome_recorded = bool(persisted_status)
@@ -1640,3 +1648,143 @@ async def drain_worker_jobs(
         if _now() >= deadline:
             break
     return processed
+
+
+async def settle_interrupted_worker(
+    *,
+    job_id: str,
+    attempt: int,
+    worker_id: str,
+    container_id: str,
+    stopped_at: datetime,
+) -> bool:
+    """Settle only the exact owner whose container was positively observed stopped."""
+    from sqlalchemy import text
+    from oddish.db import get_session, TrialModel, TrialStatus
+    from oddish.workers.queue.cleanup import (
+        _locked_or_missing,
+        _mirror_stale_job_to_domain_row,
+        _DomainRowLocked,
+    )
+
+    try:
+        async with get_session() as session:
+            row = (
+                (
+                    await session.execute(
+                        text("""
+                SELECT wj.*, wj.kind::text AS kind
+                FROM worker_jobs wj JOIN worker_resource_attempts ra
+                  ON ra.worker_job_id = wj.id AND ra.attempt = wj.attempts
+                WHERE wj.id = :id AND wj.attempts = :attempt
+                  AND wj.current_worker_id = :worker AND wj.status::text = 'RUNNING'
+                  AND ra.worker_id = :worker AND ra.modal_container_id = :container
+                  AND ra.outcome IS NULL
+                FOR UPDATE OF wj SKIP LOCKED
+            """),
+                        dict(
+                            id=job_id,
+                            attempt=attempt,
+                            worker=worker_id,
+                            container=container_id,
+                        ),
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return False
+            row = dict(row)
+            cancelled = False
+            if row["kind"] == "TRIAL" and row["subject_id"]:
+                trial = await _locked_or_missing(session, TrialModel, row["subject_id"])
+                # Never overwrite a settled, cancelled, superseded, or newer trial.
+                if trial is None:
+                    cancelled = True
+                else:
+                    if trial.superseded_by_trial_id is not None:
+                        return False
+                    cancelled = (
+                        trial.harbor_stage == "cancelled"
+                        or trial.deleted_at is not None
+                        or trial.status == TrialStatus.SKIPPED
+                    )
+                    if not cancelled and (
+                        trial.status not in (TrialStatus.RUNNING, TrialStatus.PAUSED)
+                        or trial.current_worker_id != worker_id
+                    ):
+                        return False
+                    if not cancelled and trial.attempts >= trial.max_attempts:
+                        row["max_attempts"] = row["attempts"]
+            status = (
+                "CANCELLED"
+                if cancelled
+                else ("RETRYING" if attempt < row["max_attempts"] else "FAILED")
+            )
+            reason = f"Modal worker container {container_id} confirmed stopped; termination cause unknown."
+            end = max(stopped_at, row["claimed_at"])
+            await session.execute(
+                text("""
+                UPDATE worker_resource_attempts SET outcome = 'INTERRUPTED',
+                    interruption_reason = :reason, finished_at = :end,
+                    cleanup_pending = true, sandbox_provider = :provider,
+                    sandbox_external_id = :external
+                WHERE worker_job_id = :id AND attempt = :attempt
+            """),
+                dict(
+                    id=job_id,
+                    attempt=attempt,
+                    reason=reason,
+                    end=end,
+                    provider=row["provider"],
+                    external=row["external_id"],
+                ),
+            )
+            await session.execute(
+                text("""
+                UPDATE worker_jobs SET status = CAST(:status AS worker_job_status),
+                    error_message = :reason, stale_reaped_at = NOW(),
+                    finished_at = CASE WHEN :status = 'RETRYING' THEN NULL ELSE NOW() END,
+                    available_after = NOW(), next_retry_at = NULL,
+                    current_worker_id = NULL, current_queue_slot = NULL,
+                    modal_function_call_id = NULL, provider = NULL, external_id = NULL,
+                    payload = CASE WHEN :status = 'RETRYING' THEN payload ELSE payload - 'registry_auth_enc' END
+                WHERE id = :id
+            """),
+                dict(id=job_id, status=status, reason=reason),
+            )
+            if not cancelled:
+                row.update(new_status=status, error_message=reason)
+                await _mirror_stale_job_to_domain_row(session, row)
+            await session.execute(
+                text("""
+                UPDATE queue_slots SET locked_by = NULL, locked_until = NULL,
+                    locked_at = NULL, launch_demand = NULL
+                WHERE queue_key = :queue AND slot = :slot AND locked_by = :worker
+            """),
+                dict(
+                    queue=row["queue_key"],
+                    slot=row["current_queue_slot"],
+                    worker=worker_id,
+                ),
+            )
+            await session.flush()
+    except _DomainRowLocked:
+        return False
+    logger.warning(
+        "worker_interruption_recovered job=%s attempt=%s worker=%s container=%s status=%s",
+        job_id,
+        attempt,
+        worker_id,
+        container_id,
+        status,
+    )
+    record_worker_job_transition(
+        kind=WorkerJobKind(row["kind"]),
+        outcome=WorkerJobStatus(status),
+        queue_key=row["queue_key"],
+        execution_lane=row["execution_lane"],
+        duration_seconds=(end - row["claimed_at"]).total_seconds(),
+    )
+    return True

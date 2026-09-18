@@ -147,6 +147,14 @@ uv run alembic upgrade head
 
 Re-run these whenever you pull changes that touch either `alembic/` directory.
 
+Apply core migration `worker_interruptions_001` before starting the updated
+workers. It adds container ownership, attempt outcomes, and pending sandbox
+cleanup records used by queue admission. Hosted Modal recovery also requires
+access to the original container's status; standalone workers retain heartbeat
+cleanup. See [worker interruption recovery](docs/worker-interruption-recovery.md)
+for deployment ordering and verification.
+
+
 ---
 
 ## Configure Clerk

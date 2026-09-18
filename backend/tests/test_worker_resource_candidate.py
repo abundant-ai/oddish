@@ -75,7 +75,7 @@ async def test_shared_execution_forwards_candidate_billing_and_releases_slot(
         priority_class=False,
         org_id="org",
     )
-    assert seen[0]["worker_billing_spec"] is spec
+    assert seen[0]["worker_billing_spec"] == spec
     assert seen[0]["resource_candidate"] is True
     assert seen[0]["modal_function_call_id"] == "fc-candidate"
     assert seen[0]["org_id"] == "org" and seen[0]["priority_class"] is False

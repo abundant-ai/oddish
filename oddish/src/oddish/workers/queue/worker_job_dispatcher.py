@@ -105,6 +105,8 @@ async def stamp_dispatch_stage(
             SET    admission_reason = $2
             WHERE  queue_key = $1
               AND  status::text IN ('QUEUED', 'RETRYING')
+              AND  NOT EXISTS (SELECT 1 FROM worker_resource_attempts ra
+                               WHERE ra.worker_job_id = worker_jobs.id AND ra.cleanup_pending)
               AND  NOT reroute_pending_teardown
               AND  kind::text = ANY($3::text[])
             """,
@@ -126,6 +128,8 @@ async def stamp_dispatch_stage(
                 FROM   worker_jobs
                 WHERE  queue_key = $1
                   AND  status::text IN ('QUEUED', 'RETRYING')
+                  AND  NOT EXISTS (SELECT 1 FROM worker_resource_attempts ra
+                                   WHERE ra.worker_job_id = worker_jobs.id AND ra.cleanup_pending)
                   AND  NOT reroute_pending_teardown
                   AND  kind::text = ANY($3::text[])
                   AND  spawned_at IS NULL
@@ -160,6 +164,8 @@ async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str, str],
         SELECT DISTINCT queue_key, harbor_variant_id, execution_lane
         FROM   worker_jobs
         WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+          AND  NOT EXISTS (SELECT 1 FROM worker_resource_attempts ra
+                           WHERE ra.worker_job_id = worker_jobs.id AND ra.cleanup_pending)
           AND  NOT reroute_pending_teardown
           AND  available_after <= NOW()
           AND  kind::text = ANY($1::text[])
@@ -217,6 +223,8 @@ async def get_worker_job_org_queue_counts(
         FROM   worker_jobs
         WHERE  queue_key = ANY($1)
           AND  status::text IN ('QUEUED', 'RETRYING')
+          AND  NOT EXISTS (SELECT 1 FROM worker_resource_attempts ra
+                           WHERE ra.worker_job_id = worker_jobs.id AND ra.cleanup_pending)
           AND  NOT reroute_pending_teardown
           AND  available_after <= NOW()
           AND  kind::text = ANY($2::text[])

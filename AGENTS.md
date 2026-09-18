@@ -2842,3 +2842,34 @@ selection uses Daytona/Modal (Numinous when explicitly enabled); hosted APIs
 validate the requested environment. Homebrew installs carry a HOMEBREW marker
 in their distribution metadata so version/update commands never replace the
 Homebrew-managed environment through PyPI.
+
+### Interrupted Modal workers
+
+Apply core migration `worker_interruptions_001` before deploying this worker code.
+Hosted claims persist the worker ID, `MODAL_TASK_ID` container ID and one-use
+reservation token in `worker_resource_attempts`. A database trigger preserves
+outcomes when a RUNNING job leaves that state, including cancellations and
+heartbeat cleanup; later attempts never overwrite those rows. Historical rows
+are not assigned guessed container IDs or outcomes. Heartbeat-only interruption
+records have no known container end time and retain NULL `finished_at`.
+
+Rejected reservations raise `ReservationRejected`, separately from an unreserved
+full queue. A replacement matches both invocation and reservation, checks the
+original container through Modal TaskGetInfo, and proceeds only with a positive
+`finished_at`. Missing identity, live status and API errors leave ownership alone.
+The hosted reconciler runs the same recovery before its existing heartbeat sweep;
+lookup failures cannot suppress the heartbeat fallback. Provider capacity leases
+are acquired after queue reservations so a full provider lane cannot mask a
+restarted call.
+
+`settle_interrupted_worker` locks and compares the job, attempt, worker and
+container, preserves cancellation, mirrors retry/failure to its trial, and frees
+only the old worker's slot. The interrupted attempt retains its sandbox handle
+and `cleanup_pending` flag. Both dispatch and claim exclude jobs with pending
+cleanup. Cleanup retries provider teardown using the exact attempt's sandbox
+ledger/handle, then clears the flag. Unknown provisioning handles stay blocked.
+Billing reconciliation uses the persisted container end for worker-function
+spans even while a later attempt runs; sandbox lifetimes remain separate.
+CPU/RAM reservations and rollout fractions are unchanged. Resource requests are
+not measurements of usage. See `docs/worker-interruption-recovery.md` for validation
+and remaining production investigation evidence.

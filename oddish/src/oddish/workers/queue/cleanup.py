@@ -716,6 +716,7 @@ async def cleanup_orphaned_queue_state(
                 "metric=sandbox_capacity_cleanup outcome=error phase=post_thunder "
                 f"error_type={type(exc).__name__} error={exc}"
             )
+    await finish_interrupted_attempt_cleanup()
     try:
         modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
     except Exception as exc:
@@ -2392,3 +2393,75 @@ async def _terminate_orphaned_sandbox_runs(sandbox_run_ids: list[str]) -> int:
             f"outcome={'success' if result else 'refused'} sandbox_run_id={run_id}"
         )
     return terminated
+
+
+async def finish_interrupted_attempt_cleanup() -> int:
+    """Retry durable teardown and billing work before allowing a fresh claim.
+
+    No transaction spans a provider request. Concurrent reconcilers may repeat
+    idempotent teardown, but only the still-pending attempt can be unblocked.
+    """
+    from oddish.costs.recorder import close_worker_span
+    from oddish.runtime.sandbox_lifecycle import terminate_sandbox_run
+
+    async with get_session() as session:
+        attempts = (
+            (
+                await session.execute(
+                    text("""
+            SELECT worker_job_id, attempt, finished_at, sandbox_provider, sandbox_external_id
+            FROM worker_resource_attempts WHERE cleanup_pending
+            ORDER BY finished_at LIMIT 100
+        """)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    completed = 0
+    for attempt in attempts:
+        params = dict(id=attempt["worker_job_id"], attempt=attempt["attempt"])
+        async with get_session() as session:
+            runs = (
+                (
+                    await session.execute(
+                        text("""
+                SELECT id, state, external_id FROM sandbox_runs
+                WHERE worker_job_id = :id AND worker_job_attempt = :attempt
+            """),
+                        params,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        try:
+            clean = True
+            for run in runs:
+                if run["state"] != "TERMINATED":
+                    clean = await terminate_sandbox_run(run["id"]) and clean
+            handle = attempt["sandbox_external_id"]
+            if handle and not any(run["external_id"] == handle for run in runs):
+                clean = (
+                    await cancel_job_by_worker(attempt["sandbox_provider"], handle)
+                    and clean
+                )
+            if not clean:
+                continue
+            await close_worker_span(
+                attempt["worker_job_id"],
+                attempt["attempt"],
+                finished_at=attempt["finished_at"],
+            )
+            async with get_session() as session:
+                await session.execute(
+                    text("""
+                    UPDATE worker_resource_attempts SET cleanup_pending = false
+                    WHERE worker_job_id = :id AND attempt = :attempt AND cleanup_pending
+                """),
+                    params,
+                )
+            completed += 1
+        except Exception:
+            logger.exception("Interrupted attempt cleanup deferred: %s", params)
+    return completed

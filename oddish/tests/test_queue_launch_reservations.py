@@ -178,7 +178,7 @@ async def test_adoption_release_expiry_and_stale_token_fencing(database):
     assert await slots.count_held_queue_slots(["sonnet"]) == {"sonnet": 3}
     # Late error/duplicate call cannot revoke or readopt an active worker lease.
     await slots.release_launch_reservations([first.token, failed.token])
-    assert (
+    with pytest.raises(slots.ReservationRejected):
         await slots.acquire_queue_slot(
             queue_key="sonnet",
             limit=3,
@@ -186,15 +186,13 @@ async def test_adoption_release_expiry_and_stale_token_fencing(database):
             lease_seconds=3600,
             reservation_token=first.token,
         )
-        is None
-    )
     await database.execute(
         "UPDATE queue_slots SET locked_until = NOW() - interval '1 second' WHERE locked_by = $1",
         abandoned.token,
     )
     _, replacement = await slots.reserve_queue_launches(plan_factory(limit=3))
     assert len(replacement) == 2
-    assert (
+    with pytest.raises(slots.ReservationRejected):
         await slots.acquire_queue_slot(
             queue_key="sonnet",
             limit=3,
@@ -202,8 +200,6 @@ async def test_adoption_release_expiry_and_stale_token_fencing(database):
             lease_seconds=3600,
             reservation_token=abandoned.token,
         )
-        is None
-    )
     assert await slots.count_held_queue_slots(["sonnet"]) == {"sonnet": 3}
     await slots.release_queue_slot(queue_key="sonnet", slot=adopted, worker_id="worker")
     assert await slots.count_held_queue_slots(["sonnet"]) == {"sonnet": 2}

@@ -1793,6 +1793,15 @@ class WorkerResourceAttemptModel(Base):
     """Claim-time resource attribution, preserved across retries and cost outages."""
 
     __tablename__ = "worker_resource_attempts"
+    worker_id: Mapped[str | None] = mapped_column(Text)
+    modal_container_id: Mapped[str | None] = mapped_column(Text)
+    reservation_token: Mapped[str | None] = mapped_column(Text)
+    outcome: Mapped[str | None] = mapped_column(Text)
+    interruption_reason: Mapped[str | None] = mapped_column(Text)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleanup_pending: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    sandbox_provider: Mapped[str | None] = mapped_column(Text)
+    sandbox_external_id: Mapped[str | None] = mapped_column(Text)
     worker_job_id: Mapped[str] = mapped_column(Text, primary_key=True)
     attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
     configuration: Mapped[str] = mapped_column(Text, nullable=False)

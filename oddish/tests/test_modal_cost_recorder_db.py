@@ -383,3 +383,66 @@ async def test_candidate_attempt_cost_uses_its_cpu_and_scalar_memory(memory_mb):
         assert base.cpu_request == 1 and base.mem_request_mb == 3072
     finally:
         await _remove(ids)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_interrupted_worker_billing_uses_original_container_end_during_retry():
+    from oddish.db.models import WorkerResourceAttemptModel
+
+    ids = await _seed()
+    _, _, trial_id, job_id = ids
+    start = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=45)
+    try:
+        await open_worker_span(
+            SimpleNamespace(
+                id=job_id,
+                attempts=1,
+                kind=WorkerJobKind.TRIAL,
+                subject_id=trial_id,
+                subject_table="trials",
+            ),
+            WorkerBillingSpec(1, 3072, True),
+            started_at=start,
+        )
+        async with get_session() as session:
+            session.add(
+                WorkerResourceAttemptModel(
+                    worker_job_id=job_id,
+                    attempt=1,
+                    configuration="base",
+                    cpu_request=1,
+                    memory_mb=3072,
+                    nonpreemptible=True,
+                    claimed_at=start,
+                    modal_container_id="ta-old",
+                    outcome="INTERRUPTED",
+                    finished_at=end,
+                )
+            )
+            # The next attempt is still RUNNING; no terminal job timestamp yet.
+            await session.execute(
+                update(WorkerJobModel)
+                .where(WorkerJobModel.id == job_id)
+                .values(status=WorkerJobStatus.RUNNING, attempts=2, finished_at=None)
+            )
+        assert await reconcile_compute_cost_spans() == 1
+        async with get_session() as session:
+            span = await session.scalar(
+                select(ModalCostSpanModel).where(
+                    ModalCostSpanModel.worker_job_id == job_id
+                )
+            )
+            assert span.finished_at == end
+            assert span.cost_usd is not None and span.cost_usd > 0
+            assert span.unpriced_reason is None
+        assert await reconcile_compute_cost_spans() == 0
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                WorkerResourceAttemptModel.__table__.delete().where(
+                    WorkerResourceAttemptModel.worker_job_id == job_id
+                )
+            )
+        await _remove(ids)

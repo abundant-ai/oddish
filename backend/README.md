@@ -817,3 +817,15 @@ For local database verification, point `ENDPOINT_TEST_DATABASE_URL` at a disposa
 PostgreSQL database and run `pytest tests/test_endpoint_health.py` from `backend`.
 That suite recreates the monitoring tables and its isolated Slack-outbox fixture;
 it must not target an application database. Provider calls are mocked.
+
+### Interrupted Modal worker recovery
+
+Apply core migration `worker_interruptions_001` before deploying workers. Each
+hosted attempt records its Modal container ID and final outcome. A restarted
+function call with a consumed reservation checks the original container; only a
+confirmed stop permits recovery of the same still-owned job and attempt. The
+scheduler obtains a fresh reservation after old-sandbox cleanup succeeds.
+Unknown status retains the existing heartbeat cleanup fallback. CPU/RAM requests
+and rollout settings do not change. See
+[`docs/worker-interruption-recovery.md`](../docs/worker-interruption-recovery.md)
+for local evidence and the required non-production interruption drill.

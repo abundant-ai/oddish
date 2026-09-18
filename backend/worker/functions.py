@@ -22,6 +22,8 @@ from oddish.config import Settings
 Settings.db_use_null_pool = True
 
 import asyncio
+import os
+from dataclasses import replace
 import time
 from uuid import uuid4
 
@@ -92,6 +94,7 @@ from oddish.workers.queue.concurrency_controller import (
 )
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
+    ReservationRejected,
     cleanup_stale_queue_slots,
     release_queue_slot,
     reserve_queue_launches,
@@ -301,6 +304,12 @@ async def _run_one_job(
     except Exception:
         pass
 
+    worker_billing_spec = replace(
+        worker_billing_spec,
+        modal_container_id=os.environ.get("MODAL_TASK_ID"),
+        reservation_token=reservation_token,
+    )
+
     # Open the span FIRST and run everything else inside it — the
     # ``configure_storage_paths`` + Modal handshake + console prints
     # used to fire ahead of the span and showed up as orphan top-
@@ -311,6 +320,7 @@ async def _run_one_job(
         harbor_variant_id=harbor_variant_id,
         execution_lane=execution_lane,
         modal_function_call_id=fc_id,
+        modal_container_id=worker_billing_spec.modal_container_id,
         worker_configuration=worker_billing_spec.configuration,
         worker_cpu=worker_billing_spec.cpu_cores,
         worker_memory_mb=worker_billing_spec.memory_mb,
@@ -339,34 +349,34 @@ async def _run_one_job(
         }:
             raise RuntimeError(f"unsupported execution lane: {execution_lane!r}")
         capacity_provider = capacity_provider_for_execution_lane(execution_lane)
-        if capacity_provider is not None:
-            capacity_limit = configured_sandbox_capacity_limit(capacity_provider)
-            capacity_slot = await acquire_sandbox_capacity_lease(
-                provider=capacity_provider,
-                limit=capacity_limit,
-                worker_id=worker_id,
-                lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
-            )
-            if capacity_slot is None:
-                console.print(
-                    f"metric=sandbox_capacity_exhausted provider={capacity_provider} "
-                    f"limit={capacity_limit}"
-                )
-                return
-
         queue_limit = await _effective_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
                 f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
             )
             return
-        lock_slot = await acquire_queue_slot(
-            queue_key=queue_key,
-            limit=queue_limit,
-            worker_id=worker_id,
-            lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
-            reservation_token=reservation_token,
-        )
+        try:
+            lock_slot = await acquire_queue_slot(
+                queue_key=queue_key,
+                limit=queue_limit,
+                worker_id=worker_id,
+                lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
+                reservation_token=reservation_token,
+            )
+        except ReservationRejected as exc:
+            console.print(
+                f"metric=queue_reservation_rejected reason={exc.reason} "
+                f"modal_function_call_id={fc_id} "
+                f"modal_container_id={worker_billing_spec.modal_container_id}"
+            )
+            from .interrupted_workers import recover_interrupted_workers
+
+            await recover_interrupted_workers(
+                function_call_id=fc_id,
+                reservation_token=reservation_token,
+                replacement_container_id=worker_billing_spec.modal_container_id,
+            )
+            return
         if lock_slot is None:
             console.print(
                 f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"
@@ -382,6 +392,21 @@ async def _run_one_job(
         console.print(
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
+
+        if capacity_provider is not None:
+            capacity_limit = configured_sandbox_capacity_limit(capacity_provider)
+            capacity_slot = await acquire_sandbox_capacity_lease(
+                provider=capacity_provider,
+                limit=capacity_limit,
+                worker_id=worker_id,
+                lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
+            )
+            if capacity_slot is None:
+                console.print(
+                    f"metric=sandbox_capacity_exhausted provider={capacity_provider} "
+                    f"limit={capacity_limit}"
+                )
+                return
 
         if capacity_provider is not None:
             # Only a normal return proves the sandbox teardown path completed.
@@ -765,6 +790,16 @@ async def reconcile_queue_state():
             phase_errors.append(f"stale_slot_cleanup: {e}")
             log_exception("reconcile phase failed", phase="stale_slot_cleanup")
             console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
+
+        try:
+            from .interrupted_workers import recover_interrupted_workers
+
+            summary[
+                "interrupted_workers_recovered"
+            ] = await recover_interrupted_workers()
+        except Exception as e:
+            phase_errors.append(f"interrupted_workers: {e}")
+            log_exception("reconcile phase failed", phase="interrupted_workers")
 
         try:
             cleanup_counts = await cleanup_orphaned_queue_state()

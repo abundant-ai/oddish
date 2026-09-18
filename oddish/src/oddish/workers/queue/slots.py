@@ -25,6 +25,14 @@ _ENSURE_QUEUE_SLOTS_SQL = """
 """
 
 
+class ReservationRejected(Exception):
+    """A one-use launch token cannot be adopted; it must never take a new slot."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 class LaunchReservation(NamedTuple):
     unit: DispatchUnit
     slot: int
@@ -85,7 +93,18 @@ async def acquire_queue_slot(
                 lease_seconds,
                 reservation_token,
             )
-        return int(row["slot"]) if row else None
+            if row is None:
+                consumed = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM worker_resource_attempts "
+                    "WHERE reservation_token = $1)",
+                    reservation_token,
+                )
+                raise ReservationRejected(
+                    "reservation_already_consumed"
+                    if consumed
+                    else "reservation_expired_or_unavailable"
+                )
+        return int(row["slot"])
     await ensure_queue_slots(queue_key, limit)
     async with _slot_connection() as conn:
         async with conn.transaction():
