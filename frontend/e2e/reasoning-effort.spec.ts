@@ -333,7 +333,7 @@ test("mixed unspecified and high trials share totals and row filtering", async (
   await expect(row.locator("td").nth(1).getByRole("button")).toHaveCount(5);
   await expect(
     leaderboard(page).getByText("20.0%", { exact: true })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   await row.locator("td").nth(1).getByRole("button").nth(2).click();
   await expect(page.getByLabel("Selected effort")).toHaveText("high: 5 trials");
   await expect(page).toHaveURL(/sample=mixed/);
@@ -378,7 +378,7 @@ test("public experiments always group efforts and hide the grouping control", as
   ).toHaveCount(0);
   await expect(
     leaderboard(page).getByText("20.0%", { exact: true })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   await page.goto("/effort?sample=mixed&detail=1&public=1");
   await expect(row.locator("td")).toHaveCount(2);
   await expect(

@@ -362,6 +362,8 @@ class DeliveryBackfillTests(unittest.TestCase):
         self.assertEqual(result["categories"], ["Migration", "Rust", "Security"])
         self.assertEqual(len(result["category_evidence"]), 3)
         self.assertTrue(result["retired_at"])
+        row["tags"] = {"category": " ", "github_meta": "{not json"}
+        self.assertEqual(inventory_task(row, tags)["categories"], ["Security"])
 
     def test_cli_writes_preview_and_refuses_to_replace_existing_output(self):
         with tempfile.TemporaryDirectory() as directory:

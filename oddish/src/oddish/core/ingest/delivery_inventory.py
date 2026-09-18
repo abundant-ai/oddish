@@ -36,17 +36,18 @@ def inventory_task(
     tags = row["tags"] or {}
     github = tags.get("github_meta") or {}
     if isinstance(github, str):
-        github = json.loads(github)
+        try:
+            github = json.loads(github)
+        except ValueError:
+            github = {}
     if not isinstance(github, dict):
-        raise ValueError(f"task {row['id']}: github_meta must be an object")
+        github = {}
     for location, value in [
         ("tags.category", tags.get("category")),
         ("tags.github_meta.category", github.get("category")),
     ]:
-        if value is not None:
-            categories.append(
-                {"source": location, "value": required_text(value, location)}
-            )
+        if isinstance(value, str) and value.strip():
+            categories.append({"source": location, "value": value.strip()})
     for tag_id in row["current_version_tag_ids"] or []:
         tag = tag_definitions.get(tag_id)
         if tag and tag.get("merged_into_id"):
