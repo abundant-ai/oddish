@@ -138,6 +138,12 @@ class DeliveryBackfillTests(unittest.TestCase):
         plan = build_plan(bundle(), org_id="org-1", inventory=inv)
         self.assertEqual(plan["task_profiles"][0]["identity_status"], "name_collision")
         self.assertEqual(plan["metadata_proposals"], [])
+        # A retired task's name is free for reuse, so it is no collision.
+        inv["tasks"][1]["retired_at"] = "2026-09-01T00:00:00Z"
+        plan = build_plan(bundle(), org_id="org-1", inventory=inv)
+        profile = plan["task_profiles"][0]
+        self.assertEqual(profile["identity_status"], "resolved_explicit_id")
+        self.assertEqual(profile["candidate_task_ids"], ["task-1", "task-2"])
 
     def test_name_only_is_candidate_not_resolution(self):
         data = bundle()
