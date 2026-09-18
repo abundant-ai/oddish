@@ -25,6 +25,10 @@ table, and the compatibility rule) live in `CONTRIBUTING.md`. In short:
 - If you change API contracts, queue behavior, or storage layout, update this file.
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.
+- If you change dashboard UI (layout, labels, selectors, or flows under
+  `frontend/src/`), update the matching Playwright specs under `frontend/e2e/`
+  in the same change. Those e2e tests are UI-dependent; leaving them stale is a
+  common miss. Details are in the CONTRIBUTING.md documents-to-update table.
 - Preserve the package boundary: `oddish/` must remain self-hostable for the
   CLI and standalone server; hosted product concerns (auth, org membership,
   Modal app wiring, managed worker spawning, GitHub/webhook integrations, and

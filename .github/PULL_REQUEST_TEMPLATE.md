@@ -22,6 +22,8 @@ the page and state named. Otherwise write "No user-visible change.">
 
 ### Local testing
 
+<!-- Dashboard UI changes: update matching frontend/e2e/ Playwright specs in
+     this PR (CONTRIBUTING.md documents-to-update). Say what you ran. -->
 <What was exercised, the relevant environment, and observed results.
 Include important failures or untested behavior.>
 
