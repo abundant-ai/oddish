@@ -26,8 +26,9 @@ ACTIVE_VERDICT_STATUSES = frozenset(
     (VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING)
 )
 
+INSUFFICIENT_EVIDENCE_PREFIX = "Insufficient evidence"
 INSUFFICIENT_EVIDENCE_ERROR = (
-    "Insufficient evidence: no eligible solver trials for the current task version."
+    f"{INSUFFICIENT_EVIDENCE_PREFIX}: no eligible solver trials for the current task version."
 )
 
 
@@ -36,7 +37,7 @@ def is_insufficient_evidence(error: str | None) -> bool:
 
     The dashboard matches the same prefix (frontend/src/lib/review.ts).
     """
-    return bool(error and error.startswith("Insufficient evidence"))
+    return bool(error and error.startswith(INSUFFICIENT_EVIDENCE_PREFIX))
 
 
 def has_published_verdict(task: VerdictState) -> bool:
