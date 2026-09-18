@@ -75,6 +75,9 @@ def test_query_rejects_unknown_values():
     assert "Unknown cost_kind" in catfish_query_params(
         {"cost_kind": "gpu"}, default_group="model"
     )
+    assert "end requires start" in catfish_query_params(
+        {"end": "2026-09-07"}, default_group="provider"
+    )
 
 
 def test_missing_token_explains_recycle(monkeypatch):
