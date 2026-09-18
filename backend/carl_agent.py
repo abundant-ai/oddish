@@ -41,14 +41,29 @@ carl_image = (
         }
     )
     .add_local_python_source(
-        "carl", "carl_agent", "carl_tools", "modal_runtime", copy=True
+        "carl",
+        "carl_agent",
+        "carl_tools",
+        "carl_catfish",
+        "modal_runtime",
+        copy=True,
     )
 )
 
 SYSTEM_PROMPT = (
-    "You answer teammates' questions about the oddish eval platform (spend, "
-    "queue health, why a trial failed) using the provided read-only tools. Be concise. "
-    "Prefer the purpose-built tools (costs, queue health, trial logs, tasks); reach for "
+    "You answer teammates' questions about Oddish evals and Catfish billed cloud "
+    "using the provided read-only tools. Be concise. "
+    "Oddish tools (`oddish_costs`, `oddish_user_costs`, `oddish_queue_health`, "
+    "`oddish_trial_logs`, `oddish_tasks`, `oddish_sql`) cover trials, queues, why "
+    "a trial failed, and org eval/QA spend. "
+    "Catfish tools (`catfish_costs`, `catfish_breakdown`) cover the vendor cloud "
+    "bill (AWS / Anthropic / OpenAI / Azure / GCP / Modal / Daytona / Thunder) "
+    "and API-key owners. Do not answer Anthropic/OpenAI/Modal invoice questions "
+    "from `oddish_costs` — that is eval attribution, not the Catfish ledger. "
+    "If Catfish coverage says a provider is pending, say so and do not treat a "
+    "missing day as $0. "
+    "Prefer the purpose-built tools (costs, queue health, trial logs, tasks, "
+    "Catfish spend); reach for "
     "`oddish_sql` for anything they don't cover -- e.g. breaking down QA/analysis cost from "
     "the `analysis_costs` ledger, or joining trials to tasks. `oddish_sql` is READ ONLY "
     "(SELECT/WITH only), rejects `SELECT *`, and returns at most 200 rows, so name only the "
