@@ -64,7 +64,10 @@ function getLiveParam(name: string): string | null {
 }
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
-import type { FeedbackRecord } from "@/components/qa-report/types";
+import {
+  feedbackRequestInit,
+  type FeedbackRecord,
+} from "@/components/qa-report/types";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -827,21 +830,7 @@ export function TrialDetailPanel({
     }
     await fetcher(
       `/api/experiments/${encodeExperimentRouteParam(feedbackExperimentId)}/feedback`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: record.note?.trim() ?? "",
-          target:
-            record.target.kind === "verdict" ? "qa_verdict" : "qa_action_item",
-          target_key:
-            record.target.kind === "verdict"
-              ? record.target.classification
-              : record.target.id,
-          vote: record.vote,
-          trial_id: trial.id,
-        }),
-      }
+      feedbackRequestInit(record, trial.id)
     );
   }
 

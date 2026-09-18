@@ -335,6 +335,7 @@ def _aggregate_task_detail_rollups(
             retained_findings=[report["finding"] for report in v.reported_findings or []],
             pre_trial_status=v.pre_trial_status,
             pre_trial_error=v.pre_trial_error,
+            pre_trial_trial_id=(v.pre_trial or {}).get("block_id"),
             pre_trial_cost_usd=(v.pre_trial or {}).get("cost_usd"),
         )
         for v in version_rows

@@ -18,6 +18,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
 import { FindingList } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
+import { FeedbackControl } from "@/components/qa-report/feedback-control";
+import {
+  feedbackRequestInit,
+  type FeedbackRecord,
+} from "@/components/qa-report/types";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
@@ -101,6 +106,7 @@ export function TaskOverviewPanel({
   scopeLoading,
   verdictTask,
   checksFindings,
+  checksTrialId,
   checksStatus,
   checksError,
   onRerunChecks,
@@ -136,6 +142,8 @@ export function TaskOverviewPanel({
    *  card of its own (the side-by-side "Task definition" pane). */
   verdictTask?: Task | null;
   checksFindings?: PreTrialFinding[] | null;
+  /** The audit trial behind `checksFindings`; votes on those anchor to it. */
+  checksTrialId?: string | null;
   checksStatus?: string | null;
   checksError?: string | null;
   onRerunChecks: () => void;
@@ -400,6 +408,36 @@ export function TaskOverviewPanel({
   // that never got picked up.
   const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
 
+  // Votes persist through the hosted API only; a public share pane has no
+  // feedback route, so it renders no controls.
+  const canVote = apiBaseUrl === "/api" && Boolean(taskId);
+  const postFeedback = async (
+    trialId: string | undefined,
+    record: FeedbackRecord
+  ) => {
+    if (!trialId) throw new Error("No trial to record this vote against");
+    await fetcher(
+      `${apiBaseUrl}/tasks/${taskId}/feedback`,
+      feedbackRequestInit(record, trialId)
+    );
+  };
+  // An audit finding votes against the audit trial; a trial-only finding
+  // against the first trial that reported it. Audits that predate the
+  // recorded trial id have nothing to vote against.
+  const findingVoteTrialId = (findingId: string) => {
+    const sourced = findingSourcesById.get(findingId);
+    return sourced?.fromAudit
+      ? (checksTrialId ?? undefined)
+      : sourced?.trials[0]?.id;
+  };
+  const handleFindingFeedback = (record: FeedbackRecord) =>
+    postFeedback(
+      record.target.kind === "action_item"
+        ? findingVoteTrialId(record.target.id)
+        : undefined,
+      record
+    );
+
   const mustFixCount = findingItems.filter(
     (item) => (item.tier ?? item.severity) === "must_fix"
   ).length;
@@ -446,6 +484,8 @@ export function TaskOverviewPanel({
           }
           onOpenSource={onOpenSource}
           renderItemFooter={renderFindingSources}
+          onFeedback={canVote ? handleFindingFeedback : undefined}
+          canVoteOn={(item) => findingVoteTrialId(item.id ?? "") != null}
         />
       ) : null;
     if (checksLoadError) {
@@ -573,6 +613,11 @@ export function TaskOverviewPanel({
                 key={trial.id}
                 trial={trial}
                 onOpen={() => openTrial(trial)}
+                onFeedback={
+                  canVote
+                    ? (record) => postFeedback(trial.id, record)
+                    : undefined
+                }
               />
             ))}
         </div>
@@ -703,6 +748,11 @@ export function TaskOverviewPanel({
                     key={trial.id}
                     trial={trial}
                     onOpen={() => openTrial(trial)}
+                    onFeedback={
+                      canVote
+                        ? (record) => postFeedback(trial.id, record)
+                        : undefined
+                    }
                   />
                 ))}
               </section>
@@ -714,7 +764,15 @@ export function TaskOverviewPanel({
   );
 }
 
-function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
+function TrialQaRow({
+  trial,
+  onOpen,
+  onFeedback,
+}: {
+  trial: Trial;
+  onOpen: () => void;
+  onFeedback?: (record: FeedbackRecord) => Promise<void>;
+}) {
   const analysis = trial.analysis_status === "success" ? trial.analysis : null;
   const gradingError =
     analysis?.classification === "HARNESS_ERROR" &&
@@ -725,9 +783,27 @@ function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
     ? (VERDICT_TOKENS[analysis.classification] ?? FALLBACK_TOKEN)
     : FALLBACK_TOKEN;
   const Icon = token.icon;
-  const hasBody = Boolean(
-    analysis?.evidence || analysis?.root_cause || analysis?.recommendation
-  );
+  const voteControl =
+    analysis && onFeedback ? (
+      <FeedbackControl
+        label={`the ${EXECUTION_LABELS[analysis.classification]} analysis of ${trialLabel(trial)}`}
+        className="mt-1"
+        onSubmit={(vote, note) =>
+          onFeedback({
+            target: {
+              kind: "verdict",
+              classification: analysis.classification,
+            },
+            vote,
+            note,
+          })
+        }
+      />
+    ) : null;
+  const hasBody =
+    Boolean(
+      analysis?.evidence || analysis?.root_cause || analysis?.recommendation
+    ) || voteControl != null;
 
   const header = (
     <>
@@ -845,6 +921,7 @@ function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
             />
           </div>
         ) : null}
+        {voteControl}
       </div>
     </details>
   );

@@ -2118,6 +2118,7 @@ export function TaskFilesPanel({
                   verdictTask={verdictSource ?? null}
                   experiments={checksVersion?.experiments}
                   checksFindings={checksFindings}
+                  checksTrialId={checksVersion?.pre_trial_trial_id}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
                   onRerunChecks={handleRerunChecks}

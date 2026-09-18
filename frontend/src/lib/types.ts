@@ -498,6 +498,8 @@ export interface TaskVersionSummary {
    *  findings mean something different for each, so never infer from the list. */
   pre_trial_status?: string | null;
   pre_trial_error?: string | null;
+  /** The audit trial behind `pre_trial_findings`; finding votes anchor to it. */
+  pre_trial_trial_id?: string | null;
   /** What the audit cost. Absent on audits predating cost capture — not zero,
    *  which would claim it was free. */
   pre_trial_cost_usd?: number | null;
