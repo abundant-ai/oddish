@@ -54,10 +54,30 @@ See [the runbook](delivery-metadata-backfill.md) for commands and output definit
 - [ ] Capture a fresh inventory for the Abundant organization (`8ebde5d0`,
   confirmed September 17); resolve ambiguous names against repository paths,
   experiment membership, and source evidence.
-- [ ] Add a preview/apply operation with organization checks, stale-plan rejection,
+- [x] Add a preview/apply operation with organization checks, stale-plan rejection,
   and an import receipt. Replays update the same source records.
+  (`oddish.core.ingest.delivery_apply`; verified September 17: `9 passed` in
+  `test_delivery_apply.py` on a local database; served by the routes and CLI
+  above, covered by `test_delivery_history_api.py` and
+  `test_cli_delivery_history.py`. Not yet run against staging or production.)
 - [ ] Import unambiguous facts; expose unresolved conflicts and unknown history.
-- [ ] Retain import changes and historical shipments when a task is retired.
+- [x] Retain import changes and historical shipments when a task is retired.
+  (Task foreign keys are `ON DELETE RESTRICT`; `delete_task_core` only stamps
+  `tasks.deleted_at`. Covered by `test_retiring_a_task_keeps_imported_history`.)
+
+### Rollout order
+
+1. Land the branch on `staging` (stack of PRs, each under 500 application
+   lines); the staging deploy runs `delivery_history_001`.
+2. Against staging (a mirror of production data): `oddish delivery inventory`,
+   the planner on the September 10 research, `oddish delivery import-history`
+   preview; review the receipt; apply on staging as the rehearsal.
+3. Promote `staging` to `main`; repeat inventory, preview, apply on production.
+
+The staging database is rebuilt from production by the staging refresh
+script, so whatever the rehearsal applies on staging disappears at the next
+refresh and the production rows arrive in its place. The rehearsal is also
+the first upload of a plan this size through the hosted API.
 
 ## 3. Select tasks for a lab
 
