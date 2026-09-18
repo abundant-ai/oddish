@@ -55,15 +55,10 @@ def hash_token(token: str) -> str:
 
 
 def s3_write_prefix_for(trial_id: str) -> str:
-    """The oddish S3 prefix that oddish's trial-artifact uploads are scoped to.
+    """Use the same deployment-scoped path as the artifact uploader."""
+    from oddish.db.storage import StorageClient
 
-    Mirrors ``StorageClient._trial_prefix`` so the scope matches where artifacts
-    are actually uploaded (``tasks/{task_id}/trials/{trial_id}/``).
-    """
-    task_id, sep, maybe_index = trial_id.rpartition("-")
-    if sep and maybe_index.isdigit() and task_id:
-        return f"tasks/{task_id}/trials/{trial_id}/"
-    return f"trials/{trial_id}/"
+    return StorageClient.trial_write_prefix(trial_id)
 
 
 def authorize_s3_key(key: str, prefix: str) -> bool:

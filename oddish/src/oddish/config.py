@@ -1701,6 +1701,7 @@ class Settings(BaseSettings):
     s3_access_key: str = ""
     s3_secret_key: str = ""
     s3_bucket: str = "data"
+    trial_artifact_namespace: str = Field(default="", pattern=r"^[A-Za-z0-9_-]*$")
     s3_region: str = "us-east-1"
 
     # Sauron S3 mirror (optional, disabled when bucket is empty).

@@ -883,6 +883,7 @@ ENV_VARS = {
     # Baked into the image so the container sees the same identity the
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
+    "ODDISH_TRIAL_ARTIFACT_NAMESPACE": f"{MODAL_SECRET_ENVIRONMENT}-{MODAL_APP_NAME}",
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,

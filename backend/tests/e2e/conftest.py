@@ -83,6 +83,7 @@ def live_server(schema, tmp_path_factory) -> str:
         **_clean_env(),
         **_DUMMY_S3_ENV,
         "ODDISH_DATABASE_URL": DB_URL,
+        "ODDISH_TRIAL_ARTIFACT_NAMESPACE": "e2e-local",
         "CLERK_DOMAIN": "dummy",
         "PORT": str(port),
     }

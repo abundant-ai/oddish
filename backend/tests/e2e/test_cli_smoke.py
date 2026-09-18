@@ -90,3 +90,35 @@ async def test_run_rejects_unapproved_org_without_queueing_work(live_server, see
             select(func.count()).select_from(WorkerJobModel)
             .where(WorkerJobModel.org_id == seeded["org_id"])
         ) == 0
+
+
+async def test_import_presigns_and_persists_deployment_scoped_artifacts(
+    live_server, seeded
+):
+    from urllib.parse import urlparse
+
+    from oddish.db import TrialModel, get_session
+
+    response = httpx.post(
+        f"{live_server}/trials/import/init",
+        headers={"Authorization": f"Bearer {seeded['api_key']}"},
+        json={
+            "task_id": seeded["task_id"],
+            "trial": {"agent": "nop", "status": "success", "reward": 1},
+            "upload_artifacts": True,
+        },
+        timeout=10,
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    expected_prefix = (
+        f"tasks/{seeded['task_id']}/trials/e2e-local/{result['trial_id']}/"
+    )
+    assert result["trial_s3_key"] == expected_prefix
+    assert result["archive_s3_key"] == f"{expected_prefix}.oddish-trial-import.tar.gz"
+    assert urlparse(result["upload_url"]).path.endswith(result["archive_s3_key"])
+    assert result["upload_method"] == "PUT"
+    assert result["requires_completion"] is True
+    async with get_session() as session:
+        trial = await session.get(TrialModel, result["trial_id"])
+        assert trial.trial_s3_key == expected_prefix
