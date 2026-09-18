@@ -30,7 +30,6 @@ function presentVerdict(
   qaActive: boolean,
   mustFixCount = task.must_fix_count ?? 0
 ): VerdictPresentation {
-  const status = task.verdict_status;
   const verdict = task.verdict ?? null;
   const review = qaActive ? "running" : taskReviewStatus(task);
   const pending = review === "queued" || review === "running";
@@ -46,7 +45,7 @@ function presentVerdict(
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-red-600`} />
     );
-    title = `${mustFixCount} Must fix`;
+    title = `Verdict rejected: ${mustFixCount} Must fix`;
     toneCard = "border-red-500/50 bg-red-500/10";
     toneInline = "border-red-500/50 bg-red-500/10";
   } else if (pending) {
@@ -65,13 +64,17 @@ function presentVerdict(
     title = VERDICT_LABELS.error;
     toneCard = "border-amber-500/30 bg-amber-500/5";
     toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
-  } else if (review === "outdated") {
+  } else if (
+    review === "outdated" ||
+    review === "no_evidence" ||
+    review === "missing"
+  ) {
     icon = (
       <Microscope
         className={`${iconSizeClass} text-muted-foreground shrink-0`}
       />
     );
-    title = VERDICT_LABELS.outdated;
+    title = VERDICT_LABELS[review];
     toneCard = "border-border";
     toneInline = "border-border";
   } else if (isGood === true) {
@@ -92,15 +95,14 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title =
-      status === "success" ? "No QA verdict generated" : VERDICT_LABELS.never;
+    title = VERDICT_LABELS.never;
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
 
   // An in-flight review must never display a previous verdict from cached data.
   let detail: string | null = null;
-  if (failed) {
+  if (failed || review === "no_evidence") {
     detail = task.verdict_error ?? null;
   } else if (!pending && isGood === true) {
     detail = verdict?.reasoning?.trim() || null;
@@ -188,7 +190,7 @@ export function TaskVerdictBadge({
               }
             >
               {variant === "summary" && mustFixCount > 0 && rejectionSource
-                ? `Rejected · ${rejectionSource}`
+                ? `Verdict rejected · ${rejectionSource}`
                 : isRunning && mustFixCount === 0
                   ? "Queuing QA verdict…"
                   : p.title}

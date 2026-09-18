@@ -1541,6 +1541,7 @@ async def start_qa_for_task(
     The caller must hold the task row lock and wait for task_audit_pending
     to clear. Returns True when a QA trial was created.
     """
+    from oddish.core.verdict_state import INSUFFICIENT_EVIDENCE_ERROR
     from oddish.core.verdict_sync import (
         apply_deterministic_verdict_rules,
         build_verdict_payload,
@@ -1584,11 +1585,7 @@ async def start_qa_for_task(
             payload = build_verdict_payload(verdict, [])
             complete_verdict(task, payload=payload, now=utcnow())
         else:
-            fail_verdict(
-                task,
-                error="Insufficient evidence: no eligible solver trials for the current task version.",
-                now=utcnow(),
-            )
+            fail_verdict(task, error=INSUFFICIENT_EVIDENCE_ERROR, now=utcnow())
         return False
 
     task.status = TaskStatus.VERDICT_PENDING

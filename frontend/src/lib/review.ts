@@ -18,22 +18,24 @@ export const EXECUTION_LABELS: Record<AnalysisClassification, string> = {
 
 import { QA_STATUS_LABELS } from "@/lib/deliveries";
 
+/** The server records a settled task with no QA-eligible runs as a failed
+ * verdict with this prefix (oddish/core/verdict_state.py). */
+export function isInsufficientEvidence(
+  error: string | null | undefined
+): boolean {
+  return (error ?? "").startsWith("Insufficient evidence");
+}
+
 // Task reviews use outdated only for a version mismatch; deliveries also use it
 // for evidence outside the selected time window or missing required evidence.
-export const REVIEW_LABELS = {
+export const VERDICT_LABELS = {
   ...QA_STATUS_LABELS,
-  outdated: "No QA verdict for this version",
+  outdated: "Verdict pending: regenerate for this version",
+  no_evidence: "Verdict pending: needs solver runs",
+  missing: "Verdict pending: none recorded",
 };
 
-export const VERDICT_LABELS = {
-  accepted: "Accepted",
-  needs_fixes: "Rejected",
-  outdated: "No QA verdict for this version",
-  queued: "QA verdict queued",
-  running: "QA verdict running",
-  error: "QA verdict failed",
-  never: "No QA verdict",
-};
+export const REVIEW_LABELS = VERDICT_LABELS;
 
 /** Exclude internal, superseded, and baseline runs from review coverage. */
 export function isReviewableTrial(trial: Trial): boolean {
@@ -107,11 +109,12 @@ export function taskReviewStatus(task: Task): keyof typeof REVIEW_LABELS {
       ? "queued"
       : "running";
   }
-  if (task.verdict_status === "failed") return "error";
+  if (task.verdict_status === "failed")
+    return isInsufficientEvidence(task.verdict_error) ? "no_evidence" : "error";
   if (task.verdict && task.review_version_matches === false) return "outdated";
   if (verdict === "reject") return "needs_fixes";
   if (verdict === "accept") return "accepted";
-  return "never";
+  return task.verdict_status === "success" ? "missing" : "never";
 }
 
 export type TaskReviewFilter =

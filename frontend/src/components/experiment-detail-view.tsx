@@ -791,9 +791,9 @@ function ExperimentSummaryBar({
               [
                 ["accepted", qa.accepted, "Accepted"],
                 ["rejected", qa.rejected, "Rejected"],
-                ["running", qa.running, "QA verdict in progress"],
-                ["failed", qa.failed, "QA verdict failed"],
-                ["unreviewed", qa.unreviewed, "No current QA verdict"],
+                ["running", qa.running, "Pending: generating"],
+                ["failed", qa.failed, "Failed"],
+                ["unreviewed", qa.unreviewed, "Pending: no current verdict"],
               ] as const
             )
               .filter(([, count]) => count > 0)

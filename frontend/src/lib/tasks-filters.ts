@@ -119,7 +119,7 @@ const STATUS_OPTIONS: Option[] = [
   { value: "RUNNING", label: "Running" },
   { value: "PENDING", label: "Pending" },
   { value: "ANALYZING", label: "Analyzing" },
-  { value: "VERDICT_PENDING", label: "QA verdict pending" },
+  { value: "VERDICT_PENDING", label: "Verdict pending" },
   { value: "FAILED", label: "Failed" },
 ];
 

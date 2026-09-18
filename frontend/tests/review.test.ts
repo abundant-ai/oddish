@@ -217,7 +217,7 @@ for (const [label, is_good, expected] of [
         ),
         html
       );
-      assert.ok(!html.includes("No QA verdict for this version"), html);
+      assert.ok(!html.includes(review.VERDICT_LABELS.outdated), html);
       assert.equal(html.includes("2 completed runs"), ungradedSettled === 2);
     }
     const outdated = renderToStaticMarkup(
@@ -226,34 +226,60 @@ for (const [label, is_good, expected] of [
         ungradedSettled: 0,
       })
     );
-    assert.ok(outdated.includes("No QA verdict for this version"), outdated);
+    assert.ok(outdated.includes(review.VERDICT_LABELS.outdated), outdated);
   });
 }
 
 test("missing and inconclusive verdicts remain unreviewed", () => {
-  assert.equal(review.taskReviewStatus(task), "never");
+  assert.equal(review.taskReviewStatus(task), "missing");
   assert.equal(review.taskReviewFilter(task), "unreviewed");
   assert.equal(
     review.taskReviewStatus({
       ...task,
       verdict: { is_good: null, confidence: null },
     }),
+    "missing"
+  );
+  assert.equal(
+    review.taskReviewStatus({ ...task, verdict_status: null }),
     "never"
+  );
+  assert.equal(
+    review.taskReviewFilter({ ...task, verdict_status: null }),
+    "unreviewed"
   );
 });
 
 test("QA verdict failure retains its cause and remains distinct from rejection", () => {
-  const reason = "Insufficient evidence: no eligible solver trials.";
+  const reason = "Evidence could not be read.";
   const presented = badge.present!(
     { ...task, verdict_status: "failed", verdict_error: reason },
     "",
     false
   );
-  assert.equal(presented.title, "QA verdict failed");
+  assert.equal(presented.title, "Verdict failed");
   assert.equal(presented.detail, reason);
   assert.equal(presented.isGood, null);
-  assert.equal(review.REVIEW_LABELS.error, "QA verdict failed");
-  assert.equal(review.REVIEW_LABELS.accepted, "Accepted");
+  assert.equal(review.REVIEW_LABELS.error, "Verdict failed");
+  assert.equal(review.REVIEW_LABELS.accepted, "Verdict accepted");
+});
+
+test("a settled task without eligible runs is pending solver runs, not failed", () => {
+  const reason =
+    "Insufficient evidence: no eligible solver trials for the current task version.";
+  const noEvidence = { ...task, verdict_status: "failed", verdict_error: reason };
+  assert.equal(review.taskReviewStatus(noEvidence), "no_evidence");
+  assert.equal(review.taskReviewFilter(noEvidence), "unreviewed");
+  const presented = badge.present!(noEvidence, "", false);
+  assert.equal(presented.title, "Verdict pending: needs solver runs");
+  assert.equal(presented.detail, reason);
+  assert.equal(presented.isGood, null);
+  const html = renderToStaticMarkup(
+    React.createElement(exports.Chip, { task: noEvidence, ungradedSettled: 0 })
+  );
+  assert.ok(html.includes("Verdict pending: needs solver runs"), html);
+  assert.ok(html.includes(reason), html);
+  assert.ok(!html.includes("bg-amber-100"), html);
 });
 
 test("analysis progress separates completed classifications from failed and pending analysis", () => {
@@ -317,8 +343,8 @@ test("analysis progress separates completed classifications from failed and pend
 
 test("accepted and missing verdict chips have concise exact labels", () => {
   for (const [verdict, label] of [
-    [{ verdict: "accept", is_good: true, confidence: null }, "Accepted"],
-    [null, "No QA verdict generated"],
+    [{ verdict: "accept", is_good: true, confidence: null }, "Verdict accepted"],
+    [null, "Verdict pending: none recorded"],
   ] as const) {
     const html = renderToStaticMarkup(
       React.createElement(exports.Chip, {
@@ -344,7 +370,7 @@ test("rejected verdict is the accessible findings button", () => {
     })
   );
   assert.match(html, /<button[^>]*aria-label="Open findings for Broken task"/);
-  assert.match(html, /Rejected/);
+  assert.match(html, /Verdict rejected/);
 });
 
 test("rejected verdict displays a single exact must-fix count on its findings button", () => {
@@ -361,7 +387,7 @@ test("rejected verdict displays a single exact must-fix count on its findings bu
     })
   );
   assert.match(html, /<button[^>]*aria-label="Open findings for Broken task"/);
-  assert.equal((html.match(/Rejected: 1 Must Fix/g) ?? []).length, 1);
+  assert.equal((html.match(/Verdict rejected: 1 Must fix/g) ?? []).length, 1);
   assert.doesNotMatch(html, /Must fix Finding/);
 });
 
@@ -422,8 +448,8 @@ test("verdict summary hides empty categories and keeps clearing an active filter
   );
   assert.match(html, /QA verdicts/);
   assert.match(html, /2 Accepted/);
-  assert.match(html, /1 QA verdict failed/);
-  assert.doesNotMatch(html, /0 (Rejected|Pending|No verdict)/);
+  assert.match(html, /1 Failed/);
+  assert.doesNotMatch(html, /0 (Rejected|Pending)/);
   assert.match(html, /Show all tasks/);
 });
 
@@ -516,7 +542,7 @@ for (const verdictStatus of ["success", "running", "failed", null] as const) {
         onOpen: () => {},
       })
     );
-    assert.equal(html.replace(/<[^>]*>/g, ""), "Rejected: 3 Must Fix");
+    assert.equal(html.replace(/<[^>]*>/g, ""), "Verdict rejected: 3 Must fix");
     assert.match(html, /aria-label="Open findings for Task"/);
   });
 }
@@ -542,7 +568,10 @@ for (const variant of ["inline", "summary", "card"] as const) {
     assert.equal((html.match(/3 Must fix/g) ?? []).length, 1);
     assert.doesNotMatch(html, /confidence|1 Must fix/);
     if (variant === "summary") {
-      assert.equal(html.replace(/<[^>]*>/g, ""), "3 Must fix");
+      assert.equal(
+        html.replace(/<[^>]*>/g, ""),
+        "Verdict rejected: 3 Must fix"
+      );
     } else {
       assert.match(html, /Duplicate explanation/);
       assert.match(html, /Duplicate fix/);
@@ -569,7 +598,7 @@ test("task-page rejection identifies the audit and count without generated prose
   );
   assert.equal(
     html.replace(/<[^>]*>/g, ""),
-    "Rejected · Pre-trial audit2 Must fix"
+    "Verdict rejected · Pre-trial audit2 Must fix"
   );
 });
 test("selected version without findings does not reuse another version's count", () => {
@@ -584,5 +613,5 @@ test("selected version without findings does not reuse another version's count",
     false,
     0
   );
-  assert.equal(presented.title, "No QA verdict for this version");
+  assert.equal(presented.title, review.VERDICT_LABELS.outdated);
 });

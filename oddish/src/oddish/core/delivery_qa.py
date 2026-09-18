@@ -166,7 +166,10 @@ def evaluate_delivery_qa(
             or task.verdict.get("_graded_by", qa.id if payload.with_verdict else None)
             != qa.id
         ):
-            result.status, result.detail = "error", "No current QA verdict was generated"
+            result.status, result.detail = (
+                "outdated",
+                "No current QA verdict was generated; regenerate the QA verdict",
+            )
         elif task.verdict.get("is_good") is True:
             result.status, result.detail = (
                 "accepted",

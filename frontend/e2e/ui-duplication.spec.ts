@@ -48,7 +48,9 @@ test("drawer keeps one verdict count and generation control, restoring the page 
   await expect(
     page.getByRole("heading", { name: "Findings", exact: true })
   ).toBeVisible();
-  await expect(page.getByText("1 Must fix", { exact: true })).toHaveCount(1);
+  await expect(
+    page.getByText(/^(Verdict rejected: )?1 Must fix$/)
+  ).toHaveCount(1);
   await expect(
     page.getByRole("button", { name: /Generate QA verdict for v7/i })
   ).toHaveCount(1);
@@ -136,7 +138,7 @@ for (const id of ["unreviewed", "review-failed"]) {
     await expect(action).toHaveCount(1);
     const card = action.locator("..");
     await expect(card).toContainText(
-      id === "unreviewed" ? "No QA verdict" : "QA verdict failed"
+      id === "unreviewed" ? "Verdict pending" : "Verdict failed"
     );
     if (id === "review-failed")
       await expect(card).toContainText("Evidence could not be read.");
