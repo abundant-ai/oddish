@@ -155,26 +155,12 @@ export function TrajectorySummary({
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <Sparkles className="h-4 w-4" /> Summary
         </CardTitle>
-        {canRegenerate && activeRefresh ? (
+        {canRegenerate && activeRefresh && (
           <Button size="sm" variant="outline" disabled>
             <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
             Regenerating
           </Button>
-        ) : canRegenerate ? (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onRegenerate}
-            disabled={isStartingRegeneration}
-          >
-            {isStartingRegeneration ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-1 h-3.5 w-3.5" />
-            )}
-            Regenerate
-          </Button>
-        ) : null}
+        )}
       </CardHeader>
       <CardContent className="space-y-3">
         {(failedRefresh || requestError) && (

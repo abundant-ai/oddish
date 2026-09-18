@@ -475,7 +475,6 @@ test.describe("critical task and trial subtree", () => {
       async (route) => {
         if (new URL(route.request().url()).pathname.endsWith("/summary")) {
           if (route.request().method() === "POST") {
-            summaryPostCount += 1;
             if (failNextSummaryPost) {
               failNextSummaryPost = false;
               await route.fulfill({
@@ -484,7 +483,7 @@ test.describe("critical task and trial subtree", () => {
               });
               return;
             }
-            failNextSummaryPoll = summaryPostCount > 1;
+            summaryPostCount += 1;
             await route.fulfill({
               status: summaryPostCount > 1 ? 200 : 202,
               json: {
@@ -510,7 +509,7 @@ test.describe("critical task and trial subtree", () => {
                 summary: replacementSummary,
                 refresh: {
                   status: "failed",
-                  job_id: "summary-refresh-p1",
+                  job_id: "summary-refresh-p2",
                   detail: "Trajectory summary refresh failed after it started",
                 },
               },
@@ -539,6 +538,22 @@ test.describe("critical task and trial subtree", () => {
                 refresh: {
                   status: "settling",
                   job_id: "summary-refresh-p1",
+                  retry_after_ms: 25,
+                },
+              },
+            });
+            return;
+          }
+          if (summaryGetCount === 4) {
+            // The summary is published while the server has already started
+            // a second refresh on its own. The next poll reports it failed.
+            failNextSummaryPoll = true;
+            await route.fulfill({
+              json: {
+                summary: replacementSummary,
+                refresh: {
+                  status: "running",
+                  job_id: "summary-refresh-p2",
                   retry_after_ms: 25,
                 },
               },
@@ -743,20 +758,10 @@ test.describe("critical task and trial subtree", () => {
     await page.getByRole("button", { name: /^#1/ }).click();
     await expect(page.getByText("DEFERRED_TRAJECTORY_STEP_BODY")).toBeVisible();
 
-    const summaryPost = page.waitForRequest(
-      (request) =>
-        request.method() === "POST" &&
-        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
-    );
-    await page
-      .getByRole("tabpanel", { name: "Trajectory", exact: true })
-      .getByRole("button", { name: "Generate", exact: true })
-      .click();
-    await summaryPost;
-    await expect(page.getByText("Replacement summary published")).toBeVisible();
-    expect(summaryPostCount).toBe(1);
-    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
-
+    const trajectoryPanel = page.getByRole("tabpanel", {
+      name: "Trajectory",
+      exact: true,
+    });
     failNextSummaryPost = true;
     const failedSummaryPost = page.waitForResponse(
       (response) =>
@@ -764,18 +769,37 @@ test.describe("critical task and trial subtree", () => {
         response.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`) &&
         response.status() === 503
     );
-    await page
-      .getByRole("tabpanel", { name: "Trajectory", exact: true })
-      .getByRole("button", { name: "Regenerate", exact: true })
+    await trajectoryPanel
+      .getByRole("button", { name: "Generate", exact: true })
       .click();
     await failedSummaryPost;
-    await expect(page.getByText("Replacement summary published")).toBeVisible();
-    const regenerationAlert = page
-      .getByRole("tabpanel", { name: "Trajectory" })
-      .getByRole("alert");
-    await expect(regenerationAlert).toContainText(
+    await expect(trajectoryPanel.getByText("Summary unavailable")).toBeVisible();
+    await expect(trajectoryPanel).toContainText(
       "Summary refresh temporarily unavailable"
     );
+    expect(summaryPostCount).toBe(0);
+
+    const summaryPost = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        request.url().endsWith(`/api/trials/${TRIAL_ID}/trajectory/summary`)
+    );
+    await trajectoryPanel.getByRole("button", { name: "Retry" }).click();
+    await summaryPost;
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
+    expect(summaryPostCount).toBe(1);
+    expect(summaryGetCount).toBeGreaterThanOrEqual(4);
+
+    // The summary card has no regenerate control. A refresh the server
+    // started on its own still surfaces its failure with a retry.
+    await expect(
+      trajectoryPanel.getByRole("button", { name: "Regenerate", exact: true })
+    ).toHaveCount(0);
+    const regenerationAlert = trajectoryPanel.getByRole("alert");
+    await expect(regenerationAlert).toContainText(
+      "Trajectory summary refresh failed after it started"
+    );
+    await expect(page.getByText("Replacement summary published")).toBeVisible();
 
     const retriedSummaryPost = page.waitForRequest(
       (request) =>
@@ -784,11 +808,9 @@ test.describe("critical task and trial subtree", () => {
     );
     await regenerationAlert.getByRole("button", { name: "Retry" }).click();
     await retriedSummaryPost;
-    expect(summaryPostCount).toBe(3);
+    expect(summaryPostCount).toBe(2);
+    await expect(regenerationAlert).toHaveCount(0);
     await expect(page.getByText("Replacement summary published")).toBeVisible();
-    await expect(regenerationAlert).toContainText(
-      "Trajectory summary refresh failed after it started"
-    );
 
     await page.getByRole("tab", { name: "Summary" }).click();
     const secondTrialPattern = new RegExp(
