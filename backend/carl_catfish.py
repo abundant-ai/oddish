@@ -148,6 +148,13 @@ def _coverage_lines(data: dict) -> list[str]:
     return lines
 
 
+def _view_lines(data: dict) -> list[str]:
+    view = data.get("view")
+    if not isinstance(view, str) or not view.startswith("https://"):
+        return []
+    return ["", f"<{view}|Open this view in Catfish>"]
+
+
 def format_catfish_costs(data: dict) -> str:
     totals = data.get("totals") or {}
     lines = [
@@ -162,6 +169,7 @@ def format_catfish_costs(data: dict) -> str:
         lines += ["", "*Daily*"]
         for point in series:
             lines.append(f"• {point.get('date')}: {_money(point.get('usd'))}")
+    lines += _view_lines(data)
     return "\n".join(lines)
 
 
@@ -187,4 +195,5 @@ def format_catfish_breakdown(data: dict) -> str:
                 f"prior {_money(row.get('previousUsd'))}  "
                 f"({_delta(row.get('changePercent'))})"
             )
+    lines += _view_lines(data)
     return "\n".join(lines)
