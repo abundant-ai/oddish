@@ -155,8 +155,15 @@ async def fetch_catfish_chart(params: dict[str, str]) -> tuple[bytes, str] | str
     return body, _chart_filename(response)
 
 
-def queue_catfish_chart(png: bytes, caption: str, filename: str = "catfish-mix.png") -> None:
-    _pending_charts.append((png, caption, filename))
+def catfish_view_url(data: dict) -> str:
+    view = data.get("view")
+    if isinstance(view, str) and view.startswith("https://"):
+        return view
+    return ""
+
+
+def queue_catfish_chart(png: bytes, view: str = "", filename: str = "catfish-mix.png") -> None:
+    _pending_charts.append((png, view, filename))
 
 
 def drain_catfish_charts() -> list[tuple[bytes, str, str]]:
@@ -165,7 +172,7 @@ def drain_catfish_charts() -> list[tuple[bytes, str, str]]:
     return items
 
 
-async def maybe_queue_catfish_chart(params: dict[str, str], caption: str) -> None:
+async def maybe_queue_catfish_chart(params: dict[str, str], view: str = "") -> None:
     """Proof PNG for a successful text answer. Failures stay off the Slack reply."""
     try:
         chart = await fetch_catfish_chart(params)
@@ -176,7 +183,7 @@ async def maybe_queue_catfish_chart(params: dict[str, str], caption: str) -> Non
         log.info("catfish chart skipped: %s", chart)
         return
     png, filename = chart
-    queue_catfish_chart(png, caption, filename)
+    queue_catfish_chart(png, view, filename)
 
 
 def _window_label(data: dict) -> str:
@@ -207,8 +214,8 @@ def _coverage_lines(data: dict) -> list[str]:
 
 
 def _view_lines(data: dict) -> list[str]:
-    view = data.get("view")
-    if not isinstance(view, str) or not view.startswith("https://"):
+    view = catfish_view_url(data)
+    if not view:
         return []
     # Bare URL: `_deliver` HTML-escapes the answer, so Slack `<url|label>`
     # would render as literal angle brackets.
