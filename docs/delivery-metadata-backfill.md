@@ -157,6 +157,70 @@ For local database tests, use a database migrated with the core stack only
 (`oddish/`): the hosted stack's migrations add a foreign key from `tasks` to
 `organizations`, which the core test fixtures do not populate.
 
+## Preview and apply
+
+With the plan and the same inventory file it was built from:
+
+```sh
+oddish delivery import-history /absolute/path/backfill-preview/plan.json \
+  --inventory /absolute/path/inventory.json \
+  [--customer meta=<customer id or name>] ...
+oddish delivery import-history ... --apply
+oddish delivery import-receipts
+```
+
+Both calls upload the two files to `POST /deliveries/history-imports`, which
+runs `delivery_apply.apply_plan_core` in one transaction on the API side
+(the real plan is tens of megabytes; the write itself takes seconds). The
+organization comes from the sign-in. Applying requires an organization
+admin; previews and the receipt list need the `tasks` scope.
+
+Without `--apply` the API computes, from reads only, every row the plan
+would create or update and records a `previewed` receipt with those counts;
+nothing is written. `--apply` executes the same diff in one transaction and
+records an `applied` receipt. The API accepts an apply only when a
+`previewed` receipt for this exact plan (same content hash) exists from the
+last 24 hours, so an apply always follows a review, and it holds a
+per-organization advisory lock for the transaction, so two concurrent applies
+serialize and the second becomes a replay. A rejected plan prints the reasons
+and exits 3; its `rejected` receipt is still recorded. `import-receipts`
+lists receipts newest first.
+
+A plan is rejected, and nothing but the receipt is written, when:
+
+- its schema, organization, or mode is not a planner preview for the
+  signed-in organization;
+- it was built without an inventory, or `--inventory` is not the file it was
+  built from (the plan's `input_hashes.inventory` must match);
+- it is an apply without a preview of the same plan in the last 24 hours;
+- the inventory is older than 7 days (the `max_inventory_age_hours` form
+  field on the route overrides this; the live identity check below is the
+  real freshness guard);
+- a resolved task is no longer in the organization or has been renamed since
+  the inventory, a proposed alias is now the current name of another live
+  task, or an earlier import gave that alias to a different task;
+- a `--customer` mapping names a customer that does not exist in the
+  organization.
+
+What `--apply` writes: every `evidence` record (new rows are created, changed
+facts are updated in place, unchanged rows only get the new `last_import_id`
+as the receipt that last saw them); `source_names` proposals as live aliases;
+other proposals as metadata assertions; and `delivery_observations` with a
+resolved task ID as history rows, one per source record, so one task and
+customer can have several rows and readers dedupe by task and customer.
+Observations without a resolved task, and resolved profiles with conflicting
+category values, are counted in the receipt summary and not imported. A fact
+row keeps the receipt that created or last changed it; an identical replay
+leaves it untouched. A history row's operator-confirmed customer, shipped
+version, content hash, program, acceptance, and finalization are never reset
+by a plan that does not establish them. A wrong alias or assertion is
+retracted (`retracted_at`), never deleted, and an alias the ledger later
+reused for another task gets `valid_until` set so the name can be recorded for
+both tasks in sequence.
+
+On a self-hosted standalone server the same routes exist without auth; its
+documents and history rows carry the organization label `local`.
+
 ## Verification
 
 The tests run without server dependencies or a database:
@@ -170,3 +234,17 @@ They cover explicit IDs and aliases, reused names, conflicting IDs/categories,
 organization mismatch, missing IDs, category no-ops, repeated/reordered inputs,
 source edits/removals, multiple recipients, unknown historical versions,
 existing category extraction, and refusal to replace previous output.
+
+The database-backed tests need a database migrated with the core stack only:
+
+```sh
+ODDISH_DATABASE_URL=postgresql+asyncpg://... uv run pytest \
+  tests/test_task_history_schema.py tests/test_delivery_apply.py
+```
+
+They cover the uniqueness and retention constraints, preview versus apply,
+replay, changed source values, every rejection above, customer mapping, the
+inventory's organization scoping, retirement of an imported task, and the
+routes over HTTP (`test_delivery_history_api.py`). `test_cli_delivery_history.py`
+covers the CLI against a fake API. Nothing has been run against staging or
+production yet; the rollout order is in [the todo](delivery-metadata-todo.md).

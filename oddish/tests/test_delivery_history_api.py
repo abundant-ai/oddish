@@ -1,12 +1,15 @@
-"""Standalone-server inventory route over real HTTP against local PostgreSQL."""
+"""Standalone-server history routes over real HTTP against local PostgreSQL."""
 
 from contextlib import asynccontextmanager
+import json
 
 import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
+from test_delivery_backfill import bundle
 
+from oddish.core.ingest.delivery_backfill import build_plan
 from oddish.db import TaskModel, utcnow
 
 
@@ -54,8 +57,9 @@ async def history_api(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_inventory_lists_live_and_retired_tasks_with_the_local_label(history_api):
-    response = await history_api.get("/deliveries/task-inventory")
+async def test_inventory_then_preview_then_apply_over_http(history_api):
+    client = history_api
+    response = await client.get("/deliveries/task-inventory")
     assert response.status_code == 200, response.text
     inventory = response.json()
     assert inventory["org_id"] == "local"
@@ -64,3 +68,51 @@ async def test_inventory_lists_live_and_retired_tasks_with_the_local_label(histo
         by_id["task-1"]["org_id"] == "local" and by_id["task-1"]["retired_at"] is None
     )
     assert by_id["task-old"]["retired_at"] is not None
+
+    plan = build_plan(bundle(), org_id="local", inventory=inventory)
+    files = {
+        "plan": ("plan.json", json.dumps(plan).encode(), "application/json"),
+        "inventory": (
+            "inventory.json",
+            json.dumps(inventory).encode(),
+            "application/json",
+        ),
+    }
+    response = await client.post("/deliveries/history-imports", files=files)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert (preview["mode"], preview["outcome"]) == ("preview", "previewed")
+    assert preview["summary"]["delivery_history"]["created"] == 1
+
+    response = await client.post(
+        "/deliveries/history-imports", files=files, data={"apply": "true"}
+    )
+    assert response.status_code == 200, response.text
+    applied = response.json()
+    assert (applied["mode"], applied["outcome"]) == ("apply", "applied")
+
+    response = await client.get("/deliveries/history-imports")
+    assert [r["outcome"] for r in response.json()] == ["applied", "previewed"]
+
+    # A plan for another organization is rejected with a receipt, not a 500.
+    foreign_inventory = {
+        **inventory,
+        "org_id": "org-x",
+        "tasks": [{**task, "org_id": "org-x"} for task in inventory["tasks"]],
+    }
+    foreign = build_plan(bundle(), org_id="org-x", inventory=foreign_inventory)
+    response = await client.post(
+        "/deliveries/history-imports",
+        files={
+            **files,
+            "plan": ("plan.json", json.dumps(foreign).encode(), "application/json"),
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "rejected"
+
+    response = await client.post(
+        "/deliveries/history-imports",
+        files={**files, "plan": ("plan.json", b"not json", "application/json")},
+    )
+    assert response.status_code == 422

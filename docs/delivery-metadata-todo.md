@@ -67,8 +67,9 @@ See [the runbook](delivery-metadata-backfill.md) for commands and output definit
 
 ### Rollout order
 
-1. Land the branch on `staging` (stack of PRs, each under 500 application
-   lines); the staging deploy runs `delivery_history_001`.
+1. Land the five stacked PRs on `staging` (inventory export, planner, history
+   tables, import core, import routes and CLI); the staging deploy runs
+   `delivery_history_001`.
 2. Against staging (a mirror of production data): `oddish delivery inventory`,
    the planner on the September 10 research, `oddish delivery import-history`
    preview; review the receipt; apply on staging as the rehearsal.

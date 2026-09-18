@@ -208,6 +208,17 @@ async def _purge(org_id: str, task_id: str, api_key_id: str) -> None:
         await session.execute(
             text("delete from experiments where org_id = :o"), {"o": org_id}
         )
+        # Imported task history references tasks with RESTRICT, in FK order.
+        for table in (
+            "task_delivery_history",
+            "task_aliases",
+            "task_metadata_assertions",
+            "task_source_records",
+            "metadata_import_receipts",
+        ):
+            await session.execute(
+                text(f"delete from {table} where org_id = :o"), {"o": org_id}
+            )
         await session.execute(
             TaskModel.__table__.delete().where(TaskModel.id == task_id)
         )

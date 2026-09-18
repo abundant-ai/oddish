@@ -5,6 +5,8 @@ are admin-only. Readiness state is computed in ``oddish.core.deliveries`` — th
 only add auth and transaction boundaries.
 """
 
+import asyncio
+from datetime import timedelta
 from typing import Annotated
 
 from auth import (
@@ -15,7 +17,16 @@ from auth import (
     require_admin,
     require_auth,
 )
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from models import UserModel, UserRole
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -35,6 +46,14 @@ from oddish.core.deliveries import (
     set_manual_check_core,
 )
 from oddish.core.delivery_view import delivery_page, delivery_selection
+from oddish.core.ingest.delivery_apply import (
+    DEFAULT_MAX_INVENTORY_AGE,
+    apply_plan_core,
+    list_import_receipts_core,
+    load_json_document,
+    parse_customer_map,
+    parse_plan,
+)
 from oddish.core.ingest.delivery_inventory import export_inventory_core
 from oddish.db import get_read_session, get_session
 from oddish.schemas import (
@@ -50,6 +69,7 @@ from oddish.schemas import (
     DeliveryTasksAdd,
     DeliveryTaskBoardRow,
     DeliveryViewQuery,
+    HistoryImportReceipt,
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
@@ -178,6 +198,96 @@ async def get_task_inventory(
         auth.require_scope(APIKeyScope.TASKS)
         inventory = await export_inventory_core(session, org_id=auth.org_id)
         return TaskInventoryResponse.model_validate(inventory)
+
+
+@router.get("/deliveries/history-imports", response_model=list[HistoryImportReceipt])
+async def list_history_imports(
+    request: Request,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> list[HistoryImportReceipt]:
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
+        receipts = await list_import_receipts_core(
+            session, org_id=auth.org_id, limit=limit
+        )
+        return [HistoryImportReceipt.model_validate(r) for r in receipts]
+
+
+@router.post("/deliveries/history-imports", response_model=HistoryImportReceipt)
+async def import_delivery_history(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    plan: Annotated[UploadFile, File()],
+    inventory: Annotated[UploadFile, File()],
+    apply: Annotated[bool, Form()] = False,
+    customer: Annotated[list[str] | None, Form()] = None,
+    max_inventory_age_hours: Annotated[float | None, Form(gt=0)] = None,
+) -> HistoryImportReceipt:
+    """Preview (default) or apply a reviewed delivery metadata plan.
+
+    Admin only: ``apply`` writes task aliases, metadata assertions, and
+    delivery history, and is accepted only after a recent preview of the same
+    plan. Every run, including a rejected one, records a receipt.
+    """
+    plan_doc, plan_hash = await _read_plan_upload(plan)
+    inventory_doc = await _read_json_upload(inventory, "inventory")
+    try:
+        customer_map = parse_customer_map(customer or [])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    max_age = (
+        timedelta(hours=max_inventory_age_hours)
+        if max_inventory_age_hours
+        else DEFAULT_MAX_INVENTORY_AGE
+    )
+    async with get_session() as session:
+        try:
+            receipt = await apply_plan_core(
+                session,
+                plan=plan_doc,
+                inventory=inventory_doc,
+                org_id=auth.org_id,
+                mode="apply" if apply else "preview",
+                plan_hash=plan_hash,
+                customer_map=customer_map,
+                user_id=auth.user_id,
+                max_inventory_age=max_age,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail=f"plan is malformed: {exc}"
+            ) from exc
+        await session.commit()
+        return HistoryImportReceipt.model_validate(receipt)
+
+
+# The real plan is under 20 MB; this bounds a runaway upload, not a
+# legitimate one. Parsing runs off the event loop so other requests on the
+# container are not stalled by a large document.
+_MAX_IMPORT_UPLOAD_BYTES = 128 * 1024 * 1024
+
+
+async def _read_upload(upload: UploadFile, label: str) -> bytes:
+    data = await upload.read(_MAX_IMPORT_UPLOAD_BYTES + 1)
+    if len(data) > _MAX_IMPORT_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"{label} upload is too large")
+    return data
+
+
+async def _read_json_upload(upload: UploadFile, label: str) -> dict:
+    data = await _read_upload(upload, label)
+    try:
+        return await asyncio.to_thread(load_json_document, data, label)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _read_plan_upload(upload: UploadFile) -> tuple[dict, str]:
+    data = await _read_upload(upload, "plan")
+    try:
+        return await asyncio.to_thread(parse_plan, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
