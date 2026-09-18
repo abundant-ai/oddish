@@ -1924,7 +1924,13 @@ is imported. There is no `notify_github_analysis` hook or active task-level
 
 ### Trial Storage Layout
 
-Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/``. Every upload
+New trial artifacts use ``tasks/<task_id>/trials/<namespace>/<trial_id>/`` when
+``ODDISH_TRIAL_ARTIFACT_NAMESPACE`` is set. Hosted Modal apps set it to
+``<secret-environment>-<app-name>`` so forked databases cannot overwrite another
+deployment’s trial artifacts. Worker uploads, imports, copied trials, and scoped
+write credentials share this prefix. Stored ``trial_s3_key`` pointers and legacy
+read fallbacks stay unchanged. Self-hosted installations default to the historical
+``tasks/<task_id>/trials/<trial_id>/`` layout. Every upload
 uses an immutable retry prefix: ordinary agent and operator-probe attempts use
 ``attempt-<attempt>/``; QA, QA-eval, audit, and summarize attempts use
 ``analysis-<kind>/attempt-<attempt>/``. Harbor's randomly named trial directory
@@ -2822,7 +2828,9 @@ provider capability catalog; a provider still validates its selected model.
 
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
-inside the isolated local test app and intercept submission requests. The
+inside the isolated local test app and intercept submission requests. The effort
+suite always starts this checkout’s server; set `EFFORT_TEST_PORT` when running
+multiple worktrees (default `3117`). It refuses to reuse an occupied port. The
 Dashboard CI workflow runs this config in a separate step and stores its
 artifacts in `frontend/effort-test-results/`; the default dashboard config
 excludes the local-only effort spec. Effort cases wait for the client-rendered
