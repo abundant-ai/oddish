@@ -157,6 +157,13 @@ def _chart_caption(body: str, view: str) -> str:
     return body
 
 
+def _followup_chart_caption(view: str) -> str:
+    """Later charts keep a link, not another copy of the writeup."""
+    if view.startswith("https://"):
+        return view
+    return "Catfish spend"
+
+
 def _clear_placeholder(channel: str, ts: str) -> None:
     try:
         _slack_call("chat.delete", channel=channel, ts=ts)
@@ -173,13 +180,18 @@ def _post_catfish_charts(channel: str, thread: str, body: str) -> bool:
 
     posted = False
     for png, view, filename in drain_catfish_charts():
+        caption = (
+            _chart_caption(body, view)
+            if not posted
+            else _followup_chart_caption(view)
+        )
         try:
             _upload_file(
                 channel,
                 thread,
                 png,
                 filename=filename,
-                caption=_chart_caption(body, view),
+                caption=caption,
             )
             posted = True
         except Exception:

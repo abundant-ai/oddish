@@ -247,6 +247,15 @@ def test_chart_caption_appends_missing_view_url():
     assert carl._chart_caption(f"{writeup}\n{view}", view) == f"{writeup}\n{view}"
 
 
+def test_followup_chart_caption_is_view_or_title():
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=model"
+    )
+    assert carl._followup_chart_caption(view) == view
+    assert carl._followup_chart_caption("") == "Catfish spend"
+
+
 def test_finish_answer_chart_success_skips_deliver(monkeypatch):
     from carl_catfish import drain_catfish_charts, queue_catfish_chart
 
@@ -278,6 +287,79 @@ def test_finish_answer_chart_success_skips_deliver(monkeypatch):
     assert "*Catfish breakdown" not in caption
     assert "*Top models*" not in caption
     assert "Open this view in Catfish" not in caption
+
+
+def test_finish_answer_two_charts_writeup_once(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    costs_view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    breakdown_view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=model"
+    )
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", costs_view, "catfish-mix.png")
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", breakdown_view, "catfish-breakdown.png")
+    uploads = []
+    delivered = []
+    monkeypatch.setattr(
+        carl,
+        "_upload_file",
+        lambda *args, **kwargs: uploads.append((args, kwargs)) or {},
+    )
+    monkeypatch.setattr(carl, "_clear_placeholder", lambda *_args: None)
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+
+    assert delivered == []
+    assert len(uploads) == 2
+    first = uploads[0][1]["caption"]
+    second = uploads[1][1]["caption"]
+    assert first.startswith(writeup)
+    assert costs_view in first
+    assert writeup not in second
+    assert second == breakdown_view
+
+
+def test_finish_answer_first_chart_fail_writeup_on_second(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    costs_view = "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+    breakdown_view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17&gby=model"
+    )
+    queue_catfish_chart(b"png-1", costs_view, "catfish-mix.png")
+    queue_catfish_chart(b"png-2", breakdown_view, "catfish-breakdown.png")
+    uploads = []
+    delivered = []
+
+    def upload(*args, **kwargs):
+        if args[2] == b"png-1":
+            raise RuntimeError("upload down")
+        uploads.append((args, kwargs))
+        return {}
+
+    monkeypatch.setattr(carl, "_upload_file", upload)
+    monkeypatch.setattr(carl, "_clear_placeholder", lambda *_args: None)
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == []
+    assert len(uploads) == 1
+    caption = uploads[0][1]["caption"]
+    assert caption.startswith(writeup)
+    assert breakdown_view in caption
 
 
 def test_finish_answer_chart_fail_still_delivers(monkeypatch):
