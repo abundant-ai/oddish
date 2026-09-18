@@ -999,6 +999,9 @@ class TaskVersionSummary(TaskVersionRollup):
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
     pre_trial_error: str | None = None
+    # The audit trial that produced these findings; votes on a finding anchor
+    # to it. Absent on audits that predate the block_id record.
+    pre_trial_trial_id: str | None = None
     # What this audit cost. Captured at write time; absent on audits that
     # predate that (analysis_costs has no version reference to recover it from).
     pre_trial_cost_usd: float | None = None
