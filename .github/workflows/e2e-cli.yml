@@ -18,6 +18,8 @@ on:
     paths:
       - "backend/**"
       - "oddish/src/**"
+      - "oddish/tests/startup/**"
+      - "oddish/tests/test_config_queue_keys.py"
       - "oddish/tests/test_deliver*"
       - "oddish/pyproject.toml"
       - "oddish/uv.lock"
@@ -29,6 +31,8 @@ on:
     paths:
       - "backend/**"
       - "oddish/src/**"
+      - "oddish/tests/startup/**"
+      - "oddish/tests/test_config_queue_keys.py"
       - "oddish/tests/test_deliver*"
       - "oddish/pyproject.toml"
       - "oddish/uv.lock"
@@ -74,6 +78,12 @@ jobs:
 
       - name: Sync backend dependencies
         run: uv sync --frozen
+
+      - name: Check CLI startup latency and model routing
+        run: >-
+          uv run pytest
+          ../oddish/tests/startup
+          ../oddish/tests/test_config_queue_keys.py -v
 
       - name: Run e2e CLI suite
         env:
