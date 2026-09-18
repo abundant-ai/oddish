@@ -1186,6 +1186,24 @@ class LiveTailer:
                 if cancelled is None:
                     return
             self._last_written, self._last_cost = checkpoint_ack
+            # The provider that can pause a sandbox on model credit needs the
+            # running total to know when the trial's budget is reached. Sent
+            # only after the checkpoint landed, so the provider never sees a
+            # number oddish itself has not recorded. Best effort; a miss here
+            # is caught by the next checkpoint, which carries the cumulative.
+            values = checkpoint[0] if checkpoint is not None else None
+            if values is not None:
+                from oddish.workers.harbor.spend_signal import signal_spend
+
+                await signal_spend(
+                    self.environment,
+                    self.trial_id,
+                    kind="usage",
+                    cumulative_usd=values.get("cost_usd"),
+                    input_tokens=int(values.get("input_tokens") or 0),
+                    output_tokens=int(values.get("output_tokens") or 0),
+                    note={"attempt": self.attempt},
+                )
 
     async def _flush_events(self, session) -> int:
         if not self.pending_events or self.replaced:

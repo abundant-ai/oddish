@@ -1728,3 +1728,67 @@ def test_tbh_fold_drops_its_buffer_when_the_log_is_re_teed():
     fold.feed_line(tbh_line("run.output.delta", {"text": "partial"}))
     fold.on_truncate()
     assert fold.flush() == []
+
+
+@pytest.mark.asyncio
+async def test_cost_checkpoint_forwards_cumulative_spend_to_the_provider(monkeypatch):
+    """Every landed cost checkpoint is forwarded as a usage signal, carrying
+    the cumulative cost and tokens, so a provider that pauses on model credit
+    knows when the trial's budget is reached. Sent after the checkpoint is
+    recorded, never before."""
+    from oddish.core import quota_enforcement
+    from oddish.workers.harbor import spend_signal
+
+    patch_db(monkeypatch, price=0.25)
+
+    async def enforce_ok(**_kwargs):
+        return 0
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", enforce_ok)
+    signals = []
+
+    async def record_signal(environment, trial_id, **kw):
+        signals.append((trial_id, kw))
+        return True
+
+    monkeypatch.setattr(spend_signal, "signal_spend", record_signal)
+    tailer = make_tailer(FakeEnv([]), trial_id="t9", attempt=2)
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 1}))
+
+    await tailer._persist_tick()
+
+    assert len(signals) == 1
+    trial_id, kw = signals[0]
+    assert trial_id == "t9"
+    assert kw["kind"] == "usage"
+    assert kw["cumulative_usd"] == 0.25
+    assert kw["input_tokens"] == 1
+    assert kw["note"] == {"attempt": 2}
+
+
+@pytest.mark.asyncio
+async def test_no_spend_signal_when_the_checkpoint_did_not_land(monkeypatch):
+    """A refused quota enforcement leaves the checkpoint unrecorded; the
+    provider must not be told a number oddish itself has not kept."""
+    from oddish.core import quota_enforcement
+    from oddish.workers.harbor import spend_signal
+
+    patch_db(monkeypatch, price=0.25)
+
+    async def enforce_fails(**_kwargs):
+        return None
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", enforce_fails)
+    from unittest.mock import AsyncMock
+
+    signal = AsyncMock(return_value=True)
+    monkeypatch.setattr(spend_signal, "signal_spend", signal)
+    tailer = make_tailer(FakeEnv([]))
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 1}))
+
+    await tailer._persist_tick()
+    signal.assert_not_awaited()

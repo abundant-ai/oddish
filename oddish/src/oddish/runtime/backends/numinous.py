@@ -169,6 +169,71 @@ class NuminousBackend:
             logger.info("metric=numinous.outcome_stamp trial_id=%s failed", trial_id)
             return 0
 
+    async def report_spend(
+        self,
+        trial_id: str,
+        *,
+        kind: str = "usage",
+        cumulative_usd: float | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        note: dict[str, Any] | None = None,
+    ) -> bool:
+        """Tell the control plane what the model has cost this trial so far,
+        or that its credit ran out (``credit_exhausted``) or came back
+        (``credit_restored``).
+
+        Infrastructure is a few percent of a trial's cost; model tokens are
+        the rest. The expensive failure is therefore a trial killed at 90%
+        because the model API refused, not an expensive sandbox. Given these
+        signals the control plane pauses instead: the sandbox suspends with
+        its memory intact, bills storage only, and its TTL clock stops, so
+        the trial resumes mid-thought when credit is back and never costs an
+        attempt. ``credit_restored`` (or a resume) continues it.
+
+        Addressed by the trial id (``POST /v1/trials/{id}/spend``), which the
+        environment stamps as ``oddish.trial_id`` at create, so it lands on
+        the trial's current attempt without knowing the sandbox. Sent from the
+        live tailer on every cost checkpoint and from quota control on each
+        pause/resume transition. Metadata: never raises, never fails a trial.
+        Returns whether the control plane accepted it."""
+        if not trial_id or kind not in ("usage", "credit_exhausted", "credit_restored"):
+            return False
+        body: dict[str, Any] = {
+            "source": "oddish",
+            "kind": kind,
+            "amount_usd": 0.0,
+            "tokens_in": int(input_tokens or 0),
+            "tokens_out": int(output_tokens or 0),
+            "note": dict(note or {}),
+        }
+        if cumulative_usd is not None:
+            body["cumulative_usd"] = float(cumulative_usd)
+        try:
+            import httpx
+
+            url, headers = _api()
+            async with httpx.AsyncClient(
+                base_url=url, headers=headers, timeout=15
+            ) as client:
+                r = await client.post(f"/v1/trials/{trial_id}/spend", json=body)
+            accepted = r.status_code < 400
+            logger.info(
+                "metric=numinous.spend_signal trial_id=%s kind=%s status=%s paused=%s",
+                trial_id,
+                kind,
+                r.status_code,
+                (r.json().get("paused_reason") if accepted else None),
+            )
+            return accepted
+        except Exception:
+            logger.info(
+                "metric=numinous.spend_signal trial_id=%s kind=%s failed",
+                trial_id,
+                kind,
+            )
+            return False
+
     async def settle_trial(
         self,
         trial_id: str,

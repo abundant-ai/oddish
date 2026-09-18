@@ -2351,6 +2351,7 @@ async def _run_harbor_trial_async_impl(
                         job,
                         trial_id=trial_id,
                         org_id=org_id,
+                        environment=environment,
                         billed_user_id=billed_user_id,
                     )
                 else:

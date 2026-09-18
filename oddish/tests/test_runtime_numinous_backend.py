@@ -226,3 +226,98 @@ async def test_settle_trial_never_raises(monkeypatch) -> None:
     assert (
         await NuminousBackend().settle_trial("t", reward=0.0, status="success") is False
     )
+
+
+# -- model spend signal -------------------------------------------------------
+# Infrastructure is a few percent of a trial's cost; model tokens are the rest.
+# The control plane pauses a sandbox on these signals instead of letting the
+# trial die when the model API refuses. The backend forwards them; it must
+# never fail a trial doing so.
+
+
+def _capture_transport(monkeypatch, status: int = 200, body: dict | None = None):
+    import httpx
+
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            status, json=body if body is not None else {"paused_reason": None}
+        )
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        kwargs["transport"] = transport
+        return orig_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_report_spend_posts_usage_to_the_trial_route(monkeypatch) -> None:
+    """Addressed by trial id, not sandbox id: oddish knows the trial before it
+    knows which sandbox the current attempt landed on."""
+    import json
+
+    seen = _capture_transport(monkeypatch)
+    ok = await NuminousBackend().report_spend(
+        "trial-7",
+        kind="usage",
+        cumulative_usd=1.25,
+        input_tokens=1000,
+        output_tokens=50,
+        note={"attempt": 2},
+    )
+    assert ok is True
+    assert len(seen) == 1
+    req = seen[0]
+    assert req.method == "POST" and req.url.path == "/v1/trials/trial-7/spend"
+    body = json.loads(req.content)
+    assert body["source"] == "oddish" and body["kind"] == "usage"
+    assert body["cumulative_usd"] == 1.25
+    assert body["tokens_in"] == 1000 and body["tokens_out"] == 50
+    assert body["note"] == {"attempt": 2}
+
+
+@pytest.mark.asyncio
+async def test_report_spend_exhausted_and_restored_are_the_pause_signals(
+    monkeypatch,
+) -> None:
+    import json
+
+    seen = _capture_transport(
+        monkeypatch, body={"paused_reason": "model_credit_exhausted"}
+    )
+    assert (
+        await NuminousBackend().report_spend("trial-7", kind="credit_exhausted") is True
+    )
+    assert (
+        await NuminousBackend().report_spend("trial-7", kind="credit_restored") is True
+    )
+    kinds = [json.loads(r.content)["kind"] for r in seen]
+    assert kinds == ["credit_exhausted", "credit_restored"]
+
+
+@pytest.mark.asyncio
+async def test_report_spend_never_raises(monkeypatch) -> None:
+    """A metadata call must not fail a trial: refused, unreachable, or given an
+    unknown kind, it returns False and the trial proceeds."""
+    _capture_transport(monkeypatch, status=503)
+    assert (
+        await NuminousBackend().report_spend("trial-7", kind="usage", cumulative_usd=1)
+        is False
+    )
+    assert await NuminousBackend().report_spend("trial-7", kind="not_a_kind") is False
+    assert await NuminousBackend().report_spend("", kind="usage") is False
+
+    import httpx
+
+    def exploding_client(**kwargs):
+        raise ConnectionError("control plane unreachable")
+
+    monkeypatch.setattr(httpx, "AsyncClient", exploding_client)
+    assert await NuminousBackend().report_spend("trial-7", kind="usage") is False
