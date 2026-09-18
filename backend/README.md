@@ -289,6 +289,49 @@ Common optional settings:
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
 - `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. Carl's code lives in `carl.py`, `carl_agent.py`, and `carl_tools.py`.
 
+### Where provider keys actually live
+
+Provider keys are environment variables **inside the `oddish-prod` Modal
+secret** (`main` environment), not standalone secrets of their own.
+`RUNTIME_SECRET_NAME = "oddish-prod"` in `backend/modal_runtime.py` is what the
+API containers and workers mount, so that is the only place a rotation takes
+effect.
+
+Rotate one from the Modal dashboard:
+
+    Apps -> Secrets -> oddish-prod -> Edit -> <VAR>
+
+or from the CLI:
+
+```bash
+uv run modal secret create oddish-prod XAI_API_KEY="..." --force
+```
+
+A workspace secret whose name merely resembles a variable is not mounted and
+editing it changes nothing. `XAI_API_KEYS` exists as a workspace secret, but the
+value the workers read is the `XAI_API_KEYS` **variable inside `oddish-prod`**.
+The authoritative list of mounted secrets is every `Secret.from_name(...)` in
+`backend/modal_app.py` and `backend/modal_runtime.py`; at time of writing that
+is `oddish-prod`, `oddish-logfire`, `<app>-db`, and the purpose-specific
+Sauron/GKE/Numinous/EC2/Slack secrets. Nothing else reaches a container.
+
+**`XAI_API_KEYS` overrides `XAI_API_KEY`.** `_pick_api_key()` in
+`oddish/workers/agents/grok_build.py` reads `XAI_API_KEYS` first as a
+comma-separated pool and picks one at random, falling back to `XAI_API_KEY`
+only when that pool is empty. Rotating `XAI_API_KEY` while a stale
+`XAI_API_KEYS` pool is still set silently keeps the old keys in use. Clear or
+update both.
+
+### Cycling workers after a secret change
+
+Modal injects secrets at container start, so running containers keep the old
+value until they are replaced. Stop them and let the app start fresh ones:
+
+    Apps -> oddish -> api_app -> Containers -> stop the containers
+
+In-flight requests on a stopped container fail, so cycle when the queue is
+quiet, or stop them a few at a time.
+
 ### Observability (Pydantic Logfire)
 
 Tracing explicitly accepts incoming W3C parent context. New queued jobs save
