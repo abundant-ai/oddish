@@ -28,6 +28,7 @@ from oddish.core.deliveries import (
     set_manual_check_core,
 )
 from oddish.core.delivery_view import delivery_page, delivery_selection
+from oddish.core.ingest.delivery_inventory import export_inventory_core
 from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
@@ -45,6 +46,7 @@ from oddish.schemas import (
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
+    TaskInventoryResponse,
     TaskQAHistoryResponse,
 )
 
@@ -80,6 +82,14 @@ async def create_customer(data: CustomerCreate) -> CustomerResponse:
         customer = await create_customer_core(session, org_id=None, name=data.name)
         await session.commit()
         return CustomerResponse.model_validate(customer)
+
+
+# Declared before ``/deliveries/{delivery_id}`` so these literal paths win.
+@router.get("/deliveries/task-inventory", response_model=TaskInventoryResponse)
+async def get_task_inventory() -> TaskInventoryResponse:
+    async with get_read_session() as session:
+        inventory = await export_inventory_core(session, org_id=None)
+        return TaskInventoryResponse.model_validate(inventory)
 
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
