@@ -35,6 +35,7 @@ from oddish.core.deliveries import (
     set_manual_check_core,
 )
 from oddish.core.delivery_view import delivery_page, delivery_selection
+from oddish.core.ingest.delivery_inventory import export_inventory_core
 from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
@@ -52,6 +53,7 @@ from oddish.schemas import (
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
+    TaskInventoryResponse,
     TaskQAHistoryResponse,
 )
 from sqlalchemy import select
@@ -163,6 +165,19 @@ async def _fill_user_names(
             )
     for check in checks:
         check.checked_by_name = names.get(check.checked_by_user_id or "")
+
+
+# Declared before ``/deliveries/{delivery_id}`` so these literal paths win.
+@router.get("/deliveries/task-inventory", response_model=TaskInventoryResponse)
+async def get_task_inventory(
+    request: Request,
+    auth: Annotated[AuthContext, Depends(get_auth_context)],
+) -> TaskInventoryResponse:
+    """Task identities for the delivery metadata planner, retired tasks included."""
+    async with authorized_read_session(request, auth) as session:
+        auth.require_scope(APIKeyScope.TASKS)
+        inventory = await export_inventory_core(session, org_id=auth.org_id)
+        return TaskInventoryResponse.model_validate(inventory)
 
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)

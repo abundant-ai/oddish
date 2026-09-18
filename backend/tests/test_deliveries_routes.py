@@ -154,3 +154,12 @@ async def test_qa_work_requires_task_scope_and_a_user(operation, has_identity):
                 "d1", QAWorkPatch(version_id="v1", note="edit"), auth
             )
     assert exc.value.status_code == 403
+
+
+def test_task_inventory_is_declared_before_the_delivery_id_route() -> None:
+    """``/deliveries/task-inventory`` must not be swallowed by
+    ``/deliveries/{delivery_id}``."""
+    paths = [route.path for route in deliveries.router.routes]
+    assert paths.index("/deliveries/task-inventory") < paths.index(
+        "/deliveries/{delivery_id}"
+    )

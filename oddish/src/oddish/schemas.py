@@ -2974,6 +2974,35 @@ class TaskQAHistoryVersion(BaseModel):
     decisions: list[TaskQAHistoryDecision] = Field(default_factory=list)
 
 
+class TaskInventoryCategory(BaseModel):
+    source: str
+    value: str
+
+
+class TaskInventoryTask(BaseModel):
+    id: str
+    name: str
+    org_id: str
+    task_path: str
+    retired_at: str | None = None
+    current_version_id: str | None = None
+    current_content_hash: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    category_evidence: list[TaskInventoryCategory] = Field(default_factory=list)
+
+
+class TaskInventoryResponse(BaseModel):
+    """Current task identities of one organization, retired tasks included.
+
+    Input to the delivery metadata planner (``docs/delivery-metadata-backfill.md``).
+    """
+
+    schema_version: str
+    org_id: str
+    captured_at: str
+    tasks: list[TaskInventoryTask]
+
+
 class TaskQAHistoryResponse(BaseModel):
     task_id: str
     task_name: str

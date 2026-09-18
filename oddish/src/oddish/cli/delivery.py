@@ -8,6 +8,8 @@ it into their loops. See docs/delivery-design.md.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import httpx
@@ -633,3 +635,36 @@ def history(
             console.print(
                 f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Historical delivery metadata (docs/delivery-metadata-backfill.md)
+# ---------------------------------------------------------------------------
+
+
+@delivery_app.command("inventory")
+def export_inventory(
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            dir_okay=False,
+            help="Where to write the inventory JSON. Must not exist yet.",
+        ),
+    ],
+    api_url: Annotated[str, _API_OPTION] = "",
+) -> None:
+    """Export the organization's task identities for the delivery metadata planner."""
+    if output.exists():
+        _fail(f"{output} already exists; choose a new inventory file")
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=300.0, headers=get_auth_headers()) as client:
+        inventory = _request(client, "GET", f"{api_url}/deliveries/task-inventory")
+    with output.open("x", encoding="utf-8") as handle:
+        json.dump(inventory, handle, indent=2)
+        handle.write("\n")
+    console.print(
+        f"Exported {len(inventory['tasks'])} task identities for organization "
+        f"{inventory['org_id']} to {output}"
+    )
