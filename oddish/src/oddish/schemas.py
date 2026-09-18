@@ -3003,6 +3003,27 @@ class TaskInventoryResponse(BaseModel):
     tasks: list[TaskInventoryTask]
 
 
+class HistoryImportReceipt(BaseModel):
+    """One preview, apply, or rejected run of a delivery metadata plan."""
+
+    id: str
+    org_id: str
+    plan_schema: str
+    plan_hash: str
+    mode: str
+    outcome: str
+    rejection_reason: str | None = None
+    source_as_of: str | None = None
+    source_revision: str | None = None
+    inventory_captured_at: datetime | None = None
+    input_hashes: dict = Field(default_factory=dict)
+    summary: dict = Field(default_factory=dict)
+    created_by_user_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TaskQAHistoryResponse(BaseModel):
     task_id: str
     task_name: str

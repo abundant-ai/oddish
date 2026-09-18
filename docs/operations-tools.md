@@ -31,8 +31,9 @@ the consolidated delivery-research JSON. It preserves source rows, resolves
 explicit task IDs against an optional organization inventory, and reports identity
 and category conflicts. It does not write database rows or set delivery approval.
 The organization inventory it matches against comes from `oddish delivery
-inventory`; see [the backfill runbook](delivery-metadata-backfill.md) for scope
-and tests.
+inventory`, and a reviewed plan is previewed or applied with `oddish delivery
+import-history` (apply is admin-only). Both go through the hosted API; see
+[the backfill runbook](delivery-metadata-backfill.md) for scope and tests.
 
 ## Rebuild task statistics
 

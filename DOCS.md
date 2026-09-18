@@ -1066,9 +1066,13 @@ oddish delivery finalize august-batch
 # A task's QA trail: versions, audits, rollouts, defects, QA runs
 oddish delivery history task-1
 
-# Historical delivery metadata (docs/delivery-metadata-backfill.md): export
-# this organization's task identities for the planner.
+# Historical delivery metadata (docs/delivery-metadata-backfill.md):
+# export this organization's task identities for the planner, then preview
+# and apply a reviewed plan. --apply needs admin and a preview from the last day.
 oddish delivery inventory --output inventory.json
+oddish delivery import-history plan.json --inventory inventory.json --customer meta=Meta
+oddish delivery import-history plan.json --inventory inventory.json --apply
+oddish delivery import-receipts
 ```
 
 Commands
