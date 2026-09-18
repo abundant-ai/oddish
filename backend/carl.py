@@ -76,14 +76,15 @@ def _bot_token() -> str:
     raise RuntimeError("Carl's Slack bot token is not configured")
 
 
-def _slack_call(method: str, **payload: Any) -> dict:
+def _slack_call(method: str, *, form: dict[str, Any] | None = None, **payload: Any) -> dict:
     headers = {"Authorization": f"Bearer {_bot_token()}"}
+    body = {"data": form} if form is not None else {"json": payload}
     for attempt in range(_SLACK_RETRIES + 1):
         response = httpx.post(
             f"https://slack.com/api/{method}",
             headers=headers,
-            json=payload,
             timeout=10,
+            **body,
         )
         if response.status_code == 429 and attempt < _SLACK_RETRIES:
             time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
@@ -124,36 +125,27 @@ def _upload_file(
     filename: str,
     caption: str,
 ) -> dict:
-    """Smallest Slack files.upload hook. Needs files:write on the Carl bot."""
-    headers = {"Authorization": f"Bearer {_bot_token()}"}
-    cut = caption[:_MAX_SLACK]
-    form = {
-        "channels": channel,
-        "thread_ts": thread,
-        "filename": filename,
-        "title": "Daily spend by provider",
-        "initial_comment": cut,
-    }
-    files = {"file": (filename, content, "image/png")}
+    """Slack external upload. Needs files:write on the Carl bot."""
+    ticket = _slack_call(
+        "files.getUploadURLExternal",
+        form={"filename": filename, "length": str(len(content))},
+    )
     for attempt in range(_SLACK_RETRIES + 1):
-        response = httpx.post(
-            "https://slack.com/api/files.upload",
-            headers=headers,
-            data=form,
-            files=files,
-            timeout=30,
-        )
+        response = httpx.post(ticket["upload_url"], content=content, timeout=30)
         if response.status_code == 429 and attempt < _SLACK_RETRIES:
             time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
             continue
         response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            raise RuntimeError(
-                f"Slack files.upload failed: {data.get('error', 'unknown')}"
-            )
-        return data
-    raise RuntimeError("Slack files.upload failed: retries exhausted")
+        break
+    else:
+        raise RuntimeError("Slack file upload failed: retries exhausted")
+    return _slack_call(
+        "files.completeUploadExternal",
+        files=[{"id": ticket["file_id"], "title": "Daily spend by provider"}],
+        channel_id=channel,
+        thread_ts=thread,
+        initial_comment=caption[:_MAX_SLACK],
+    )
 
 
 def _post_catfish_charts(channel: str, thread: str) -> None:

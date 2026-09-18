@@ -125,25 +125,37 @@ def test_bot_token_reuses_existing_carl_credentials(monkeypatch):
     assert carl._bot_token() == "xoxb-carl"
 
 
-def test_upload_file_posts_png_to_files_upload(monkeypatch):
+def test_upload_file_uses_external_upload_api(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
-    captured = {}
+    calls = []
 
     class Response:
-        status_code = 200
-        headers = {}
+        def __init__(self, payload=None):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload or {"ok": True}
 
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"ok": True, "file": {"id": "F123"}}
+            return self._payload
 
-    def fake_post(url, headers, data, files, timeout):
-        captured.update(
-            url=url, headers=headers, data=data, files=files, timeout=timeout
-        )
-        return Response()
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("files.getUploadURLExternal"):
+            return Response(
+                {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/XYZ",
+                    "file_id": "F123",
+                }
+            )
+        if url == "https://files.slack.com/upload/v1/XYZ":
+            return Response()
+        if url.endswith("files.completeUploadExternal"):
+            return Response({"ok": True, "files": [{"id": "F123"}]})
+        raise AssertionError(url)
 
     monkeypatch.setattr(carl.httpx, "post", fake_post)
     png = b"\x89PNG\r\n\x1a\n" + b"mix"
@@ -155,12 +167,20 @@ def test_upload_file_posts_png_to_files_upload(monkeypatch):
         caption="*Catfish cloud spend*\n• total: $1.00",
     )
 
-    assert captured["url"] == "https://slack.com/api/files.upload"
-    assert captured["headers"]["Authorization"] == "Bearer xoxb-carl"
-    assert captured["data"]["channels"] == "C123"
-    assert captured["data"]["thread_ts"] == "100.1"
-    assert captured["data"]["initial_comment"].startswith("*Catfish cloud spend*")
-    assert captured["files"]["file"] == ("catfish-mix.png", png, "image/png")
+    assert [call["url"] for call in calls] == [
+        "https://slack.com/api/files.getUploadURLExternal",
+        "https://files.slack.com/upload/v1/XYZ",
+        "https://slack.com/api/files.completeUploadExternal",
+    ]
+    assert calls[0]["headers"]["Authorization"] == "Bearer xoxb-carl"
+    assert calls[0]["data"] == {"filename": "catfish-mix.png", "length": str(len(png))}
+    assert calls[1]["content"] == png
+    assert calls[2]["json"]["channel_id"] == "C123"
+    assert calls[2]["json"]["thread_ts"] == "100.1"
+    assert calls[2]["json"]["initial_comment"].startswith("*Catfish cloud spend*")
+    assert calls[2]["json"]["files"] == [
+        {"id": "F123", "title": "Daily spend by provider"}
+    ]
 
 
 def test_partial_overflow_delivery_reports_failure(monkeypatch):
