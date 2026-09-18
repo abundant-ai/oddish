@@ -24,6 +24,16 @@ The cost report includes nondeleted completed trials in nondeleted experiments,
 filtered to billed or native non-probe/non-combined runs. This is the tool's
 comparison population, not a claim to reproduce every dashboard billing filter.
 
+## Preview historical delivery metadata
+
+`python -m oddish.core.ingest.delivery_backfill` prepares a local preview from
+the consolidated delivery-research JSON. It preserves source rows, resolves
+explicit task IDs against an optional organization inventory, and reports identity
+and category conflicts. It does not write database rows or set delivery approval.
+The organization inventory it matches against comes from `oddish delivery
+inventory`; see [the backfill runbook](delivery-metadata-backfill.md) for scope
+and tests.
+
 ## Rebuild task statistics
 
 From `oddish/`, with the intended database configured:
