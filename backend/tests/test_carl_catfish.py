@@ -8,6 +8,7 @@ import pytest
 from carl_catfish import (
     catfish_config,
     catfish_query_params,
+    catfish_view_url,
     drain_catfish_charts,
     fetch_catfish_chart,
     fetch_catfish_costs,
@@ -109,6 +110,8 @@ def test_format_includes_https_view_link():
     assert "javascript:alert(1)" not in format_catfish_costs(
         {**PAYLOAD, "view": "javascript:alert(1)"}
     )
+    assert catfish_view_url({**PAYLOAD, "view": view}) == view
+    assert catfish_view_url({**PAYLOAD, "view": "javascript:alert(1)"}) == ""
 
 
 def test_format_breakdown_lists_models():
@@ -265,3 +268,36 @@ async def test_chart_failure_does_not_hide_costs(monkeypatch):
     assert "503" not in text
     assert "chart down" not in text
     assert drain_catfish_charts() == []
+
+
+@pytest.mark.asyncio
+async def test_costs_tool_queues_view_url_not_tool_dump(monkeypatch):
+    _install_sdk(monkeypatch)
+    import carl_catfish
+    import carl_tools
+
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    png = b"\x89PNG\r\n\x1a\n" + b"mix"
+
+    async def fake_costs(params):
+        return {**PAYLOAD, "view": view}
+
+    async def fake_chart(params):
+        return png, "catfish-mix.png"
+
+    drain_catfish_charts()
+    monkeypatch.setattr(carl_tools, "fetch_catfish_costs", fake_costs)
+    monkeypatch.setattr(carl_catfish, "fetch_catfish_chart", fake_chart)
+
+    result = await carl_tools.catfish_costs(
+        {"range": "7d", "provider": "anthropic"}
+    )
+    text = result["content"][0]["text"]
+    queued = drain_catfish_charts()
+
+    assert "*Catfish cloud spend*" in text
+    assert queued == [(png, view, "catfish-mix.png")]
+    assert "*Catfish cloud spend*" not in queued[0][1]

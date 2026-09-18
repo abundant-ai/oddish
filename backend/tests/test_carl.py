@@ -179,7 +179,7 @@ def test_upload_file_uses_external_upload_api(monkeypatch):
     assert calls[2]["json"]["thread_ts"] == "100.1"
     assert calls[2]["json"]["initial_comment"].startswith("*Catfish cloud spend*")
     assert calls[2]["json"]["files"] == [
-        {"id": "F123", "title": "Daily spend by provider"}
+        {"id": "F123", "title": "Catfish spend"}
     ]
 
 
@@ -229,6 +229,147 @@ def test_upload_file_escapes_caption_ampersands(monkeypatch):
     )
 
     comment = calls[-1]["json"]["initial_comment"]
+    assert "&amp;" in comment
+    assert "&end=" not in comment
+    assert "https://costs.abundant.run/?start=2026-09-11&amp;end=2026-09-17" in comment
+
+
+def test_chart_caption_appends_missing_view_url():
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+    caption = carl._chart_caption(writeup, view)
+    assert caption.startswith(writeup)
+    assert caption.endswith(view)
+    assert "*Catfish breakdown" not in caption
+    assert carl._chart_caption(f"{writeup}\n{view}", view) == f"{writeup}\n{view}"
+
+
+def test_finish_answer_chart_success_skips_deliver(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", view, "catfish-mix.png")
+    uploads = []
+    delivered = []
+    monkeypatch.setattr(
+        carl,
+        "_upload_file",
+        lambda *args, **kwargs: uploads.append((args, kwargs)) or {},
+    )
+    monkeypatch.setattr(carl, "_clear_placeholder", lambda *_args: None)
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+
+    assert delivered == []
+    caption = uploads[0][1]["caption"]
+    assert caption.startswith(writeup)
+    assert view in caption
+    assert "*Catfish breakdown" not in caption
+    assert "*Top models*" not in caption
+    assert "Open this view in Catfish" not in caption
+
+
+def test_finish_answer_chart_fail_still_delivers(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", "", "catfish-mix.png")
+    delivered = []
+    monkeypatch.setattr(
+        carl,
+        "_upload_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("upload down")),
+    )
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == [("C123", "100.2", "100.1", writeup)]
+
+
+def test_finish_answer_no_chart_still_delivers(monkeypatch):
+    from carl_catfish import drain_catfish_charts
+
+    drain_catfish_charts()
+    delivered = []
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Queue depth looks fine."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == [("C123", "100.2", "100.1", writeup)]
+
+
+def test_finish_answer_escapes_appended_view_ampersands(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", view, "catfish-mix.png")
+    calls = []
+
+    class Response:
+        def __init__(self, payload=None):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload or {"ok": True}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("files.getUploadURLExternal"):
+            return Response(
+                {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/XYZ",
+                    "file_id": "F123",
+                }
+            )
+        if url == "https://files.slack.com/upload/v1/XYZ":
+            return Response()
+        if url.endswith("files.completeUploadExternal"):
+            return Response({"ok": True, "files": [{"id": "F123"}]})
+        if url.endswith("chat.delete"):
+            return Response()
+        raise AssertionError(url)
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
+    monkeypatch.setattr(carl.httpx, "post", fake_post)
+    delivered = []
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    writeup = "Anthropic was $12k last week, mostly Opus."
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == []
+    complete = next(
+        call for call in calls if call["url"].endswith("files.completeUploadExternal")
+    )
+    comment = complete["json"]["initial_comment"]
+    assert writeup in comment
     assert "&amp;" in comment
     assert "&end=" not in comment
     assert "https://costs.abundant.run/?start=2026-09-11&amp;end=2026-09-17" in comment

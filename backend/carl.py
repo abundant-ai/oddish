@@ -143,23 +143,55 @@ def _upload_file(
     cut = _split_at(escaped, _MAX_SLACK)
     return _slack_call(
         "files.completeUploadExternal",
-        files=[{"id": ticket["file_id"], "title": "Daily spend by provider"}],
+        files=[{"id": ticket["file_id"], "title": "Catfish spend"}],
         channel_id=channel,
         thread_ts=thread,
         initial_comment=escaped[:cut],
     )
 
 
-def _post_catfish_charts(channel: str, thread: str) -> None:
+def _chart_caption(body: str, view: str) -> str:
+    """Writeup plus a bare Catfish URL when the agent did not already include it."""
+    if view.startswith("https://") and view not in body:
+        return f"{body.rstrip()}\n\n{view}"
+    return body
+
+
+def _clear_placeholder(channel: str, ts: str) -> None:
+    try:
+        _slack_call("chat.delete", channel=channel, ts=ts)
+    except Exception:
+        log.exception("failed to delete thinking placeholder channel=%s", channel)
+        try:
+            _update(channel, ts, ":arrow_down: Answer posted below.")
+        except Exception:
+            log.exception("stale placeholder left channel=%s", channel)
+
+
+def _post_catfish_charts(channel: str, thread: str, body: str) -> bool:
     from carl_catfish import drain_catfish_charts
 
-    for png, caption, filename in drain_catfish_charts():
+    posted = False
+    for png, view, filename in drain_catfish_charts():
         try:
             _upload_file(
-                channel, thread, png, filename=filename, caption=caption
+                channel,
+                thread,
+                png,
+                filename=filename,
+                caption=_chart_caption(body, view),
             )
+            posted = True
         except Exception:
             log.exception("catfish chart upload failed channel=%s", channel)
+    return posted
+
+
+def _finish_answer(channel: str, ts: str, thread: str, body: str) -> DeliveryStatus:
+    if _post_catfish_charts(channel, thread, body):
+        _clear_placeholder(channel, ts)
+        return "complete"
+    return _deliver(channel, ts, thread, body)
 
 
 def _update(channel: str, ts: str, text: str) -> None:

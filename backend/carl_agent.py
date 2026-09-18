@@ -8,11 +8,10 @@ import time
 import modal
 
 from carl import (
-    _deliver,
     _escape,
+    _finish_answer,
     _log,
     _post,
-    _post_catfish_charts,
     _release_event,
     _update,
 )
@@ -279,11 +278,7 @@ async def _carl_answer_impl(
         turn_limit=hit_turn_limit,
         budget_limit=hit_budget_limit,
     )
-    delivery = _deliver(channel, status_ts, thread, body)
-    if delivery != "failed":
-        _post_catfish_charts(channel, thread)
-    else:
-        drain_catfish_charts()
+    delivery = _finish_answer(channel, status_ts, thread, body)
     if delivery != "complete":
         if delivery == "failed":
             try:

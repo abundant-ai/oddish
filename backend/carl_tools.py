@@ -9,6 +9,7 @@ import httpx
 from claude_agent_sdk import create_sdk_mcp_server, tool
 from carl_catfish import (
     catfish_query_params,
+    catfish_view_url,
     fetch_catfish_costs,
     format_catfish_breakdown,
     format_catfish_costs,
@@ -643,7 +644,7 @@ async def catfish_costs(args: dict) -> dict:
     if isinstance(data, str):
         return _text(f":warning: {data}")
     text = format_catfish_costs(data)
-    await maybe_queue_catfish_chart(params, text)
+    await maybe_queue_catfish_chart(params, catfish_view_url(data))
     return _text(text)
 
 
@@ -674,7 +675,7 @@ async def catfish_breakdown(args: dict) -> dict:
     if isinstance(data, str):
         return _text(f":warning: {data}")
     text = format_catfish_breakdown(data)
-    await maybe_queue_catfish_chart(params, text)
+    await maybe_queue_catfish_chart(params, catfish_view_url(data))
     return _text(text)
 
 
