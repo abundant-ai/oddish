@@ -117,6 +117,25 @@ def _post(channel: str, thread: str, text: str) -> str:
     )["ts"]
 
 
+def _first_chunk(text: str) -> tuple[str, str]:
+    """Split escaped Slack text the same way `_deliver` does."""
+    first_limit = _MAX_SLACK - len(_PARTIAL_SUFFIX) if len(text) > _MAX_SLACK else _MAX_SLACK
+    cut = _split_at(text, first_limit)
+    return text[:cut], text[cut:]
+
+
+def _post_overflow(channel: str, thread: str, rest: str) -> bool:
+    while rest:
+        cut = _split_at(rest, _MAX_SLACK)
+        try:
+            _post(channel, thread, rest[:cut])
+        except Exception:
+            log.exception("overflow delivery chunk failed channel=%s", channel)
+            return False
+        rest = rest[cut:]
+    return True
+
+
 def _upload_file(
     channel: str,
     thread: str,
@@ -124,7 +143,7 @@ def _upload_file(
     *,
     filename: str,
     caption: str,
-) -> dict:
+) -> DeliveryStatus:
     """Slack external upload. Needs files:write on the Carl bot."""
     ticket = _slack_call(
         "files.getUploadURLExternal",
@@ -139,15 +158,21 @@ def _upload_file(
         break
     else:
         raise RuntimeError("Slack file upload failed: retries exhausted")
-    escaped = _escape(caption)
-    cut = _split_at(escaped, _MAX_SLACK)
-    return _slack_call(
+    first, rest = _first_chunk(_escape(caption))
+    _slack_call(
         "files.completeUploadExternal",
         files=[{"id": ticket["file_id"], "title": "Catfish spend"}],
         channel_id=channel,
         thread_ts=thread,
-        initial_comment=escaped[:cut],
+        initial_comment=first,
     )
+    if _post_overflow(channel, thread, rest):
+        return "complete"
+    try:
+        _post(channel, thread, _PARTIAL_SUFFIX.strip())
+    except Exception:
+        log.exception("partial-delivery warning failed channel=%s", channel)
+    return "partial"
 
 
 def _chart_caption(body: str, view: str) -> str:
@@ -175,34 +200,38 @@ def _clear_placeholder(channel: str, ts: str) -> None:
             log.exception("stale placeholder left channel=%s", channel)
 
 
-def _post_catfish_charts(channel: str, thread: str, body: str) -> bool:
+def _post_catfish_charts(channel: str, thread: str, body: str) -> DeliveryStatus | None:
     from carl_catfish import drain_catfish_charts
 
-    posted = False
+    status: DeliveryStatus | None = None
     for png, view, filename in drain_catfish_charts():
         caption = (
             _chart_caption(body, view)
-            if not posted
+            if status is None
             else _followup_chart_caption(view)
         )
         try:
-            _upload_file(
+            chunk_status = _upload_file(
                 channel,
                 thread,
                 png,
                 filename=filename,
                 caption=caption,
             )
-            posted = True
+            if chunk_status not in ("complete", "partial"):
+                chunk_status = "complete"
+            if status != "partial":
+                status = chunk_status
         except Exception:
             log.exception("catfish chart upload failed channel=%s", channel)
-    return posted
+    return status
 
 
 def _finish_answer(channel: str, ts: str, thread: str, body: str) -> DeliveryStatus:
-    if _post_catfish_charts(channel, thread, body):
+    posted = _post_catfish_charts(channel, thread, body)
+    if posted is not None:
         _clear_placeholder(channel, ts)
-        return "complete"
+        return posted
     return _deliver(channel, ts, thread, body)
 
 
@@ -220,10 +249,7 @@ def _notify(channel: str, thread: str, text: str, event_id: str | None) -> None:
 
 
 def _deliver(channel: str, ts: str, thread: str, text: str) -> DeliveryStatus:
-    text = _escape(text)
-    first_limit = _MAX_SLACK - len(_PARTIAL_SUFFIX) if len(text) > _MAX_SLACK else _MAX_SLACK
-    cut = _split_at(text, first_limit)
-    first = text[:cut]
+    first, rest = _first_chunk(_escape(text))
     delivered_ts = ts
     try:
         _update(channel, ts, first)
@@ -238,20 +264,13 @@ def _deliver(channel: str, ts: str, thread: str, text: str) -> DeliveryStatus:
             _update(channel, ts, ":arrow_down: Answer posted below.")
         except Exception:
             log.exception("stale placeholder left channel=%s", channel)
-    rest = text[cut:]
-    while rest:
-        cut = _split_at(rest, _MAX_SLACK)
-        try:
-            _post(channel, thread, rest[:cut])
-        except Exception:
-            log.exception("overflow delivery chunk failed channel=%s", channel)
-            try:
-                _update(channel, delivered_ts, f"{first}{_PARTIAL_SUFFIX}")
-            except Exception:
-                log.exception("partial-delivery warning failed channel=%s", channel)
-            return "partial"
-        rest = rest[cut:]
-    return "complete"
+    if _post_overflow(channel, thread, rest):
+        return "complete"
+    try:
+        _update(channel, delivered_ts, f"{first}{_PARTIAL_SUFFIX}")
+    except Exception:
+        log.exception("partial-delivery warning failed channel=%s", channel)
+    return "partial"
 
 
 def _spawn_answer(

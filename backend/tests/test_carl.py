@@ -158,14 +158,20 @@ def test_upload_file_uses_external_upload_api(monkeypatch):
         raise AssertionError(url)
 
     monkeypatch.setattr(carl.httpx, "post", fake_post)
+    posts = []
+    monkeypatch.setattr(carl, "_post", lambda *args: posts.append(args))
     png = b"\x89PNG\r\n\x1a\n" + b"mix"
-    carl._upload_file(
-        "C123",
-        "100.1",
-        png,
-        filename="catfish-mix.png",
-        caption="*Catfish cloud spend*\n• total: $1.00",
+    assert (
+        carl._upload_file(
+            "C123",
+            "100.1",
+            png,
+            filename="catfish-mix.png",
+            caption="*Catfish cloud spend*\n• total: $1.00",
+        )
+        == "complete"
     )
+    assert posts == []
 
     assert [call["url"] for call in calls] == [
         "https://slack.com/api/files.getUploadURLExternal",
@@ -287,6 +293,157 @@ def test_finish_answer_chart_success_skips_deliver(monkeypatch):
     assert "*Catfish breakdown" not in caption
     assert "*Top models*" not in caption
     assert "Open this view in Catfish" not in caption
+
+
+def test_finish_answer_long_writeup_uploads_then_overflows(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    queue_catfish_chart(b"\x89PNG\r\n\x1a\n", view, "catfish-mix.png")
+    calls = []
+    posts = []
+
+    class Response:
+        def __init__(self, payload=None):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload or {"ok": True}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("files.getUploadURLExternal"):
+            return Response(
+                {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/XYZ",
+                    "file_id": "F123",
+                }
+            )
+        if url == "https://files.slack.com/upload/v1/XYZ":
+            return Response()
+        if url.endswith("files.completeUploadExternal"):
+            return Response({"ok": True, "files": [{"id": "F123"}]})
+        if url.endswith("chat.delete"):
+            return Response()
+        raise AssertionError(url)
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
+    monkeypatch.setattr(carl.httpx, "post", fake_post)
+    monkeypatch.setattr(
+        carl, "_post", lambda channel, thread, text: posts.append((channel, thread, text))
+    )
+    delivered = []
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    tail = "cost footer $12.00"
+    writeup = ("x" * (carl._MAX_SLACK + 20)) + tail
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == []
+    complete = next(
+        call for call in calls if call["url"].endswith("files.completeUploadExternal")
+    )
+    comment = complete["json"]["initial_comment"]
+    caption = carl._chart_caption(writeup, view)
+    first, rest = carl._first_chunk(carl._escape(caption))
+    assert comment == first
+    assert tail not in comment
+    assert view not in comment
+    assert posts == [("C123", "100.1", rest)]
+    assert tail in rest
+    assert carl._escape(view) in rest
+    assert comment + rest == carl._escape(caption)
+
+
+def test_finish_answer_long_two_charts_writeup_once(monkeypatch):
+    from carl_catfish import drain_catfish_charts, queue_catfish_chart
+
+    drain_catfish_charts()
+    costs_view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=line"
+    )
+    breakdown_view = (
+        "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17"
+        "&provider=anthropic&gby=model"
+    )
+    queue_catfish_chart(b"png-1", costs_view, "catfish-mix.png")
+    queue_catfish_chart(b"png-2", breakdown_view, "catfish-breakdown.png")
+    calls = []
+    posts = []
+    file_ids = iter(("F1", "F2"))
+
+    class Response:
+        def __init__(self, payload=None):
+            self.status_code = 200
+            self.headers = {}
+            self._payload = payload or {"ok": True}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, **kwargs):
+        calls.append({"url": url, **kwargs})
+        if url.endswith("files.getUploadURLExternal"):
+            file_id = next(file_ids)
+            return Response(
+                {
+                    "ok": True,
+                    "upload_url": f"https://files.slack.com/upload/v1/{file_id}",
+                    "file_id": file_id,
+                }
+            )
+        if url.startswith("https://files.slack.com/upload/v1/"):
+            return Response()
+        if url.endswith("files.completeUploadExternal"):
+            return Response({"ok": True, "files": [{"id": kwargs["json"]["files"][0]["id"]}]})
+        if url.endswith("chat.delete"):
+            return Response()
+        raise AssertionError(url)
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
+    monkeypatch.setattr(carl.httpx, "post", fake_post)
+    monkeypatch.setattr(
+        carl, "_post", lambda channel, thread, text: posts.append((channel, thread, text))
+    )
+    delivered = []
+    monkeypatch.setattr(
+        carl, "_deliver", lambda *args: delivered.append(args) or "complete"
+    )
+    tail = "cost footer $12.00"
+    writeup = ("x" * (carl._MAX_SLACK + 20)) + tail
+
+    assert carl._finish_answer("C123", "100.2", "100.1", writeup) == "complete"
+    assert delivered == []
+    completes = [
+        call for call in calls if call["url"].endswith("files.completeUploadExternal")
+    ]
+    assert len(completes) == 2
+    first_comment = completes[0]["json"]["initial_comment"]
+    second_comment = completes[1]["json"]["initial_comment"]
+    first_caption = carl._chart_caption(writeup, costs_view)
+    first, rest = carl._first_chunk(carl._escape(first_caption))
+    assert first_comment == first
+    assert writeup not in second_comment
+    assert second_comment == carl._escape(breakdown_view)
+    assert posts == [("C123", "100.1", rest)]
+    assert tail in rest
+    assert carl._escape(costs_view) in rest
+    assert carl._escape(breakdown_view) not in rest
 
 
 def test_finish_answer_two_charts_writeup_once(monkeypatch):
