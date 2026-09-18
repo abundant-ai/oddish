@@ -1612,10 +1612,10 @@ fails their tasks. Before editing a response schema, status enum, CLI
 option, queue payload, or storage key under `oddish/`, search
 `oddish/src/oddish/cli/`, the packaged skill references under
 `oddish/src/oddish/assets/skills/oddish/references/`, `backend/`, and
-`frontend/` for readers of it, and list them in the PR body under
-`Compatibility`. Add fields rather than renaming them, keep old values
-accepted for at least one release, and never change the meaning of an
-existing value. The previously released CLI must keep working against the
+`frontend/` for readers of it. Explain material compatibility effects and
+relevant reader checks in the PR body's What changed section. Add fields
+rather than renaming them, keep old values accepted for at least one release,
+and never change the meaning of an existing value. The previously released CLI must keep working against the
 new server; if it cannot, the PR body names the first client version that
 breaks. The same applies to helpers other packages or open PRs import: check
 callers before removing or re-signaturing them.
