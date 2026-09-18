@@ -92,6 +92,7 @@ jobs:
           ../oddish/tests/test_delivery_progress.py
           ../oddish/tests/test_delivery_inventory.py
           ../oddish/tests/test_task_history_schema.py
+          ../oddish/tests/test_delivery_apply.py
           ../oddish/tests/test_delivery_history_api.py
           ../oddish/tests/test_cli_delivery_history.py
           tests/test_deliveries_routes.py
