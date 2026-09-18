@@ -415,6 +415,23 @@ class DeliveryBackfillTests(unittest.TestCase):
             compare_plans(plan, build_plan(data, org_id="org-1"))["changed"], []
         )
 
+    def test_blank_inventory_name_still_resolves_by_explicit_id(self):
+        inv = inventory()
+        inv["tasks"][0]["name"] = ""
+        inv["tasks"].append(
+            {"id": "task-2", "org_id": "org-1", "name": None, "categories": []}
+        )
+        plan = build_plan(bundle(), org_id="org-1", inventory=inv)
+        profile = plan["task_profiles"][0]
+        self.assertEqual(profile["task_id"], "task-1")
+        self.assertEqual(profile["identity_status"], "resolved_explicit_id")
+        # Both source names become aliases: the task has no current name.
+        proposal = next(
+            p for p in plan["metadata_proposals"] if p["field"] == "source_names"
+        )
+        self.assertEqual(proposal["proposed_value"], ["new-name", "old-name"])
+        self.assertEqual(profile["candidate_task_ids"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

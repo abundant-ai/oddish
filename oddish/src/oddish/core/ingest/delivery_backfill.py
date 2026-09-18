@@ -214,7 +214,11 @@ def validate_inventory(inventory: dict | None, org_id: str) -> dict[str, dict]:
     tasks = {}
     for row in inventory["tasks"]:
         task_id = required_text(row["id"], "inventory task ID")
-        required_text(row["name"], "inventory task name")
+        # A task with a blank name can still be matched by its explicit ID;
+        # it just never takes part in name matching.
+        name = row["name"]
+        if not isinstance(name, str) or not name.strip():
+            row["name"] = ""
         if row["org_id"] != org_id:
             raise ValueError(
                 f"inventory task {task_id} belongs to another organization"
@@ -244,7 +248,8 @@ def build_plan(
     evidence = collect_evidence(bundle, raw_sink=raw_sink)
     names_to_inventory: dict[str, set[str]] = defaultdict(set)
     for task in tasks.values():
-        names_to_inventory[task["name"]].add(task["id"])
+        if task["name"]:
+            names_to_inventory[task["name"]].add(task["id"])
 
     # Only explicitly co-recorded aliases connect names. Two records carrying
     # the same ID are also one identity, even when no rename was documented.
