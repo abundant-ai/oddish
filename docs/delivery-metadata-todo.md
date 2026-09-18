@@ -51,9 +51,12 @@ See [the runbook](delivery-metadata-backfill.md) for commands and output definit
   plan uploaded as a file; no review view for unresolved groups yet. A full
   write measured 0.9 s locally against the API's 600 s request budget, so
   the import is one request, not a background job.
-- [ ] Capture a fresh inventory for the Abundant organization (`8ebde5d0`,
-  confirmed September 17); resolve ambiguous names against repository paths,
-  experiment membership, and source evidence.
+- [x] Capture a fresh inventory for the Abundant organization (`8ebde5d0`,
+  confirmed September 17). Done on staging September 18: 45,800 tasks, 271
+  retired, one blank-named task (handled by #1733), no category evidence
+  anywhere in Oddish, so the research is the only source of categories.
+  Resolving ambiguous names against repository paths, experiment membership,
+  and source evidence is the review tool in section 3.
 - [x] Add a preview/apply operation with organization checks, stale-plan rejection,
   and an import receipt. Replays update the same source records.
   (`oddish.core.ingest.delivery_apply`; verified September 17: `9 passed` in
@@ -61,6 +64,13 @@ See [the runbook](delivery-metadata-backfill.md) for commands and output definit
   above, covered by `test_delivery_history_api.py` and
   `test_cli_delivery_history.py`. Not yet run against staging or production.)
 - [ ] Import unambiguous facts; expose unresolved conflicts and unknown history.
+  Rehearsed on staging September 18 (receipts `af61488b` preview, `d3dc058c`
+  apply, `5d2d67e3` replay with every row unchanged): 17,895 source records,
+  153 aliases, 1,340 category assertions, 4,461 history rows for 1,343
+  resolved groups; 22 MB upload, 21 s preview, 24 s apply. Customer labels
+  (`xai`, `tml`, `gdm`, `meta`, `minimax`) left unmapped: staging has no real
+  customer rows; a replay with `--customer` links them once rows exist.
+  Production apply still pending promotion.
 - [x] Retain import changes and historical shipments when a task is retired.
   (Task foreign keys are `ON DELETE RESTRICT`; `delete_task_core` only stamps
   `tasks.deleted_at`. Covered by `test_retiring_a_task_keeps_imported_history`.)
@@ -82,6 +92,13 @@ the first upload of a plan this size through the hosted API.
 
 ## 3. Select tasks for a lab
 
+- [ ] Review tool for identities the planner refuses to guess. On the
+  September 10 research against the staging inventory: 394 name-only
+  candidate groups (362 with exactly one candidate task), 137 explicit source
+  IDs absent from the organization, 114 groups with conflicting IDs, and 4
+  name collisions. A confirmation becomes an alias with evidence and an
+  operator attribution; a rejection is recorded so the group stops
+  resurfacing. Nothing resolves without a person confirming it.
 - [ ] Add task filters for category, domain, language, environment, source, and
   previous recipients. Preserve original classifications during normalization.
 - [ ] Capture lab/program requirements with revisions and required evidence.

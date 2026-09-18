@@ -170,9 +170,9 @@ oddish delivery import-receipts
 ```
 
 Both calls upload the two files to `POST /deliveries/history-imports`, which
-runs `delivery_apply.apply_plan_core` in one transaction on the API side
-(the real plan is tens of megabytes; the write itself takes seconds). The
-organization comes from the sign-in. Applying requires an organization
+runs `delivery_apply.apply_plan_core` in one transaction on the API side. On
+staging the real 22 MB plan previewed in 21 s and applied in 24 s end to
+end, including the upload. The organization comes from the sign-in. Applying requires an organization
 admin; previews and the receipt list need the `tasks` scope.
 
 Without `--apply` the API computes, from reads only, every row the plan
