@@ -130,6 +130,14 @@ def _install_sdk(monkeypatch):
     sdk.tool = tool
     sdk.create_sdk_mcp_server = lambda **kwargs: kwargs
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    if "pglast.parser" not in sys.modules:
+        parser = types.ModuleType("pglast.parser")
+        parser.ParseError = Exception
+        parser.parse_sql_json = lambda _sql: '{"stmts":[]}'
+        pglast = types.ModuleType("pglast")
+        pglast.parser = parser
+        monkeypatch.setitem(sys.modules, "pglast", pglast)
+        monkeypatch.setitem(sys.modules, "pglast.parser", parser)
 
 
 @pytest.mark.asyncio
