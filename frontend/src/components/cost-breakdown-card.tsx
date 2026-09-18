@@ -53,6 +53,7 @@ import type {
   CostUserBreakdown,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { overlayVerifierSeries } from "@/lib/cost-chart-series";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
@@ -504,6 +505,11 @@ function MethodologyNote() {
             cost that was estimated.
           </li>
           <li>
+            CUA / Computer-Use verifier spend is the Verifier stack and tile.
+            The Agent and Model stacks are the solving agent only; those views
+            keep a Verifier (CUA) segment so that spend cannot hide.
+          </li>
+          <li>
             All first-party spend for the active organization. Imported runs
             and experiment-combine copies are excluded so spend counts once.
           </li>
@@ -538,10 +544,10 @@ export type ChartDimension =
   | "compute";
 
 const CHART_DIMENSIONS: ChartDimension[] = [
+  "type",
   "agent",
   "model",
   "user",
-  "type",
   "analysis_type",
   "compute",
 ];
@@ -590,7 +596,7 @@ export function StackBySelector({
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("1");
-  const [dimension, setDimension] = useState<ChartDimension>("agent");
+  const [dimension, setDimension] = useState<ChartDimension>("type");
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
@@ -602,11 +608,11 @@ export function CostBreakdownCard() {
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const series = data
     ? dimension === "agent"
-      ? data.series_by_agent
+      ? overlayVerifierSeries(data.series_by_agent, data.series_by_type)
       : dimension === "model"
-        ? data.series_by_model
+        ? overlayVerifierSeries(data.series_by_model, data.series_by_type)
         : dimension === "user"
-          ? data.series_by_user
+          ? overlayVerifierSeries(data.series_by_user, data.series_by_type)
           : dimension === "type"
             ? (data.series_by_type ?? data.series_by_agent)
             : dimension === "analysis_type"
@@ -657,8 +663,10 @@ export function CostBreakdownCard() {
         </div>
         <p className="text-muted-foreground text-xs">
           All first-party trial spend for the active organization, including
-          deleted historical spend and unbilled spend that never resolved to a
-          registered user — see the info icon for methodology.
+          CUA verifier spend, deleted historical spend, and unbilled spend that
+          never resolved to a registered user — see the info icon for
+          methodology. The chart opens on cost type so verifier spend is
+          visible.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
