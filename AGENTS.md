@@ -1074,6 +1074,12 @@ pip install oddish[all]       # everything including dev tools
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Doc-store MCP server: `oddish-docstore-mcp` (see `oddish/src/oddish/mcp/README.md`)
 
+Keep model-routing imports in `oddish.config` lazy: Harbor's utility modules
+load LiteLLM, which fetches a pricing table during import. Help and local version
+commands must print without loading it or accessing the network. The CLI CI job
+runs `oddish/tests/startup` in fresh processes, with a three-second first-stdout
+budget and a separate deterministic import/network guard.
+
 ### Soft Delete
 
 Every model that mixes in `TimestampedMixin` has a `deleted_at` column, but

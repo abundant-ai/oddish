@@ -13,15 +13,22 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from harbor.agents.utils import PROVIDER_KEYS
-from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
-from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
 
 logger = logging.getLogger(__name__)
+
+
+def split_provider_model_name(model_name: str) -> tuple[str | None, str]:
+    # Harbor's utility module imports LiteLLM, which fetches its pricing table
+    # during import. CLI help/version only need the settings definitions below;
+    # load model-routing dependencies when routing is actually requested.
+    from harbor.llms.utils import split_provider_model_name as split
+
+    return split(model_name)
+
 
 # Deploy-time ODDISH_GKE_* coordinate snapshot, baked into the worker image by
 # the Modal deploy (see the backend app's _GKE_COORDS_FILE). The coordinates
@@ -1152,6 +1159,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
 
 
 def _normalize_model_provider(provider: str) -> str | None:
+    from harbor.agents.utils import PROVIDER_KEYS
+
     normalized = provider.strip().lower()
     if not normalized:
         return None
@@ -1196,6 +1205,8 @@ def _infer_provider_prefix(
     carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
     inference must go BELOW the gate.
     """
+    from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
