@@ -152,7 +152,9 @@ def _view_lines(data: dict) -> list[str]:
     view = data.get("view")
     if not isinstance(view, str) or not view.startswith("https://"):
         return []
-    return ["", f"<{view}|Open this view in Catfish>"]
+    # Bare URL: `_deliver` HTML-escapes the answer, so Slack `<url|label>`
+    # would render as literal angle brackets.
+    return ["", f"Open this view in Catfish: {view}"]
 
 
 def format_catfish_costs(data: dict) -> str:

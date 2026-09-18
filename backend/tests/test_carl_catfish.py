@@ -98,8 +98,9 @@ def test_format_includes_https_view_link():
     view = "https://costs.abundant.run/?start=2026-09-11&end=2026-09-17&provider=anthropic&gby=line"
     costs = format_catfish_costs({**PAYLOAD, "view": view})
     breakdown = format_catfish_breakdown({**PAYLOAD, "view": view})
-    assert f"<{view}|Open this view in Catfish>" in costs
-    assert f"<{view}|Open this view in Catfish>" in breakdown
+    assert f"Open this view in Catfish: {view}" in costs
+    assert f"Open this view in Catfish: {view}" in breakdown
+    assert "<" not in costs and ">" not in breakdown
     assert "javascript:alert(1)" not in format_catfish_costs(
         {**PAYLOAD, "view": "javascript:alert(1)"}
     )
