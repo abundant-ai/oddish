@@ -116,6 +116,58 @@ def _post(channel: str, thread: str, text: str) -> str:
     )["ts"]
 
 
+def _upload_file(
+    channel: str,
+    thread: str,
+    content: bytes,
+    *,
+    filename: str,
+    caption: str,
+) -> dict:
+    """Smallest Slack files.upload hook. Needs files:write on the Carl bot."""
+    headers = {"Authorization": f"Bearer {_bot_token()}"}
+    cut = caption[:_MAX_SLACK]
+    form = {
+        "channels": channel,
+        "thread_ts": thread,
+        "filename": filename,
+        "title": "Daily spend by provider",
+        "initial_comment": cut,
+    }
+    files = {"file": (filename, content, "image/png")}
+    for attempt in range(_SLACK_RETRIES + 1):
+        response = httpx.post(
+            "https://slack.com/api/files.upload",
+            headers=headers,
+            data=form,
+            files=files,
+            timeout=30,
+        )
+        if response.status_code == 429 and attempt < _SLACK_RETRIES:
+            time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
+            continue
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(
+                f"Slack files.upload failed: {data.get('error', 'unknown')}"
+            )
+        return data
+    raise RuntimeError("Slack files.upload failed: retries exhausted")
+
+
+def _post_catfish_charts(channel: str, thread: str) -> None:
+    from carl_catfish import drain_catfish_charts
+
+    for png, caption, filename in drain_catfish_charts():
+        try:
+            _upload_file(
+                channel, thread, png, filename=filename, caption=caption
+            )
+        except Exception:
+            log.exception("catfish chart upload failed channel=%s", channel)
+
+
 def _update(channel: str, ts: str, text: str) -> None:
     cut = _split_at(text, _MAX_SLACK)
     _slack_call("chat.update", channel=channel, ts=ts, text=text[:cut])

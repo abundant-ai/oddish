@@ -7,7 +7,15 @@ import time
 
 import modal
 
-from carl import _deliver, _escape, _log, _post, _release_event, _update
+from carl import (
+    _deliver,
+    _escape,
+    _log,
+    _post,
+    _post_catfish_charts,
+    _release_event,
+    _update,
+)
 from modal_runtime import app, runtime_secret
 
 MODEL = "claude-opus-4-8"
@@ -151,8 +159,10 @@ async def _carl_answer_impl(
         query,
     )
 
+    from carl_catfish import drain_catfish_charts
     from carl_tools import allowed_tool_names, build_server
 
+    drain_catfish_charts()
     try:
         budget = float(os.environ.get("ODDISH_CARL_MAX_BUDGET_USD", "1.0"))
     except ValueError:
@@ -270,6 +280,10 @@ async def _carl_answer_impl(
         budget_limit=hit_budget_limit,
     )
     delivery = _deliver(channel, status_ts, thread, body)
+    if delivery != "failed":
+        _post_catfish_charts(channel, thread)
+    else:
+        drain_catfish_charts()
     if delivery != "complete":
         if delivery == "failed":
             try:

@@ -125,6 +125,44 @@ def test_bot_token_reuses_existing_carl_credentials(monkeypatch):
     assert carl._bot_token() == "xoxb-carl"
 
 
+def test_upload_file_posts_png_to_files_upload(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-carl")
+    captured = {}
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True, "file": {"id": "F123"}}
+
+    def fake_post(url, headers, data, files, timeout):
+        captured.update(
+            url=url, headers=headers, data=data, files=files, timeout=timeout
+        )
+        return Response()
+
+    monkeypatch.setattr(carl.httpx, "post", fake_post)
+    png = b"\x89PNG\r\n\x1a\n" + b"mix"
+    carl._upload_file(
+        "C123",
+        "100.1",
+        png,
+        filename="catfish-mix.png",
+        caption="*Catfish cloud spend*\n• total: $1.00",
+    )
+
+    assert captured["url"] == "https://slack.com/api/files.upload"
+    assert captured["headers"]["Authorization"] == "Bearer xoxb-carl"
+    assert captured["data"]["channels"] == "C123"
+    assert captured["data"]["thread_ts"] == "100.1"
+    assert captured["data"]["initial_comment"].startswith("*Catfish cloud spend*")
+    assert captured["files"]["file"] == ("catfish-mix.png", png, "image/png")
+
+
 def test_partial_overflow_delivery_reports_failure(monkeypatch):
     updates = []
     monkeypatch.setattr(carl, "_update", lambda *args: updates.append(args))
