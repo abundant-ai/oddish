@@ -1106,15 +1106,16 @@ async def _compute_board(
             )
 
             # Verdict failed is reserved for a QA run that did not complete;
-            # every other gap is pending work, named in the label.
+            # every other gap is pending work, named in the label. The task's
+            # own insufficient-evidence state outranks an older failed run.
             qa_status = qa_statuses.get(task.id, DeliveryQAStatus())
-            if qa_status.status == "error":
-                verdict_label, missing_detail = "Verdict failed", qa_status.detail
-            elif task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
+            if task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
                 task.verdict_error
             ):
                 verdict_label = "Verdict pending: needs solver runs"
                 missing_detail = task.verdict_error or f"no completed QA verdict on {vlabel}"
+            elif qa_status.status == "error":
+                verdict_label, missing_detail = "Verdict failed", qa_status.detail
             else:
                 verdict_label = {
                     "queued": "Verdict pending: generation queued",

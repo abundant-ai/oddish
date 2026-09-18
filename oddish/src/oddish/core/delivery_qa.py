@@ -14,6 +14,7 @@ from oddish.core.analysis_payload import (
     parse_analysis_payload,
     qa_trial_evidence,
 )
+from oddish.core.verdict_state import is_insufficient_evidence
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     TaskModel,
@@ -122,6 +123,12 @@ def evaluate_delivery_qa(
         result.detail = (
             "QA verdict generation is running" if result.status == "running" else "QA verdict generation is queued"
         )
+    elif task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
+        task.verdict_error
+    ):
+        # The task settled after this run with no QA-eligible trials, so the
+        # run's outcome no longer describes the task.
+        result.status, result.detail = "never", task.verdict_error or ""
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",

@@ -2,7 +2,7 @@
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from test_statement_budgets import count_statements
@@ -1548,6 +1548,7 @@ async def test_delivery_failure_labels_identify_audit_state(
     [
         ("rejected", "Verdict rejected"),
         ("no_evidence", "Verdict pending: needs solver runs"),
+        ("stale_failed_qa", "Verdict pending: needs solver runs"),
         ("never", "Verdict pending: not yet generated"),
         ("qa_failed", "Verdict failed"),
     ],
@@ -1559,15 +1560,26 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
     if state == "rejected":
         task.verdict = {"is_good": False, "verdict": "reject", "primary_issue": "x"}
     else:
-        await session.execute(
-            delete(TrialModel).where(
-                TrialModel.task_id == task.id, TrialModel.kind == "qa"
+        qa_trials = list(
+            await session.scalars(
+                select(TrialModel).where(
+                    TrialModel.task_id == task.id, TrialModel.kind == "qa"
+                )
             )
         )
+        if state == "stale_failed_qa":
+            # A failed run for this version predates the task settling without
+            # QA-eligible trials; the task's current state wins.
+            qa_trials[0].status = TrialStatus.FAILED
+            qa_trials[0].error_message = "worker crashed"
+        else:
+            for stale in qa_trials:
+                await session.delete(stale)
         task.verdict = None
         task.verdict_status = VerdictStatus.FAILED if state != "never" else None
         task.verdict_error = {
             "no_evidence": INSUFFICIENT_EVIDENCE_ERROR,
+            "stale_failed_qa": INSUFFICIENT_EVIDENCE_ERROR,
             "qa_failed": "worker crashed",
         }.get(state)
         if state == "qa_failed":
@@ -1589,7 +1601,12 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
     check = _checks(board, task.id)["verdict_ok"]
     assert check.status == "fail"
     assert check.failure_labels == [label]
-    if state == "no_evidence":
+    qa = board.tasks[0].qa
+    if state in ("no_evidence", "stale_failed_qa"):
         assert check.detail == INSUFFICIENT_EVIDENCE_ERROR
+        assert qa.status == "never"
+    if state == "stale_failed_qa":
+        assert qa.detail == INSUFFICIENT_EVIDENCE_ERROR
     if state == "qa_failed":
         assert check.detail == "worker crashed"
+        assert qa.status == "error"

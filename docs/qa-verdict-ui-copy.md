@@ -193,6 +193,12 @@ that prefix and label it "Verdict pending: needs solver runs".
 The delivery QA status `error` is now produced only when the latest QA run
 did not succeed. A QA run that succeeded without publishing a verdict the
 task still owns is `outdated`, since regenerating the verdict resolves it.
+A task whose current verdict error is the insufficient-evidence text reports
+`never` with that error as detail, even when an older failed QA run exists for
+the version: the task settled after that run without QA-eligible trials. The
+experiments list counts such tasks under `verdict_pending`, not
+`verdict_failed`, so its "Failures" and "Verdict pending" filters match the
+experiment page.
 `lib/review.ts` gained two review states: `no_evidence` (failed verdict with
 the insufficient-evidence error) and `missing` (verdict job succeeded, no
 verdict recorded); both filter as unreviewed.
