@@ -218,7 +218,7 @@ def validate_inventory(inventory: dict | None, org_id: str) -> dict[str, dict]:
         # it just never takes part in name matching.
         name = row["name"]
         if not isinstance(name, str) or not name.strip():
-            row["name"] = ""
+            row = {**row, "name": ""}
         if row["org_id"] != org_id:
             raise ValueError(
                 f"inventory task {task_id} belongs to another organization"

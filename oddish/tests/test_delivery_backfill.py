@@ -14,6 +14,7 @@ from oddish.core.ingest.delivery_backfill import (
     build_plan,
     collect_evidence,
     compare_plans,
+    digest,
     task_id_from_url,
 )
 from oddish.core.ingest.delivery_inventory import INVENTORY_SCHEMA, inventory_task
@@ -423,7 +424,9 @@ class DeliveryBackfillTests(unittest.TestCase):
         inv["tasks"].append(
             {"id": "task-2", "org_id": "org-1", "name": None, "categories": []}
         )
+        uploaded = digest(inv)  # What apply hashes: the file as parsed.
         plan = build_plan(bundle(), org_id="org-1", inventory=inv)
+        self.assertEqual(plan["input_hashes"]["inventory"], uploaded)
         profile = plan["task_profiles"][0]
         self.assertEqual(profile["task_id"], "task-1")
         self.assertEqual(profile["identity_status"], "resolved_explicit_id")
