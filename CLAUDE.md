@@ -67,9 +67,10 @@ every promotion pull request; humans get it with
 ## Hotfixes
 
 Branch the fix from `main`, open it as a normal PR into `staging`, squash,
-then promote immediately. `CONTRIBUTING.md` has the full procedure and the
-break-glass rules for landing on `main` directly. Never cherry-pick a fix
-into `staging`.
+then promote immediately (pin the hotfix sha; skip extra staging soak).
+`CONTRIBUTING.md` has the full procedure and break-glass rules;
+`docs/urgent-hotfix-release.md` has the timed checklist, rollback steps, and
+dry-run rehearsal. Never cherry-pick a fix into `staging`.
 
 ## Useful pointers
 
