@@ -137,3 +137,70 @@ def test_task_upload_keeps_exact_names(tmp_path) -> None:
     client._ensure_client = _noop  # type: ignore[assignment]
     asyncio.run(client.upload_task_directory("task_a", tmp_path))
     assert uploaded == ["tasks/task_a/oracle%bin"]
+
+
+def test_forked_databases_upload_same_trial_without_overwriting(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from oddish.config import settings
+    from oddish.core.trial_artifacts import resolve_trial_artifact_layout
+    from oddish.workers.queue.job_tokens import s3_write_prefix_for
+
+    objects = {}
+    client = StorageClient()
+
+    async def ensure_client():
+        pass
+
+    async def upload(file_path, key):
+        objects[key] = file_path.read_text()
+
+    async def download(key):
+        return objects[key]
+
+    client._ensure_client = ensure_client
+    client.upload_file = upload
+    client.download_text = download
+    prefixes = []
+    for namespace, agent in [("main-oddish", "codex"), ("main-oddish-pr-123", "grok")]:
+        monkeypatch.setattr(settings, "trial_artifact_namespace", namespace)
+        (tmp_path / "result.json").write_text(
+            json.dumps({"trial_results": [{"trial_name": agent}]})
+        )
+        prefix = asyncio.run(
+            client.upload_trial_results(
+                "task-1568",
+                tmp_path,
+                authorized_prefix=s3_write_prefix_for("task-1568"),
+                subprefix="attempt-1",
+            )
+        )
+        prefixes.append(prefix)
+        assert namespace in StorageClient._trial_import_archive_key("task-1568")
+    assert prefixes[0] != prefixes[1]
+    assert len(objects) == 2
+    # Stored pointers remain authoritative even when read from the other deployment.
+    for prefix, agent in zip(prefixes, ["codex", "grok"], strict=True):
+        layout = asyncio.run(
+            resolve_trial_artifact_layout(
+                SimpleNamespace(id="task-1568", trial_s3_key=prefix),
+                client,
+            )
+        )
+        assert layout.artifact_prefix == f"{prefix}{agent}/"
+
+
+def test_namespace_preserves_historical_read_fallback(monkeypatch):
+    from oddish.config import settings
+    from oddish.db.storage import resolve_trial_s3_prefix
+
+    monkeypatch.setattr(settings, "trial_artifact_namespace", "main-oddish-pr-123")
+    assert (
+        resolve_trial_s3_prefix("task-1568", trial_s3_key=None)
+        == "tasks/task/trials/task-1568/"
+    )
+    assert (
+        StorageClient.trial_write_prefix("task-1568")
+        == "tasks/task/trials/main-oddish-pr-123/task-1568/"
+    )

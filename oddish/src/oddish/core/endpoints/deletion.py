@@ -1009,7 +1009,7 @@ async def combine_experiments_core(
                 trial_result_path=source.harbor_result_path,
             )
             if copy_artifacts:
-                destination_prefix = StorageClient._trial_prefix(new_trial_id)
+                destination_prefix = StorageClient.trial_write_prefix(new_trial_id)
                 new_trial_s3_key = destination_prefix
                 new_harbor_result_path = None
                 copy_plan.append((source_prefix, destination_prefix))

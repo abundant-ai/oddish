@@ -817,3 +817,12 @@ For local database verification, point `ENDPOINT_TEST_DATABASE_URL` at a disposa
 PostgreSQL database and run `pytest tests/test_endpoint_health.py` from `backend`.
 That suite recreates the monitoring tables and its isolated Slack-outbox fixture;
 it must not target an application database. Provider calls are mocked.
+
+### Trial artifact isolation
+
+`ODDISH_TRIAL_ARTIFACT_NAMESPACE` adds a deployment namespace to new trial
+artifact paths. Use a distinct value (letters, digits, underscores, or hyphens)
+for each database sharing an S3 bucket. Modal deployments set it automatically
+to the secret environment plus app name. Existing stored artifact pointers
+remain readable; changing this value during an unfinished import is unsupported.
+The default empty value preserves the self-hosted storage layout.

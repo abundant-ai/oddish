@@ -348,7 +348,7 @@ async def initialize_trial_import(
             cost_usd=trial_spec.cost_usd,
             phase_timing=trial_spec.phase_timing,
             has_trajectory=trial_spec.has_trajectory,
-            trial_s3_key=StorageClient._trial_prefix(trial_id),
+            trial_s3_key=StorageClient.trial_write_prefix(trial_id),
             started_at=started_at,
             finished_at=finished_at,
             # Written in the SAME transaction as the insert so the QA
@@ -427,7 +427,7 @@ async def initialize_trial_import(
 
     # Build the presign response *after* commit so the row is durable
     # before the client starts uploading artifacts.
-    trial_s3_key = StorageClient._trial_prefix(trial_id)
+    trial_s3_key = StorageClient.trial_write_prefix(trial_id)
     archive_s3_key: str | None = None
     upload_url: str | None = None
     upload_headers: dict[str, str] = {}
@@ -488,7 +488,7 @@ async def complete_trial_import(
 
     storage = get_storage_client()
     archive_key = StorageClient._trial_import_archive_key(trial_id)
-    trial_prefix = StorageClient._trial_prefix(trial_id)
+    trial_prefix = StorageClient.trial_write_prefix(trial_id)
     try:
         archive_exists = await storage.object_exists(archive_key)
         if archive_exists:
@@ -533,7 +533,7 @@ async def complete_trial_import(
             return (
                 trial_again.trial_s3_key
                 if trial_again and trial_again.trial_s3_key
-                else StorageClient._trial_prefix(trial_id)
+                else StorageClient.trial_write_prefix(trial_id)
             )
 
     trial_s3_key = await run_with_deadlock_retry(
