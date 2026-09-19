@@ -2998,6 +2998,8 @@ class DeliveryTaskModel(TimestampedMixin, Base):
     __table_args__ = (
         UniqueConstraint("delivery_id", "task_id", name="uq_delivery_tasks_task"),
         Index("idx_delivery_tasks_delivery_order", "delivery_id", "sort_order"),
+        # The task browser's "delivered to" filter looks membership up by task.
+        Index("idx_delivery_tasks_task_id", "task_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)

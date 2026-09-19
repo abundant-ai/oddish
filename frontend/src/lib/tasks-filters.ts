@@ -85,6 +85,12 @@ export interface FilterValues {
   partialCountMin: number | null;
   failCountMin: number | null;
   harnessCountMin: number | null;
+  // Delivery selection: which customers already have the task (imported
+  // history + finalized deliveries) and the imported category.
+  deliveredTo: string[];
+  notDeliveredTo: string[];
+  neverDelivered: boolean | null;
+  categories: string[];
   // Stored summary thresholds: median trajectory length and distinct agents.
   stepsP50Min: number | null;
   stepsP50Max: number | null;
@@ -248,7 +254,7 @@ export const SORT_OPTIONS: Option[] = [
 export interface FilterDef {
   key: string;
   label: string;
-  group: "Task" | "Trial";
+  group: "Delivery" | "Task" | "Trial";
   control: ControlKind;
   options?: Option[];
   facet?: keyof TaskBrowseFacets;
@@ -546,6 +552,36 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "num",
   },
+  // Delivery selection: pick tasks for a customer batch. Delivery records
+  // come from the metadata import (history) and finalized deliveries; the
+  // options are the customer rows plus unmapped import labels.
+  {
+    key: "notDeliveredTo",
+    label: "Not delivered to",
+    group: "Delivery",
+    control: "multiselect",
+    facet: "delivery_customers",
+  },
+  {
+    key: "deliveredTo",
+    label: "Delivered to",
+    group: "Delivery",
+    control: "multiselect",
+    facet: "delivery_customers",
+  },
+  {
+    key: "neverDelivered",
+    label: "No delivery record",
+    group: "Delivery",
+    control: "boolean",
+  },
+  {
+    key: "categories",
+    label: "Category",
+    group: "Task",
+    control: "multiselect",
+    facet: "categories",
+  },
 ];
 
 // Conditions offered inside an OR-group. Keys match the backend flat params.
@@ -817,6 +853,14 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.stepsP50Min !== null || f.stepsP50Max !== null;
     case "agentCount":
       return f.agentCountMin !== null;
+    case "deliveredTo":
+      return f.deliveredTo.length > 0;
+    case "notDeliveredTo":
+      return f.notDeliveredTo.length > 0;
+    case "neverDelivered":
+      return f.neverDelivered !== null;
+    case "categories":
+      return f.categories.length > 0;
     default:
       return false;
   }
@@ -896,6 +940,10 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("partial_count_min", f.partialCountMin);
   num("fail_count_min", f.failCountMin);
   num("harness_count_min", f.harnessCountMin);
+  csv("delivered_to", f.deliveredTo);
+  csv("not_delivered_to", f.notDeliveredTo);
+  bool("never_delivered", f.neverDelivered);
+  csv("categories", f.categories);
   num("steps_p50_min", f.stepsP50Min);
   num("steps_p50_max", f.stepsP50Max);
   num("agent_count_min", f.agentCountMin);
@@ -988,6 +1036,10 @@ export const FILTER_PARAM_KEYS = [
   "partial_count_min",
   "fail_count_min",
   "harness_count_min",
+  "delivered_to",
+  "not_delivered_to",
+  "never_delivered",
+  "categories",
   "steps_p50_min",
   "steps_p50_max",
   "agent_count_min",
@@ -1102,6 +1154,10 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     partialCountMin: num("partial_count_min"),
     failCountMin: num("fail_count_min"),
     harnessCountMin: num("harness_count_min"),
+    deliveredTo: csv("delivered_to"),
+    notDeliveredTo: csv("not_delivered_to"),
+    neverDelivered: bool("never_delivered"),
+    categories: csv("categories"),
     stepsP50Min: num("steps_p50_min"),
     stepsP50Max: num("steps_p50_max"),
     agentCountMin: num("agent_count_min"),

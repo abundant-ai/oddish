@@ -83,6 +83,48 @@ function TrajectorySummary({ task }: { task: TaskBrowseItem }) {
   );
 }
 
+// One chip per customer the task is recorded as sent to, from the metadata
+// import (history) and finalized deliveries. Hover lists each batch. Nothing
+// renders when there is no record: the import's coverage is partial, so an
+// absent record is not a claim the task was never sent.
+function DeliveredToChips({ task }: { task: TaskBrowseItem }) {
+  const records = task.deliveries ?? [];
+  if (records.length === 0) return null;
+  const byCustomer = new Map<string, typeof records>();
+  for (const record of records) {
+    const list = byCustomer.get(record.customer) ?? [];
+    list.push(record);
+    byCustomer.set(record.customer, list);
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-muted-foreground text-[11px] tracking-wide uppercase">
+        Delivered to
+      </span>
+      {[...byCustomer.entries()].map(([customer, list]) => (
+        <Badge
+          key={customer}
+          variant="outline"
+          className="font-mono text-[10px]"
+          title={list
+            .map(
+              (r) =>
+                `${r.batch ?? "(batch unknown)"}${r.date ? ` · ${r.date}` : ""}${
+                  r.source === "delivery" ? " · Oddish delivery" : ""
+                }`
+            )
+            .join("\n")}
+        >
+          {customer}
+          {list.length > 1 ? (
+            <span className="text-muted-foreground"> ×{list.length}</span>
+          ) : null}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
   return {
     pass: task.pass_count,
@@ -484,6 +526,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
             ))}
           </div>
         ) : null}
+        <DeliveredToChips task={task} />
         <div className="space-y-1.5">
           <div className="flex items-baseline justify-between gap-3">
             <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
