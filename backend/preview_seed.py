@@ -35,6 +35,7 @@ _RECONCILED_TABLES = (
     "task_versions",
     "task_experiments",
     "trials",
+    "task_delivery_history",
     "worker_jobs",
     "skills",
     "skill_files",
@@ -232,6 +233,43 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         )
         for t in trials:
             t.pop("_rn", None)
+
+        # Historical shipments are source-backed facts, not active preview
+        # delivery checklists. Retain their evidence and customer mapping.
+        if await table_exists(conn, "task_delivery_history"):
+            history = await rows_of(
+                conn,
+                "SELECT * FROM task_delivery_history WHERE task_id = ANY(:ids)",
+                ids=kept_task_ids,
+            )
+            rows["task_delivery_history"] = history
+            _warn(f"sampled {len(history)} delivery history rows")
+            if history:
+                sources = await rows_of(
+                    conn,
+                    "SELECT r.* FROM task_source_records r"
+                    " JOIN task_delivery_history h"
+                    " ON h.org_id = r.org_id AND h.source_record_id = r.record_id"
+                    " WHERE h.task_id = ANY(:ids)",
+                    ids=kept_task_ids,
+                )
+                rows["task_source_records"] = sources
+                receipt_ids = {h["import_id"] for h in history}
+                receipt_ids.update(
+                    r[key]
+                    for r in sources
+                    for key in ("first_import_id", "last_import_id")
+                )
+                rows["metadata_import_receipts"] = await rows_of(
+                    conn,
+                    "SELECT * FROM metadata_import_receipts WHERE id = ANY(:ids)",
+                    ids=sorted(receipt_ids),
+                )
+                rows["customers"] = await rows_of(
+                    conn,
+                    "SELECT * FROM customers WHERE id = ANY(:ids)",
+                    ids=sorted({h["customer_id"] for h in history if h["customer_id"]}),
+                )
 
         trial_ids = {t["id"] for t in trials}
         failures: dict[str, str] = {}

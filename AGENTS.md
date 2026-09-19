@@ -2312,6 +2312,12 @@ existing previews only when their next preparation or operator sync runs.
 
 ### Preview Branch Preserved Rows
 
+`preview_seed.py` samples `task_delivery_history` for sampled tasks together with
+its source records, import receipts, and mapped customers. It reconciles imported
+task membership but retains source evidence and customers, which preview-owned
+work may reference. `find_last_deploys.migrations_matches` includes seed-loader
+changes so reused branches receive changed sample coverage without a schema reset.
+
 After migrations, sample updates, and preserved-row restoration,
 `prepare_preview_database.sh` runs `refresh_browse_summaries.py` on both new and
 reused previews. Raw seed inserts bypass the trial-write hooks, so

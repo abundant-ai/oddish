@@ -3,8 +3,9 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
+  type Dispatch,
+  type SetStateAction,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { useSearchParams } from "next/navigation";
@@ -42,7 +43,6 @@ import type {
   TaskBrowseFacets,
 } from "@/lib/types";
 import {
-  clearTaskFilters,
   cleanOrGroups,
   COMPARE_AGG_OPTIONS,
   COMPARE_METRIC_OPTIONS,
@@ -53,7 +53,6 @@ import {
   CONDITION_DEFS,
   FILTER_DEFS,
   setTaskFilters,
-  updateTaskSearchParams,
   isFilterActive,
   searchParamsToFilters,
   SORT_OPTIONS,
@@ -172,7 +171,19 @@ const EMPTY_FILTERS = searchParamsToFilters(new URLSearchParams());
 // background.
 const FACETS_DEDUPE_MS = 5 * 60_000;
 
-export function TasksFilters() {
+export function TasksFilters({
+  searchQuery,
+  onSearchChange,
+  addedKeys,
+  setAddedKeys,
+  onClearFilters,
+}: {
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  addedKeys: string[];
+  setAddedKeys: Dispatch<SetStateAction<string[]>>;
+  onClearFilters: () => void;
+}) {
   // Facets load client-side so a task-grid refresh never reloads the
   // filter options; the dedupe window above keeps remounts from re-asking
   // (the 2026-08-06 HAR showed this fetch running twice per session,
@@ -198,52 +209,6 @@ export function TasksFilters() {
     [searchParams]
   );
 
-  // Free-text search lives in the URL `q` param (debounced). `query` is the
-  // legacy param some deep links still use — read it as a fallback.
-  const urlSearch = searchParams.get("q") ?? searchParams.get("query") ?? "";
-  const [searchQuery, setSearchQuery] = useState(urlSearch);
-
-  // Search values committed below whose navigations haven't landed yet. Lets
-  // the re-sync effect tell "our own commit landing" (skip — the input may
-  // already be ahead of it) from an external URL change.
-  const pendingSearchCommits = useRef<string[]>([]);
-
-  const isFirstSearchRender = useRef(true);
-
-  // Re-sync the input when the URL search text changes externally (back/forward,
-  // applying a saved filter, Clear all) — but never for our own commits landing,
-  // which would clobber whatever the user has typed since.
-  useEffect(() => {
-    const pending = pendingSearchCommits.current;
-    const landed = pending.indexOf(urlSearch);
-    if (landed !== -1) {
-      pending.splice(0, landed + 1);
-      return;
-    }
-    pendingSearchCommits.current = [];
-    setSearchQuery((prev) => (prev.trim() === urlSearch ? prev : urlSearch));
-  }, [urlSearch]);
-
-  useEffect(() => {
-    if (isFirstSearchRender.current) {
-      isFirstSearchRender.current = false;
-      return;
-    }
-    const handle = window.setTimeout(() => {
-      updateTaskSearchParams((params) => {
-        const trimmed = searchQuery.trim();
-        // Already committed (e.g. a whitespace-only edit) — skip the refetch.
-        if (trimmed === (params.get("q") ?? params.get("query") ?? "")) return;
-        if (trimmed) params.set("q", trimmed);
-        else params.delete("q");
-        params.delete("query"); // collapse the legacy param into `q`
-        pendingSearchCommits.current.push(trimmed);
-      });
-    }, 300);
-    return () => window.clearTimeout(handle);
-  }, [searchQuery]);
-
-  const [addedKeys, setAddedKeys] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [filterSearch, setFilterSearch] = useState("");
 
@@ -277,11 +242,6 @@ export function TasksFilters() {
   const activeDefs = FILTER_DEFS.filter(
     (def) => def.key !== "sort" && isFilterActive(def.key, values)
   );
-  const clearFilters = () => {
-    clearTaskFilters();
-    setSearchQuery("");
-    setAddedKeys([]);
-  };
   const summary = (def: FilterDef) => {
     if (NUM_FIELD[def.key]) return `≥ ${values[NUM_FIELD[def.key]]}`;
     if (NUMRANGE_FIELD[def.key]) {
@@ -312,7 +272,7 @@ export function TasksFilters() {
         <div className="relative min-w-56 flex-1">
           <Input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search tasks…"
             aria-label="Search tasks"
             className="pr-8"
@@ -374,7 +334,7 @@ export function TasksFilters() {
               className="mb-4"
             />
             <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
-              {(["Task", "Delivery", "Trial"] as const).map((group) => {
+              {(["Delivery", "Task", "Trial"] as const).map((group) => {
                 const defs = (
                   filterSearch
                     ? FILTER_DEFS.filter((d) => !d.hidden)
@@ -483,7 +443,7 @@ export function TasksFilters() {
         searchQuery.trim() ||
         values.author.length ||
         values.mine === "only" ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
+          <Button variant="ghost" size="sm" onClick={onClearFilters}>
             Clear filters
           </Button>
         ) : null}

@@ -192,6 +192,13 @@ from production are never copied, and page reads add no aggregation queries.
 The job waits for summary repair, approval sync, and secret publication before
 deploying.
 
+The preview sample includes imported delivery history for its sampled tasks,
+with the referenced source records, import receipts, and mapped customer rows.
+Unmapped lab labels remain selectable. Live delivery checklists are not copied.
+Changes to the seed loader trigger sample reconciliation on reused previews;
+the source evidence and customer rows are retained when membership leaves the
+sample, so preview-owned work can continue referencing them.
+
 Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
 check approval before each job and every 15 seconds during execution; losing
 approval or failing to read it cancels the handler. The reconciler also cancels

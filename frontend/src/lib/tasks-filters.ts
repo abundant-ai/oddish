@@ -582,22 +582,24 @@ export const FILTER_DEFS: FilterDef[] = [
   // come from the metadata import (history) and finalized deliveries; the
   // options are the customer rows plus unmapped import labels.
   {
-    key: "notDeliveredTo",
-    label: "Not delivered to",
+    key: "deliveredTo",
+    label: "Sent to lab",
     group: "Delivery",
     control: "multiselect",
     facet: "delivery_customers",
+    pinned: true,
   },
   {
-    key: "deliveredTo",
-    label: "Delivered to",
+    key: "notDeliveredTo",
+    label: "Not sent to lab",
     group: "Delivery",
     control: "multiselect",
     facet: "delivery_customers",
+    pinned: true,
   },
   {
     key: "neverDelivered",
-    label: "No delivery record",
+    label: "Delivery records",
     group: "Delivery",
     control: "boolean",
     pinned: true,

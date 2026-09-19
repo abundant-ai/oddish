@@ -10,11 +10,10 @@ import { useSelection } from "./selection-context";
 import {
   TASKS_PAGE_SIZE,
   QA_OUTCOME_OPTIONS,
-  clearTaskFilters,
 } from "@/lib/tasks-filters";
 import { useTaskBrowse } from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
-import { TaskCard } from "./task-card";
+import { TaskCard, TaskDeliveryHistory } from "./task-card";
 import { TasksGridSkeleton } from "./tasks-grid-skeleton";
 
 function pageHref(sp: URLSearchParams, offset: number): string {
@@ -33,7 +32,11 @@ const pagerClass =
 // the SWR cache and revalidates in the background. The URL stays the source
 // of truth: sidebar writes and the pager links change searchParams, which
 // changes the SWR key.
-export function RecentTasksResults() {
+export function RecentTasksResults({
+  onClearFilters,
+}: {
+  onClearFilters: () => void;
+}) {
   const searchParams = useSearchParams();
   const { selection, toggle } = useSelection();
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -106,7 +109,7 @@ export function RecentTasksResults() {
           )}
         >
           <p>No tasks match the current filters.</p>
-          <Button variant="ghost" onClick={clearTaskFilters}>
+          <Button variant="ghost" onClick={onClearFilters}>
             Clear filters
           </Button>
         </div>
@@ -172,9 +175,7 @@ export function RecentTasksResults() {
                     </td>
                     <td>{task.agent_count ?? 0}</td>
                     <td>
-                      {Array.from(
-                        new Set((task.deliveries ?? []).map((d) => d.customer))
-                      ).join(", ") || "None recorded"}
+                      <TaskDeliveryHistory task={task} />
                     </td>
                     <td>
                       <Button

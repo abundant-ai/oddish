@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
               },
             ]
           : path.endsWith("/facets")
-            ? { categories: ["coding"], agent_models: [{ agent: "test-agent", model: "test-model" }] }
+            ? { delivery_customers: ["Mapped Lab", "Legacy Lab"], categories: ["coding"], agent_models: [{ agent: "test-agent", model: "test-model" }] }
             : path.endsWith("/count")
               ? { total: 0 }
               : { items: [], total: 0, has_more: false };
@@ -411,3 +411,65 @@ test("tags load only when their filter is revealed and reuse the result on reope
   await expect(page.getByRole("button", { name: "Has all", exact: true })).toBeVisible();
   expect(tagRequests).toBe(1);
 });
+
+for (const initialSearch of ["", "old search"]) {
+  for (const source of ["toolbar", "empty results"]) {
+    test(`${source} clear cancels pending search with ${initialSearch ? "committed" : "empty"} URL search`, async ({ page }) => {
+      const params = new URLSearchParams({
+        delivery: "existing",
+        qa_outcomes: "rejected",
+        sort: "total_trials_desc",
+        mine: "off",
+      });
+      if (initialSearch) params.set("q", initialSearch);
+      await page.goto(`/picker?${params}`);
+      await expect(page.getByRole("heading", { name: "Add tasks to Existing" })).toBeVisible();
+      await expect(page.getByText("No tasks match the current filters.")).toBeVisible();
+      await page.clock.install();
+      await page.clock.pauseAt(new Date());
+      const search = page.getByRole("textbox", { name: "Search tasks", exact: true });
+      await search.fill("pending search");
+      const clears = page.getByRole("button", { name: "Clear filters", exact: true });
+      await clears.nth(source === "toolbar" ? 0 : 1).click();
+      await expect(search).toHaveValue("");
+      await page.clock.runFor(1000);
+      await expect(search).toHaveValue("");
+      const cleared = new URL(page.url()).searchParams;
+      expect(cleared.has("q")).toBe(false);
+      expect(cleared.has("query")).toBe(false);
+      expect(cleared.has("qa_outcomes")).toBe(false);
+      expect(cleared.get("delivery")).toBe("existing");
+      expect(cleared.get("sort")).toBe("total_trials_desc");
+      expect(cleared.get("mine")).toBe("off");
+      // A reset cancels the old edit, but must not disable subsequent searches.
+      await search.fill("new search");
+      await page.clock.runFor(300);
+      await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe("new search");
+    });
+  }
+}
+
+
+for (const destination of ["", "?delivery=existing"]) {
+  test(`lab filters are visible and recorded destinations appear in ${destination ? "delivery picking" : "task cards"}`, async ({ page }) => {
+    await page.route("**/api/tasks/browse?*", (route) => route.fulfill({
+      json: { items: [{ ...task, deliveries: [
+        { customer: "Mapped Lab", batch: "September batch", date: "2026-09-01", source: "history" },
+        { customer: "Legacy Lab", batch: "August batch", date: "2026-08-01", source: "history" },
+      ] }], total: 1, has_more: false },
+    }));
+    await page.goto(`/picker${destination}`);
+    await expect(page.getByText("Mapped Lab", { exact: true })).toBeVisible();
+    await expect(page.getByText("Legacy Lab", { exact: true })).toHaveAttribute("title", "August batch · 2026-08-01");
+    await page.getByRole("button", { name: /^Filters/ }).click();
+    await page.getByRole("group", { name: "Sent to lab", exact: true }).getByRole("button", { name: "Any", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Mapped Lab", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("delivered_to")).toBe("Mapped Lab");
+    await page.getByRole("checkbox", { name: "Mapped Lab", exact: true }).press("Escape");
+    await expect(page.getByRole("checkbox", { name: "Mapped Lab", exact: true })).toBeHidden();
+    await page.getByRole("group", { name: "Not sent to lab", exact: true }).getByRole("button", { name: "Any", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Legacy Lab", exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get("not_delivered_to")).toBe("Legacy Lab");
+    expect(new URL(page.url()).searchParams.get("delivered_to")).toBe("Mapped Lab");
+  });
+}

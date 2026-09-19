@@ -2651,8 +2651,7 @@ async def browse_task_facets_core(
             category_values = category_values.where(
                 TaskMetadataAssertionModel.org_id == org_id
             )
-        names = set((await session.execute(customer_names)).scalars().all())
-        names |= set((await session.execute(unmapped_labels.distinct())).scalars())
+        names = (await session.execute(customer_names.union(unmapped_labels))).scalars()
         delivery_customers = sorted(names, key=str.casefold)
         categories = sorted(
             (await session.execute(category_values.distinct())).scalars().all(),
