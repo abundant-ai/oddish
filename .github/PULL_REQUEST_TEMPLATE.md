@@ -1,31 +1,26 @@
-<!-- Feature PR into staging. Fill every section; delete the comments.
-     Body format is defined in .claude/skills/write-pr/SKILL.md; agents run
-     that skill. Rules: CONTRIBUTING.md. Promotion PRs (staging -> main) use
-     the release-promotion template instead and complete with a /promote
-     comment, never the merge button. -->
+<!-- Feature PR into staging. Keep the complete body under 300 words.
+     Follow .claude/skills/write-pr/SKILL.md and CONTRIBUTING.md.
+     Delete these drafting instructions before publishing.
+     Promotion PRs use the release-promotion template instead. -->
 
 ## TL;DR
 
-- Scope: <Affected behavior in ordinary words>. Changes span <N> files: <counts by purpose>.
-- Size: app +<N>/-<N>; tests +<N>/-<N>; docs +<N>/-<N> lines. <!-- app additions must stay under 500 -->
-- Compatibility: <nothing a client reads changes | older CLI keeps working because <reason> | breaks CLI < x.y.z; see below>
+<One sentence explaining what changes and why it matters.>
 
-<Existing situation and concrete problem. Define a new feature or necessary
-project term before using it. Explain who does what and what happens.>
+- **App code lines:** +<added> / −<removed>
+- **Test code lines:** +<added> / −<removed>
+- **Docs/other:** +<added> / −<removed>
+- **Net:** <signed total> lines across <N> files
 
-<What happens after this change, and why that fixes the stated problem.>
+### What changed
 
-### Screenshot or preview
+<Explain the previous behavior, its consequence, and the new behavior in
+plain sentences. Include material compatibility or rollout limitations.
+For visible changes, include a screenshot or preview link with the state named.>
 
-<Required when a user can see the change: an image, or the preview link with
-the page and state named. Otherwise write "No user-visible change.">
+### Tests
 
-### Local testing
+<Explain the tests written or updated, what they prove, and observed results.
+Include meaningful failures or coverage gaps; omit resolved setup problems.>
 
-<What was exercised, the relevant environment, and observed results.
-Include important failures or untested behavior.>
-
-### Core files changed
-
-- **`path/file.ext`** — <What this file does differently and which
-  previously explained behavior it affects.>
+---

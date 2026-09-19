@@ -27,7 +27,10 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { ExperimentsList } from "@/components/experiments-list";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -1195,6 +1198,11 @@ export function TaskDetailClient({
                 costUsd={totals?.qa_cost_usd}
                 size="tile"
                 title="QA/analysis spend for this task's trials. Not included in the cost figure."
+              />
+              <VerifierCostSuffix
+                costUsd={totals?.verifier_cost_usd}
+                size="tile"
+                title="CUA/verifier LLM spend for this task's trials. Not included in the cost figure."
               />
             </span>
             {(totals?.token_trial_count ?? 0) > 0 ? (

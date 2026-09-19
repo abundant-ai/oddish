@@ -809,9 +809,43 @@ async def browse_tasks(
         description=(
             "Aggregate sort: cost_desc, avg_score_(asc|desc), "
             "total_tokens_(asc|desc), runtime_total_(asc|desc), or "
-            "runtime_avg_(asc|desc). Unknown/absent keeps the default recency "
+            "runtime_avg_(asc|desc); stored-summary sort: "
+            "steps_p50_(asc|desc), total_trials_(asc|desc), or "
+            "agent_count_(asc|desc). Unknown/absent keeps the default recency "
             "order."
         ),
+    ),
+    # --- Delivery selection (imported history, deliveries, assertions) ---
+    delivered_to: str | None = Query(
+        None,
+        description=(
+            "Customer CSV: tasks with a delivery record naming any of them "
+            "(imported history label or mapped customer name, or a finalized "
+            "Oddish delivery to that customer)."
+        ),
+    ),
+    not_delivered_to: str | None = Query(
+        None,
+        description=(
+            "Customer CSV: tasks with NO delivery record naming any of them. "
+            "History coverage is partial; absence is not proof."
+        ),
+    ),
+    never_delivered: bool | None = Query(
+        None, description="true: no delivery record at all; false: at least one"
+    ),
+    categories: str | None = Query(
+        None, description="Imported task category CSV (task_metadata_assertions)"
+    ),
+    # --- Stored summary thresholds (task_version_browse_summaries) ---
+    steps_p50_min: int | None = Query(
+        None, ge=0, description="Median trajectory length (steps), min"
+    ),
+    steps_p50_max: int | None = Query(
+        None, ge=0, description="Median trajectory length (steps), max"
+    ),
+    agent_count_min: int | None = Query(
+        None, ge=1, description="Distinct agents that ran the task, min"
     ),
     # --- Phase 2.1 agent/model comparison (computed on the fly) ---
     compare_by: str | None = Query(
@@ -968,6 +1002,13 @@ async def browse_tasks(
             pass_rate_min=pass_rate_min,
             pass_rate_max=pass_rate_max,
             sort=sort,
+            delivered_to=_split_tag_csv(delivered_to),
+            not_delivered_to=_split_tag_csv(not_delivered_to),
+            never_delivered=never_delivered,
+            categories=_split_tag_csv(categories),
+            steps_p50_min=steps_p50_min,
+            steps_p50_max=steps_p50_max,
+            agent_count_min=agent_count_min,
             compare_by=compare_by,
             compare_a=compare_a,
             compare_b=compare_b,

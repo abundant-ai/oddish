@@ -63,6 +63,10 @@ export ODDISH_API_KEY="ok_..."
 # export ODDISH_DASHBOARD_URL="https://www.oddish.app"
 ```
 
+Controllers may pass W3C headers in `ODDISH_TRACE_CONTEXT` JSON to link CLI API
+calls to a parent trace. See [`../DOCS.md`](../DOCS.md). Storage requests do not
+receive this context.
+
 Need to deploy your own stack? See [`../SELF_HOSTING.md`](../SELF_HOSTING.md).
 Need package internals, architecture, or development notes? See [`AGENTS.md`](../AGENTS.md).
 

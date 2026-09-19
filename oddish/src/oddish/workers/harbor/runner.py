@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import time
+import tomllib
 import uuid
 from dataclasses import replace
 from decimal import Decimal
@@ -1997,6 +1998,28 @@ async def _run_harbor_trial_async_impl(
     # Harbor than the one baked into this container cannot be swapped in-process
     # (sys.modules caches it), so route to the child-interpreter engine.
     if hc.variant_id == "ephemeral":
+        from .trusted_trajectory import configure_trusted_trajectory
+
+        try:
+            verifier_config = configure_trusted_trajectory(task_path, hc.verifier)
+            if verifier_config is not hc.verifier:
+                raise ValueError(
+                    "Trusted verifier input requires Oddish's bundled Harbor "
+                    "runtime; ephemeral Harbor variants are not supported."
+                )
+        except (OSError, tomllib.TOMLDecodeError):
+            # Leave invalid task files to the selected engine's normal validation.
+            pass
+        except ValueError as exc:
+            return HarborOutcome(
+                reward=None,
+                error=str(exc),
+                exit_code=-1,
+                duration_sec=0.0,
+                job_result_path=None,
+                job_dir=None,
+                exception_type="TrustedTrajectoryConfigurationError",
+            )
         if restricted_compose_kind != "none":
             return HarborOutcome(
                 reward=None,
@@ -2345,11 +2368,14 @@ async def _run_harbor_trial_async_impl(
             if n_skills:
                 agent_config.skills = [*agent_config.skills, skills_root]
 
+        from .trusted_trajectory import configure_trusted_trajectory
+
+        verifier_config = configure_trusted_trajectory(effective_task_path, hc.verifier)
         job_config_kwargs: dict[str, Any] = {
             "tasks": [TaskConfig(path=effective_task_path)],
             "agents": [agent_config],
             "environment": env_config,
-            "verifier": hc.verifier,
+            "verifier": verifier_config,
             "artifacts": hc.artifacts,
             "jobs_dir": unique_parent,
         }

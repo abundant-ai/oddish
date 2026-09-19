@@ -910,6 +910,7 @@ async def test_cost_breakdown_includes_qa_analysis_cost():
             "inference",
             "qa",
             "compute",
+            "verifier",
         }
         type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
         qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)

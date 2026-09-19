@@ -433,11 +433,11 @@ function TaskVerdictChip({
   const label =
     hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
-      : status === "never" && task.verdict_status === "success"
-        ? "No QA verdict generated"
-        : VERDICT_LABELS[status];
+      : VERDICT_LABELS[status];
   let tip: string | null =
-    status === "error" ? (task.verdict_error ?? null) : null;
+    status === "error" || status === "no_evidence"
+      ? (task.verdict_error ?? null)
+      : null;
   if (
     (status === "accepted" || status === "needs_fixes") &&
     task.verdict &&

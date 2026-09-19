@@ -154,3 +154,24 @@ async def test_qa_work_requires_task_scope_and_a_user(operation, has_identity):
                 "d1", QAWorkPatch(version_id="v1", note="edit"), auth
             )
     assert exc.value.status_code == 403
+
+
+def test_history_literal_paths_are_declared_before_the_delivery_id_route() -> None:
+    """``/deliveries/task-inventory`` and ``/deliveries/history-imports`` must
+    not be swallowed by ``/deliveries/{delivery_id}``."""
+    paths = [route.path for route in deliveries.router.routes]
+    board = paths.index("/deliveries/{delivery_id}")
+    assert paths.index("/deliveries/task-inventory") < board
+    assert paths.index("/deliveries/history-imports") < board
+
+
+def test_history_import_is_admin_only_and_reads_are_task_scoped() -> None:
+    by_path = {}
+    for route in deliveries.router.routes:
+        for method in getattr(route, "methods", set()) or set():
+            by_path[(method, route.path)] = [
+                d.call for d in route.dependant.dependencies
+            ]
+    assert require_admin in by_path[("POST", "/deliveries/history-imports")]
+    assert require_admin not in by_path[("GET", "/deliveries/history-imports")]
+    assert require_admin not in by_path[("GET", "/deliveries/task-inventory")]

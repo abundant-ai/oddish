@@ -42,6 +42,7 @@ from oddish.costs.recorder import (
     record_verifier_span,
     transition_agent_sandbox,
 )
+from oddish.costs.verifier_cost import record_verifier_llm_costs
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -89,6 +90,12 @@ from oddish.worker.probe_staging import (
 )
 from oddish.workers.analysis_trials import ANALYSIS_ARTIFACTS, is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.judge_costs import (
+    begin_judge_costs,
+    extract_judge_costs,
+    judge_costs_enabled,
+    settle_judge_costs,
+)
 from oddish.workers.harbor.quota_control import QuotaPauseControlError
 from oddish.workers.harbor.runner import (
     FallbackEnvironmentCompatibilityError,
@@ -300,6 +307,7 @@ class PreparedTrialRun:
     fallback_from_environment: str | None = None
     trial_kind: str = "agent"
     task_version: int | None = None
+    task_version_id: str | None = None
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -359,6 +367,9 @@ class SandboxCostState:
     billed_user_id: str | None
     worker_job_id: str | None
     worker_job_attempt: int | None
+    task_id: str | None = None
+    task_version_id: str | None = None
+    task_path: Path | None = None
     terminal_at: datetime | None = None
 
 
@@ -791,6 +802,7 @@ async def _prepare_trial_run(
             fallback_from_environment=fallback_from_environment,
             trial_kind=trial.kind or "agent",
             task_version=task_version,
+            task_version_id=trial.task_version_id,
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
@@ -1009,6 +1021,7 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     trial_attempt: int,
+    judge_costs: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
@@ -1017,6 +1030,19 @@ async def _store_trial_results(
     ):
         if not trial:
             return False, False
+        # Result ownership can end before paid verifier usage reaches us. The
+        # pre-execution marker authorizes only this worker's original attempt;
+        # settle that ledger even when all result updates below are forbidden.
+        judge_summary = None
+        if judge_costs is not None:
+            judge_summary = await settle_judge_costs(
+                session,
+                trial,
+                trial_attempt,
+                judge_costs,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+            )
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
@@ -1036,6 +1062,8 @@ async def _store_trial_results(
             trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
         )
         if user_cancelled:
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
                     trial, outcome, preserve_checkpointed_cost=True
@@ -1062,6 +1090,9 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
             return False, False
+
+        if judge_summary is not None:
+            trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -1134,6 +1165,8 @@ async def _store_trial_results(
                 retry_after_seconds=outcome.retry_after_seconds,
             )
 
+            if judge_summary is not None:
+                trial.result = {**(trial.result or {}), "_verifier_judges": judge_summary}
             trial.has_trajectory = outcome.has_trajectory
 
             if derived_reward is not None:
@@ -1717,6 +1750,7 @@ async def _execute_trial(
     execution_error: str | None = None
     retryable = True
     tailed_attempt: int | None = None
+    outcome: HarborOutcome | None = None
     try:
         try:
             env_type = EnvironmentType(
@@ -1774,8 +1808,12 @@ async def _execute_trial(
         # live transcript while polling clients still observe the trial as
         # running (read_trial_live reports done via finished_at).
         tailed_attempt = await live_tail.shutdown(trial_id)
-        # Clean up temp task directory
-        if temp_task_dir and temp_task_dir.exists():
+        # Settlement still reads CUA signals and model names from the
+        # downloaded/overlay task copy. Keep it when Harbor produced an
+        # outcome; run_trial_job's _release_prepared_trial_attempt removes
+        # it after _settle_compute_costs. Cancel and pre-outcome failures
+        # never settle, so they still clean up here.
+        if outcome is None and temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     return TrialExecutionResult(
@@ -1799,6 +1837,24 @@ def _phase_timestamp(value: object) -> datetime | None:
 async def _settle_compute_costs(
     state: SandboxCostState, outcome: HarborOutcome | None
 ) -> None:
+    # CUA LLM spend is independent of Modal compute spans: record it even when
+    # this attempt has no worker_job_id (e.g. local runner).
+    job_dir = getattr(outcome, "job_dir", None) if outcome is not None else None
+    if job_dir is not None:
+        task_path = state.task_path
+        if task_path is not None and not task_path.exists():
+            task_path = None
+        await record_verifier_llm_costs(
+            job_dir=job_dir,
+            task_path=task_path,
+            trial_id=state.trial_id,
+            attempt=state.attempt,
+            experiment_id=state.experiment_id,
+            org_id=state.org_id,
+            task_id=state.task_id,
+            task_version_id=state.task_version_id,
+        )
+
     if state.worker_job_id is None or state.worker_job_attempt is None:
         return
     try:
@@ -2022,6 +2078,25 @@ async def _prepare_claimed_trial_attempt(
         prepared_task = await _prepare_trial_task(
             trial_id=trial_id, prepared_trial=prepared_trial
         )
+        if judge_costs_enabled(prepared_task.task_path):
+            async with _trial_session(trial_id, with_for_update=True) as (
+                session, trial
+            ):
+                if (
+                    trial is None
+                    or trial.attempts != prepared_trial.trial_attempt
+                    or not await _worker_still_owns_trial(
+                        session, trial, worker_id=worker_id, worker_job_id=worker_job_id
+                    )
+                ):
+                    raise RuntimeError("Verifier judge attempt is no longer owned")
+                await begin_judge_costs(
+                    session,
+                    trial,
+                    prepared_trial.trial_attempt,
+                    worker_id=worker_id,
+                    worker_job_id=worker_job_id,
+                )
         os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
         span_provider = (
@@ -2061,6 +2136,9 @@ async def _prepare_claimed_trial_attempt(
             experiment_id=prepared_trial.experiment_id or None,
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
+            task_id=prepared_trial.task_id,
+            task_version_id=prepared_trial.task_version_id,
+            task_path=prepared_task.task_path,
             worker_job_id=worker_job_id,
             worker_job_attempt=worker_job_attempt,
         )
@@ -2092,6 +2170,10 @@ async def _settle_trial_attempt(
     probe_analysis: dict | None = None,
 ) -> bool:
     """Persist one attempt result and run its terminal lifecycle exactly once."""
+    judge_costs = extract_judge_costs(
+        execution.outcome.job_dir if execution.outcome else None,
+        execution.outcome.job_result_path if execution.outcome else None,
+    )
     trial_terminal, run_post_trial_hooks = await asyncio.shield(
         _store_trial_results(
             trial_id=trial_id,
@@ -2104,6 +2186,7 @@ async def _settle_trial_attempt(
             worker_id=worker_id,
             worker_job_id=worker_job_id,
             trial_attempt=prepared_trial.trial_attempt,
+            judge_costs=judge_costs,
         )
     )
     await _finish_trial_settlement(
@@ -2419,10 +2502,6 @@ async def run_trial_job(
                 reward=execution.outcome.reward,
             )
 
-        # Cleanup local Harbor artifacts AFTER both uploads complete.
-        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
-            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
-
         trial_terminal = await _settle_trial_attempt(
             trial_id=trial_id,
             prepared_trial=prepared_trial,
@@ -2433,6 +2512,10 @@ async def run_trial_job(
             artifact_upload_error=artifact_upload_error,
             probe_analysis=probe_analysis,
         )
+        # Settlement reads verifier usage and contract errors from these files.
+        # Remove them only after both uploads and result settlement complete.
+        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
+            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
     finally:
         heartbeat_stop.set()
         if not heartbeat_interrupt.done():

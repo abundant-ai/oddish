@@ -213,11 +213,14 @@ def _active_qa(*, status="running", task_version_id="task-1-v2"):
     return row
 
 
-def _aggregate(groups, experiments=None, qa_cost=1.25, active_qa=None):
+def _aggregate(
+    groups, experiments=None, qa_cost=1.25, verifier_cost=3.5, active_qa=None
+):
     return {
         "groups": groups,
         "experiments": experiments or [],
         "qa_cost_usd": qa_cost,
+        "verifier_cost_usd": verifier_cost,
         "active_qa_trial": active_qa,
     }
 
@@ -312,6 +315,7 @@ def test_task_open_is_org_scoped_exact_compact_and_bounded():
     assert response.totals.cost_usd == pytest.approx(120.2)
     assert response.totals.billed_cost_usd == pytest.approx(50.0)
     assert response.totals.qa_cost_usd == pytest.approx(1.25)
+    assert response.totals.verifier_cost_usd == pytest.approx(3.5)
     assert len(response.trials) == 20
     assert response.trials_has_more is True
 

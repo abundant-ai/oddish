@@ -64,7 +64,10 @@ function getLiveParam(name: string): string | null {
 }
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
-import type { FeedbackRecord } from "@/components/qa-report/types";
+import {
+  feedbackRequestInit,
+  type FeedbackRecord,
+} from "@/components/qa-report/types";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -91,7 +94,10 @@ import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
@@ -824,21 +830,7 @@ export function TrialDetailPanel({
     }
     await fetcher(
       `/api/experiments/${encodeExperimentRouteParam(feedbackExperimentId)}/feedback`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: record.note?.trim() ?? "",
-          target:
-            record.target.kind === "verdict" ? "qa_verdict" : "qa_action_item",
-          target_key:
-            record.target.kind === "verdict"
-              ? record.target.classification
-              : record.target.id,
-          vote: record.vote,
-          trial_id: trial.id,
-        }),
-      }
+      feedbackRequestInit(record, trial.id)
     );
   }
 
@@ -1485,7 +1477,8 @@ export function TrialDetailPanel({
               trial.output_tokens != null ||
               // A trial can be QA'd without the agent ever reporting a cost;
               // keep the card so its QA sidecar isn't hidden.
-              hasDisplayableCostUsd(trial.qa_cost_usd)) && (
+              hasDisplayableCostUsd(trial.qa_cost_usd) ||
+              hasDisplayableCostUsd(trial.verifier_cost_usd)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -1523,6 +1516,7 @@ export function TrialDetailPanel({
                         costUsd={trial.qa_cost_usd}
                         title="QA/analysis spend for this trial. Not included in the cost figure."
                       />
+                      <VerifierCostSuffix costUsd={trial.verifier_cost_usd} />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (

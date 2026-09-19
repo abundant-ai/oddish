@@ -44,7 +44,14 @@ git fetch origin main && git checkout -b fix/<name> origin/main
 
 Open it as a normal feature PR into `staging`, get an expedited review,
 squash-merge, then promote immediately. This is the standard path; use it
-whenever the pipeline is fast enough for the incident.
+whenever the pipeline is fast enough for the incident. Pin the hotfix sha
+on the staging→main promotion PR (`promotion-target` or `/promote <sha>`)
+so later staging commits do not ride along, and do not wait for an extra
+staging soak after Staging Deploy is green.
+
+For the timed checklist, required checks, rollback commands, and the dry-run
+rehearsal (`rehearse_urgent_hotfix.sh`), see
+[`docs/urgent-hotfix-release.md`](docs/urgent-hotfix-release.md).
 
 Break-glass (landing a fix on `main` directly) is only for two cases: the
 pipeline is too slow for the incident, or `staging` holds work that cannot
@@ -73,9 +80,12 @@ part of `staging` by giving the promotion workflow the commit to stop at.
   have to reconstruct the UI from the diff.
 - Every pull request body follows the format in
   `.claude/skills/write-pr/SKILL.md`. Agents run the `write-pr` skill; humans
-  fill in the default template, which has the same sections. The body
-  explains the existing behavior and its consequence before naming
-  implementation files, and reports what was actually tested.
+  fill in the matching template. Every body stays under 300 words; each
+  included PR description in a promotion stays under 50 words. Start TL;DR
+  with one summary sentence, then app/test/docs-other line counts and net.
+  Follow with plain-language What changed and Tests sections. Explain the
+  problem and resulting behavior without compressing sentences or adding
+  a file inventory; report the strongest relevant validation and its limits.
 - Review threads are resolved by the author after addressing them, with a
   reply saying what changed. The `staging` ruleset blocks merge while any
   thread is open.
@@ -93,8 +103,9 @@ under `oddish/` that a client reads (response fields, status vocabularies,
 CLI options, queue payloads, storage keys), find what depends on it: search
 `oddish/src/oddish/cli/`, the packaged skill references under
 `oddish/src/oddish/assets/skills/oddish/`, `backend/`, and `frontend/` for
-readers of the thing you are changing, and list them in the pull request
-body under `Compatibility`.
+readers of the thing you are changing. Explain material compatibility effects
+and the relevant reader checks in the pull request's What changed section;
+do not add a separate compatibility inventory.
 
 The previously released CLI version must keep working against the new
 server. Add fields rather than renaming them, keep old values accepted for

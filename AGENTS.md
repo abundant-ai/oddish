@@ -734,6 +734,86 @@ validates organization scope and experiment membership through the shared
 errors, and permits one successful submission per mounted control. There are
 no public, read, update, triage, snapshot, or notification paths.
 
+### Reward Kit agent-judge costs
+
+Tasks can opt into a worker-supplied record for a separate verifier with
+`metadata.oddish.verifier_trusted_trajectory = true`. This also requires
+`verifier_judge_costs = true`, one task step, and a separate Linux verifier.
+It uses Oddish's bundled Harbor runtime. Ephemeral Harbor variants fail before
+the child engine starts; they cannot silently omit the trusted input transfer.
+The worker selects a fixed core verifier class. It rejects custom verifier
+imports, kwargs, and disabled verification for this option. No task file can
+supply a host import path or input path through this option.
+
+After Harbor restores artifacts, the worker copies only the current trial's
+host `agent/trajectory.json` into `/logs/verifier/input-trajectory.json` and
+writes its SHA-256 to `/logs/verifier/input-trajectory.json.sha256`. The input
+must be a regular, non-linked ATIF file of at most 20,000,000 bytes. The separate
+image retains its own `/tests`; the worker does not upload replacement tests.
+The hash identifies the supplied bytes. It does not establish the truth of
+the tool output or other claims within the record.
+
+If the host record is missing, invalid, or cannot be transferred, verification
+returns reward zero before a judge starts. The worker writes a fixed error in
+`verifier/step-judge-error.txt` and a programmatic failure to that trial's
+`verifier/reward-details.json`, which establishes zero judge spend for this
+failure. After standard verification starts, missing usage stays incomplete;
+the worker does not replace it with a zero-cost report.
+
+A task that uses paid Reward Kit agent judges must set this before submission:
+
+```toml
+[metadata.oddish]
+verifier_judge_costs = true
+```
+
+The worker saves a pending cost record before it starts the task. It then reads
+`verifier/reward-details.json` from the exact Harbor trial in the result manifest.
+Uploaded local artifacts stay in place until result and judge cost settlement
+finish. This keeps the usage report available after the S3 upload succeeds.
+The read is limited to 2 MiB, 128 agent/LLM components, and 16 models per component.
+Reward Kit 0.2.1 agent judges report input, output, cache-read, cache-write, and
+per-model token counts. Input includes cache tokens. Oddish uses its model price
+list and labels this cost `estimated`; it is not a provider invoice.
+
+Each component and actual model has a stable ledger ID derived from the saved
+trial ID and attempt. The worker takes org, task, experiment, and payer identity
+from the locked trial row at the start, never from the report. The pending record
+also binds the worker and queue job. That worker can settle its own attempt's
+cost after cancellation, replacement, or loss of current ownership. The existing
+result guards still prevent it from changing the current trial result. Repeated
+settlement does not charge twice. Retry attempts remain separate charges. These records use
+`analysis_costs.job_kind = verifier_judge`; the solver's `trials.cost_usd` keeps
+its old meaning. No database migration or credential change is needed.
+
+The initial record has `cost_source = pending` and no price. Settlement closes
+that record with a zero price only when all usage is accounted for. If usage is
+missing, a model has no known price, or a component reports paid tool requests
+whose price is not supported, its accounting stays incomplete. Known token
+charges are still saved. A worker crash leaves the pending record unpriced.
+A report with only programmatic criteria records zero judge spend; use that
+only when a verifier stops before it starts any judge. Missing or broken reports
+never prove zero spend. LLM judges are not supported: Reward Kit 0.2.1 omits their
+usage. A backend exception that loses agent usage also remains incomplete.
+
+`GET /experiments/{id}/cost-totals` adds `qa_cost_complete`,
+`qa_unpriced_count`, and `qa_pending_count`, plus the three `owned_qa_*`
+equivalents. Counts refer to ledger records, including the attempt record.
+Pending experiment counts require an unfinished trial. A completed trial with
+an unpriced pending record is an accounting fault, not ongoing work. The dollar
+total is only the known part while any unpriced record remains. Clients that
+control a budget must wait for pending usage and stop new paid work when settled
+usage is incomplete. These fields describe recorded usage; they do not mean
+that all trials or later QA have finished. Costs on QA shadow trials count in
+the parent experiment. The compact trial result `_verifier_judges` records the
+attempt, fixed error codes, report digest, and report path. Full reports stay in
+artifact storage. Task-authored metrics cannot set this reserved field.
+
+This is opt-in accounting for trusted verifier usage records. It does not grant
+model credentials, change network rules, run judges, or prove that every task
+has declared its paid tools. Configure and validate verifier-only model access
+before enabling paid judges. Existing tasks and older clients keep working.
+
 ### Task Identity
 
 `GET /tasks/{task_id}/open` is the bounded first-paint contract for the task
@@ -994,6 +1074,12 @@ pip install oddish[all]       # everything including dev tools
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Doc-store MCP server: `oddish-docstore-mcp` (see `oddish/src/oddish/mcp/README.md`)
 
+Keep model-routing imports in `oddish.config` lazy: Harbor's utility modules
+load LiteLLM, which fetches a pricing table during import. Help and local version
+commands must print without loading it or accessing the network. The CLI CI job
+runs `oddish/tests/startup` in fresh processes, with a three-second first-stdout
+budget and a separate deterministic import/network guard.
+
 ### Soft Delete
 
 Every model that mixes in `TimestampedMixin` has a `deleted_at` column, but
@@ -1052,6 +1138,35 @@ overrides), `db_helpers.py`, `job_tokens.py`, `runtime_status.py`, `shared.py`,
 Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call
 `ensure_builtin_handlers_registered()` at startup.
+
+### Trace context across queued work
+
+The API's active W3C trace context is saved in the existing
+`worker_jobs.payload._oddish_trace_context` field. This field contains only
+`traceparent` and optional `tracestate`, never baggage, credentials, or task
+contents. The shared enqueue helper adds it after handler validation and
+preserves it when a saved payload is requeued. The runner removes it from the
+in-memory projection passed to handlers; the saved row keeps it for retries.
+It is not part of sweep identity
+or a deduplication key; no database migration is needed.
+
+Hosted and core Logfire configuration explicitly enable `distributed_tracing`
+so incoming request parents are accepted without the SDK's default warning.
+Each claimed attempt creates an `oddish.worker_job.execute` consumer span from
+that saved parent. The span covers the handler, outcome write, and completion
+hooks. It records the job and subject IDs, attempt, retry decision, and queue
+outcome without raw failure messages. Context is detached before the worker
+claims another job. Older rows without a parent still run and start a new trace.
+Jobs created by a separate recovery pass use that pass's active trace; this
+change does not infer a missing historical parent from task or trial IDs.
+
+Controllers that invoke the CLI can set `ODDISH_TRACE_CONTEXT` to a JSON object
+with W3C `traceparent` and optional `tracestate`. The CLI forwards validated
+headers only through its authenticated API clients. Direct presigned storage
+uploads and downloads use separate clients and do not receive these headers.
+Missing or malformed context is ignored. This input needs a CLI release that
+contains the change; API-to-worker propagation needs matching API and worker
+deployments with tracing enabled. Neither path forwards a Logfire token.
 
 ### Local Development
 
@@ -1497,10 +1612,10 @@ fails their tasks. Before editing a response schema, status enum, CLI
 option, queue payload, or storage key under `oddish/`, search
 `oddish/src/oddish/cli/`, the packaged skill references under
 `oddish/src/oddish/assets/skills/oddish/references/`, `backend/`, and
-`frontend/` for readers of it, and list them in the PR body under
-`Compatibility`. Add fields rather than renaming them, keep old values
-accepted for at least one release, and never change the meaning of an
-existing value. The previously released CLI must keep working against the
+`frontend/` for readers of it. Explain material compatibility effects and
+relevant reader checks in the PR body's What changed section. Add fields
+rather than renaming them, keep old values accepted for at least one release,
+and never change the meaning of an existing value. The previously released CLI must keep working against the
 new server; if it cannot, the PR body names the first client version that
 breaks. The same applies to helpers other packages or open PRs import: check
 callers before removing or re-signaturing them.
@@ -1809,7 +1924,13 @@ is imported. There is no `notify_github_analysis` hook or active task-level
 
 ### Trial Storage Layout
 
-Trial artifacts live under ``tasks/<task_id>/trials/<trial_id>/``. Every upload
+New trial artifacts use ``tasks/<task_id>/trials/<namespace>/<trial_id>/`` when
+``ODDISH_TRIAL_ARTIFACT_NAMESPACE`` is set. Hosted Modal apps set it to
+``<secret-environment>-<app-name>`` so forked databases cannot overwrite another
+deployment’s trial artifacts. Worker uploads, imports, copied trials, and scoped
+write credentials share this prefix. Stored ``trial_s3_key`` pointers and legacy
+read fallbacks stay unchanged. Self-hosted installations default to the historical
+``tasks/<task_id>/trials/<trial_id>/`` layout. Every upload
 uses an immutable retry prefix: ordinary agent and operator-probe attempts use
 ``attempt-<attempt>/``; QA, QA-eval, audit, and summarize attempts use
 ``analysis-<kind>/attempt-<attempt>/``. Harbor's randomly named trial directory
@@ -1851,6 +1972,17 @@ alongside storage request counts and download timings.
 Modal compute-cost ledger rows use full UUID hex identifiers (32 characters)
 within the existing 64-character column; high-volume ledger inserts must not
 truncate UUIDs to the eight-character IDs used by some other entities.
+
+CUA / verifier LLM spend lives in `verifier_costs` (sibling of
+`analysis_costs`), one row per `(trial_id, attempt, component)` for
+`cua_loop` and `cua_judge`. It is **never** folded into `trials.cost_usd`
+(solver only), the `analysis_spend` view, user quotas, or the people
+leaderboard (`billed_user_id` stays null). Settlement reads local
+`verifier/` artifacts after Harbor; cleanup backfills from S3 with
+`cost_source=backfill`. Surfaces: trial/experiment/task tiles and the
+admin type stack (`verifier` next to inference / QA / compute). Public
+share pages omit it. Apply core migration `verifier_costs_001` before
+deploying readers.
 
 ### Default Harbor dependency
 
@@ -2696,7 +2828,9 @@ provider capability catalog; a provider still validates its selected model.
 
 Run effort UI regression tests with `pnpm exec playwright test -c
 playwright.effort.config.ts` from `frontend/`. They use the production components
-inside the isolated local test app and intercept submission requests. The
+inside the isolated local test app and intercept submission requests. The effort
+suite always starts this checkout’s server; set `EFFORT_TEST_PORT` when running
+multiple worktrees (default `3117`). It refuses to reuse an occupied port. The
 Dashboard CI workflow runs this config in a separate step and stores its
 artifacts in `frontend/effort-test-results/`; the default dashboard config
 excludes the local-only effort spec. Effort cases wait for the client-rendered

@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -889,6 +890,23 @@ class TaskBrowseSummaryModel(Base):
     cost_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    # Trajectory-length distribution over the same scoped trials
+    # (``trials.total_steps``). ``steps_present`` is how many trials recorded
+    # a step count; the percentiles are NULL when none did, which is not the
+    # same as a measured zero. Discrete percentiles: each value is a step
+    # count some trial actually had. Stored so the browser can filter and
+    # sort on "median steps" without aggregating trials per request.
+    steps_present: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    steps_p25: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_p75: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Distinct ``trials.agent`` values among the scoped trials: how many
+    # harnesses have run this version, the delivery board's rollout check.
+    agent_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1407,11 +1425,82 @@ class AnalysisCostModel(TimestampedMixin, Base):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
-    # via model_pricing. Job A is always "native".
+    # via model_pricing. "pending" is an unpriced verifier-judge attempt
+    # marker, closed once at settlement; priced charge rows stay immutable.
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
-# The ``analysis_spend`` VIEW: the frozen ``analysis_costs`` ledger unioned
+class VerifierCostModel(TimestampedMixin, Base):
+    """Append-only ledger of verifier LLM spend (CUA loop + judge).
+
+    Distinct from ``trials.cost_usd`` (the solving agent's run) and from
+    ``analysis_costs`` / ``analysis_spend`` (QA/audit). One row per
+    ``(trial_id, attempt, component)``. ``billed_user_id`` stays NULL: CUA
+    bills the platform key and must not enter user quotas or the people
+    leaderboard. Soft-delete is filtered explicitly at read sites (same as
+    ``analysis_costs``); this model is not registered for session auto-filter.
+    """
+
+    __tablename__ = "verifier_costs"
+    __table_args__ = (
+        Index(
+            "uq_verifier_costs_trial_attempt_component",
+            "trial_id",
+            "attempt",
+            "component",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_verifier_costs_trial_id", "trial_id"),
+        Index("ix_verifier_costs_experiment_id", "experiment_id"),
+        Index("ix_verifier_costs_org_id", "org_id"),
+        Index("ix_verifier_costs_task_id", "task_id"),
+        Index("ix_verifier_costs_task_version_id", "task_version_id"),
+        Index("ix_verifier_costs_component", "component"),
+        Index("ix_verifier_costs_route", "route"),
+        CheckConstraint(
+            "component IN ('cua_loop', 'cua_judge')",
+            name="ck_verifier_costs_component",
+        ),
+        CheckConstraint(
+            "route IN ('anthropic', 'bedrock', 'other')",
+            name="ck_verifier_costs_route",
+        ),
+        CheckConstraint(
+            "cost_source IN ('native', 'estimated', 'backfill')",
+            name="ck_verifier_costs_cost_source",
+        ),
+        CheckConstraint("attempt >= 0", name="ck_verifier_costs_attempt_nonneg"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    trial_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``cua_loop`` (Computer1) or ``cua_judge`` (per-criterion LiteLLM judge).
+    component: Mapped[str] = mapped_column(String(32), nullable=False)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Always NULL for v1: platform-funded, quota-inert.
+    billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ``anthropic`` | ``bedrock`` | ``other`` — Claude-console recon filter.
+    route: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Hash of the CUA key, never a copy of ``trials.llm_key_hash``.
+    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ``native`` | ``estimated`` | ``backfill``
+    cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Set when cost_usd is NULL: e.g. ``missing_trajectory``.
+    unpriced_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+# The ``analysis_spend`` VIEW: the ``analysis_costs`` ledger unioned
 # with QA/audit trial spend -- the single home of the analysis-cost cutover
 # seam. Created by migration ``analysisspend01`` on migrated databases and by
 # the ``after_create`` listener below on ``create_all`` databases (000_initial
@@ -2909,6 +2998,8 @@ class DeliveryTaskModel(TimestampedMixin, Base):
     __table_args__ = (
         UniqueConstraint("delivery_id", "task_id", name="uq_delivery_tasks_task"),
         Index("idx_delivery_tasks_delivery_order", "delivery_id", "sort_order"),
+        # The task browser's "delivered to" filter looks membership up by task.
+        Index("idx_delivery_tasks_task_id", "task_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -3022,6 +3113,298 @@ class DeliverySnapshotModel(Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+# =============================================================================
+# Source-backed task history (delivery metadata backfill)
+# =============================================================================
+#
+# Reviewed facts imported from external delivery records: the names a task
+# has carried, the classifications sources assert for it, and the customer
+# batches it appeared in. These tables are separate from the live delivery
+# checklists (``deliveries`` / ``delivery_tasks``) and the frozen
+# ``delivery_snapshots``: nothing here decides readiness or records a new
+# shipment. Every fact row points at retained source records and at the
+# import receipt that wrote it, so a replay updates the same rows.
+#
+# Task references use ``ondelete="RESTRICT"`` on purpose: retiring a task is
+# a soft delete (``tasks.deleted_at``) and its history must stay readable.
+# None of these classes are registered with the soft-delete filter.
+
+
+class MetadataImportReceiptModel(Base):
+    """One preview or apply run of a delivery metadata plan.
+
+    ``plan_hash`` identifies the exact plan document and ``input_hashes``
+    keeps the planner's bundle/inventory hashes, so a stale or foreign plan
+    is recognizable. ``summary`` records what the run created, updated,
+    skipped, or rejected.
+    """
+
+    __tablename__ = "metadata_import_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('preview', 'apply')",
+            name="ck_metadata_import_receipts_mode",
+        ),
+        CheckConstraint(
+            "outcome IN ('previewed', 'applied', 'rejected')",
+            name="ck_metadata_import_receipts_outcome",
+        ),
+        Index("idx_metadata_import_receipts_org_created", "org_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_schema: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_as_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    inventory_captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    input_hashes: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    summary: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class TaskSourceRecordModel(Base):
+    """A retained external source row (shipment list, pass-rate sheet, ledger,
+    rework tracker, submission record).
+
+    ``facts`` holds only the allowlisted columns the import uses; the verbatim
+    row, with people's names and notes, stays in the operator's local raw
+    file. ``record_id`` is the planner's stable ID (source collection plus
+    logical row key), so a replay finds the same row; ``content_hash`` shows
+    whether the facts changed since. The composite primary key lets fact
+    tables reference evidence with an organization-checked foreign key.
+    """
+
+    __tablename__ = "task_source_records"
+    __table_args__ = (Index("idx_task_source_records_org_kind", "org_id", "kind"),)
+
+    org_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_key: Mapped[list] = mapped_column(JSONB, nullable=False)
+    names: Mapped[list] = mapped_column(JSONB, nullable=False)
+    explicit_task_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    source_urls: Mapped[list] = mapped_column(JSONB, nullable=False)
+    facts: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_import_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("metadata_import_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    last_import_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("metadata_import_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TaskAliasModel(Base):
+    """A name a task has been known by, backed by source records.
+
+    An alias is live while ``valid_until`` and ``retracted_at`` are NULL, and
+    one live alias identifies at most one task per organization. A name the
+    ledger later reused for another task gets an end date on the earlier
+    alias instead of staying an unresolved conflict. Additions only: the
+    task's current ``tasks.name`` is untouched.
+    """
+
+    __tablename__ = "task_aliases"
+    __table_args__ = (
+        Index(
+            "uq_task_aliases_org_name_live",
+            "org_id",
+            "name",
+            unique=True,
+            postgresql_where=text("valid_until IS NULL AND retracted_at IS NULL"),
+        ),
+        Index("idx_task_aliases_org_task", "org_id", "task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="delivery_backfill",
+        server_default="delivery_backfill",
+    )
+    # ``task_source_records.record_id`` values supporting this alias.
+    evidence_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    import_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("metadata_import_receipts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    valid_from: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    valid_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retracted_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TaskMetadataAssertionModel(Base):
+    """One source-backed classification of a task (``field`` = ``value``).
+
+    ``value`` is the original wording from the source. Conflicting values for
+    the same field are separate rows; nothing here picks a winner or writes
+    ``tasks.tags``. Normalized views are a later, separate step. A wrong
+    assertion is retracted, not deleted, so its evidence stays auditable.
+    """
+
+    __tablename__ = "task_metadata_assertions"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "task_id",
+            "field",
+            "value",
+            name="uq_task_metadata_assertions_fact",
+        ),
+        Index("idx_task_metadata_assertions_org_field", "org_id", "field", "value"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    field: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="delivery_backfill",
+        server_default="delivery_backfill",
+    )
+    evidence_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    import_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("metadata_import_receipts.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    retracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retracted_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TaskDeliveryHistoryModel(Base):
+    """A task's recorded membership in a customer batch, from one source row.
+
+    This is history as the sources state it. ``customer_label`` and ``batch``
+    are quoted from the source; ``customer_id`` links to a ``customers`` row
+    only once an operator confirms the mapping. ``shipped_version_id``,
+    ``shipped_content_hash``, ``program``, ``customer_acceptance`` and
+    ``finalized_at`` stay unknown until a source establishes them; they are
+    never filled from the task's current default version or from an upload
+    succeeding.
+    """
+
+    __tablename__ = "task_delivery_history"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "source_record_id"],
+            ["task_source_records.org_id", "task_source_records.record_id"],
+            ondelete="RESTRICT",
+            name="fk_task_delivery_history_source_record",
+        ),
+        UniqueConstraint(
+            "org_id", "source_record_id", name="uq_task_delivery_history_source"
+        ),
+        CheckConstraint(
+            "customer_acceptance IN ('unknown', 'accepted', 'rejected', 'returned')",
+            name="ck_task_delivery_history_acceptance",
+        ),
+        Index("idx_task_delivery_history_org_task", "org_id", "task_id"),
+        Index("idx_task_delivery_history_org_customer", "org_id", "customer_label"),
+        Index("idx_task_delivery_history_org_customer_id", "org_id", "customer_id"),
+    )
+
+    # The planner's stable observation ID (organization + source record).
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_record_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    customer_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    customer_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("customers.id", ondelete="RESTRICT"), nullable=True
+    )
+    program: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    batch: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Verbatim from the source; parsing dates is a later normalization step.
+    source_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    customer_task_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    membership: Mapped[str] = mapped_column(String(128), nullable=False)
+    shipped_version_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    shipped_content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    customer_acceptance: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown"
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    import_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("metadata_import_receipts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 

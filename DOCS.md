@@ -22,6 +22,11 @@ Ensure your API key is set:
 export ODDISH_API_KEY="ok_..."
 ```
 
+A controller can set `ODDISH_TRACE_CONTEXT` to JSON containing a W3C
+`traceparent` and optional `tracestate`. API calls then join the controller's
+trace. Other fields, malformed headers, and storage upload/download requests
+are excluded. This does not enable trace export or replace `ODDISH_API_KEY`.
+
 ## Usage
 
 **Commands:**
@@ -1060,6 +1065,14 @@ oddish delivery finalize august-batch
 
 # A task's QA trail: versions, audits, rollouts, defects, QA runs
 oddish delivery history task-1
+
+# Historical delivery metadata (docs/delivery-metadata-backfill.md):
+# export this organization's task identities for the planner, then preview
+# and apply a reviewed plan. --apply needs admin and a preview from the last day.
+oddish delivery inventory --output inventory.json
+oddish delivery import-history plan.json --inventory inventory.json --customer meta=Meta
+oddish delivery import-history plan.json --inventory inventory.json --apply
+oddish delivery import-receipts
 ```
 
 Commands

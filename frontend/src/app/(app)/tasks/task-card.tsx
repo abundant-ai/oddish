@@ -12,7 +12,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ExperimentsList } from "@/components/experiments-list";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { TagChip } from "@/components/tag-chip";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
@@ -54,6 +57,71 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
       className="text-muted-foreground text-xs"
       linkClassName="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
     />
+  );
+}
+
+// "median 412 steps (p25 300 · p75 600) · 3 agents": the stored summary's
+// trajectory-length percentiles and distinct-agent count, so a card shows
+// what the "Median steps" / "Agents ≥" filters and sorts are reading.
+function TrajectorySummary({ task }: { task: TaskBrowseItem }) {
+  const parts: string[] = [];
+  if (task.steps_p50 != null) {
+    const spread =
+      task.steps_p25 != null && task.steps_p75 != null
+        ? ` (p25 ${task.steps_p25} · p75 ${task.steps_p75})`
+        : "";
+    parts.push(`median ${task.steps_p50} steps${spread}`);
+  }
+  if (task.agent_count) {
+    parts.push(`${task.agent_count} agent${task.agent_count === 1 ? "" : "s"}`);
+  }
+  if (parts.length === 0) return null;
+  return (
+    <div className="text-muted-foreground text-[11px] tabular-nums">
+      {parts.join(" · ")}
+    </div>
+  );
+}
+
+// One chip per customer the task is recorded as sent to, from the metadata
+// import (history) and finalized deliveries. Hover lists each batch. Nothing
+// renders when there is no record: the import's coverage is partial, so an
+// absent record is not a claim the task was never sent.
+function DeliveredToChips({ task }: { task: TaskBrowseItem }) {
+  const records = task.deliveries ?? [];
+  if (records.length === 0) return null;
+  const byCustomer = new Map<string, typeof records>();
+  for (const record of records) {
+    const list = byCustomer.get(record.customer) ?? [];
+    list.push(record);
+    byCustomer.set(record.customer, list);
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-muted-foreground text-[11px] tracking-wide uppercase">
+        Delivered to
+      </span>
+      {[...byCustomer.entries()].map(([customer, list]) => (
+        <Badge
+          key={customer}
+          variant="outline"
+          className="font-mono text-[10px]"
+          title={list
+            .map(
+              (r) =>
+                `${r.batch ?? "(batch unknown)"}${r.date ? ` · ${r.date}` : ""}${
+                  r.source === "delivery" ? " · Oddish delivery" : ""
+                }`
+            )
+            .join("\n")}
+        >
+          {customer}
+          {list.length > 1 ? (
+            <span className="text-muted-foreground"> ×{list.length}</span>
+          ) : null}
+        </Badge>
+      ))}
+    </div>
   );
 }
 
@@ -428,6 +496,10 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                   costUsd={task.qa_cost_usd}
                   title="QA/analysis spend for this task's trials. Not included in the cost figure."
                 />
+                <VerifierCostSuffix
+                  costUsd={task.verifier_cost_usd}
+                  title="CUA/verifier LLM spend for this task's trials. Not included in the cost figure."
+                />
               </div>
               {task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
@@ -454,9 +526,13 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
             ))}
           </div>
         ) : null}
+        <DeliveredToChips task={task} />
         <div className="space-y-1.5">
-          <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
-            Latest trials
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
+              Latest trials
+            </div>
+            <TrajectorySummary task={task} />
           </div>
           <TrialGraphics task={task} />
         </div>

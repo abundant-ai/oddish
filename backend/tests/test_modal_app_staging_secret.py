@@ -36,3 +36,13 @@ def _load_modal_app(monkeypatch, app_name: str):
 def test_db_override_secret_attachment(monkeypatch, app_name, expects_override):
     recorded = _load_modal_app(monkeypatch, app_name)
     assert (f"{app_name}-db" in recorded) is expects_override
+
+
+@pytest.mark.parametrize("app_name", ["oddish", "oddish-staging", "oddish-pr-123"])
+def test_trial_artifact_namespace_is_baked_into_each_app(monkeypatch, app_name):
+    monkeypatch.setenv("MODAL_SECRET_ENVIRONMENT", "main")
+    _load_modal_app(monkeypatch, app_name)
+    assert (
+        sys.modules["modal_app"].ENV_VARS["ODDISH_TRIAL_ARTIFACT_NAMESPACE"]
+        == f"main-{app_name}"
+    )

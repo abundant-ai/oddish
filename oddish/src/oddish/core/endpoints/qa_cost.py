@@ -55,6 +55,9 @@ class QaCostTotals(BaseModel):
     qa_job_count: int = 0
     qa_has_estimated: bool = False
     qa_has_native: bool = False
+    qa_cost_complete: bool = True
+    qa_unpriced_count: int = 0
+    qa_pending_count: int = 0
 
 
 class ExperimentQaCostTotals(QaCostTotals):
@@ -67,6 +70,9 @@ class ExperimentQaCostTotals(QaCostTotals):
 
     owned_qa_cost_usd: float = 0.0
     owned_qa_job_count: int = 0
+    owned_qa_cost_complete: bool = True
+    owned_qa_unpriced_count: int = 0
+    owned_qa_pending_count: int = 0
 
 
 _LIVE = AnalysisCostModel.deleted_at.is_(None)
@@ -78,6 +84,8 @@ _LEDGER_ROW = (
     AnalysisCostModel.id.label("row_id"),
     _COST.label("cost_usd"),
     AnalysisCostModel.cost_source.label("cost_source"),
+    AnalysisCostModel.cost_usd.is_(None).label("unpriced"),
+    (AnalysisCostModel.cost_source == "pending").label("pending"),
 )
 
 
@@ -88,6 +96,9 @@ def _fold(rows) -> QaCostTotals:
     rows."""
     totals = QaCostTotals()
     for row in rows:
+        totals.qa_unpriced_count += row.unpriced_count
+        totals.qa_pending_count += row.pending_count
+        totals.qa_cost_complete = totals.qa_unpriced_count == 0
         totals.qa_cost_usd += float(row.cost_usd)
         totals.qa_job_count += row.job_count
         totals.qa_has_native = totals.qa_has_native or bool(row.has_native)
@@ -202,6 +213,8 @@ async def get_task_qa_costs(
         func.concat("trial:", TrialModel.id).label("row_id"),
         func.coalesce(TrialModel.cost_usd, 0.0).label("cost_usd"),
         literal("native").label("cost_source"),
+        literal(False).label("unpriced"),
+        literal(False).label("pending"),
         TrialModel.task_id.label("task_id"),
     ).where(
         TrialModel.task_id.in_(ids),
@@ -228,6 +241,8 @@ async def get_task_qa_costs(
         func.sum(u.c.cost_usd).label("cost_usd"),
         func.count().label("job_count"),
         *_group_flags(u.c.cost_source),
+        func.sum(case((u.c.unpriced, 1), else_=0)).label("unpriced_count"),
+        func.sum(case((u.c.pending, 1), else_=0)).label("pending_count"),
     ).group_by(u.c.task_id)
     if not scoped:
         # Broad callers count QA on soft-deleted trials too: deleting a trial
@@ -259,8 +274,17 @@ async def get_experiment_qa_cost_totals(
     Aggregated in SQL, grouped by ``owned``: at most two group rows come back
     (owned / not-owned) rather than every ledger row in scope.
     """
+    shadow_ids = select(ExperimentModel.id).where(
+        ExperimentModel.shadow_of == experiment_id
+    )
     owned = case(
-        (TrialModel.id.isnot(None), TrialModel.experiment_id == experiment_id),
+        (
+            TrialModel.id.isnot(None),
+            or_(
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.experiment_id.in_(shadow_ids),
+            ),
+        ),
         else_=AnalysisCostModel.experiment_id == experiment_id,
     ).label("owned")
 
@@ -270,6 +294,19 @@ async def get_experiment_qa_cost_totals(
             func.sum(_COST).label("cost_usd"),
             func.count().label("job_count"),
             *_group_flags(AnalysisCostModel.cost_source),
+            func.sum(case((AnalysisCostModel.cost_usd.is_(None), 1), else_=0)).label(
+                "unpriced_count"
+            ),
+            func.sum(
+                case(
+                    (
+                        (AnalysisCostModel.cost_source == "pending")
+                        & TrialModel.finished_at.is_(None),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("pending_count"),
         )
         .select_from(AnalysisCostModel)
         .outerjoin(TrialModel, TrialModel.id == AnalysisCostModel.trial_id)
@@ -284,6 +321,7 @@ async def get_experiment_qa_cost_totals(
                     ).member_trial_ids_select()
                 ),
                 AnalysisCostModel.experiment_id == experiment_id,
+                TrialModel.experiment_id.in_(shadow_ids),
             ),
         )
         .group_by(owned)
@@ -336,4 +374,7 @@ async def get_experiment_qa_cost_totals(
         **base.model_dump(),
         owned_qa_cost_usd=owned_totals.qa_cost_usd,
         owned_qa_job_count=owned_totals.qa_job_count,
+        owned_qa_cost_complete=owned_totals.qa_cost_complete,
+        owned_qa_unpriced_count=owned_totals.qa_unpriced_count,
+        owned_qa_pending_count=owned_totals.qa_pending_count,
     )

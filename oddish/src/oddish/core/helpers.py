@@ -455,6 +455,7 @@ def build_trial_response(
     # None = "not resolved by this caller", which the UI renders as nothing.
     # Distinct from 0.0, which would mean "resolved, and there was no QA".
     qa_cost_usd: float | None = None,
+    verifier_cost_usd: float | None = None,
     exclusions: CostExclusions | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
@@ -523,6 +524,7 @@ def build_trial_response(
         started_at=trial.started_at,
         finished_at=trial.finished_at,
         qa_cost_usd=qa_cost_usd,
+        verifier_cost_usd=verifier_cost_usd,
     )
 
 

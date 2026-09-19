@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import Integer, case, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,11 @@ _SUMMARY_FIELDS = (
     "harness_count",
     "skipped_count",
     "pending_count",
+    "steps_present",
+    "steps_p25",
+    "steps_p50",
+    "steps_p75",
+    "agent_count",
     "cost_breakdown",
 )
 
@@ -55,8 +61,26 @@ def _empty_summary(task_id: str, version_id: str) -> dict:
         "harness_count": 0,
         "skipped_count": 0,
         "pending_count": 0,
+        "steps_present": 0,
+        "steps_p25": None,
+        "steps_p50": None,
+        "steps_p75": None,
+        "agent_count": 0,
         "cost_breakdown": [],
     }
+
+
+def _steps_percentile(fraction: float) -> Any:
+    """Discrete percentile of ``trials.total_steps`` over the group.
+
+    ``percentile_disc`` returns a step count some trial actually had (see
+    ``task_version_model_metrics._median``); NULL step counts are ignored, so
+    the result is NULL only when no trial in the group recorded steps.
+    """
+    return func.cast(
+        func.percentile_disc(fraction).within_group(TrialModel.total_steps.asc()),
+        Integer,
+    )
 
 
 async def refresh_task_browse_summaries(
@@ -121,6 +145,11 @@ async def refresh_task_browse_summaries(
                 )
                 for name in ("pass", "partial", "fail", "harness", "skipped", "other")
             ],
+            func.count(TrialModel.total_steps).label("steps_present"),
+            _steps_percentile(0.25).label("steps_p25"),
+            _steps_percentile(0.5).label("steps_p50"),
+            _steps_percentile(0.75).label("steps_p75"),
+            func.count(func.distinct(TrialModel.agent)).label("agent_count"),
         )
         .where(TrialModel.task_version_id.in_(list(summaries)), *browse_trial_scope())
         .group_by(TrialModel.task_version_id)

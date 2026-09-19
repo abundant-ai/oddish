@@ -1,4 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
+const port = process.env.EFFORT_TEST_PORT ?? "3117";
+
 export default defineConfig({
   testDir: "e2e",
   testMatch: [
@@ -16,16 +18,15 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://localhost:3117",
+    baseURL: `http://localhost:${port}`,
     ...devices["Desktop Chrome"],
     trace: "retain-on-failure",
     navigationTimeout: 60_000,
   },
   webServer: {
-    command:
-      "node node_modules/next/dist/bin/next dev e2e/delivery-app --webpack -p 3117",
-    url: "http://localhost:3117/effort",
-    reuseExistingServer: !process.env.CI,
+    command: `node node_modules/next/dist/bin/next dev e2e/delivery-app --webpack -p ${port}`,
+    url: `http://localhost:${port}/effort`,
+    reuseExistingServer: false,
     timeout: 120000,
   },
 });

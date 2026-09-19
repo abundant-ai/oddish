@@ -15,14 +15,16 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
   qa_execution: "QA execution",
 };
 
+// Four verdict words: accepted, rejected, pending (with what is still
+// missing), and failed, which is reserved for a QA run that did not complete.
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "Accepted",
-  needs_fixes: "Rejected",
-  outdated: "QA verdict needs refresh",
-  queued: "QA verdict queued",
-  running: "QA verdict running",
-  error: "QA verdict failed",
-  never: "No QA verdict",
+  accepted: "Verdict accepted",
+  needs_fixes: "Verdict rejected",
+  outdated: "Verdict pending: regeneration needed",
+  queued: "Verdict pending: generation queued",
+  running: "Verdict pending: generating",
+  error: "Verdict failed",
+  never: "Verdict pending: not yet generated",
 };
 
 export const DELIVERY_STATES = {
@@ -81,7 +83,7 @@ export function deliveryCheckOrder(key: string): number {
 /** Keep missing delivery requirements visible without parsing check prose. */
 export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
   const defects = row.defects.filter((finding) => !finding.acknowledged).length;
-  if (defects > 0) return [`Rejected: ${defects} Must Fix`];
+  if (defects > 0) return [`Verdict rejected: ${defects} Must fix`];
   const labels = row.checks
     .filter((check) => check.kind === "automated" && check.status === "fail")
     .sort((a, b) => deliveryCheckOrder(a.key) - deliveryCheckOrder(b.key))
@@ -93,9 +95,9 @@ export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
               pre_trial_passed: "Pre-trial audit needed",
               min_rollouts: "Run requirements unmet",
               verdict_ok:
-                row.qa.status === "needs_fixes"
-                  ? "Rejected"
-                  : "QA verdict needed",
+                row.qa.status === "accepted"
+                  ? QA_STATUS_LABELS.outdated
+                  : QA_STATUS_LABELS[row.qa.status],
               task_exists: "Task missing",
               no_must_fix: "Finding decisions needed",
             }[check.key] ?? check.label,

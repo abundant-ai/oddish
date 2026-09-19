@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from auth import APIKeyScope, AuthContext, require_auth
-from oddish.core.feedback import create_feedback_core
+from oddish.core.feedback import create_feedback_core, create_task_feedback_core
 from oddish.db import get_session
 from oddish.schemas import FeedbackCreate, FeedbackResponse
 
@@ -26,6 +26,26 @@ async def create_feedback(
             session,
             data=data,
             experiment_id=experiment_id,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+        )
+        await session.commit()
+        return FeedbackResponse.model_validate(row)
+
+
+@router.post("/tasks/{task_id}/feedback", response_model=FeedbackResponse)
+async def create_task_feedback(
+    task_id: str,
+    data: FeedbackCreate,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> FeedbackResponse:
+    """Vote on one of the task's trials: its pre-trial audit or a trajectory analysis."""
+    auth.require_scope(APIKeyScope.TASKS)
+    async with get_session() as session:
+        row = await create_task_feedback_core(
+            session,
+            data=data,
+            task_id=task_id,
             org_id=auth.org_id,
             user_id=auth.user_id,
         )

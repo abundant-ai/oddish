@@ -31,11 +31,14 @@ Never directly commit or push to `main` or `staging`. Check out a feature
 branch, commit there, push that branch, and open a PR into `staging` (the
 default branch). Write every PR body with the `write-pr` skill; the default
 template in `.github/PULL_REQUEST_TEMPLATE.md` has the same sections. Keep
-application code under 500 added lines per PR, include a screenshot or
-preview link for anything a user can see, and fill in the `Compatibility`
-line (see the "Installed clients are always behind the server" gotcha in
-`AGENTS.md`). Do not add co-author trailers or attribution lines to commits
-or PR bodies.
+all descriptions under 300 words and each included PR description in a
+promotion under 50 words. Start TL;DR with one summary sentence, then
+app/test/docs-other line counts and net, followed by What changed and Tests.
+Keep application code under 500 added lines per PR and include a screenshot
+or preview link for anything a user can see. Explain material compatibility
+effects in What changed (see the "Installed clients are always behind the
+server" gotcha in `AGENTS.md`). Do not add co-author trailers or attribution
+lines to commits or PR bodies.
 
 `main` is release-only: it advances solely via fast-forward promotion, either
 by a maintainer running the `Promotion Preflight` workflow and executing the
@@ -67,9 +70,10 @@ every promotion pull request; humans get it with
 ## Hotfixes
 
 Branch the fix from `main`, open it as a normal PR into `staging`, squash,
-then promote immediately. `CONTRIBUTING.md` has the full procedure and the
-break-glass rules for landing on `main` directly. Never cherry-pick a fix
-into `staging`.
+then promote immediately (pin the hotfix sha; skip extra staging soak).
+`CONTRIBUTING.md` has the full procedure and break-glass rules;
+`docs/urgent-hotfix-release.md` has the timed checklist, rollback steps, and
+dry-run rehearsal. Never cherry-pick a fix into `staging`.
 
 ## Useful pointers
 

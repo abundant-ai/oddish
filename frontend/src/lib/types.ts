@@ -192,6 +192,7 @@ export interface Trial {
   // endpoint that served this trial (most do not) -- distinct from 0, which
   // would mean "resolved, and there was no QA".
   qa_cost_usd?: number | null;
+  verifier_cost_usd?: number | null;
   is_billed?: boolean;
   cost_exclusion_reason?: string | null;
   has_trajectory?: boolean;
@@ -390,6 +391,17 @@ interface TaskBrowseTrial {
   model: string | null;
 }
 
+// One record of a task having been sent to a customer. `history` rows come
+// from the delivery-metadata import (quoted from spreadsheets and trackers;
+// `date` is verbatim, not normalized); `delivery` rows are finalized Oddish
+// deliveries (`batch` is the delivery name, `date` the finalize day).
+export interface TaskBrowseDelivery {
+  customer: string;
+  batch?: string | null;
+  date?: string | null;
+  source: "history" | "delivery";
+}
+
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -408,6 +420,17 @@ export interface TaskBrowseItem {
   harness_count: number;
   skipped_count: number;
   pending_count: number;
+  // Trajectory-length percentiles (steps) and distinct-agent count over the
+  // task's scoped trials; percentiles are null when no trial recorded steps.
+  // Optional: older cached responses predate them.
+  steps_present?: number;
+  steps_p25?: number | null;
+  steps_p50?: number | null;
+  steps_p75?: number | null;
+  agent_count?: number;
+  // Every customer the task is recorded as sent to; empty is "no record",
+  // not "never sent" (history coverage is partial).
+  deliveries?: TaskBrowseDelivery[];
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -420,6 +443,7 @@ export interface TaskBrowseItem {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
   latest_trials_truncated: boolean;
   experiments: TaskBrowseExperiment[];
@@ -451,6 +475,11 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
+  // Customers a task can have been delivered to (customer rows plus
+  // unmapped import labels) and imported task categories. Optional: a
+  // cached response from before these existed omits them.
+  delivery_customers?: string[];
+  categories?: string[];
 }
 
 // GET /api/tasks/browse/experiment-options — async options for the sidebar
@@ -496,6 +525,8 @@ export interface TaskVersionSummary {
    *  findings mean something different for each, so never infer from the list. */
   pre_trial_status?: string | null;
   pre_trial_error?: string | null;
+  /** The audit trial behind `pre_trial_findings`; finding votes anchor to it. */
+  pre_trial_trial_id?: string | null;
   /** What the audit cost. Absent on audits predating cost capture — not zero,
    *  which would claim it was free. */
   pre_trial_cost_usd?: number | null;
@@ -653,6 +684,7 @@ interface TaskCostTotals {
   billed_has_native: boolean;
   total_trials: number;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
 }
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
@@ -693,6 +725,9 @@ export interface ExperimentCostTotals {
   qa_cost_usd?: number;
   owned_qa_cost_usd?: number;
   qa_has_estimated?: boolean;
+  verifier_cost_usd?: number;
+  owned_verifier_cost_usd?: number;
+  verifier_has_estimated?: boolean;
   excluded_cost_usd?: number;
   owned_excluded_cost_usd?: number;
   experiment_cost_excluded?: boolean;
@@ -1262,6 +1297,7 @@ interface CostTotals {
   cost_native_usd: number;
   cost_estimated_usd: number;
   qa_cost_usd?: number;
+  verifier_cost_usd?: number;
   compute_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;

@@ -10,6 +10,10 @@ import type { PreTrialFinding, Task, Trial } from "../src/lib/types.ts";
 
 const require = createRequire(import.meta.url);
 const hidden = () => null;
+// Every vote control the overview mounts, and every request a vote sends.
+type Submit = (vote: "agree" | "disagree", note?: string) => Promise<void>;
+const controls: { label: string; onSubmit: Submit }[] = [];
+const requests: { url: string; body: Record<string, unknown> }[] = [];
 // Render the real overview and findings; isolate routing, fetching, and controls.
 const mocks: Record<string, unknown> = {
   "next/navigation": {
@@ -17,11 +21,20 @@ const mocks: Record<string, unknown> = {
     useSearchParams: () => new URLSearchParams(),
   },
   swr: () => ({ data: [] }),
-  "@/lib/api": { fetcher: hidden },
+  "@/lib/api": {
+    fetcher: async (url: string, init: { body: string }) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+    },
+  },
   "@/components/ui/skeleton": { Skeleton: hidden },
   "@/components/analysis-prose": { AnalysisProse: hidden },
   "@/components/qa-report/copy-json-button": { CopyJsonButton: hidden },
-  "@/components/qa-report/feedback-control": { FeedbackControl: hidden },
+  "@/components/qa-report/feedback-control": {
+    FeedbackControl: (control: { label: string; onSubmit: Submit }) => {
+      controls.push(control);
+      return null;
+    },
+  },
   "@/components/task-verdict-badge": {
     TaskVerdictBadge: () =>
       React.createElement("span", null, "Overall verdict"),
@@ -38,7 +51,7 @@ function load(name: string, parent = ""): unknown {
   const exports = {};
   cache[name] = exports;
   const extension =
-    name.startsWith("@/components/") && !name.endsWith("/tokens")
+    name.startsWith("@/components/") && !/\/(tokens|types)$/.test(name)
       ? "tsx"
       : "ts";
   runInNewContext(
@@ -146,3 +159,117 @@ for (const [description, fields, required] of [
     });
   }
 }
+
+test("hosted overview votes on audit findings, trial findings, and analyses", async () => {
+  controls.length = 0;
+  requests.length = 0;
+  const auditFinding: PreTrialFinding = { id: "audit-1", title: "Audit finding" };
+  const trialFinding: PreTrialFinding = { id: "item-1", title: "Trial finding" };
+  const trial = {
+    id: "trial-1",
+    agent: "codex",
+    model: "openai/gpt-5",
+    task_version: 2,
+    status: "completed",
+    created_at: "2026-09-17T00:00:00Z",
+    analysis_status: "success",
+    analysis: { classification: "BAD_FAILURE", action_items: [trialFinding] },
+  } as Trial;
+  const render = (apiBaseUrl: string) =>
+    renderToStaticMarkup(
+      React.createElement(TaskOverviewPanel, {
+        taskId: "task-1",
+        apiBaseUrl,
+        version: 2,
+        checksStatus: "success",
+        checksFindings: [auditFinding],
+        checksTrialId: "task-1-audit",
+        scopeTrials: [trial],
+        onRerunChecks: hidden,
+        checksRerunning: false,
+      })
+    );
+
+  render("/api");
+  assert.deepEqual(
+    controls.map((c) => c.label).sort(),
+    [
+      "action item: Audit finding",
+      "action item: Trial finding",
+      "the Bad failure analysis of codex · gpt-5",
+    ]
+  );
+  for (const control of controls) await control.onSubmit("agree");
+  await controls[0].onSubmit("disagree", " not in this task ");
+  assert.ok(requests.every((r) => r.url === "/api/tasks/task-1/feedback"));
+  assert.deepEqual(
+    requests.map((r) => r.body),
+    [
+      {
+        body: "",
+        target: "qa_action_item",
+        target_key: "audit-1",
+        vote: "agree",
+        trial_id: "task-1-audit",
+      },
+      {
+        body: "",
+        target: "qa_action_item",
+        target_key: "item-1",
+        vote: "agree",
+        trial_id: "trial-1",
+      },
+      {
+        body: "",
+        target: "qa_verdict",
+        target_key: "BAD_FAILURE",
+        vote: "agree",
+        trial_id: "trial-1",
+      },
+      {
+        body: "not in this task",
+        target: "qa_action_item",
+        target_key: "audit-1",
+        vote: "disagree",
+        trial_id: "task-1-audit",
+      },
+    ]
+  );
+
+  controls.length = 0;
+  render("/api/public/share-1");
+  assert.equal(controls.length, 0);
+});
+
+test("an audit without a recorded trial id takes no finding vote", () => {
+  controls.length = 0;
+  renderToStaticMarkup(
+    React.createElement(TaskOverviewPanel, {
+      taskId: "task-1",
+      apiBaseUrl: "/api",
+      version: 2,
+      checksStatus: "success",
+      checksFindings: [{ id: "audit-1", title: "Audit finding" }],
+      scopeTrials: [
+        {
+          id: "trial-1",
+          agent: "codex",
+          task_version: 2,
+          status: "completed",
+          created_at: "2026-09-17T00:00:00Z",
+          analysis_status: "success",
+          analysis: {
+            classification: "GOOD_FAILURE",
+            action_items: [{ id: "item-1", title: "Trial finding" }],
+          },
+        } as Trial,
+      ],
+      onRerunChecks: hidden,
+      checksRerunning: false,
+    })
+  );
+  assert.deepEqual(
+    controls.map((c) => c.label).sort(),
+    ["action item: Trial finding", "the Good failure analysis of codex"]
+  );
+});

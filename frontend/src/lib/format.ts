@@ -34,6 +34,7 @@ export interface TaskTrialCost {
   costUsd: number;
   excludedCostUsd: number;
   qaCostUsd: number;
+  verifierCostUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
@@ -49,6 +50,7 @@ export function sumTaskTrialCost(
   let costUsd = 0;
   let excludedCostUsd = 0;
   let qaCostUsd = 0;
+  let verifierCostUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
   let hasNative = false;
@@ -59,6 +61,8 @@ export function sumTaskTrialCost(
     // Outside the cost_usd guard below: QA can exist on a trial whose agent
     // cost was never reported.
     if (trial.qa_cost_usd != null) qaCostUsd += trial.qa_cost_usd;
+    if (trial.verifier_cost_usd != null)
+      verifierCostUsd += trial.verifier_cost_usd;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
     if (trial.cost_exclusion_reason) excludedCostUsd += trial.cost_usd;
@@ -70,6 +74,7 @@ export function sumTaskTrialCost(
     costUsd,
     excludedCostUsd,
     qaCostUsd,
+    verifierCostUsd,
     pricedCount,
     hasEstimated,
     hasNative,

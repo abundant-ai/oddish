@@ -19,6 +19,7 @@ function ActionItemDetail({
   item,
   itemKey,
   onFeedback,
+  canVoteOn,
   renderItemFooter,
   findingLink,
   onOpenSource,
@@ -28,9 +29,11 @@ function ActionItemDetail({
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
+  canVoteOn?: (item: PreTrialFinding, itemKey: string) => boolean;
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const where = findingLocation(item);
+  const voteable = onFeedback && (canVoteOn?.(item, itemKey) ?? true);
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -100,7 +103,7 @@ function ActionItemDetail({
 
       {renderItemFooter?.(item, itemKey)}
 
-      {onFeedback ? (
+      {voteable ? (
         <FeedbackControl
           label={`action item: ${item.title ?? itemKey}`}
           className="mt-1.5"
@@ -121,6 +124,7 @@ function ActionItemDetail({
 export function FindingList({
   items,
   onFeedback,
+  canVoteOn,
   className,
   renderItemFooter,
   selectedFinding,
@@ -132,6 +136,8 @@ export function FindingList({
   onOpenSource?: (item: PreTrialFinding) => void;
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
+  /** Hide the vote control on items `onFeedback` has nothing to record against. */
+  canVoteOn?: (item: PreTrialFinding, itemKey: string) => boolean;
   className?: string;
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
@@ -201,6 +207,7 @@ export function FindingList({
                 onOpenSource={onOpenSource}
                 itemKey={key}
                 onFeedback={onFeedback}
+                canVoteOn={canVoteOn}
                 renderItemFooter={renderItemFooter}
               />
             </div>

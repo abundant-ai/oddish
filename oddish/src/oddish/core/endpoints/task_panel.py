@@ -144,6 +144,7 @@ async def get_task_panel_core(
             ],
             pre_trial_status=row["pre_trial_status"],
             pre_trial_error=row["pre_trial_error"],
+            pre_trial_trial_id=(row["pre_trial"] or {}).get("block_id"),
             experiments=row["experiments"],
         )
     )

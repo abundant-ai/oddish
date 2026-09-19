@@ -112,7 +112,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Rejected tasks" },
-  { value: "pending-verdict", label: "QA verdict pending" },
+  { value: "pending-verdict", label: "Verdict pending" },
   { value: "failed", label: "Failures" },
 ] as const;
 
