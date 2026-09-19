@@ -111,7 +111,7 @@ def test_worker_readiness_validates_dependencies_without_returning_credentials(
     monkeypatch.setenv("TNR_API_TOKEN", "do-not-return")
     monkeypatch.setitem(sys.modules, "asyncssh", ModuleType("asyncssh"))
     versions = {
-        "thunder-sandbox": "0.7.3",
+        "thunder-sandbox": "0.7.4",
         "aiohttp": "3.12.0",
         "asyncssh": "2.21.0",
         "cryptography": "45.0.0",
@@ -120,7 +120,7 @@ def test_worker_readiness_validates_dependencies_without_returning_credentials(
 
     result = thunder_readiness.check_thunder_worker.get_raw_f()()
 
-    assert result["thunder_sandbox"] == "0.7.3"
+    assert result["thunder_sandbox"] == "0.7.4"
     assert result["api_url_resolved"] is True
     assert result["api_token_resolved"] is True
     assert "https://thunder.invalid" not in result.values()

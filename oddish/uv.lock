@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=ca077e0cfffa4961d23fb2bc73f23fda71ec5794" }]
+overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=eda159341631a3cbbbe8be9c74ad17cd6d006a78" }]
 
 [[package]]
 name = "aioboto3"
@@ -815,7 +815,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?rev=ca077e0cfffa4961d23fb2bc73f23fda71ec5794#ca077e0cfffa4961d23fb2bc73f23fda71ec5794" }
+source = { git = "https://github.com/abundant-ai/harbor?rev=eda159341631a3cbbbe8be9c74ad17cd6d006a78#eda159341631a3cbbbe8be9c74ad17cd6d006a78" }
 dependencies = [
     { name = "dirhash" },
     { name = "dockerfile-parse" },
@@ -1594,7 +1594,7 @@ requires-dist = [
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.192.0" },
     { name = "dockerfile-parse", marker = "extra == 'worker'", specifier = ">=2.0.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
-    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=ca077e0cfffa4961d23fb2bc73f23fda71ec5794" },
+    { name = "harbor", git = "https://github.com/abundant-ai/harbor?rev=eda159341631a3cbbbe8be9c74ad17cd6d006a78" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
@@ -1615,7 +1615,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
-    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.7.3" },
+    { name = "thunder-sandbox", marker = "extra == 'worker'", specifier = "==0.7.4" },
     { name = "tomlkit", specifier = "==0.15.1" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
     { name = "typer", specifier = "==0.21.1" },
@@ -2393,8 +2393,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "jeepney" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -2618,15 +2618,15 @@ wheels = [
 
 [[package]]
 name = "thunder-sandbox"
-version = "0.7.3"
+version = "0.7.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/11/ff/1ad36a9361efe14a944102c6fa2839f1b0e74ee69434ce20a2e210aa9443/thunder_sandbox-0.7.3.tar.gz", hash = "sha256:a2f540e957c99fa4f089665591e755eaed01f408924c6c25092527a5240b8b7c", size = 60886, upload-time = "2026-09-16T23:09:03.499Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/5a/69d94924dff1269842cac0026642c621df452fb9b5e56d82559021807e42/thunder_sandbox-0.7.4.tar.gz", hash = "sha256:248f8fba66e807b30a1260e564d508a43b2231bd31704c10cc48974dbdca4d27", size = 61213, upload-time = "2026-09-19T02:02:56.539Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/f2/8ff4e2e0615b8f4e5989e319b70e58f0a1ce7f2d92042d5fcb6993f85a62/thunder_sandbox-0.7.3-py3-none-any.whl", hash = "sha256:9d5739e6ca8932b499a8db8d8f941b1d57799327b2be8752d1d4a549d41ddcf7", size = 65049, upload-time = "2026-09-16T23:09:01.895Z" },
+    { url = "https://files.pythonhosted.org/packages/46/ff/449ee5ce8b8845d54a6ab6cf41ca53572bed9464e6ecc077417fefd7fd13/thunder_sandbox-0.7.4-py3-none-any.whl", hash = "sha256:35e48cd746b3f74d2724ad7a07e7ac992472561868c6c8224a5791cdd93ea2a1", size = 65391, upload-time = "2026-09-19T02:02:55.222Z" },
 ]
 
 [[package]]
