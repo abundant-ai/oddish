@@ -749,3 +749,62 @@ async def test_browse_count_matches_the_filtered_set():
             )
     finally:
         await engine.dispose()
+
+
+async def test_browse_summary_columns():
+    """Median trajectory length and distinct-agent count are stored on the
+    summary row by ``refresh_task_browse_summaries`` and drive filters, sorts,
+    and card fields without a trial aggregate at request time."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        async with maker() as session:
+            await refresh_task_browse_summaries(session, ["v-e", "v-z", "v-h"])
+            await session.commit()
+        everyone = {"alpha", "beta", "gamma", "epsilon", "zeta", "eta"}
+        async with maker() as session:
+            # Median steps: beta 200, alpha 20, epsilon 10, zeta 5 (discrete
+            # median of 5/10), eta 5, gamma NULL (its only trial is a probe).
+            assert await _names(session, steps_p50_min=100) == {"beta"}
+            assert await _names(session, steps_p50_max=5) == {"zeta", "eta"}
+            assert await _names(session, steps_p50_min=10, steps_p50_max=20) == {
+                "alpha",
+                "epsilon",
+            }
+            # Distinct agents: zeta ran codex + claude-code, everyone else one.
+            assert await _names(session, agent_count_min=2) == {"zeta"}
+            assert await _names(session, agent_count_min=1) == everyone - {"gamma"}
+            # The count path applies the same predicate.
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, agent_count_min=2)
+                == 1
+            )
+
+            # Summary sorts: by column, NULL last.
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="steps_p50_desc"
+            )
+            names = [item.name for item in resp.items]
+            assert names[:3] == ["beta", "alpha", "epsilon"]
+            assert names[-1] == "gamma"
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="total_trials_desc"
+            )
+            assert [item.name for item in resp.items][0] == "epsilon"
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="agent_count_desc"
+            )
+            assert [item.name for item in resp.items][0] == "zeta"
+
+            # Card data comes from the same row.
+            resp = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            by_name = {item.name: item for item in resp.items}
+            assert (by_name["zeta"].steps_p50, by_name["zeta"].agent_count) == (5, 2)
+            assert (by_name["zeta"].steps_p25, by_name["zeta"].steps_p75) == (5, 10)
+            assert by_name["epsilon"].steps_present == 3
+            assert by_name["gamma"].steps_p50 is None
+            assert by_name["gamma"].agent_count == 0
+    finally:
+        await engine.dispose()

@@ -409,6 +409,14 @@ export interface TaskBrowseItem {
   harness_count: number;
   skipped_count: number;
   pending_count: number;
+  // Trajectory-length percentiles (steps) and distinct-agent count over the
+  // task's scoped trials; percentiles are null when no trial recorded steps.
+  // Optional: older cached responses predate them.
+  steps_present?: number;
+  steps_p25?: number | null;
+  steps_p50?: number | null;
+  steps_p75?: number | null;
+  agent_count?: number;
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;

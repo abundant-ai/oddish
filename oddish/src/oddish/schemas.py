@@ -1724,6 +1724,14 @@ class TaskBrowseItem(BaseModel):
     harness_count: int = 0
     skipped_count: int = 0
     pending_count: int = 0
+    # Trajectory-length distribution and distinct-harness count over the
+    # same scoped trials, from the summary row. Percentiles are None when
+    # no trial recorded a step count.
+    steps_present: int = 0
+    steps_p25: int | None = None
+    steps_p50: int | None = None
+    steps_p75: int | None = None
+    agent_count: int = 0
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None

@@ -809,9 +809,21 @@ async def browse_tasks(
         description=(
             "Aggregate sort: cost_desc, avg_score_(asc|desc), "
             "total_tokens_(asc|desc), runtime_total_(asc|desc), or "
-            "runtime_avg_(asc|desc). Unknown/absent keeps the default recency "
+            "runtime_avg_(asc|desc); stored-summary sort: "
+            "steps_p50_(asc|desc), total_trials_(asc|desc), or "
+            "agent_count_(asc|desc). Unknown/absent keeps the default recency "
             "order."
         ),
+    ),
+    # --- Stored summary thresholds (task_version_browse_summaries) ---
+    steps_p50_min: int | None = Query(
+        None, ge=0, description="Median trajectory length (steps), min"
+    ),
+    steps_p50_max: int | None = Query(
+        None, ge=0, description="Median trajectory length (steps), max"
+    ),
+    agent_count_min: int | None = Query(
+        None, ge=1, description="Distinct agents that ran the task, min"
     ),
     # --- Phase 2.1 agent/model comparison (computed on the fly) ---
     compare_by: str | None = Query(
@@ -968,6 +980,9 @@ async def browse_tasks(
             pass_rate_min=pass_rate_min,
             pass_rate_max=pass_rate_max,
             sort=sort,
+            steps_p50_min=steps_p50_min,
+            steps_p50_max=steps_p50_max,
+            agent_count_min=agent_count_min,
             compare_by=compare_by,
             compare_a=compare_a,
             compare_b=compare_b,

@@ -917,6 +917,18 @@ _AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
     "runtime_avg_asc": ("runtime_avg", False),
 }
 
+# Sort tokens served straight from ``task_version_browse_summaries`` columns
+# (already joined for every page), so unlike ``_AGGREGATE_SORTS`` they add no
+# GROUP BY over trials. NULL (never measured) sorts last in both directions.
+_SUMMARY_SORTS: dict[str, tuple[str, bool]] = {
+    "steps_p50_desc": ("steps_p50", True),
+    "steps_p50_asc": ("steps_p50", False),
+    "total_trials_desc": ("total_trials", True),
+    "total_trials_asc": ("total_trials", False),
+    "agent_count_desc": ("agent_count", True),
+    "agent_count_asc": ("agent_count", False),
+}
+
 # Phase 2.2: aggregate condition keys allowed inside an OR-group. If any group
 # uses one, the ``_task_metrics_subquery`` join is added so the group predicate
 # can reference its columns (same columns the global aggregate filters use).
@@ -1016,6 +1028,10 @@ async def browse_tasks_core(
     pass_rate_min: float | None = None,
     pass_rate_max: float | None = None,
     sort: str | None = None,
+    # --- Stored summary thresholds (task_version_browse_summaries) ---
+    steps_p50_min: int | None = None,
+    steps_p50_max: int | None = None,
+    agent_count_min: int | None = None,
     # --- Phase 2.1 agent/model comparison (no migration) ---
     compare_by: str | None = None,
     compare_a: str | None = None,
@@ -1062,6 +1078,9 @@ async def browse_tasks_core(
       predicates before pagination. There is NO supporting index or roll-up; this
       is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
       uses persisted costs plus the same token estimates shown on task cards.
+    * ``steps_p50_*`` and ``agent_count_min`` read the stored summary row
+      (``task_version_browse_summaries``), as do the ``_SUMMARY_SORTS`` sort
+      tokens, so they cost a joined column read rather than a trial aggregate.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1176,6 +1195,30 @@ async def browse_tasks_core(
                 )
             )
         )
+
+    # Stored-summary thresholds: joined here (before ``name_rank`` / LIMIT) so
+    # they filter the ranked set; the page query joins the same row again for
+    # its columns. A version with no summary row or no recorded steps has a
+    # NULL value and drops out of every bound.
+    if any(
+        value is not None for value in (steps_p50_min, steps_p50_max, agent_count_min)
+    ):
+        ranked_tasks = ranked_tasks.outerjoin(
+            TaskBrowseSummaryModel,
+            TaskBrowseSummaryModel.task_version_id == TaskModel.current_version_id,
+        )
+        if steps_p50_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                TaskBrowseSummaryModel.steps_p50 >= steps_p50_min
+            )
+        if steps_p50_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                TaskBrowseSummaryModel.steps_p50 <= steps_p50_max
+            )
+        if agent_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                TaskBrowseSummaryModel.agent_count >= agent_count_min
+            )
 
     # Trial-level predicates: "task has >=1 current-version trial matching".
     def _trial_exists(*predicates: Any, include_probes: bool = False) -> Any:
@@ -1785,6 +1828,11 @@ async def browse_tasks_core(
             TaskBrowseSummaryModel.harness_count,
             TaskBrowseSummaryModel.skipped_count,
             TaskBrowseSummaryModel.pending_count,
+            TaskBrowseSummaryModel.steps_present,
+            TaskBrowseSummaryModel.steps_p25,
+            TaskBrowseSummaryModel.steps_p50,
+            TaskBrowseSummaryModel.steps_p75,
+            TaskBrowseSummaryModel.agent_count,
             TaskBrowseSummaryModel.cost_breakdown,
         )
         .select_from(ranked_tasks_subquery)
@@ -1807,6 +1855,14 @@ async def browse_tasks_core(
         metric_column = ranked_tasks_subquery.c[column_label]
         aggregate_order.append(
             nulls_last(metric_column.desc() if descending else metric_column.asc())
+        )
+    # Stored-summary sort: the row is already joined above, so this is an
+    # ORDER BY on a column, not a GROUP BY over trials.
+    if sort in _SUMMARY_SORTS:
+        column_name, descending = _SUMMARY_SORTS[sort]
+        summary_column = getattr(TaskBrowseSummaryModel, column_name)
+        aggregate_order.append(
+            nulls_last(summary_column.desc() if descending else summary_column.asc())
         )
 
     paged_rows = (
@@ -2144,6 +2200,11 @@ async def browse_tasks_core(
                 harness_count=int(row["harness_count"] or 0),
                 skipped_count=int(row["skipped_count"] or 0),
                 pending_count=int(row["pending_count"] or 0),
+                steps_present=int(row["steps_present"] or 0),
+                steps_p25=row["steps_p25"],
+                steps_p50=row["steps_p50"],
+                steps_p75=row["steps_p75"],
+                agent_count=int(row["agent_count"] or 0),
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),

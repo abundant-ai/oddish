@@ -60,6 +60,29 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   );
 }
 
+// "median 412 steps (p25 300 · p75 600) · 3 agents": the stored summary's
+// trajectory-length percentiles and distinct-agent count, so a card shows
+// what the "Median steps" / "Agents ≥" filters and sorts are reading.
+function TrajectorySummary({ task }: { task: TaskBrowseItem }) {
+  const parts: string[] = [];
+  if (task.steps_p50 != null) {
+    const spread =
+      task.steps_p25 != null && task.steps_p75 != null
+        ? ` (p25 ${task.steps_p25} · p75 ${task.steps_p75})`
+        : "";
+    parts.push(`median ${task.steps_p50} steps${spread}`);
+  }
+  if (task.agent_count) {
+    parts.push(`${task.agent_count} agent${task.agent_count === 1 ? "" : "s"}`);
+  }
+  if (parts.length === 0) return null;
+  return (
+    <div className="text-muted-foreground text-[11px] tabular-nums">
+      {parts.join(" · ")}
+    </div>
+  );
+}
+
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
   return {
     pass: task.pass_count,
@@ -462,8 +485,11 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
           </div>
         ) : null}
         <div className="space-y-1.5">
-          <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
-            Latest trials
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
+              Latest trials
+            </div>
+            <TrajectorySummary task={task} />
           </div>
           <TrialGraphics task={task} />
         </div>

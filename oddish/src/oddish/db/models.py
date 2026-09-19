@@ -890,6 +890,23 @@ class TaskBrowseSummaryModel(Base):
     cost_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list
     )
+    # Trajectory-length distribution over the same scoped trials
+    # (``trials.total_steps``). ``steps_present`` is how many trials recorded
+    # a step count; the percentiles are NULL when none did, which is not the
+    # same as a measured zero. Discrete percentiles: each value is a step
+    # count some trial actually had. Stored so the browser can filter and
+    # sort on "median steps" without aggregating trials per request.
+    steps_present: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    steps_p25: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_p50: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    steps_p75: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Distinct ``trials.agent`` values among the scoped trials: how many
+    # harnesses have run this version, the delivery board's rollout check.
+    agent_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
