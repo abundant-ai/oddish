@@ -212,10 +212,11 @@ test.describe("tasks page network shape", () => {
       .toBe(1);
     expect(countSince(log, 0, COUNT_RE)).toBe(1);
 
-    // Tags are lazy now: opening Filters loads them once, then the dashboard
+    // Tags are lazy now: revealing their filter loads them once, then the dashboard
     // and subsequent filter mounts must reuse that same vocabulary.
     expect(countSince(log, 0, TAGS_RE)).toBe(0);
     await page.getByRole("button", { name: /^Filters/ }).click();
+    await page.getByRole("textbox", { name: "Find a filter" }).fill("Tags");
     await expect.poll(() => countSince(log, 0, TAGS_RE)).toBe(1);
     await page.keyboard.press("Escape");
 

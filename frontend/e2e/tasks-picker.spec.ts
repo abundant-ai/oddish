@@ -303,6 +303,7 @@ test("numeric custom ranges apply once and reject inverted bounds", async ({
 
 test("sorting legacy only-mine links keeps the author filter", async ({page}) => {
   await page.goto("/picker?mine=only");
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
   await page.getByRole("combobox", {name: "Sort tasks"}).selectOption("mine");
   await expect.poll(() => new URL(page.url()).searchParams.get("author")).toBe("me");
   await page.evaluate(() => {
@@ -390,4 +391,23 @@ test("customer loading and failure offer a working retry", async ({ page }) => {
   await page.getByRole("combobox", { name: "Customer", exact: true }).click();
   await page.getByRole("option", { name: "Lab", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Customer", exact: true })).toHaveText("Lab");
+});
+
+
+test("tags load only when their filter is revealed and reuse the result on reopen", async ({ page }) => {
+  let tagRequests = 0;
+  await page.route("**/api/tags", async (route) => {
+    tagRequests++;
+    await route.fulfill({ json: { items: [] } });
+  });
+  await page.getByRole("button", { name: /^Filters/ }).click();
+  await expect(page.getByRole("textbox", { name: "Find a filter" })).toBeVisible();
+  expect(tagRequests).toBe(0);
+  await page.getByRole("textbox", { name: "Find a filter" }).fill("Tags");
+  await expect.poll(() => tagRequests).toBe(1);
+  await expect(page.getByRole("button", { name: "Has all", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Filters/ }).click();
+  await expect(page.getByRole("button", { name: "Has all", exact: true })).toBeVisible();
+  expect(tagRequests).toBe(1);
 });
