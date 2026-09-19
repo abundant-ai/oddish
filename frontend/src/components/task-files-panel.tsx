@@ -548,6 +548,8 @@ export function TaskFilesPanel({
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [isCancellingQA, setIsCancellingQA] = useState(false);
+  const [qaCancelError, setQACancelError] = useState<string | null>(null);
   // Trajectory analysis is a single task-level QA job (classify every trial,
   // then synthesize the verdict), surfaced as one Run QA action.
   const [isRunningQA, setIsRunningQA] = useState(false);
@@ -972,6 +974,18 @@ export function TaskFilesPanel({
         !panel?.qa_active
       : panel?.can_run_qa);
   const qaActionLabel = `Generate QA verdict${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
+  // A content-only caller that supplies filesUrl renders the panes without the
+  // drawer header (see the return below), so it has no header cancel button.
+  const headerless = contentOnly && Boolean(filesUrl);
+  // The header's cancel button reaches QA only while panel.cancel is "qa", and
+  // the panel endpoint reports "qa" only when no agent trial is live: with
+  // trials in flight it says "task" and that button cancels the trials. So the
+  // header covers the QA run in exactly one case, and everywhere else the
+  // overview badge carries Cancel QA itself — otherwise hiding the page badge
+  // behind this pane would take away the only control that stops the run.
+  const headerCancelsQA = !headerless && allowRetry && panel?.cancel === "qa";
+  const badgeCarriesCancel =
+    !cancelExperimentId && allowRetry && taskQaActive && !headerCancelsQA;
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1060,12 +1074,45 @@ export function TaskFilesPanel({
       }
       setCancelError(null);
       onRetryComplete?.(id ? [id] : undefined);
+      // cancel/qa_active drive this button's label and the badge's control;
+      // refresh the cache that holds them instead of waiting out the poll.
+      void mutateChecks();
     } catch (err) {
       setCancelError(
         err instanceof Error ? err.message : "Failed to cancel task"
       );
     } finally {
       setIsCancelling(false);
+    }
+  };
+
+  // Stops the QA run on its own, whatever the agent trials are doing: the
+  // endpoint cancels the task's qa/audit trials, its pre-trial audit and its
+  // verdict, and never touches an agent trial.
+  const handleCancelQA = async () => {
+    const id = task?.id ?? effectiveChecksTaskId;
+    if (!id || isCancellingQA) return;
+    setIsCancellingQA(true);
+    setQACancelError(null);
+
+    try {
+      const res = await fetch(`${baseUrl}/tasks/${id}/qa/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel QA");
+      }
+      onRetryComplete?.([id]);
+      // qa_active drives this control; refresh the cache that holds it so the
+      // button clears now rather than at the next five-second poll.
+      void mutateChecks();
+    } catch (err) {
+      setQACancelError(
+        err instanceof Error ? err.message : "Failed to cancel QA"
+      );
+    } finally {
+      setIsCancellingQA(false);
     }
   };
 
@@ -1106,6 +1153,8 @@ export function TaskFilesPanel({
     setIsRerunning(false);
     setQAActionError(null);
     setIsRunningQA(false);
+    setQACancelError(null);
+    setIsCancellingQA(false);
   }, [taskId]);
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -2151,7 +2200,24 @@ export function TaskFilesPanel({
                   }}
                   executionReviewAction={
                     showAnalysis &&
-                    task && (
+                    task &&
+                    (badgeCarriesCancel ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleCancelQA}
+                        disabled={isCancellingQA}
+                        className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
+                      >
+                        {isCancellingQA ? (
+                          <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <OctagonX className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {isCancellingQA ? "Cancelling..." : "Cancel QA"}
+                      </Button>
+                    ) : (
                       <Button
                         type="button"
                         variant="outline"
@@ -2167,9 +2233,9 @@ export function TaskFilesPanel({
                         )}
                         {isRunningQA ? "Queueing..." : qaActionLabel}
                       </Button>
-                    )
+                    ))
                   }
-                  executionReviewError={qaActionError}
+                  executionReviewError={qaActionError ?? qaCancelError}
                 />
               ) : (
                 renderFileContent()

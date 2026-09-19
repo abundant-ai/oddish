@@ -56,7 +56,6 @@ import type {
 } from "@/lib/types";
 import { useTaskOpenReader } from "@/lib/use-task-open-reader";
 import { markOpenIntent } from "@/lib/open-intent";
-import { taskReviewStatus } from "@/lib/review";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
@@ -1143,13 +1142,14 @@ export function TaskDetailClient({
           }
         />
 
+        {/* The drawer's overview badge shows the same verdict and carries
+            its own Generate/Cancel QA control, so the page badge would only
+            duplicate it while that pane is visible. */}
         {!isBrowseSnapshot &&
         !(
           drawer &&
           activeTaskPane === "overview" &&
-          (drawer.mode === "task" || drawerShowTask) &&
-          !["queued", "running"].includes(taskReviewStatus(task)) &&
-          !isRunningJudge
+          (drawer.mode === "task" || drawerShowTask)
         ) ? (
           <TaskVerdictBadge
             task={task}
@@ -1444,6 +1444,9 @@ export function TaskDetailClient({
                 task={task}
                 staticChecksTaskId={task.id}
                 onOpenTrial={handleOpenTrialFromOverview}
+                // This pane's overview badge can cancel the task's QA run, and
+                // the page's own verdict badge reads the task record behind it.
+                onRetryComplete={revalidateReaderResources}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 loadFilesLazily
                 taskVersion={selectedVersion?.version}
