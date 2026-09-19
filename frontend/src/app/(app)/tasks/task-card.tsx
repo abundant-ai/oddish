@@ -403,7 +403,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
           <Checkbox
             checked={selected}
             onCheckedChange={() => toggle(task)}
-            aria-label={`Select ${task.name} for cost total`}
+            aria-label={`Select ${task.name}`}
             className="mt-0.5 shrink-0"
           />
           <div className="min-w-0 flex-1">
@@ -418,6 +418,14 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.author_pinned ? (
+                <Badge
+                  className="w-fit border-transparent bg-[#6f88b4]/20 text-[11px] text-[#3f5a8a] dark:text-[#a8b8d2]"
+                  title="One of your tasks"
+                >
+                  yours
+                </Badge>
+              ) : null}
               {(() => {
                 const meta = task.github_meta;
                 const prUrl = taskPrUrl(task.link, meta);

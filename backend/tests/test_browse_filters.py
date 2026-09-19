@@ -324,6 +324,11 @@ async def test_browse_aggregate_filters():
     try:
         await _setup(engine)
         await _insert_aggregate_tasks(engine)
+        # ``total_trials_min`` reads the stored summary row (kept current by
+        # the trial-finish hook in production), so the fixture refreshes it.
+        async with maker() as session:
+            await refresh_task_browse_summaries(session, ["v-e", "v-z", "v-h"])
+            await session.commit()
         async with maker() as session:
             # Avg score is a PERCENT (0-100). alpha & zeta = 100%, epsilon &
             # eta = 50%, beta = 0%, gamma = NULL (probe-only -> excluded).
@@ -922,5 +927,80 @@ async def test_browse_delivery_selection():
             facets = await browse_task_facets_core(session, org_id=ORG)
             assert facets.delivery_customers == ["GDM", "TML", "xai"]
             assert facets.categories == ["security"]
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_pinned_author_ids_and_trials_threshold():
+    """``pin_author_*`` orders the caller's tasks first without filtering,
+    ``ids_only`` returns the whole ordered set, and ``total_trials_min`` reads
+    the stored summary row instead of the trial aggregate."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        async with engine.begin() as c:
+            # gamma is attributed by user id, zeta by the github tag, beta by
+            # the legacy ``user`` column holding a handle.
+            await c.execute(
+                text("update tasks set created_by_user_id='user-k' where id='t-c'")
+            )
+            await c.execute(
+                text(
+                    "update tasks set tags='{\"github_username\": \"Kyle\"}'::jsonb "
+                    "where id='t-z'"
+                )
+            )
+            await c.execute(text("update tasks set \"user\"='kyle' where id='t-b'"))
+        async with maker() as session:
+            await refresh_task_browse_summaries(session, ["v-e", "v-z", "v-h"])
+            await session.commit()
+        pin = {
+            "pin_author_user_ids": ["user-k"],
+            "pin_author_github_usernames": ["kyle"],
+            "pin_author_emails": [],
+        }
+        async with maker() as session:
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="steps_p50_desc", **pin
+            )
+            names = [item.name for item in resp.items]
+            # Pinned rows first (sorted among themselves by the requested
+            # sort: beta median 200 before zeta 5; gamma has no steps so it
+            # is last of the pinned group), then everyone else by the sort.
+            assert names[:3] == ["beta", "zeta", "gamma"]
+            assert set(names[3:]) == {"alpha", "epsilon", "eta"}
+            assert [item.author_pinned for item in resp.items][:3] == [True] * 3
+            assert not any(item.author_pinned for item in resp.items[3:])
+            # Nothing is filtered out by pinning.
+            assert len(names) == 6
+            # Without a pin the flag is false everywhere.
+            plain = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            assert not any(item.author_pinned for item in plain.items)
+
+            # ids_only: the same order as the page, uncapped by limit/offset.
+            ids = await browse_tasks_core(
+                session,
+                org_id=ORG,
+                limit=2,
+                offset=1,
+                sort="steps_p50_desc",
+                ids_only=True,
+                **pin,
+            )
+            assert ids == [item.id for item in resp.items]
+            assert await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, ids_only=True, tags_all=["nope"]
+            ) == []
+
+            # total_trials_min comes from the summary row: epsilon has 3
+            # scoped trials, zeta/eta 2, alpha/beta 1, gamma 0 (probe only).
+            assert await _names(session, total_trials_min=3) == {"epsilon"}
+            assert await _names(session, total_trials_min=2) == {"epsilon", "zeta", "eta"}
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, total_trials_min=2)
+                == 3
+            )
     finally:
         await engine.dispose()

@@ -6,7 +6,8 @@ import {
   TasksToolbar,
 } from "./tasks-client";
 import { TasksFilterSidebar } from "./tasks-filter-sidebar";
-import { SelectionProvider } from "./selection-context";
+import { TasksLabBar } from "./tasks-lab-bar";
+import { SelectionBar, SelectionProvider } from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
 
 // Forcing dynamic rendering avoids the static-prerender error for the client
@@ -17,7 +18,8 @@ export default function TasksPage() {
   return (
     <SelectionProvider>
       <TooltipProvider>
-        <div className="space-y-6">
+        <div className="space-y-4">
+          <TasksLabBar />
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <TasksFilterSidebar />
             <div className="min-w-0 flex-1">
@@ -33,6 +35,7 @@ export default function TasksPage() {
                   <TasksToolbar />
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <SelectionBar />
                   <RecentTasksResults />
                 </CardContent>
               </Card>

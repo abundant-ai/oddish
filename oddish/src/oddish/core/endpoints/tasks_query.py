@@ -928,6 +928,10 @@ _AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
 # Sort tokens served straight from ``task_version_browse_summaries`` columns
 # (already joined for every page), so unlike ``_AGGREGATE_SORTS`` they add no
 # GROUP BY over trials. NULL (never measured) sorts last in both directions.
+# Ceiling on ``ids_only`` results: one selection is at most this many tasks.
+# Above it the caller narrows the filter; a delivery batch is far smaller.
+BROWSE_IDS_LIMIT = 5000
+
 _SUMMARY_SORTS: dict[str, tuple[str, bool]] = {
     "steps_p50_desc": ("steps_p50", True),
     "steps_p50_asc": ("steps_p50", False),
@@ -1122,6 +1126,11 @@ async def browse_tasks_core(
     author_user_ids: Sequence[str] | None = None,
     author_github_usernames: Sequence[str] | None = None,
     author_emails: Sequence[str] | None = None,
+    # "Mine first": the same three identity lists, but as an ordering
+    # preference rather than a filter (see ``author_rank`` below).
+    pin_author_user_ids: Sequence[str] | None = None,
+    pin_author_github_usernames: Sequence[str] | None = None,
+    pin_author_emails: Sequence[str] | None = None,
     statuses: Sequence[str] | None = None,
     priorities: Sequence[str] | None = None,
     verdict_statuses: Sequence[str] | None = None,
@@ -1204,12 +1213,16 @@ async def browse_tasks_core(
     or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
     count_only: bool = False,
-) -> TaskBrowseResponse | int:
+    ids_only: bool = False,
+) -> TaskBrowseResponse | int | list[str]:
     """List latest-version task summaries for the task browser.
 
     With ``count_only`` the same filters are applied and the matching total is
     returned as an ``int`` instead of a page -- see ``browse_tasks_count_core``,
-    which is the typed entry point callers should use for that.
+    which is the typed entry point callers should use for that. With
+    ``ids_only`` the task ids of the whole matching set are returned in page
+    order (capped at ``BROWSE_IDS_LIMIT``), with no per-row hydration: the
+    browser's "Select all N" materializes a selection through it.
 
     Beyond the free-text / tag / author filters, the browser supports a set of
     "Phase 1.1.1" direct filters that require no schema change:
@@ -1234,9 +1247,10 @@ async def browse_tasks_core(
       predicates before pagination. There is NO supporting index or roll-up; this
       is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
       uses persisted costs plus the same token estimates shown on task cards.
-    * ``steps_p50_*`` and ``agent_count_min`` read the stored summary row
-      (``task_version_browse_summaries``), as do the ``_SUMMARY_SORTS`` sort
-      tokens, so they cost a joined column read rather than a trial aggregate.
+    * ``steps_p50_*``, ``agent_count_min`` and ``total_trials_min`` read the
+      stored summary row (``task_version_browse_summaries``), as do the
+      ``_SUMMARY_SORTS`` sort tokens, so they cost a joined column read rather
+      than a trial aggregate.
     * Delivery-selection filters pick tasks for a customer batch. ``delivered_to``
       / ``not_delivered_to`` / ``never_delivered`` are ``EXISTS`` probes over the
       imported ``task_delivery_history`` rows and finalized Oddish deliveries
@@ -1308,6 +1322,8 @@ async def browse_tasks_core(
         if unknown_tokens & ({*ast.all} | {*ast.any_}):
             if count_only:
                 return 0
+            if ids_only:
+                return []
             return TaskBrowseResponse(
                 items=[], limit=limit, offset=offset, has_more=False
             )
@@ -1323,6 +1339,17 @@ async def browse_tasks_core(
     )
     if author_filter is not None:
         ranked_tasks = ranked_tasks.where(author_filter)
+    # "Mine first": tasks by the pinned author sort ahead of everyone else's
+    # within whichever sort is active. Evaluated in the CTE on TaskModel
+    # columns (no join): ``author_rank`` is 0 for a match and 1 otherwise, and
+    # a constant 1 when nothing is pinned so the page row always carries it.
+    pin_filter = _build_browse_author_filter(
+        pin_author_user_ids, pin_author_github_usernames, pin_author_emails
+    )
+    author_rank = (
+        case((pin_filter, 0), else_=1) if pin_filter is not None else literal(1)
+    )
+    ranked_tasks = ranked_tasks.add_columns(author_rank.label("author_rank"))
 
     # --- Phase 1.1.1 direct filters (no schema change) ---------------------
     # Task-column predicates: plain WHERE on the tasks row.
@@ -1380,12 +1407,17 @@ async def browse_tasks_core(
     # its columns. A version with no summary row or no recorded steps has a
     # NULL value and drops out of every bound.
     if any(
-        value is not None for value in (steps_p50_min, steps_p50_max, agent_count_min)
+        value is not None
+        for value in (steps_p50_min, steps_p50_max, agent_count_min, total_trials_min)
     ):
         ranked_tasks = ranked_tasks.outerjoin(
             TaskBrowseSummaryModel,
             TaskBrowseSummaryModel.task_version_id == TaskModel.current_version_id,
         )
+        if total_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                TaskBrowseSummaryModel.total_trials >= total_trials_min
+            )
         if steps_p50_min is not None:
             ranked_tasks = ranked_tasks.where(
                 TaskBrowseSummaryModel.steps_p50 >= steps_p50_min
@@ -1581,7 +1613,6 @@ async def browse_tasks_core(
             avg_score_max,
             total_tokens_min,
             total_tokens_max,
-            total_trials_min,
             completed_trials_min,
             failed_trials_min,
             pass_count_min,
@@ -1653,10 +1684,6 @@ async def browse_tasks_core(
         if total_tokens_max is not None:
             ranked_tasks = ranked_tasks.where(
                 task_metrics.c.total_tokens <= total_tokens_max
-            )
-        if total_trials_min is not None:
-            ranked_tasks = ranked_tasks.where(
-                task_metrics.c.total_trials >= total_trials_min
             )
         if completed_trials_min is not None:
             ranked_tasks = ranked_tasks.where(
@@ -1994,6 +2021,7 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
+            ranked_tasks_subquery.c.author_rank,
             TaskBrowseSummaryModel.last_run_at,
             TaskBrowseSummaryModel.total_trials,
             TaskBrowseSummaryModel.completed_trials,
@@ -2044,23 +2072,41 @@ async def browse_tasks_core(
             nulls_last(summary_column.desc() if descending else summary_column.asc())
         )
 
-    paged_rows = (
-        paged_rows.order_by(
-            *aggregate_order,
-            # Fresh "never run" tasks should appear near the top of the
-            # browser (ordered by upload time), not buried below every
-            # real experiment. Fall back to the task's created_at when
-            # no trials have finished yet.
-            func.coalesce(
-                TaskBrowseSummaryModel.last_run_at,
-                ranked_tasks_subquery.c.created_at,
-            ).desc(),
-            nulls_last(ranked_tasks_subquery.c.current_version.desc()),
-            ranked_tasks_subquery.c.name.asc(),
-        )
-        .limit(limit + 1)
-        .offset(offset)
+    # The pinned author's tasks come before the sort itself: "mine first, then
+    # everything else by the chosen order".
+    if pin_filter is not None:
+        aggregate_order.insert(0, ranked_tasks_subquery.c.author_rank.asc())
+    page_order = (
+        *aggregate_order,
+        # Fresh "never run" tasks should appear near the top of the
+        # browser (ordered by upload time), not buried below every
+        # real experiment. Fall back to the task's created_at when
+        # no trials have finished yet.
+        func.coalesce(
+            TaskBrowseSummaryModel.last_run_at,
+            ranked_tasks_subquery.c.created_at,
+        ).desc(),
+        nulls_last(ranked_tasks_subquery.c.current_version.desc()),
+        ranked_tasks_subquery.c.name.asc(),
     )
+
+    if ids_only:
+        ids_started_at = now()
+        ids_result = await session.execute(
+            paged_rows.with_only_columns(ranked_tasks_subquery.c.task_id)
+            .order_by(*page_order)
+            # One past the ceiling so the caller can tell a full set from a
+            # cut one without a second count query.
+            .limit(BROWSE_IDS_LIMIT + 1)
+        )
+        ids = [str(value) for value in ids_result.scalars()]
+        if record_timing is not None:
+            record_timing(
+                "browse_ids", elapsed_ms(ids_started_at), "Browse tasks ids query"
+            )
+        return ids
+
+    paged_rows = paged_rows.order_by(*page_order).limit(limit + 1).offset(offset)
 
     page_started_at = now()
     result = await session.execute(paged_rows)
@@ -2399,6 +2445,7 @@ async def browse_tasks_core(
                 steps_p50=row["steps_p50"],
                 steps_p75=row["steps_p75"],
                 agent_count=int(row["agent_count"] or 0),
+                author_pinned=int(row["author_rank"] or 0) == 0,
                 deliveries=deliveries_by_task.get(str(row["task_id"]), []),
                 last_run_at=row["last_run_at"],
                 link=row["link"],
@@ -2477,9 +2524,7 @@ async def browse_tasks_core(
     return response
 
 
-async def browse_tasks_count_core(
-    session: AsyncSession, **filters: Any
-) -> int:
+async def browse_tasks_count_core(session: AsyncSession, **filters: Any) -> int:
     """Tasks matching ``filters`` across every page.
 
     Typed wrapper over ``browse_tasks_core(count_only=True)``. It forwards the

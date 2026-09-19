@@ -21,6 +21,7 @@ const BROWSE_KEY_PREFIX = "/api/tasks/browse?";
 // distinguishable in the network shape (see e2e/tasks-network-shape.spec.ts,
 // which asserts one grid fetch per filter state).
 const BROWSE_COUNT_KEY_PREFIX = "/api/tasks/browse/count?";
+const BROWSE_IDS_KEY_PREFIX = "/api/tasks/browse/ids?";
 
 /**
  * Builds the SWR cache key — and fetch URL — for one browse state from the
@@ -66,6 +67,23 @@ export function browseCountKey(searchParams: URLSearchParams): string {
     if (value) params.set(key, value);
   }
   return `${BROWSE_COUNT_KEY_PREFIX}${params.toString()}`;
+}
+
+/**
+ * The fetch URL for "Select all": every matching task id in page order.
+ * Same params as ``browseKey`` minus ``offset`` -- the set is the whole
+ * filter state -- and WITH ``sort``, so the ids come back in the order the
+ * user is looking at.
+ */
+export function browseIdsKey(searchParams: URLSearchParams): string {
+  const params = new URLSearchParams();
+  const q = searchParams.get("q") ?? searchParams.get("query");
+  if (q) params.set("q", q);
+  for (const key of BROWSE_FORWARD_KEYS) {
+    const value = searchParams.get(key);
+    if (value) params.set(key, value);
+  }
+  return `${BROWSE_IDS_KEY_PREFIX}${params.toString()}`;
 }
 
 // Staging has shown multi-second browse responses; a hung fetch should fail

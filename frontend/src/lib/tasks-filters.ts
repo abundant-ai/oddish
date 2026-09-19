@@ -28,7 +28,31 @@ export type CompareCond = {
 // flat browse params), plus an optional nested ``compare`` condition.
 export type OrGroup = Record<string, string[] | number | boolean | CompareCond>;
 
+// Where the signed-in user's own tasks go: ahead of everyone else's
+// (default, ``mine`` absent), alone, or nowhere special.
+export type MineMode = "first" | "only" | "off";
+export const MINE_MODES: readonly MineMode[] = ["first", "only", "off"];
+
+// What the backend gets for one `mine` mode plus the author tokens from the
+// URL and the search box: `only` adds the token `me` to the author FILTER;
+// anything but `off` (including a bare /tasks) PINS the caller's tasks to the
+// top of the page order. Pure, so it is unit-tested without the proxy.
+export function backendAuthorParams(
+  mine: string | null,
+  authors: string[]
+): { author: string[]; pinAuthor: boolean } {
+  const all = mine === "only" ? [...authors, "me"] : authors;
+  return {
+    author: Array.from(new Set(all.filter(Boolean))),
+    pinAuthor: mine !== "only" && mine !== "off",
+  };
+}
+
 export interface FilterValues {
+  // Author tokens (github handle, email, member name, or ``me``); ANDed with
+  // the search box's github:/author: tokens by the browse proxy.
+  author: string[];
+  mine: MineMode | null;
   statuses: string[];
   priorities: string[];
   verdictStatuses: string[];
@@ -884,6 +908,8 @@ export function filterParams(f: FilterValues): [string, string][] {
     if (v !== null && !Number.isNaN(v)) out.push([param, String(v)]);
   };
 
+  csv("author", f.author);
+  if (f.mine) out.push(["mine", f.mine]);
   csv("statuses", f.statuses);
   csv("priorities", f.priorities);
   csv("verdict_statuses", f.verdictStatuses);
@@ -983,6 +1009,8 @@ export const TASKS_PAGE_SIZE = 24;
 // to clear stale filter params before re-writing, and to forward them to the
 // browse fetch.
 export const FILTER_PARAM_KEYS = [
+  "author",
+  "mine",
   "statuses",
   "priorities",
   "verdict_statuses",
@@ -1094,7 +1122,12 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     const v = sp.get(k);
     return v === null || v === "" ? null : Number(v);
   };
+  const mine = sp.get("mine");
   return {
+    author: csv("author"),
+    mine: (MINE_MODES as readonly string[]).includes(mine ?? "")
+      ? (mine as MineMode)
+      : null,
     statuses: csv("statuses"),
     priorities: csv("priorities"),
     verdictStatuses: csv("verdict_statuses"),
