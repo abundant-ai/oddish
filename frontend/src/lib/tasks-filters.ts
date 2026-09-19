@@ -85,7 +85,17 @@ export interface FilterValues {
   partialCountMin: number | null;
   failCountMin: number | null;
   harnessCountMin: number | null;
-  sort: string | null; // aggregate sort token (e.g. "avg_score_desc")
+  // Delivery selection: which customers already have the task (imported
+  // history + finalized deliveries) and the imported category.
+  deliveredTo: string[];
+  notDeliveredTo: string[];
+  neverDelivered: boolean | null;
+  categories: string[];
+  // Stored summary thresholds: median trajectory length and distinct agents.
+  stepsP50Min: number | null;
+  stepsP50Max: number | null;
+  agentCountMin: number | null;
+  sort: string | null; // aggregate or stored-summary sort token
   // Phase 2.1 agent/model comparison ("A beats B" on a metric).
   compareBy: string | null; // "agent" | "model"
   compareA: string | null;
@@ -232,12 +242,19 @@ export const SORT_OPTIONS: Option[] = [
   { value: "runtime_total_asc", label: "Run time (short → long)" },
   { value: "runtime_avg_desc", label: "Avg run time (long → short)" },
   { value: "runtime_avg_asc", label: "Avg run time (short → long)" },
+  // Stored-summary sorts (backend ``_SUMMARY_SORTS``): no trial aggregation.
+  { value: "steps_p50_desc", label: "Median steps (long → short)" },
+  { value: "steps_p50_asc", label: "Median steps (short → long)" },
+  { value: "total_trials_desc", label: "Trials (most → fewest)" },
+  { value: "total_trials_asc", label: "Trials (fewest → most)" },
+  { value: "agent_count_desc", label: "Agents (most → fewest)" },
+  { value: "agent_count_asc", label: "Agents (fewest → most)" },
 ];
 
 export interface FilterDef {
   key: string;
   label: string;
-  group: "Task" | "Trial";
+  group: "Delivery" | "Task" | "Trial";
   control: ControlKind;
   options?: Option[];
   facet?: keyof TaskBrowseFacets;
@@ -347,7 +364,7 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "analysisClassifications",
-    label: "Analysis result",
+    label: "Trial analysis",
     group: "Trial",
     control: "multiselect",
     facet: "analysis_classifications",
@@ -521,6 +538,50 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "matchany",
   },
+  // Stored summary thresholds (task_version_browse_summaries): read from the
+  // per-version row the grid already joins, so no trial aggregation.
+  {
+    key: "stepsP50",
+    label: "Median steps (task)",
+    group: "Task",
+    control: "numrange",
+  },
+  {
+    key: "agentCount",
+    label: "Agents ≥",
+    group: "Task",
+    control: "num",
+  },
+  // Delivery selection: pick tasks for a customer batch. Delivery records
+  // come from the metadata import (history) and finalized deliveries; the
+  // options are the customer rows plus unmapped import labels.
+  {
+    key: "notDeliveredTo",
+    label: "Not delivered to",
+    group: "Delivery",
+    control: "multiselect",
+    facet: "delivery_customers",
+  },
+  {
+    key: "deliveredTo",
+    label: "Delivered to",
+    group: "Delivery",
+    control: "multiselect",
+    facet: "delivery_customers",
+  },
+  {
+    key: "neverDelivered",
+    label: "No delivery record",
+    group: "Delivery",
+    control: "boolean",
+  },
+  {
+    key: "categories",
+    label: "Category",
+    group: "Task",
+    control: "multiselect",
+    facet: "categories",
+  },
 ];
 
 // Conditions offered inside an OR-group. Keys match the backend flat params.
@@ -576,7 +637,7 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
   },
   {
     id: "analysisClassifications",
-    label: "Analysis result",
+    label: "Trial analysis",
     control: "multiselect",
     facet: "analysis_classifications",
     keys: ["analysis_classifications"],
@@ -788,6 +849,18 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.topValue !== null;
     case "matchAny":
       return f.orGroups !== null && cleanOrGroups(f.orGroups).length > 0;
+    case "stepsP50":
+      return f.stepsP50Min !== null || f.stepsP50Max !== null;
+    case "agentCount":
+      return f.agentCountMin !== null;
+    case "deliveredTo":
+      return f.deliveredTo.length > 0;
+    case "notDeliveredTo":
+      return f.notDeliveredTo.length > 0;
+    case "neverDelivered":
+      return f.neverDelivered !== null;
+    case "categories":
+      return f.categories.length > 0;
     default:
       return false;
   }
@@ -867,6 +940,13 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("partial_count_min", f.partialCountMin);
   num("fail_count_min", f.failCountMin);
   num("harness_count_min", f.harnessCountMin);
+  csv("delivered_to", f.deliveredTo);
+  csv("not_delivered_to", f.notDeliveredTo);
+  bool("never_delivered", f.neverDelivered);
+  csv("categories", f.categories);
+  num("steps_p50_min", f.stepsP50Min);
+  num("steps_p50_max", f.stepsP50Max);
+  num("agent_count_min", f.agentCountMin);
   if (f.sort) out.push(["sort", f.sort]);
   // Agent/model comparison — only serialize a complete, distinct pair.
   if (f.compareA && f.compareB && f.compareA !== f.compareB) {
@@ -956,6 +1036,13 @@ export const FILTER_PARAM_KEYS = [
   "partial_count_min",
   "fail_count_min",
   "harness_count_min",
+  "delivered_to",
+  "not_delivered_to",
+  "never_delivered",
+  "categories",
+  "steps_p50_min",
+  "steps_p50_max",
+  "agent_count_min",
   "sort",
   "compare_by",
   "compare_a",
@@ -1067,6 +1154,13 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     partialCountMin: num("partial_count_min"),
     failCountMin: num("fail_count_min"),
     harnessCountMin: num("harness_count_min"),
+    deliveredTo: csv("delivered_to"),
+    notDeliveredTo: csv("not_delivered_to"),
+    neverDelivered: bool("never_delivered"),
+    categories: csv("categories"),
+    stepsP50Min: num("steps_p50_min"),
+    stepsP50Max: num("steps_p50_max"),
+    agentCountMin: num("agent_count_min"),
     sort: sp.get("sort"),
     compareBy: sp.get("compare_by"),
     compareA: sp.get("compare_a"),

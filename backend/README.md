@@ -44,7 +44,7 @@ Scheduled functions
        - Writes heartbeats, records outcomes, exits
   ▼
 Harbor execution on Modal, Daytona, Archil, GKE (TPU), opt-in ephemeral EC2,
-or opt-in Numinous Cloud (CPU and optionally GPU)
+opt-in Numinous Cloud (CPU and optionally GPU), or opt-in Thunder GPU sandboxes
   - logs/artifacts persisted to S3
 ```
 
@@ -54,7 +54,8 @@ Dispatcher + batch-draining workers backed by the unified `worker_jobs` table:
 
 1. `poll_queue()` runs on a 180s Modal schedule. It builds a dispatch plan via
    `build_dispatch_plan` (org-first fair share over active queue keys, plus a
-   budgeted EC2 capacity lane) and launches up to `MAX_WORKERS_PER_POLL`
+   budgeted EC2 and Thunder capacity lanes) and launches up to
+   `MAX_WORKERS_PER_POLL`
    worker containers.
 2. `reconcile_queue_state()` runs separately. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
@@ -64,7 +65,8 @@ Dispatcher + batch-draining workers backed by the unified `worker_jobs` table:
    the queue key, then on the default lane calls `drain_worker_jobs`, which
    atomically claims and runs queued rows one at a time until the
    `ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS` budget (default 300) expires;
-   the EC2 lane still runs exactly one row via `run_single_worker_job`. Each
+   the EC2 and Thunder lanes still run exactly one row via
+   `run_single_worker_job`. Each
    claim dispatches to the registered handler
    (`TRIAL` / `TASK_EXPAND` / `TAG_PROJECT`), writes heartbeats to both
    `worker_jobs.heartbeat_at` and the mirrored domain column, records the
@@ -285,9 +287,57 @@ Common optional settings:
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 - `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours; an escalation when a running or retrying trial's live cost rises above the configured floor, which `<@...>`-mentions its owner plus the always-ping list; and a `<!channel>` alert when a user's rolling seven-day spend, including live running-trial checkpoints, rises more than the configured dollar delta above their workspace's average spender. The two channel escalation thresholds and the ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. User daily-overage alerts fire at most once per UTC calendar day. The per-user DM cutoffs (the milestone and completed-trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
-- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. Carl's code lives in `carl.py`, `carl_agent.py`, and `carl_tools.py`.
+- `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. Cloud-bill answers (`catfish_costs`, `catfish_breakdown`) need `CATFISH_API_TOKEN` and optional `CATFISH_API_URL` (defaults to `https://costs.abundant.run`) plus `CATFISH_VERCEL_BYPASS` when Vercel Authentication is on. After changing those keys in `oddish-prod`, recycle only `carl_answer`. Carl's code lives in `carl.py`, `carl_agent.py`, `carl_tools.py`, and `carl_catfish.py`.
+
+### Where provider keys actually live
+
+Provider keys are environment variables **inside the `oddish-prod` Modal
+secret** (`main` environment), not standalone secrets of their own.
+`RUNTIME_SECRET_NAME = "oddish-prod"` in `backend/modal_runtime.py` is what the
+API containers and workers mount, so that is the only place a rotation takes
+effect.
+
+Rotate one from the Modal dashboard:
+
+    Apps -> Secrets -> oddish-prod -> Edit -> <VAR>
+
+or from the CLI:
+
+```bash
+uv run modal secret create oddish-prod XAI_API_KEY="..." --force
+```
+
+A workspace secret whose name merely resembles a variable is not mounted and
+editing it changes nothing. `XAI_API_KEYS` exists as a workspace secret, but the
+value the workers read is the `XAI_API_KEYS` **variable inside `oddish-prod`**.
+The authoritative list of mounted secrets is every `Secret.from_name(...)` in
+`backend/modal_app.py` and `backend/modal_runtime.py`; at time of writing that
+is `oddish-prod`, `oddish-logfire`, `<app>-db`, and the purpose-specific
+Sauron/GKE/Numinous/EC2/Slack secrets. Nothing else reaches a container.
+
+**`XAI_API_KEYS` overrides `XAI_API_KEY`.** `_pick_api_key()` in
+`oddish/workers/agents/grok_build.py` reads `XAI_API_KEYS` first as a
+comma-separated pool and picks one at random, falling back to `XAI_API_KEY`
+only when that pool is empty. Rotating `XAI_API_KEY` while a stale
+`XAI_API_KEYS` pool is still set silently keeps the old keys in use. Clear or
+update both.
+
+### Cycling workers after a secret change
+
+Modal injects secrets at container start, so running containers keep the old
+value until they are replaced. Stop them and let the app start fresh ones:
+
+    Apps -> oddish -> api_app -> Containers -> stop the containers
+
+In-flight requests on a stopped container fail, so cycle when the queue is
+quiet, or stop them a few at a time.
 
 ### Observability (Pydantic Logfire)
+
+Tracing explicitly accepts incoming W3C parent context. New queued jobs save
+only the trace headers and restore that parent for each worker attempt. Retries
+and provider reroutes retain the saved parent; handlers do not receive the
+reserved trace field. API and worker code must both include this support.
 
 Optional. Provision a write token in Logfire, then create the dedicated
 `oddish-logfire` secret in Modal's `main` environment so the API containers and
@@ -362,6 +412,69 @@ Standalone hosts installed with `oddish[worker]` must also provide the OpenSSH
 client (`openssh-client` on Debian/Ubuntu), because Harbor invokes `ssh` to reach
 the VM. The shared `backend/Dockerfile` already installs this package for the
 Railway/Docker deployment path, and the Modal worker image installs it as well.
+
+### Thunder Harbor backend
+
+Thunder is the default GPU provider on deployments that enable it: it sits
+between Daytona and Modal in the runtime registry, so a GPU submission with no
+explicit environment routes to Thunder when its `gpu_types` names exactly one
+accelerator Thunder offers (A6000, A100, H100), while plain-CPU work stays on
+Daytona and private-registry pulls, untyped GPU requests, and other GPU types
+stay on Modal. Deployments that leave it disabled
+keep Modal as the GPU default. A trial that has failed
+`ODDISH_THUNDER_MAX_FAILED_ATTEMPTS` attempts on Thunder (default 2; 0
+disables) has its next retry moved to `ODDISH_THUNDER_FALLBACK_PROVIDER`
+(default `modal`) by the same atomic handoff the capacity fallback uses. Set
+these non-secret deploy values in `backend/.env` or the deploy environment:
+
+```bash
+ODDISH_THUNDER_ENABLED=true
+ODDISH_THUNDER_SECRET_NAME=oddish-thunder
+ODDISH_THUNDER_MAX_CAPACITY=128
+ODDISH_THUNDER_MAX_FAILED_ATTEMPTS=2
+```
+
+Create `oddish-thunder` in the same Modal environment as the app with exactly
+`TNR_API_URL` and `TNR_API_TOKEN`. Only dedicated `thunder_trial` workers and
+the dedicated teardown function receive this secret. API, dispatcher,
+reconciler, generic workers, and EC2 workers do not. For example:
+
+```bash
+uv run modal secret create oddish-thunder \
+  TNR_API_URL="$TNR_API_URL" \
+  TNR_API_TOKEN="$TNR_API_TOKEN"
+```
+
+The global capacity is enforced with durable, atomic provider leases across
+all organizations, models, queue keys, and Harbor variants. Cancellation and
+orphan cleanup operate on the persisted sandbox ID through the provider SDK.
+Thunder uses `thunder-sandbox==0.7.3` and its Python dependencies (`aiohttp`,
+`asyncssh`, and `cryptography`); it does not shell out to `ssh`, `scp`, or
+`ssh-keygen`.
+
+Sync the locked deployment environment, deploy, and validate the remote worker
+without printing credentials (commands run from `backend/`):
+
+```bash
+uv sync --locked
+uv run modal deploy deploy.py
+uv run modal run thunder_readiness.py::check_thunder_worker
+```
+
+Then, from the Oddish repository root, submit the hermetic smoke task with one
+deterministic `nop` attempt:
+
+```bash
+oddish run ../smoke_test_thunder/task --env thunder -a nop \
+  --n-trials 1 --max-trial-attempts 1 --json
+```
+
+Keep the returned task/trial IDs. `oddish status <task-id> --json` must show the
+agent trial in `environment: thunder` with reward `1`; pulled artifacts must
+contain the expected GPU output. Separately cancel an in-flight smoke trial and
+confirm its persisted sandbox ID is terminated. Finally, verify the Thunder
+provider inventory contains none of the sandbox IDs created by either run and
+that the `sandbox_capacity_leases` count returns to its pre-smoke value.
 
 ### oddish runtime patching
 
@@ -704,3 +817,12 @@ For local database verification, point `ENDPOINT_TEST_DATABASE_URL` at a disposa
 PostgreSQL database and run `pytest tests/test_endpoint_health.py` from `backend`.
 That suite recreates the monitoring tables and its isolated Slack-outbox fixture;
 it must not target an application database. Provider calls are mocked.
+
+### Trial artifact isolation
+
+`ODDISH_TRIAL_ARTIFACT_NAMESPACE` adds a deployment namespace to new trial
+artifact paths. Use a distinct value (letters, digits, underscores, or hyphens)
+for each database sharing an S3 bucket. Modal deployments set it automatically
+to the secret environment plus app name. Existing stored artifact pointers
+remain readable; changing this value during an unfinished import is unsupported.
+The default empty value preserves the self-hosted storage layout.

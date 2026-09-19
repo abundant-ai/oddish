@@ -50,6 +50,7 @@ import {
   parseLineRange,
   type LineRange,
 } from "@/lib/line-range";
+import { experimentModelLabel } from "@/lib/experiment-agent-grouping";
 import { sameFilePath } from "@/lib/file-path";
 
 /**
@@ -63,7 +64,10 @@ function getLiveParam(name: string): string | null {
 }
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
-import type { FeedbackRecord } from "@/components/qa-report/types";
+import {
+  feedbackRequestInit,
+  type FeedbackRecord,
+} from "@/components/qa-report/types";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -90,14 +94,21 @@ import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import {
   isActiveTrialStatus,
   isLiveQaTrial,
   isWorkerOwnedTrialStatus,
   taskHasActiveVerdict,
 } from "@/lib/job-status";
-import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
+import {
+  isAnalysisStatusActive,
+  preloadTrial,
+  useTrial,
+} from "@/lib/use-trial";
 import { embeddedCtrfSummary } from "@/lib/verifier-results";
 import { fetcher } from "@/lib/api";
 
@@ -176,6 +187,7 @@ interface TrialDetailPanelProps {
   onNavigate?: (trial: Trial, trialIndex: number | null) => void;
   onNavigateToTask?: () => void;
   onRetry?: (taskIds?: string[]) => void | Promise<void>;
+  onRetried: (previousTrialId: string, replacement: Trial) => void;
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
@@ -270,14 +282,14 @@ function TrialAnalysisCard({
   if (!actionsReady) {
     queueBlockedReason = "Loading latest trial state.";
   } else if (taskQaInProgress) {
-    queueBlockedReason = "Task-level QA is already running";
+    queueBlockedReason = "Task QA is already running";
   } else if (trialAnalysisInProgress && !runStale) {
     queueBlockedReason =
       trial.analysis_status === "running"
-        ? "Analysis is already running for this trial"
-        : "Analysis is already queued for this trial";
+        ? "QA is running for this trial"
+        : "QA is queued for this trial";
   } else if (trial.status !== "success" && trial.status !== "failed") {
-    queueBlockedReason = "The trial must finish before analysis can run";
+    queueBlockedReason = "QA requires a finished trial";
   }
 
   if (!hasAnalysis && !showQueueButton) return null;
@@ -320,10 +332,8 @@ function TrialAnalysisCard({
             (now - new Date(trial.analysis_started_at).getTime()) / 1000
           )
         );
-        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+        progressLine = `${Math.floor(secs / 60)}m ${secs % 60}s`;
       }
-    } else {
-      progressLine = "Waiting for a QA worker.";
     }
   }
 
@@ -365,15 +375,13 @@ function TrialAnalysisCard({
               className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
-                (hasAnalysis
-                  ? "Reset this trial's analysis and re-run it with the latest prompt"
-                  : "Analyze this trial with the latest prompt")
+                "Reruns task QA: re-analyzes every eligible trial and regenerates verdict."
               }
             >
               {queuing
                 ? "Queuing…"
                 : hasAnalysis
-                  ? "Re-run analysis"
+                  ? "Re-run Trajectory analysis"
                   : "Run analysis"}
             </button>
           </div>
@@ -455,20 +463,20 @@ function TrialAnalysisCard({
                       ? "Analyzing"
                       : trial.analysis_status
                         ? "Analysis queued"
-                        : "QA is running"}
+                        : "Task QA running"}
                   </span>
-                  <span className="text-muted-foreground text-xs">
-                    {trial.analysis_status
-                      ? progressLine
-                      : "The task's QA run grades every trial; this trial's result lands when it finishes."}
-                  </span>
+                  {progressLine && (
+                    <span className="text-muted-foreground text-xs">
+                      {progressLine}
+                    </span>
+                  )}
                   {activeQaTrial && onOpenActiveQaTrial && (
                     <button
                       type="button"
                       onClick={() => onOpenActiveQaTrial(activeQaTrial)}
                       className="text-muted-foreground hover:text-foreground self-start font-mono text-[11px] underline decoration-dotted underline-offset-2"
                     >
-                      view the QA run
+                      Open QA run
                     </button>
                   )}
                 </div>
@@ -484,7 +492,7 @@ function TrialAnalysisCard({
                     </span>
                   ) : (
                     <span className="text-muted-foreground text-xs">
-                      No report was produced.
+                      No QA report produced.
                     </span>
                   )}
                 </div>
@@ -492,9 +500,6 @@ function TrialAnalysisCard({
                 <div className="flex flex-col gap-1">
                   <span className="font-mono text-sm font-bold">
                     No analysis yet
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    This trial has not been analyzed.
                   </span>
                 </div>
               )}
@@ -523,9 +528,13 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--experiment ${task.experiment_id}`);
   }
 
-  const sandboxBackend = getSandboxBackend(trial);
-  if (sandboxBackend) {
-    parts.push(`-e ${sandboxBackend.id}`);
+  // Preserve every server-owned Harbor environment, even when the UI has no
+  // branded badge for it yet. Legacy rows can still fall back to a recognized
+  // sandbox job provider.
+  const trialEnvironment = normalizeRunEnvironment(trial.environment);
+  const runEnvironment = trialEnvironment ?? getSandboxBackend(trial)?.id;
+  if (runEnvironment) {
+    parts.push(`-e ${runEnvironment}`);
   }
 
   if (trial.agent) {
@@ -536,7 +545,20 @@ export function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`-m ${trial.queue_key || trial.model}`);
   }
 
+  if (trial.reasoning_effort) {
+    const effort = trial.reasoning_effort.replace(/'/g, "'\\''");
+    parts.push(`--agent-kwarg 'reasoning_effort=${effort}'`);
+  }
   return parts.join(" ");
+}
+
+function normalizeRunEnvironment(
+  environment: string | null | undefined
+): string | null {
+  const normalized = environment?.trim().toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9-]*$/.test(normalized)
+    ? normalized
+    : null;
 }
 
 function getQueueSnapshotItems(trial: Trial): string[] {
@@ -557,7 +579,13 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return isActiveTrialStatus(trial.status);
 }
 
-type SandboxBackendId = "daytona" | "modal" | "archil" | "ec2" | "numinous";
+type SandboxBackendId =
+  | "daytona"
+  | "modal"
+  | "archil"
+  | "ec2"
+  | "numinous"
+  | "thunder";
 
 type SandboxBackend = {
   id: SandboxBackendId;
@@ -600,6 +628,12 @@ const SANDBOX_BACKENDS: Record<
     logoSrc: "/numinous-logo.png",
     logoFill: true,
   },
+  thunder: {
+    id: "thunder",
+    label: "Thunder Compute",
+    logoSrc: "/thunder-compute-logo.svg",
+    logoFill: true,
+  },
 };
 
 function normalizeSandboxBackend(
@@ -611,7 +645,8 @@ function normalizeSandboxBackend(
     normalized === "modal" ||
     normalized === "archil" ||
     normalized === "ec2" ||
-    normalized === "numinous"
+    normalized === "numinous" ||
+    normalized === "thunder"
   ) {
     return normalized;
   }
@@ -723,6 +758,7 @@ export function TrialDetailPanel({
   onNavigate,
   onNavigateToTask,
   onRetry,
+  onRetried,
   onDelete,
   apiBaseUrl = "/api",
   allowRetry = true,
@@ -794,21 +830,7 @@ export function TrialDetailPanel({
     }
     await fetcher(
       `/api/experiments/${encodeExperimentRouteParam(feedbackExperimentId)}/feedback`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: record.note?.trim() ?? "",
-          target:
-            record.target.kind === "verdict" ? "qa_verdict" : "qa_action_item",
-          target_key:
-            record.target.kind === "verdict"
-              ? record.target.classification
-              : record.target.id,
-          vote: record.vote,
-          trial_id: trial.id,
-        }),
-      }
+      feedbackRequestInit(record, trial.id)
     );
   }
 
@@ -1033,8 +1055,20 @@ export function TrialDetailPanel({
         throw new Error(data.detail || data.error || "Failed to retry trial");
       }
 
-      onRetry?.(task ? [task.id] : undefined);
-      onClose();
+      try {
+        const { trial_id: replacementId } = (await res.json()) as {
+          trial_id: string;
+        };
+        // Retry creates a new row. Load it through the drawer's shared resource
+        // so the replacement never inherits the old attempt's results or logs.
+        const replacement = await preloadTrial(apiBaseUrl, replacementId);
+        onRetried(trial.id, replacement);
+      } catch (err) {
+        onClose();
+        throw err;
+      } finally {
+        await onRetry?.(task ? [task.id] : undefined);
+      }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {
@@ -1283,9 +1317,9 @@ export function TrialDetailPanel({
           <span className="flex max-w-full min-w-0 flex-1 basis-52 items-center gap-1.5">
             <span
               className="min-w-0 flex-1 truncate"
-              title={trial.model ?? undefined}
+              title={experimentModelLabel(trial.model, trial.reasoning_effort)}
             >
-              {trial.model ?? "—"}
+              {experimentModelLabel(trial.model, trial.reasoning_effort)}
             </span>
             {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           </span>
@@ -1443,7 +1477,8 @@ export function TrialDetailPanel({
               trial.output_tokens != null ||
               // A trial can be QA'd without the agent ever reporting a cost;
               // keep the card so its QA sidecar isn't hidden.
-              hasDisplayableCostUsd(trial.qa_cost_usd)) && (
+              hasDisplayableCostUsd(trial.qa_cost_usd) ||
+              hasDisplayableCostUsd(trial.verifier_cost_usd)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -1481,6 +1516,7 @@ export function TrialDetailPanel({
                         costUsd={trial.qa_cost_usd}
                         title="QA/analysis spend for this trial. Not included in the cost figure."
                       />
+                      <VerifierCostSuffix costUsd={trial.verifier_cost_usd} />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (
@@ -1638,10 +1674,6 @@ export function TrialDetailPanel({
                         </span>
                       ))}
                     </div>
-                    <p className="text-muted-foreground mt-2 text-xs">
-                      Live scheduler snapshot. This can move as other trials
-                      start, finish, or get retried.
-                    </p>
                   </CardContent>
                 </Card>
               )}

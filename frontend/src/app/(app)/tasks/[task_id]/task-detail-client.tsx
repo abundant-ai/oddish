@@ -1,5 +1,7 @@
 "use client";
 
+import { experimentModelLabel } from "@/lib/experiment-agent-grouping";
+
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -25,7 +27,10 @@ import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { useUserUiLayout } from "@/lib/use-user-ui-layout";
 import { ExperimentsList } from "@/components/experiments-list";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -49,11 +54,9 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import {
-  normalizedAgentModel,
-  useTaskOpenReader,
-} from "@/lib/use-task-open-reader";
+import { useTaskOpenReader } from "@/lib/use-task-open-reader";
 import { markOpenIntent } from "@/lib/open-intent";
+import { taskReviewStatus } from "@/lib/review";
 import { useOpenLatencySpan } from "@/lib/use-open-latency-span";
 import { preloadTrial, useTrial } from "@/lib/use-trial";
 import {
@@ -543,11 +546,13 @@ function AgentCard({
   summary,
   trials,
   onTrialSelect,
+  showSummary,
 }: {
   agentLabel: string;
   summary: TaskOpenAgentModelSummary;
   trials: Trial[];
   onTrialSelect: (trial: Trial) => void;
+  showSummary: boolean;
 }) {
   const scorePct =
     summary.reward_total > 0
@@ -576,7 +581,7 @@ function AgentCard({
           </span>
           {summary.model ? (
             <Badge variant="outline" className="font-mono text-[11px]">
-              {summary.model}
+              {experimentModelLabel(summary.model, summary.reasoning_effort)}
             </Badge>
           ) : null}
           {agentLabel !== summary.agent ? (
@@ -586,30 +591,36 @@ function AgentCard({
           ) : null}
         </div>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {summary.trial_count}
-            </span>
-          </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">
-              {scorePct != null
-                ? `${scorePct.toFixed(0)}% (${summary.pass_count}/${summary.reward_total})`
-                : "—"}
-            </span>
-          </span>
-          <span>
-            <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
-            <CostBadge
-              cost={summary.cost_usd}
-              trialCount={summary.cost_trial_count}
-              hasEstimated={summary.cost_has_estimated}
-              hasNative={summary.cost_has_native}
-              size="sm"
-            />
-          </span>
+          {showSummary && (
+            <>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
+                <span className="text-[color:var(--paper-ink)]">
+                  {summary.trial_count}
+                </span>
+              </span>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">
+                  avg score
+                </span>{" "}
+                <span className="text-[color:var(--paper-ink)]">
+                  {scorePct != null ? `${scorePct.toFixed(0)}%` : "—"}
+                </span>
+              </span>
+              <span>
+                <span className="text-[color:var(--paper-ink-3)]">
+                  total cost
+                </span>{" "}
+                <CostBadge
+                  cost={summary.cost_usd}
+                  trialCount={summary.cost_trial_count}
+                  hasEstimated={summary.cost_has_estimated}
+                  hasNative={summary.cost_has_native}
+                  size="sm"
+                />
+              </span>
+            </>
+          )}
           <span title="Mean cost per priced trial">
             <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
@@ -626,7 +637,7 @@ function AgentCard({
               {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
             </span>
           </span>
-          {summary.last_run_at ? (
+          {showSummary && summary.last_run_at ? (
             <span title={new Date(summary.last_run_at).toLocaleString()}>
               <span className="text-[color:var(--paper-ink-3)]">last run</span>{" "}
               <span className="text-[color:var(--paper-ink)]">
@@ -680,7 +691,6 @@ export function TaskDetailClient({
     isBrowseSnapshot,
     isLoading,
     isSettingDefaultVersion,
-    modelScopedAgents,
     open,
     realAgentCount,
     realTrialCount,
@@ -750,14 +760,10 @@ export function TaskDetailClient({
         agent: card.key,
         model: card.summary.model,
         trials: trialsForVersion.filter(
-          (trial) =>
-            getExperimentAgentKey(
-              normalizedAgentModel(trial),
-              modelScopedAgents
-            ) === card.key
+          (trial) => getExperimentAgentKey(trial) === card.key
         ),
       })),
-    [agentCards, modelScopedAgents, trialsForVersion]
+    [agentCards, trialsForVersion]
   );
   const drawerOrderedTrials = useMemo(
     () => drawerTrialGroups.flatMap((group) => group.trials),
@@ -833,6 +839,14 @@ export function TaskDetailClient({
     markOpenIntent("ui.trajectory.open", trial.id);
     setDrawer({ mode: "trial", fallbackTrial: trial });
   }, []);
+
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawer((current) =>
+      current?.mode === "trial" && current.fallbackTrial.id === previousTrialId
+        ? { ...current, fallbackTrial: replacement }
+        : current
+    );
+  };
 
   // --- Drawer addressability ------------------------------------------
   // The drawer state lives in the URL so any view on this page can be
@@ -1032,7 +1046,9 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue QA");
+        throw new Error(
+          data.detail || data.error || "Failed to queue QA verdict generation"
+        );
       }
       revalidateReaderResources();
     } catch (err) {
@@ -1127,10 +1143,24 @@ export function TaskDetailClient({
           }
         />
 
-        {!isBrowseSnapshot ? (
+        {!isBrowseSnapshot &&
+        !(
+          drawer &&
+          activeTaskPane === "overview" &&
+          (drawer.mode === "task" || drawerShowTask) &&
+          !["queued", "running"].includes(taskReviewStatus(task)) &&
+          !isRunningJudge
+        ) ? (
           <TaskVerdictBadge
             task={task}
             variant="summary"
+            rejectionSource={
+              (selectedVersion?.pre_trial_must_fix_count ?? 0) > 0
+                ? "Pre-trial audit"
+                : (task.must_fix_count ?? 0) > 0
+                  ? "Trial analysis"
+                  : undefined
+            }
             onViewFindings={() => {
               selectTaskPane("overview");
               handleOpenTaskFiles();
@@ -1168,6 +1198,11 @@ export function TaskDetailClient({
                 costUsd={totals?.qa_cost_usd}
                 size="tile"
                 title="QA/analysis spend for this task's trials. Not included in the cost figure."
+              />
+              <VerifierCostSuffix
+                costUsd={totals?.verifier_cost_usd}
+                size="tile"
+                title="CUA/verifier LLM spend for this task's trials. Not included in the cost figure."
               />
             </span>
             {(totals?.token_trial_count ?? 0) > 0 ? (
@@ -1238,14 +1273,6 @@ export function TaskDetailClient({
               {versionScopedScorePct != null
                 ? `${versionScopedScorePct.toFixed(1)}%`
                 : "—"}
-              {versionSummary.rewardTotal > 0 ? (
-                <span
-                  className="font-mono text-[12px] text-[color:var(--paper-ink-3)]"
-                  title={`${versionSummary.passCount} of ${versionSummary.rewardTotal} scored trials passed (reward = 1)`}
-                >
-                  {versionSummary.passCount}/{versionSummary.rewardTotal} pass
-                </span>
-              ) : null}
             </span>
           </KpiTile>
           <KpiTile
@@ -1354,6 +1381,13 @@ export function TaskDetailClient({
                 key={card.key}
                 agentLabel={card.label}
                 summary={card.summary}
+                showSummary={
+                  isBrowseSnapshot ||
+                  !selectedVersion ||
+                  agentCards.length !== 1 ||
+                  card.summary.is_probe ||
+                  card.summary.trial_count !== selectedVersion.trial_count
+                }
                 trials={card.trials}
                 onTrialSelect={handleSelectTrial}
               />
@@ -1392,8 +1426,12 @@ export function TaskDetailClient({
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
-            onShowTaskChange={(showTask) => changeDrawerVisibility({ showTask })}
-            onShowTrialChange={(showTrial) => changeDrawerVisibility({ showTrial })}
+            onShowTaskChange={(showTask) =>
+              changeDrawerVisibility({ showTask })
+            }
+            onShowTrialChange={(showTrial) =>
+              changeDrawerVisibility({ showTrial })
+            }
             sideBySideLeft={
               <TaskFilesPanel
                 isOpen={drawer.mode === "trial" && drawerShowTask}
@@ -1460,6 +1498,7 @@ export function TaskDetailClient({
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() => setDrawer({ mode: "task" })}
                   onRetry={revalidateReaderResources}
+                  onRetried={handleTrialRetried}
                   allowRetry={true}
                   apiBaseUrl="/api"
                   contentOnly={true}

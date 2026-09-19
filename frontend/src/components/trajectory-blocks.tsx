@@ -90,11 +90,6 @@ export function ToolCallBlock({
         <span className="font-mono text-xs text-purple-500">
           {name || "tool"}
         </span>
-        {isLong && !open && (
-          <span className="text-muted-foreground text-[10px]">
-            (click to expand)
-          </span>
-        )}
         {trailing}
       </Button>
       {showArgs && (

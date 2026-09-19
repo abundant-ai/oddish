@@ -78,6 +78,9 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   origins: "origins",
   analysisClassifications: "analysisClassifications",
   experiments: "experimentIds",
+  deliveredTo: "deliveredTo",
+  notDeliveredTo: "notDeliveredTo",
+  categories: "categories",
 };
 
 // numrange filter key -> [min field, max field] on FilterValues.
@@ -92,6 +95,7 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
     runtimeAvg: ["runtimeAvgMin", "runtimeAvgMax"],
     passRate: ["passRateMin", "passRateMax"],
+    stepsP50: ["stepsP50Min", "stepsP50Max"],
   };
 
 // "num" (≥ N) filter key -> the single min field it writes.
@@ -104,12 +108,15 @@ const NUM_FIELD: Record<string, keyof FilterValues> = {
   partialCount: "partialCountMin",
   failCount: "failCountMin",
   harnessCount: "harnessCountMin",
+  agentCount: "agentCountMin",
 };
 
 function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
   if (def.options) return def.options;
   if (def.facet && facets) {
-    return (facets[def.facet] as string[]).map((v) => ({ value: v, label: v }));
+    // A facets response cached before a vocabulary was added omits it.
+    const values = (facets[def.facet] as string[] | undefined) ?? [];
+    return values.map((v) => ({ value: v, label: v }));
   }
   return [];
 }
@@ -305,6 +312,9 @@ export function TasksFilterSidebar() {
       case "passRate":
         set({ passRateMin: null, passRateMax: null });
         break;
+      case "stepsP50":
+        set({ stepsP50Min: null, stepsP50Max: null });
+        break;
       case "topPerformer":
         set({ topBy: null, topValue: null, topMetric: null });
         break;
@@ -312,6 +322,7 @@ export function TasksFilterSidebar() {
       case "hasError":
       case "hasTrajectory":
       case "trialIsProbe":
+      case "neverDelivered":
         set({ [key]: null } as Partial<FilterValues>);
         break;
       case "sort":
@@ -339,6 +350,7 @@ export function TasksFilterSidebar() {
       case "partialCount":
       case "failCount":
       case "harnessCount":
+      case "agentCount":
         set({ [NUM_FIELD[key]]: null } as Partial<FilterValues>);
         break;
       default:
@@ -474,7 +486,7 @@ export function TasksFilterSidebar() {
                 align="start"
                 className="z-30 max-h-80 overflow-auto"
               >
-                {(["Task", "Trial"] as const).map((group) => {
+                {(["Delivery", "Task", "Trial"] as const).map((group) => {
                   const groupDefs = inactiveDefs.filter(
                     (d) => d.group === group
                   );

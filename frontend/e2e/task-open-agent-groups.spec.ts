@@ -88,7 +88,7 @@ test("coalesces display aliases into one exact task-open card", () => {
   expect(result.realTrialCount).toBe(5);
   expect(result.agentCards).toHaveLength(1);
   expect(result.agentCards[0]).toMatchObject({
-    key: "gemini-cli",
+    key: "gemini-cli/gemini/gemini-3.5-flash/unspecified",
     summary: {
       agent: "gemini-cli",
       model: "gemini/gemini-3.5-flash",
@@ -111,7 +111,31 @@ test("keeps genuinely distinct models in separate model-scoped cards", () => {
   );
 
   expect(result.agentCards.map((card) => card.key)).toEqual([
-    "codex/openai/gpt-5.5",
-    "codex/openai/gpt-5.6",
+    "codex/openai/gpt-5.5/unspecified",
+    "codex/openai/gpt-5.6/unspecified",
   ]);
+});
+
+test("same model with different efforts keeps task summaries and preview trials separate", () => {
+  const model = "openai/gpt-5.6";
+  const efforts = [null, "low", "high"];
+  const result = buildTaskOpenAgentGroups(
+    efforts.map((reasoning_effort) =>
+      summary("codex", model, { reasoning_effort })
+    ),
+    efforts.map((reasoning_effort) =>
+      trial(`trial-${reasoning_effort}`, "codex", model, { reasoning_effort })
+    )
+  );
+  expect(
+    result.agentCards.map((card) => ({
+      key: card.key,
+      trials: card.trials.map((t) => t.id),
+    }))
+  ).toEqual([
+    { key: "codex/openai/gpt-5.6/unspecified", trials: ["trial-null"] },
+    { key: "codex/openai/gpt-5.6/low", trials: ["trial-low"] },
+    { key: "codex/openai/gpt-5.6/high", trials: ["trial-high"] },
+  ]);
+  expect(result.realTrialCount).toBe(3);
 });

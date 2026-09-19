@@ -47,6 +47,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -56,14 +57,11 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import {
   EXECUTION_LABELS,
-  REVIEW_LABELS,
   VERDICT_LABELS,
-  preTrialReviewLabel,
-  postTrialReviewLabel,
   taskReviewStatus,
 } from "@/lib/review";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { mutate } from "swr";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { isAgentTrial } from "@/lib/types";
@@ -78,6 +76,8 @@ import {
 } from "@/lib/format";
 import {
   getExperimentAgentKey,
+  experimentModelLabel,
+  compareReasoningEffort,
   isBaselineAgentName,
   PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
@@ -95,7 +95,6 @@ import {
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
-  formatRewardValue,
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
@@ -154,7 +153,8 @@ export type AgentSummary = ExperimentAgentSummary;
 type ExperimentTrialsTableProps = {
   tasks: Task[];
   agentSummaries: AgentSummary[];
-  modelScopedAgents: ReadonlySet<string>;
+  groupEfforts?: boolean;
+
   isLoading: boolean;
   isLoadingTrials?: boolean;
   pagesComplete?: boolean;
@@ -210,7 +210,7 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
   string,
   number
 >();
-const VIRTUALIZATION_THRESHOLD = 20;
+const VIRTUALIZATION_THRESHOLD = 200;
 const INITIAL_LOADING_COLUMN_COUNT = 4;
 const INITIAL_LOADING_ROW_COUNT = 8;
 const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
@@ -221,7 +221,6 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
     agent: "Loading",
     model: null,
     queueKey: null,
-    isModelScoped: false,
   })
 );
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
@@ -244,26 +243,19 @@ type RowFilterMode = "none" | "anyError" | "allFail" | "anyFail";
 const ROW_FILTER_MODES: Array<{
   value: RowFilterMode;
   label: string;
-  description: string;
 }> = [
-  { value: "none", label: "All", description: "Show every task" },
+  { value: "none", label: "All" },
   {
     value: "anyError",
     label: "Any error",
-    description:
-      "Show tasks where at least one agent hit a harness or infrastructure error on any trial",
   },
   {
     value: "anyFail",
     label: "Any failed",
-    description:
-      "Show tasks where at least one agent scored 0 on every trial (partial credit doesn't count as failed)",
   },
   {
     value: "allFail",
     label: "All failed",
-    description:
-      "Show tasks where every agent scored 0 on every trial (partial credit doesn't count as failed)",
   },
 ];
 
@@ -389,7 +381,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
 }> = [
   {
     key: "analyzing",
-    label: "Review running",
+    label: "Analyzing",
     dotClass: "bg-blue-400",
     animate: true,
   },
@@ -405,7 +397,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: REVIEW_LABELS.error,
+    label: "Analysis failed / Harness error",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -425,9 +417,11 @@ function TaskVerdictChip({
   onPrefetch?: () => void;
 }) {
   const status = taskReviewStatus(task);
+  const hasRequiredFixes = (task.must_fix_count ?? 0) > 0;
   const running = status === "queued" || status === "running";
-  const chipClass =
-    status === "error" || status === "outdated"
+  const chipClass = hasRequiredFixes
+    ? "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300"
+    : status === "error"
       ? "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
       : status === "accepted"
         ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300"
@@ -437,21 +431,19 @@ function TaskVerdictChip({
             ? "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
             : "bg-muted text-muted-foreground";
   const label =
-    status === "needs_fixes"
+    hasRequiredFixes || status === "needs_fixes"
       ? rejectedMustFixLabel(task)
       : VERDICT_LABELS[status];
-  let tip =
-    status === "error"
-      ? `This verdict did not establish task quality. ${task.verdict_error ?? "Inspect verdict evidence."}`
-      : `${VERDICT_LABELS[status]}. Human delivery sign-off is separate`;
-
-  if (!running && status !== "error" && task.verdict && ungradedSettled > 0) {
-    tip += `. From an earlier QA run: ${ungradedSettled} settled trial${
-      ungradedSettled === 1 ? "" : "s"
-    } in this experiment ${ungradedSettled === 1 ? "was" : "were"} not part of it`;
-  }
-  if (onOpen) {
-    tip += ". Click for the task overview";
+  let tip: string | null =
+    status === "error" || status === "no_evidence"
+      ? (task.verdict_error ?? null)
+      : null;
+  if (
+    (status === "accepted" || status === "needs_fixes") &&
+    task.verdict &&
+    ungradedSettled > 0
+  ) {
+    tip = `${ungradedSettled} completed run${ungradedSettled === 1 ? "" : "s"} not included in this QA verdict`;
   }
 
   const chip = (
@@ -461,26 +453,27 @@ function TaskVerdictChip({
       {label}
     </span>
   );
-  return (
+  const control = onOpen ? (
+    <button
+      type="button"
+      onPointerEnter={onPrefetch}
+      onFocus={onPrefetch}
+      onClick={onOpen}
+      className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
+      aria-label={`${hasRequiredFixes || status === "needs_fixes" ? "Open findings" : "Open QA verdict"} for ${task.name}`}
+    >
+      {chip}
+    </button>
+  ) : (
+    chip
+  );
+  return tip ? (
     <Tooltip>
-      <TooltipTrigger asChild>
-        {onOpen ? (
-          <button
-            type="button"
-            onPointerEnter={onPrefetch}
-            onFocus={onPrefetch}
-            onClick={onOpen}
-            className="inline-flex shrink-0 cursor-pointer bg-transparent p-0"
-            aria-label={`${status === "needs_fixes" ? "Open findings" : "Open QA overview"} for ${task.name}`}
-          >
-            {chip}
-          </button>
-        ) : (
-          chip
-        )}
-      </TooltipTrigger>
+      <TooltipTrigger asChild>{control}</TooltipTrigger>
       <TooltipContent>{tip}</TooltipContent>
     </Tooltip>
+  ) : (
+    control
   );
 }
 
@@ -529,7 +522,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-blue-400",
       animate: true,
-      title: `Analyzing...`,
+      title: "Analyzing…",
     };
   }
 
@@ -548,7 +541,7 @@ function getAnalysisIndicator(trial: Trial): {
     return {
       dotClass: "bg-yellow-400",
       animate: false,
-      title: "Analysis failed",
+      title: "QA failed",
     };
   }
 
@@ -557,12 +550,12 @@ function getAnalysisIndicator(trial: Trial): {
 
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>
+  groupEfforts: boolean
 ) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
   for (const trial of trials) {
-    const key = getExperimentAgentKey(trial, modelScopedAgents);
+    const key = getExperimentAgentKey(trial, groupEfforts);
     const existing = grouped.get(key) ?? [];
     existing.push(trial);
     grouped.set(key, existing);
@@ -577,8 +570,8 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
-      ? "reward pending"
-      : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
+      ? "Score pending"
+      : `${status === "harness-error" ? "Recorded score" : "Score"} ${formatRewardPercent(trial.reward)}`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
   const queueInfo = hasLiveQueueSnapshot(trial) ? trial.queue_info : null;
   const queueSnapshot = queueInfo
@@ -594,13 +587,14 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
         .join(" • ")
     : null;
   const queue = queueSnapshot ? ` • ${queueSnapshot}` : "";
-  return `${STATUS_CONFIG[status].shortLabel} • ${trial.status} • ${reward}${error}${queue}`;
+  return `${status === "harness-error" ? "Run error" : STATUS_CONFIG[status].shortLabel} • ${reward}${error}${queue}`;
 }
 
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
-  modelScopedAgents,
+  groupEfforts = false,
+
   isLoading,
   isLoadingTrials = false,
   pagesComplete = true,
@@ -712,6 +706,8 @@ export function ExperimentTrialsTable({
     Record<string, number>
   >({});
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
+  const tableHeaderRef = useRef<HTMLTableSectionElement | null>(null);
+  const tableBodyRef = useRef<HTMLTableSectionElement | null>(null);
   const resizeRef = useRef<{
     columnKey: "task" | string;
     neighborKey: "task" | string;
@@ -914,7 +910,10 @@ export function ExperimentTrialsTable({
       if (a.agent !== b.agent) {
         return a.agent.localeCompare(b.agent);
       }
-      return a.label.localeCompare(b.label);
+      return (
+        (a.model ?? "").localeCompare(b.model ?? "") ||
+        compareReasoningEffort(a.reasoningEffort, b.reasoningEffort)
+      );
     });
   }, [agentSummaries]);
 
@@ -999,10 +998,7 @@ export function ExperimentTrialsTable({
       rowFilterMode === "none" || rowFilterAgentKeys.length === 0
         ? searchFiltered
         : searchFiltered.filter((task) => {
-            const trialsByAgent = groupTrialsByAgent(
-              task.trials,
-              modelScopedAgents
-            );
+            const trialsByAgent = groupTrialsByAgent(task.trials, groupEfforts);
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
@@ -1038,7 +1034,7 @@ export function ExperimentTrialsTable({
     taskSort,
     rowFilterMode,
     rowFilterAgentKeys,
-    modelScopedAgents,
+    groupEfforts,
   ]);
 
   const getTaskContext = useMemo(() => {
@@ -1062,7 +1058,7 @@ export function ExperimentTrialsTable({
 
       const groupedTrialsByAgent = groupTrialsByAgent(
         task.trials,
-        modelScopedAgents
+        groupEfforts
       );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
@@ -1096,7 +1092,7 @@ export function ExperimentTrialsTable({
       contextCache.set(task, context);
       return context;
     };
-  }, [visibleAgents, modelScopedAgents]);
+  }, [visibleAgents, groupEfforts]);
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
@@ -1164,15 +1160,91 @@ export function ExperimentTrialsTable({
     [selectedTaskList]
   );
 
-  const rowVirtualizer = useVirtualizer({
-    count: filteredTasks.length,
-    getScrollElement: () => tableContainerRef.current,
-    estimateSize: () => 46,
-    overscan: 4,
-    initialRect: { width: 1280, height: 720 },
-  });
+  const [tableOffset, setTableOffset] = useState<number | null>(null);
+  // Measure before paint when table content or layout changes, including
+  // while rendering fewer than the virtualization threshold.
+  useLayoutEffect(() => {
+    const body = tableBodyRef.current;
+    if (body) {
+      const offset = body.getBoundingClientRect().top + window.scrollY;
+      if (offset !== tableOffset) setTableOffset(offset);
+    }
+  }, [
+    tableOffset,
+    filteredTasks,
+    renderedAgents,
+    isLoading,
+    showPassAtK,
+    pagesComplete,
+    taskColumnWidth,
+    agentColumnWidths,
+    selectedTasks,
+  ]);
+  useLayoutEffect(() => {
+    const body = tableBodyRef.current;
+    if (!body) return;
+    const observer = new ResizeObserver(() => {
+      setTableOffset(body.getBoundingClientRect().top + window.scrollY);
+    });
+    observer.observe(document.body);
+    if (body.previousElementSibling)
+      observer.observe(body.previousElementSibling);
+    return () => observer.disconnect();
+  }, [isLoading]);
+  useLayoutEffect(() => {
+    const container = tableContainerRef.current;
+    const header = tableHeaderRef.current;
+    if (!container || !header) return;
 
-  const shouldVirtualize = filteredTasks.length >= VIRTUALIZATION_THRESHOLD;
+    // Horizontal overflow makes this wrapper the CSS sticky scroll container.
+    // Follow page scrolling explicitly while keeping one aligned, interactive
+    // header inside the horizontally scrolling table.
+    const updateHeaderPosition = () => {
+      const bounds = container.getBoundingClientRect();
+      const pageHeaderBottom = Math.max(
+        0,
+        ...Array.from(
+          document.querySelectorAll("[data-page-sticky-header]"),
+          (element) => element.getBoundingClientRect().bottom
+        )
+      );
+      const offset = Math.max(
+        0,
+        Math.min(
+          pageHeaderBottom - bounds.top,
+          bounds.height - header.offsetHeight
+        )
+      );
+      header.style.top = `${offset}px`;
+    };
+    updateHeaderPosition();
+    window.addEventListener("scroll", updateHeaderPosition, { passive: true });
+    window.addEventListener("resize", updateHeaderPosition);
+    const observer = new ResizeObserver(updateHeaderPosition);
+    observer.observe(container);
+    observer.observe(header);
+    observer.observe(document.body);
+    document
+      .querySelectorAll("[data-page-sticky-header]")
+      .forEach((element) => observer.observe(element));
+    return () => {
+      window.removeEventListener("scroll", updateHeaderPosition);
+      window.removeEventListener("resize", updateHeaderPosition);
+      observer.disconnect();
+      header.style.top = "";
+    };
+  }, [isLoading, tableOffset]);
+  // Render real rows until their document offset is known.
+  const shouldVirtualize =
+    filteredTasks.length >= VIRTUALIZATION_THRESHOLD && tableOffset !== null;
+  const rowVirtualizer = useWindowVirtualizer({
+    count: filteredTasks.length,
+    enabled: shouldVirtualize,
+    getItemKey: (index) => filteredTasks[index].id,
+    estimateSize: () => 120,
+    overscan: 6,
+    scrollMargin: tableOffset ?? 0,
+  });
   const virtualRows = shouldVirtualize ? rowVirtualizer.getVirtualItems() : [];
   const rowsToRender = shouldVirtualize
     ? virtualRows.map((virtualRow) => ({
@@ -1181,10 +1253,14 @@ export function ExperimentTrialsTable({
         virtualRow,
       }))
     : filteredTasks.map((task, index) => ({ task, index, virtualRow: null }));
-  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingTop =
+    virtualRows.length > 0
+      ? Math.max(0, virtualRows[0].start - (tableOffset ?? 0))
+      : 0;
   const paddingBottom =
     virtualRows.length > 0
-      ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+      ? rowVirtualizer.getTotalSize() -
+        (virtualRows[virtualRows.length - 1].end - (tableOffset ?? 0))
       : 0;
 
   const toggleStatus = (status: MatrixStatus) => {
@@ -1468,7 +1544,7 @@ export function ExperimentTrialsTable({
   const handleRunQAForSelectedTasks = async () => {
     if (!canRerun || isRunningQA) return;
     if (selectedQARunnableTasks.length === 0) {
-      setQAError("No tasks are ready for QA.");
+      setQAError("No tasks are ready for QA verdict generation.");
       return;
     }
 
@@ -1486,7 +1562,7 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task QA"
+              data.detail || data.error || "Failed to queue QA verdict generation"
             );
           }
         })
@@ -1494,7 +1570,9 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
+        setQAError(
+          `Failed to queue QA verdict generation for ${failures.length} task(s).`
+        );
       } else {
         setQAError(null);
       }
@@ -1721,7 +1799,6 @@ export function ExperimentTrialsTable({
             </div>
             <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading experiment tasks and trial matrix...
               <div className="ml-auto flex flex-wrap items-center gap-2">
                 <Skeleton className="h-7 w-32" />
                 <Skeleton className="h-7 w-24" />
@@ -1750,28 +1827,23 @@ export function ExperimentTrialsTable({
     const config = STATUS_CONFIG[status];
     const isDimmed = dimmedStatuses.has(status);
     return (
-      <Tooltip key={status}>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => toggleStatus(status)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
-              isDimmed ? "line-through opacity-[0.38]" : ""
-            }`}
-          >
-            <span
-              className={`inline-flex items-center justify-center border-transparent ${STATUS_GLYPH_BOX} ${config.matrixClass}`}
-            >
-              <StatusIcon status={status} />
-            </span>
-            <span>{config.shortLabel}</span>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {config.shortLabel} ({isDimmed ? "dimmed" : "visible"})
-        </TooltipContent>
-      </Tooltip>
+      <Button
+        key={status}
+        type="button"
+        variant="ghost"
+        onClick={() => toggleStatus(status)}
+        aria-pressed={!isDimmed}
+        className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+          isDimmed ? "line-through opacity-[0.38]" : ""
+        }`}
+      >
+        <span
+          className={`inline-flex items-center justify-center border-transparent ${STATUS_GLYPH_BOX} ${config.matrixClass}`}
+        >
+          <StatusIcon status={status} />
+        </span>
+        <span>{config.shortLabel}</span>
+      </Button>
     );
   };
 
@@ -1787,61 +1859,24 @@ export function ExperimentTrialsTable({
   const renderAnalyzerChip = (item: (typeof ANALYSIS_LEGEND_ITEMS)[number]) => {
     const isDimmed = dimmedAnalysisKeys.has(item.key);
     return (
-      <Tooltip key={item.key}>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => toggleAnalysisKey(item.key)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
-              isDimmed ? "line-through opacity-[0.38]" : ""
-            }`}
-          >
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${item.animate ? "animate-pulse" : ""}`}
-              style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
-            />
-            <span>{item.label}</span>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>
-          {item.label} ({isDimmed ? "dimmed" : "visible"})
-        </TooltipContent>
-      </Tooltip>
+      <Button
+        key={item.key}
+        type="button"
+        variant="ghost"
+        onClick={() => toggleAnalysisKey(item.key)}
+        aria-pressed={!isDimmed}
+        className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+          isDimmed ? "line-through opacity-[0.38]" : ""
+        }`}
+      >
+        <span
+          className={`inline-block h-2 w-2 rounded-full ${item.animate ? "animate-pulse" : ""}`}
+          style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
+        />
+        <span>{item.label}</span>
+      </Button>
     );
   };
-
-  const renderLegendAnatomy = () => (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pr-2.5 pl-1.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
-          <span className="relative inline-flex">
-            <span
-              className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
-            >
-              <StatusIcon status="pass" />
-            </span>
-            {showAnalysis && (
-              <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
-            )}
-          </span>
-          <span className="flex flex-col gap-0.5">
-            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-              <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
-              trial result
-            </span>
-            {showAnalysis && (
-              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-                Execution review
-              </span>
-            )}
-          </span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent>How to read a cell</TooltipContent>
-    </Tooltip>
-  );
 
   const renderAgentFilterMenu = () => (
     <Popover>
@@ -1851,7 +1886,7 @@ export function ExperimentTrialsTable({
           variant="ghost"
           className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
-          Agents
+          Columns
           <InlineCount>
             {visibleAgents.length}/{sortedAgentSummaries.length}
           </InlineCount>
@@ -1860,7 +1895,6 @@ export function ExperimentTrialsTable({
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
         <div className="text-muted-foreground flex items-center justify-between px-1 pb-2 text-[10px]">
-          <span>Show/hide agent columns</span>
           <Button
             type="button"
             variant="link"
@@ -1899,7 +1933,7 @@ export function ExperimentTrialsTable({
                     size={10}
                     className="shrink-0"
                   />
-                  {agent.model ?? "—"}
+                  {experimentModelLabel(agent.model, agent.reasoningEffort)}
                 </span>
               </Label>
             );
@@ -1925,26 +1959,22 @@ export function ExperimentTrialsTable({
             const active = rowFilterMode === mode.value;
             const disabled = !hasAgentsToFilter && mode.value !== "none";
             return (
-              <Tooltip key={mode.value}>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={disabled}
-                    onClick={() => setRowFilterMode(mode.value)}
-                    className={`h-auto rounded-[5px] px-2.5 py-1.5 text-[11px] leading-none font-medium whitespace-nowrap transition-colors ${
-                      active
-                        ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
-                        : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
-                    }`}
-                    aria-pressed={active}
-                  >
-                    {mode.label}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{mode.description}</TooltipContent>
-              </Tooltip>
+              <Button
+                key={mode.value}
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={disabled}
+                onClick={() => setRowFilterMode(mode.value)}
+                className={`h-auto rounded-[5px] px-2.5 py-1.5 text-[11px] leading-none font-medium whitespace-nowrap transition-colors ${
+                  active
+                    ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
+                    : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
+                }`}
+                aria-pressed={active}
+              >
+                {mode.label}
+              </Button>
             );
           })}
         </div>
@@ -1954,34 +1984,17 @@ export function ExperimentTrialsTable({
 
   const renderLegendBlock = () => (
     <div className="flex max-w-full min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1">
-      {renderLegendAnatomy()}
       <div className="flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 px-1">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-              Trial
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            Did the agent&apos;s trial run succeed? Produced by the harness when
-            the agent finishes or errors.
-          </TooltipContent>
-        </Tooltip>
+        <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
+          Trial
+        </span>
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
       {showAnalysis && (
         <div className="ml-1 flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 border-l border-dashed border-[color:var(--paper-line)] pl-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-                QA
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-xs">
-              A second pass — an LLM grades the trial output. Only present for
-              trials that were sent for analysis.
-            </TooltipContent>
-          </Tooltip>
+          <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
+            QA
+          </span>
           {ANALYSIS_LEGEND_ITEMS.map((item) => renderAnalyzerChip(item))}
         </div>
       )}
@@ -2004,17 +2017,10 @@ export function ExperimentTrialsTable({
             <div>
               <p className="text-base font-semibold text-red-700 dark:text-red-300">
                 {mustFixTotal > 0
-                  ? `${mustFixTotal} Must Fix`
-                  : `${rejectedCount} loaded ${
+                  ? `${mustFixTotal} Must fix`
+                  : `${rejectedCount} ${
                       rejectedCount === 1 ? "task" : "tasks"
                     } rejected by QA`}
-              </p>
-              <p className="mt-1 text-sm">
-                {mustFixTotal > 0
-                  ? `${rejectedCount} loaded ${
-                      rejectedCount === 1 ? "task" : "tasks"
-                    } rejected by QA. Review the required fixes before including these tasks in a delivery.`
-                  : "Review the rejection reasons before including these tasks in a delivery."}
               </p>
             </div>
             <Button
@@ -2051,9 +2057,11 @@ export function ExperimentTrialsTable({
         )}
         {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK && !pagesComplete && (
-          <p role="status" className="text-muted-foreground text-sm">
-            Graphs will appear once all task and trial results have loaded.
-          </p>
+          <Skeleton
+            role="progressbar"
+            aria-label="Loading graphs"
+            className="h-64 w-full"
+          />
         )}
         {showPassAtK && pagesComplete ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
@@ -2061,6 +2069,7 @@ export function ExperimentTrialsTable({
               <PassAtKGraph
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2071,6 +2080,7 @@ export function ExperimentTrialsTable({
               <PassAtOneLeaderboard
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
+                groupEfforts={groupEfforts}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
                 hoverAgent={hoverAgent}
@@ -2162,13 +2172,13 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleCancelQAForSelectedTasks}
-                        title="Cancels active source and execution reviews for the selected tasks."
+                        title="Cancel pre-trial audits and QA verdict generation for selected tasks."
                         disabled={
                           isCancellingQA ||
                           selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingQA ? "Cancelling" : "Cancel reviews"}
+                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
                         <InlineCount>
                           {selectedQACancellableTasks.length}
                         </InlineCount>
@@ -2177,14 +2187,16 @@ export function ExperimentTrialsTable({
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunQAForSelectedTasks}
-                        title="Reviews recorded runs for each selected task's default version; does not rerun solver trials."
+                        title="Generate a QA verdict for each selected task’s default version by reanalyzing its eligible trials."
                         disabled={
                           isRunningQA ||
                           isCancellingQA ||
                           selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningQA ? "Queueing" : "Run execution review"}
+                        {isRunningQA
+                          ? "Queuing QA verdicts…"
+                          : "Generate QA verdicts"}
                         <InlineCount>
                           {selectedQARunnableTasks.length}
                         </InlineCount>
@@ -2233,37 +2245,52 @@ export function ExperimentTrialsTable({
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {!readOnly && (
+                  <Label className="flex cursor-pointer items-center gap-2 px-2 text-xs font-normal">
+                    <Checkbox
+                      checked={groupEfforts}
+                      onCheckedChange={(checked) => {
+                        const params = new URLSearchParams(
+                          window.location.search
+                        );
+                        if (checked === true) params.set("groupEfforts", "1");
+                        else params.delete("groupEfforts");
+                        window.history.pushState(
+                          null,
+                          "",
+                          urlWithSearch(params.toString())
+                        );
+                      }}
+                    />
+                    Group effort levels
+                  </Label>
+                )}
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={handleCopyTableAsTSV}
-                      className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
-                    >
-                      {copiedTable ? (
-                        <>
-                          <Check className="h-3 w-3 text-[color:var(--paper-pass)]" />
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="h-3 w-3" />
-                          Copy TSV
-                        </>
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Copy table as TSV</TooltipContent>
-                </Tooltip>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleCopyTableAsTSV}
+                  className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                >
+                  {copiedTable ? (
+                    <>
+                      <Check className="h-3 w-3 text-[color:var(--paper-pass)]" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3 w-3" />
+                      Copy TSV
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
           </div>
           <div
             ref={tableContainerRef}
-            className={`max-h-[70vh] overflow-x-auto overflow-y-auto overscroll-none ${isResizing ? "select-none" : ""}`}
+            className={`overflow-x-auto ${isResizing ? "select-none" : ""}`}
           >
             <table
               className="w-full min-w-[960px] caption-bottom text-sm"
@@ -2284,7 +2311,10 @@ export function ExperimentTrialsTable({
                   />
                 ))}
               </colgroup>
-              <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
+              <TableHeader
+                ref={tableHeaderRef}
+                className="relative z-20 bg-[color:var(--paper-surface-2)]"
+              >
                 <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
                     className="relative sticky left-0 z-30 h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-3 font-mono font-bold text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3"
@@ -2364,80 +2394,61 @@ export function ExperimentTrialsTable({
                         </div>
                       ) : (
                         <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() =>
+                              handleCopyAgentName(agent.key, agent.agent)
+                            }
+                            className="text-foreground hover:bg-background/70 h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold transition hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                            aria-label={`Copy agent name ${agent.agent}`}
+                          >
+                            <QueueKeyIcon
+                              agent={agent.agent}
+                              size={12}
+                              className="shrink-0"
+                            />
+                            <span className="min-w-0 break-all whitespace-normal">
+                              {copiedAgentNameKey === agent.key
+                                ? "Copied"
+                                : agent.agent}
+                            </span>
+                          </Button>
+                          {!isBaselineAgentName(agent.agent) &&
+                            (agent.model ? (
                               <Button
                                 type="button"
                                 variant="ghost"
                                 onClick={() =>
-                                  handleCopyAgentName(agent.key, agent.agent)
+                                  handleCopyAgentModel(agent.key, agent.model!)
                                 }
-                                className="text-foreground hover:bg-background/70 h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold transition hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
-                                aria-label={`Copy agent name ${agent.agent}`}
-                                title="Copy agent name"
+                                className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
+                                aria-label={`Copy model id ${agent.model}${agent.reasoningEffort == null ? "" : `; reasoning effort: ${agent.reasoningEffort}`}`}
                               >
-                                <QueueKeyIcon
-                                  agent={agent.agent}
-                                  size={12}
-                                  className="shrink-0"
-                                />
-                                <span className="min-w-0 truncate">
-                                  {copiedAgentNameKey === agent.key
-                                    ? "Copied"
-                                    : agent.agent}
+                                {copiedAgentModelKey === agent.key ? (
+                                  <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                ) : (
+                                  <QueueKeyIcon
+                                    queueKey={agent.queueKey}
+                                    model={agent.model}
+                                    size={10}
+                                    className="shrink-0"
+                                  />
+                                )}
+                                <span className="min-w-0 break-all whitespace-normal">
+                                  {agent.model}
+                                  {agent.reasoningEffort != null && (
+                                    <span className="whitespace-nowrap">
+                                      /{agent.reasoningEffort}
+                                    </span>
+                                  )}
                                 </span>
                               </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                              {copiedAgentNameKey === agent.key
-                                ? "Copied agent name"
-                                : agent.agent}
-                            </TooltipContent>
-                          </Tooltip>
-                          {!isBaselineAgentName(agent.agent) && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                {agent.model ? (
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={() =>
-                                      handleCopyAgentModel(
-                                        agent.key,
-                                        agent.model!
-                                      )
-                                    }
-                                    className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
-                                    aria-label={`Copy model id ${agent.model}`}
-                                    title="Copy model id"
-                                  >
-                                    {copiedAgentModelKey === agent.key ? (
-                                      <Check className="h-3 w-3 shrink-0 text-emerald-500" />
-                                    ) : (
-                                      <QueueKeyIcon
-                                        queueKey={agent.queueKey}
-                                        model={agent.model}
-                                        size={10}
-                                        className="shrink-0"
-                                      />
-                                    )}
-                                    <span className="min-w-0 truncate">
-                                      {agent.model}
-                                    </span>
-                                  </Button>
-                                ) : (
-                                  <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
-                                    <span className="min-w-0 truncate">—</span>
-                                  </div>
-                                )}
-                              </TooltipTrigger>
-                              <TooltipContent side="bottom">
-                                {copiedAgentModelKey === agent.key
-                                  ? "Copied model id"
-                                  : (agent.model ?? "—")}
-                              </TooltipContent>
-                            </Tooltip>
-                          )}
+                            ) : (
+                              <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
+                                <span className="min-w-0 truncate">—</span>
+                              </div>
+                            ))}
                         </div>
                       )}
                       {agentIndex < renderedAgents.length - 1 &&
@@ -2458,7 +2469,7 @@ export function ExperimentTrialsTable({
                   ))}
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody ref={tableBodyRef}>
                 {shouldVirtualize && paddingTop > 0 && (
                   <TableRow aria-hidden>
                     <TableCell
@@ -2523,78 +2534,48 @@ export function ExperimentTrialsTable({
                           )}
                           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                             <div className="group/task-name flex w-full min-w-0 items-start gap-1.5">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    onPointerEnter={() => prefetchTask(task)}
-                                    onFocus={() => prefetchTask(task)}
-                                    onClick={() =>
-                                      openTaskInDrawer(task, {
-                                        orderedTasks: filteredTasks,
-                                        taskIndex: index,
-                                      })
-                                    }
-                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start bg-transparent p-0 text-left font-mono text-[11.5px] leading-snug font-normal break-all whitespace-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
-                                  >
-                                    {task.name}
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-[min(80vw,48rem)] font-mono break-all whitespace-normal">
-                                  {task.name}
-                                </TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={(event) =>
-                                      handleCopyTaskName(event, task)
-                                    }
-                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition group-hover/task-name:opacity-100 hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 ${
-                                      copiedTaskNameId === task.id
-                                        ? "text-emerald-600 opacity-100"
-                                        : ""
-                                    }`}
-                                    aria-label={`Copy task name ${task.name}`}
-                                    title={
-                                      copiedTaskNameId === task.id
-                                        ? "Copied"
-                                        : "Copy task name"
-                                    }
-                                  >
-                                    {copiedTaskNameId === task.id ? (
-                                      <Check className="h-3.5 w-3.5" />
-                                    ) : (
-                                      <Copy className="h-3.5 w-3.5" />
-                                    )}
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  {copiedTaskNameId === task.id
-                                    ? "Copied task name"
-                                    : "Copy task name"}
-                                </TooltipContent>
-                              </Tooltip>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                onPointerEnter={() => prefetchTask(task)}
+                                onFocus={() => prefetchTask(task)}
+                                onClick={() =>
+                                  openTaskInDrawer(task, {
+                                    orderedTasks: filteredTasks,
+                                    taskIndex: index,
+                                  })
+                                }
+                                className="h-auto min-w-0 flex-1 cursor-pointer justify-start bg-transparent p-0 text-left font-mono text-[11.5px] leading-snug font-normal break-all whitespace-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
+                              >
+                                {task.name}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={(event) =>
+                                  handleCopyTaskName(event, task)
+                                }
+                                className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition group-hover/task-name:opacity-100 hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 ${
+                                  copiedTaskNameId === task.id
+                                    ? "text-emerald-600 opacity-100"
+                                    : ""
+                                }`}
+                                aria-label={`Copy task name ${task.name}`}
+                                title={
+                                  copiedTaskNameId === task.id
+                                    ? "Copied"
+                                    : "Copy task name"
+                                }
+                              >
+                                {copiedTaskNameId === task.id ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
                             </div>
                             <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
-                              {showAnalysis && !readOnly && (
-                                <span className="text-muted-foreground font-mono text-[9.5px]">
-                                  Pre-trial: {preTrialReviewLabel(task)}
-                                </span>
-                              )}
-                              {showAnalysis && !readOnly && (
-                                <span
-                                  className="text-muted-foreground font-mono text-[9.5px]"
-                                  title="Post-trial reviews for loaded solver trials in this version. Passed includes fair agent failures; failed means the task affected the evaluation. Could not complete includes harness errors and failed analysis. Running, pending, and unreviewed show remaining review progress."
-                                >
-                                  Post-trial{isLoadingTrials ? " (loaded)" : ""}
-                                  : {postTrialReviewLabel(task)}
-                                </span>
-                              )}
                               {showAnalysis && (
                                 <TaskVerdictChip
                                   task={task}
@@ -2624,16 +2605,7 @@ export function ExperimentTrialsTable({
                                   onPrefetch={() => prefetchTask(task)}
                                 />
                               )}
-                              {showAnalysis &&
-                              taskReviewStatus(task) === "needs_fixes" &&
-                              rejectedOnly &&
-                              (task.verdict?.primary_issue ||
-                                task.verdict?.reasoning) ? (
-                                <p className="mt-1 min-w-0 text-xs text-pretty text-red-700/90 dark:text-red-300/90">
-                                  {task.verdict?.primary_issue ||
-                                    task.verdict?.reasoning}
-                                </p>
-                              ) : null}
+
                               {(() => {
                                 const showVersion =
                                   showAnalysis && task.current_version != null;
@@ -2695,6 +2667,7 @@ export function ExperimentTrialsTable({
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <Link
+                                      prefetch={false}
                                       href={`/tasks/${encodeURIComponent(task.id)}`}
                                       aria-label={`Open task page for ${task.name}`}
                                       className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"

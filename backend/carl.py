@@ -76,14 +76,15 @@ def _bot_token() -> str:
     raise RuntimeError("Carl's Slack bot token is not configured")
 
 
-def _slack_call(method: str, **payload: Any) -> dict:
+def _slack_call(method: str, *, form: dict[str, Any] | None = None, **payload: Any) -> dict:
     headers = {"Authorization": f"Bearer {_bot_token()}"}
+    body = {"data": form} if form is not None else {"json": payload}
     for attempt in range(_SLACK_RETRIES + 1):
         response = httpx.post(
             f"https://slack.com/api/{method}",
             headers=headers,
-            json=payload,
             timeout=10,
+            **body,
         )
         if response.status_code == 429 and attempt < _SLACK_RETRIES:
             time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
@@ -114,6 +115,95 @@ def _post(channel: str, thread: str, text: str) -> str:
     return _slack_call(
         "chat.postMessage", channel=channel, thread_ts=thread, text=text[:cut]
     )["ts"]
+
+
+def _upload_file(
+    channel: str,
+    thread: str,
+    content: bytes,
+    *,
+    filename: str,
+    caption: str,
+) -> dict:
+    """Slack external upload. Needs files:write on the Carl bot."""
+    ticket = _slack_call(
+        "files.getUploadURLExternal",
+        form={"filename": filename, "length": str(len(content))},
+    )
+    for attempt in range(_SLACK_RETRIES + 1):
+        response = httpx.post(ticket["upload_url"], content=content, timeout=30)
+        if response.status_code == 429 and attempt < _SLACK_RETRIES:
+            time.sleep(min(float(response.headers.get("retry-after", "1")), 30))
+            continue
+        response.raise_for_status()
+        break
+    else:
+        raise RuntimeError("Slack file upload failed: retries exhausted")
+    escaped = _escape(caption)
+    cut = _split_at(escaped, _MAX_SLACK)
+    return _slack_call(
+        "files.completeUploadExternal",
+        files=[{"id": ticket["file_id"], "title": "Catfish spend"}],
+        channel_id=channel,
+        thread_ts=thread,
+        initial_comment=escaped[:cut],
+    )
+
+
+def _chart_caption(body: str, view: str) -> str:
+    """Writeup plus a bare Catfish URL when the agent did not already include it."""
+    if view.startswith("https://") and view not in body:
+        return f"{body.rstrip()}\n\n{view}"
+    return body
+
+
+def _followup_chart_caption(view: str) -> str:
+    """Later charts keep a link, not another copy of the writeup."""
+    if view.startswith("https://"):
+        return view
+    return "Catfish spend"
+
+
+def _clear_placeholder(channel: str, ts: str) -> None:
+    try:
+        _slack_call("chat.delete", channel=channel, ts=ts)
+    except Exception:
+        log.exception("failed to delete thinking placeholder channel=%s", channel)
+        try:
+            _update(channel, ts, ":arrow_down: Answer posted below.")
+        except Exception:
+            log.exception("stale placeholder left channel=%s", channel)
+
+
+def _post_catfish_charts(channel: str, thread: str, body: str) -> bool:
+    from carl_catfish import drain_catfish_charts
+
+    posted = False
+    for png, view, filename in drain_catfish_charts():
+        caption = (
+            _chart_caption(body, view)
+            if not posted
+            else _followup_chart_caption(view)
+        )
+        try:
+            _upload_file(
+                channel,
+                thread,
+                png,
+                filename=filename,
+                caption=caption,
+            )
+            posted = True
+        except Exception:
+            log.exception("catfish chart upload failed channel=%s", channel)
+    return posted
+
+
+def _finish_answer(channel: str, ts: str, thread: str, body: str) -> DeliveryStatus:
+    if _post_catfish_charts(channel, thread, body):
+        _clear_placeholder(channel, ts)
+        return "complete"
+    return _deliver(channel, ts, thread, body)
 
 
 def _update(channel: str, ts: str, text: str) -> None:

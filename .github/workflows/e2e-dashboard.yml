@@ -1,24 +1,24 @@
 name: "E2E: Dashboard"
 
-# Boots the ENTIRE stack inside one runner — a postgres:16-alpine service, the
-# backend (`serve.py`), and the frontend (`pnpm dev`) — then drives the
-# authenticated dashboard Playwright spec (frontend/e2e/tasks-view.spec.ts)
-# against it. No Vercel, no Modal, no preview coupling: everything lives and
-# dies in this job.
+# Parallel jobs for independent Playwright suites.
 #
-# Why a Clerk DEVELOPMENT instance (never production): the spec signs in with
-# `@clerk/testing` — a Testing Token (mints past bot detection) plus
-# `clerk.signIn`, and a `+clerk_test` email that verifies with the universal
-# OTP. All three are development-instance-only affordances; a production Clerk
-# instance rejects Testing Tokens and has no test-email bypass, so it simply
-# cannot drive this flow. Credentials therefore come from repo secrets pointing
-# at a dev instance (`pk_test`/`sk_test`).
+# `dashboard` boots the full stack (postgres + backend + frontend) and drives
+# the authenticated dashboard Playwright spec. It alone needs Clerk
+# development-instance secrets; when any secret is absent the job no-ops green
+# (forks / unconfigured repos).
 #
-# Why it can no-op: when any of the five Clerk secrets is absent (forks,
-# unconfigured repos), the gate step flips `have_clerk=false` and every
-# subsequent step is skipped, so the job goes green in seconds doing almost
-# nothing. Secrets cannot be read in a job-level `if:`, so we map them to job
-# env and branch on a step output — the standard workaround.
+# `effort`, `files`, and `delivery` each own a self-contained Playwright
+# config with its own `webServer`. They never talk to the Clerk stack or the
+# shared postgres service, so they run in parallel with each other and with
+# `dashboard` instead of waiting behind it.
+#
+# Why a Clerk DEVELOPMENT instance (never production): the signed-in spec uses
+# `@clerk/testing` — a Testing Token, `clerk.signIn`, and a `+clerk_test`
+# email. All three are development-instance-only. Credentials come from repo
+# secrets pointing at a dev instance (`pk_test`/`sk_test`).
+#
+# Secrets cannot be read in a job-level `if:`, so the dashboard job maps them
+# to env and branches on a step output — the standard workaround.
 #
 # Like e2e-cli.yml this runs directly on ubuntu-latest (not a job container):
 # the postgres service port is mapped to the host so the DB is reachable at
@@ -167,7 +167,7 @@ jobs:
         if: steps.gate.outputs.have_clerk == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: "22" # Native TypeScript execution for delivery URL tests.
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
@@ -219,20 +219,6 @@ jobs:
           CLERK_JWT_TEMPLATE: oddish
         run: pnpm exec playwright test
 
-      - name: Run file loading and account layout fixture tests
-        if: steps.gate.outputs.have_clerk == 'true'
-        working-directory: frontend
-        env:
-          E2E_REVIEW_FIXTURES: "1"
-        run: pnpm exec playwright test --config playwright.files.config.ts file-loading.spec.ts user-ui-layout.spec.ts --output fixture-test-results
-
-      - name: Run delivery page and URL fixture tests
-        if: steps.gate.outputs.have_clerk == 'true'
-        working-directory: frontend
-        run: |
-          node --experimental-strip-types --test tests/delivery-view.test.ts tests/delivery-qa.test.ts
-          pnpm exec playwright test --config playwright.delivery.config.ts --output delivery-test-results
-
       - name: Show server logs on failure
         if: ${{ failure() && steps.gate.outputs.have_clerk == 'true' }}
         run: |
@@ -245,12 +231,10 @@ jobs:
         if: ${{ always() && steps.gate.outputs.have_clerk == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-dashboard
           path: |
             frontend/playwright-report/
             frontend/test-results/
-            frontend/fixture-test-results/
-            frontend/delivery-test-results/
             /tmp/backend.log
             /tmp/frontend.log
           retention-days: 7
@@ -261,3 +245,148 @@ jobs:
         run: |
           if [ -n "$BACKEND_PID" ]; then kill "$BACKEND_PID" 2>/dev/null || true; fi
           if [ -n "$FRONTEND_PID" ]; then kill "$FRONTEND_PID" 2>/dev/null || true; fi
+
+  effort:
+    name: "effort selector fixtures"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          pnpm exec playwright install chromium --with-deps
+
+      - name: Run effort selector fixture tests
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.effort.config.ts --output effort-test-results
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-effort
+          path: |
+            frontend/playwright-report/
+            frontend/effort-test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  files:
+    name: "file and review fixtures"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          pnpm exec playwright install chromium --with-deps
+
+      - name: Run file, review, duplication, and account layout fixture tests
+        working-directory: frontend
+        env:
+          E2E_REVIEW_FIXTURES: "1"
+        run: pnpm exec playwright test --config playwright.files.config.ts --output fixture-test-results
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-files
+          path: |
+            frontend/playwright-report/
+            frontend/fixture-test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  delivery:
+    name: "delivery fixtures"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22" # Native TypeScript execution for delivery URL tests.
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+          pnpm exec playwright install chromium --with-deps
+
+      - name: Run delivery page and URL fixture tests
+        working-directory: frontend
+        run: |
+          node --experimental-strip-types --test tests/delivery-view.test.ts tests/delivery-qa.test.ts
+          pnpm exec playwright test --config playwright.delivery.config.ts --output delivery-test-results
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-delivery
+          path: |
+            frontend/playwright-report/
+            frontend/delivery-test-results/
+          retention-days: 7
+          if-no-files-found: ignore

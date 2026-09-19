@@ -1,26 +1,30 @@
 """Compare recorded cost with a token-rate estimate in the prod runtime.
 
-Defaults are Fireworks MiniMax M3 standard serverless rates published in
-2026-07: $0.30/M input, $0.06/M cached input, and $1.20/M output.
+Supply the model and all USD-per-million-token rates explicitly; prices change.
 
     cd backend
-    modal run -e main ops_compare_token_costs.py --since 2026-07-01
+    modal run ops_compare_token_costs.py --since <YYYY-MM-DD> --model <provider/model> \
+      --input-rate <rate> --cache-read-rate <rate> --output-rate <rate> --cache-write-rate <rate>
 
 This is read-only. It imports only ``modal_app``, so no scheduled worker or
 reconciler functions are registered.
 """
 
-from modal_app import app, image, runtime_secrets
+import modal
+
+from modal_app import image, runtime_secrets
+
+app = modal.App("oddish-compare-token-costs")
 
 
 @app.function(image=image, secrets=runtime_secrets, timeout=3600)
 def compare(
     since: str,
-    model: str = "fireworks/minimax-m3",
-    input_rate: float = 0.30,
-    cache_read_rate: float = 0.06,
-    output_rate: float = 1.20,
-    cache_write_rate: float = 0.30,
+    model: str,
+    input_rate: float,
+    cache_read_rate: float,
+    output_rate: float,
+    cache_write_rate: float,
 ) -> None:
     from oddish.config import Settings
 
@@ -43,11 +47,11 @@ def compare(
 @app.local_entrypoint()
 def main(
     since: str,
-    model: str = "fireworks/minimax-m3",
-    input_rate: float = 0.30,
-    cache_read_rate: float = 0.06,
-    output_rate: float = 1.20,
-    cache_write_rate: float = 0.30,
+    model: str,
+    input_rate: float,
+    cache_read_rate: float,
+    output_rate: float,
+    cache_write_rate: float,
 ) -> None:
     compare.remote(
         since=since,

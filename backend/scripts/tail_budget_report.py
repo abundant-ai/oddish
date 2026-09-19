@@ -1,6 +1,6 @@
 """Tail-budget report: what does an N-byte tail actually capture?
 
-The sandbox agent sees only the LAST N bytes of each trajectory. This measures,
+For a proposed limit retaining only the LAST N bytes of each trajectory, this measures,
 over a real cohort, how much of each trajectory that keeps and what the whole
 cohort costs a single context at various budgets -- so the budget is chosen
 against real sizes rather than a guess.
@@ -44,9 +44,10 @@ async def report(eid: str, classification: str, limit: int) -> str:
                 TrialModel.status.in_([TrialStatus.SUCCESS, TrialStatus.FAILED]),
             )
         )
-        rows = (await session.execute(stmt)).all()
+        rows = (await session.execute(stmt.order_by(TrialModel.id))).all()
         cohort = [
-            t for t, _ in rows
+            t
+            for t, _ in rows
             if (t.analysis or {}).get("classification") == classification
         ][:limit]
 
@@ -59,7 +60,7 @@ async def report(eid: str, classification: str, limit: int) -> str:
             if traj is None:
                 failed += 1
                 continue
-            sizes.append(len(json.dumps(traj)))
+            sizes.append(len(json.dumps(traj).encode("utf-8")))
 
     if not sizes:
         return json.dumps({"error": "no trajectories read", "failed": failed})
@@ -76,25 +77,33 @@ async def report(eid: str, classification: str, limit: int) -> str:
         "trials_measured": n,
         "trajectories_unreadable": failed,
         "trajectory_bytes": {
-            "min": sizes[0], "p50": pct(0.50), "p90": pct(0.90),
-            "max": sizes[-1], "total": sum(sizes),
+            "min": sizes[0],
+            "p50": pct(0.50),
+            "p90": pct(0.90),
+            "max": sizes[-1],
+            "total": sum(sizes),
         },
         "budgets": [],
     }
     for b in BUDGETS:
         kept = sum(min(b, s) for s in sizes)
         untouched = sum(1 for s in sizes if s <= b)
-        out["budgets"].append({
-            "tail_bytes": b,
-            "cohort_bytes_at_this_budget": kept,
-            "est_tokens_whole_cohort_one_context": kept // CHARS_PER_TOKEN,
-            "est_tokens_per_batch_of_10": (kept // max(n, 1) * 10) // CHARS_PER_TOKEN,
-            "trials_fully_shown": f"{untouched}/{n}",
-            "pct_of_median_trajectory_kept": round(100 * min(b, pct(0.50)) / pct(0.50), 1),
-        })
+        out["budgets"].append(
+            {
+                "tail_bytes": b,
+                "cohort_bytes_at_this_budget": kept,
+                "est_tokens_whole_cohort_one_context": kept // CHARS_PER_TOKEN,
+                "est_tokens_per_batch_of_10": (kept // max(n, 1) * 10)
+                // CHARS_PER_TOKEN,
+                "trials_fully_shown": f"{untouched}/{n}",
+                "pct_of_median_trajectory_kept": round(
+                    100 * min(b, pct(0.50)) / pct(0.50), 1
+                ),
+            }
+        )
     return json.dumps(out, indent=2)
 
 
 @app.local_entrypoint()
-def main(eid: str = "c02666c5", classification: str = "GOOD_FAILURE", limit: int = 97):
+def main(eid: str, classification: str = "GOOD_FAILURE", limit: int = 100):
     print(report.remote(eid, classification, limit))

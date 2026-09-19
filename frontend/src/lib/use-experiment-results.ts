@@ -104,7 +104,7 @@ export function useExperimentResults({
     tasks,
     error,
     isLoading: !!url && !results && !error,
-    isLoadingTrials: isValidating,
+    isLoadingTrials: isValidating && !data,
     trialsLoaded: results?.trials.length ?? 0,
     totalTrials: results?.experiment.summary?.trial_count ?? 0,
     pagesComplete: !!data,

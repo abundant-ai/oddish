@@ -524,7 +524,7 @@ export function TaskFilesPanel({
   const checksLoading = overviewAvailable && !panel && !checksLoadError;
   const checksLoadFailure =
     checksLoadError && !panel
-      ? "Unable to load the static checks state."
+      ? "Unable to load the pre-trial audit state."
       : null;
   const checksFindings = [
     ...(checksVersion?.retained_findings ?? []),
@@ -971,15 +971,7 @@ export function TaskFilesPanel({
         !verdictInFlight &&
         !panel?.qa_active
       : panel?.can_run_qa);
-  const qaActionLabel =
-    panel?.has_analysis ||
-    verdictSource?.verdict_status ||
-    verdictSource?.verdict ||
-    (task?.trials ?? []).some(
-      (trial) => trial.analysis_status || trial.analysis
-    )
-      ? "Rerun execution review"
-      : "Run execution review";
+  const qaActionLabel = `Generate QA verdict${verdictSource?.current_version != null ? ` for v${verdictSource.current_version}` : ""}`;
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -1090,7 +1082,9 @@ export function TaskFilesPanel({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue task QA");
+        throw new Error(
+          data.detail || data.error || "Failed to queue QA verdict generation"
+        );
       }
       onRetryComplete?.([task.id]);
       // The QA-active guard reads this cache; refresh it so the guard flips
@@ -1098,7 +1092,9 @@ export function TaskFilesPanel({
       void mutateChecks();
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue task QA"
+        err instanceof Error
+          ? err.message
+          : "Failed to queue QA verdict generation"
       );
     } finally {
       setIsRunningQA(false);
@@ -1144,7 +1140,7 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks"
+          data.detail || data.error || "Failed to queue pre-trial audit"
         );
       }
       await mutateChecks();
@@ -1609,7 +1605,6 @@ export function TaskFilesPanel({
             style={{ paddingLeft: `${depth * 12 + 8}px` }}
           >
             <Loader2 className="h-3 w-3 animate-spin" />
-            Loading…
           </div>
         ) : null}
         {directory?.status === "error" ? (
@@ -1703,11 +1698,7 @@ export function TaskFilesPanel({
 
   const renderFileContent = () => {
     if (!selectedFile) {
-      return (
-        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          Select a file to view its contents
-        </div>
-      );
+      return null;
     }
 
     if (!selectedPreview && !previewError) {
@@ -1918,7 +1909,6 @@ export function TaskFilesPanel({
                           ? "bg-primary/20 text-primary"
                           : "hover:bg-muted/50 cursor-pointer"
                       }`}
-                      title="View task QA and aggregated trial QA"
                     >
                       <ListChecks
                         className="h-3.5 w-3.5 shrink-0"
@@ -1942,7 +1932,6 @@ export function TaskFilesPanel({
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="Browse task files"
                   >
                     <FolderOpen
                       className="h-3.5 w-3.5 shrink-0"
@@ -1958,12 +1947,13 @@ export function TaskFilesPanel({
                 </div>
               ) : null}
               {isListingLoading ? (
-                <p
+                <div
                   role="status"
-                  className="text-muted-foreground px-2 py-2 text-xs"
+                  aria-label="Loading files"
+                  className="px-2 py-2"
                 >
-                  Loading files…
-                </p>
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                </div>
               ) : listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
@@ -2126,7 +2116,9 @@ export function TaskFilesPanel({
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.
                   verdictTask={verdictSource ?? null}
+                  experiments={checksVersion?.experiments}
                   checksFindings={checksFindings}
+                  checksTrialId={checksVersion?.pre_trial_trial_id}
                   checksStatus={checksVersion?.pre_trial_status}
                   checksError={checksVersion?.pre_trial_error}
                   onRerunChecks={handleRerunChecks}
@@ -2136,6 +2128,27 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  onOpenSource={(item) => {
+                    if (!item.file) return;
+                    const node =
+                      findNodeByPath(fileTree, item.file) ??
+                      findNodeBySuffix(fileTree, item.file);
+                    const path = node?.path ?? item.file;
+                    selectFilePath(path);
+                    onSelectLinesChange?.(
+                      item.line_start
+                        ? {
+                            start: item.line_start,
+                            end: item.line_end ?? item.line_start,
+                          }
+                        : null
+                    );
+                    setExpandedDirs(
+                      (previous) =>
+                        new Set([...previous, ...getAncestorPaths(path)])
+                    );
+                    onActivePaneChange?.("file");
+                  }}
                   executionReviewAction={
                     showAnalysis &&
                     task && (
@@ -2145,11 +2158,6 @@ export function TaskFilesPanel({
                         size="sm"
                         onClick={handleRunQA}
                         disabled={!canRunQA || isRunningQA}
-                        title={
-                          actionsReady
-                            ? "Reviews recorded runs and synthesizes the verdict for the default version; does not rerun solver trials."
-                            : "Loading latest task state."
-                        }
                         className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                       >
                         {isRunningQA ? (
@@ -2303,11 +2311,6 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
-                    title={
-                      actionsReady
-                        ? "Reruns solver trials in this task or experiment."
-                        : "Loading latest task state."
-                    }
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw

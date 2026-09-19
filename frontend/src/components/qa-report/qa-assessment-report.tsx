@@ -6,7 +6,7 @@ import type { PreTrialFinding } from "@/lib/types";
 import { FALLBACK_TOKEN, VERDICT_TOKENS } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
-import { SeverityGroups } from "./action-items";
+import { FindingList } from "./action-items";
 import type { FeedbackRecord } from "./types";
 
 const isNa = (s: string | null | undefined) => !s || /^n\/a/i.test(s);
@@ -42,7 +42,9 @@ export function QaAssessmentReport({
   const token = VERDICT_TOKENS[classification] ?? FALLBACK_TOKEN;
   const Icon = token.icon;
   const items = actionItems ?? [];
-  const mustFix = items.length;
+  const mustFix = items.filter(
+    (item) => (item.tier ?? item.severity) === "must_fix"
+  ).length;
 
   return (
     <article
@@ -76,11 +78,6 @@ export function QaAssessmentReport({
         ) : null}
 
         <div className="text-muted-foreground ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px]">
-          {mustFix > 0 ? (
-            <span className="bg-destructive/15 text-destructive rounded-md px-1.5 py-0.5 font-semibold">
-              {mustFix} task defects
-            </span>
-          ) : null}
           {duration ? <span>{duration}</span> : null}
           {raw !== undefined ? (
             <CopyJsonButton value={raw} label="the full assessment" />
@@ -93,7 +90,7 @@ export function QaAssessmentReport({
           <AnalysisProse text={rootCause} className="text-foreground/90" />
         ) : (
           <p className="text-muted-foreground text-xs">
-            The analysis produced no root cause.
+            QA produced no root cause.
           </p>
         )}
 
@@ -111,7 +108,7 @@ export function QaAssessmentReport({
 
         {onFeedback ? (
           <FeedbackControl
-            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} verdict`}
+            label={`the ${EXECUTION_LABELS[classification as AnalysisClassification] ?? classification.replace(/_/g, " ")} analysis`}
             className="mt-3"
             onSubmit={(vote, note) =>
               onFeedback({
@@ -125,10 +122,17 @@ export function QaAssessmentReport({
 
         {items.length > 0 ? (
           <section className="mt-4">
-            <h3 className="text-muted-foreground font-mono text-[10px] font-semibold tracking-widest uppercase">
-              Action items ({items.length})
-            </h3>
-            <SeverityGroups
+            {mustFix > 0 ? (
+              <h3 className="bg-destructive/10 text-destructive border-destructive/25 rounded-md border px-3 py-2 font-mono text-xs font-semibold">
+                ACTION ITEMS: {mustFix} MUST FIX TASK{" "}
+                {mustFix === 1 ? "DEFECT" : "DEFECTS"}
+              </h3>
+            ) : (
+              <h3 className="text-muted-foreground text-xs font-semibold">
+                Findings
+              </h3>
+            )}
+            <FindingList
               items={items}
               onFeedback={onFeedback}
               className="mt-2"

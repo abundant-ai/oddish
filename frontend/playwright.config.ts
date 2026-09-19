@@ -11,7 +11,9 @@ export default defineConfig({
   testIgnore: [
     "delivery-refresh.spec.ts",
     "file-loading.spec.ts",
+    "reasoning-effort.spec.ts",
     "user-ui-layout.spec.ts",
+    "ui-duplication.spec.ts",
   ],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

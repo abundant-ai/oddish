@@ -56,22 +56,18 @@ test("groups Gemini 3.5 Flash label and harness aliases into one column", () => 
     trial("gemini-cli-api-key-no-search", "google/gemini-3.5-flash"),
     trial("gemini-cli", "gemini/gemini-3.6-flash"),
   ];
-  const { agentSummaries, modelScopedAgents } = buildExperimentAgentSummaries([
-    task(aliases),
-  ]);
+  const agentSummaries = buildExperimentAgentSummaries([task(aliases)]);
 
   expect(agentSummaries.map((summary) => summary.key)).toEqual([
-    "gemini-cli/gemini/gemini-3.5-flash",
-    "gemini-cli/gemini/gemini-3.6-flash",
+    "gemini-cli/gemini/gemini-3.5-flash/unspecified",
+    "gemini-cli/gemini/gemini-3.6-flash/unspecified",
   ]);
   expect(
-    aliases
-      .slice(0, 3)
-      .map((item) => getExperimentAgentKey(item, modelScopedAgents))
+    aliases.slice(0, 3).map((item) => getExperimentAgentKey(item))
   ).toEqual([
-    "gemini-cli/gemini/gemini-3.5-flash",
-    "gemini-cli/gemini/gemini-3.5-flash",
-    "gemini-cli/gemini/gemini-3.5-flash",
+    "gemini-cli/gemini/gemini-3.5-flash/unspecified",
+    "gemini-cli/gemini/gemini-3.5-flash/unspecified",
+    "gemini-cli/gemini/gemini-3.5-flash/unspecified",
   ]);
 });
 
@@ -80,10 +76,10 @@ test("does not relabel other Gemini models or non-Gemini harnesses", () => {
     trial("gemini-cli-api-key-no-search", "google/gemini-3.6-flash"),
     trial("mini-swe-agent", "google/gemini-3.5-flash"),
   ];
-  const { agentSummaries } = buildExperimentAgentSummaries([task(unrelated)]);
+  const agentSummaries = buildExperimentAgentSummaries([task(unrelated)]);
 
   expect(agentSummaries.map((summary) => summary.key)).toEqual([
-    "gemini-cli-api-key-no-search",
-    "mini-swe-agent",
+    "gemini-cli-api-key-no-search/google/gemini-3.6-flash/unspecified",
+    "mini-swe-agent/google/gemini-3.5-flash/unspecified",
   ]);
 });

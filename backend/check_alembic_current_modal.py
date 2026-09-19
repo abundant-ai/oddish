@@ -1,4 +1,4 @@
-"""One-off: report the applied Alembic revision of the *production* DB.
+"""Report the applied Alembic revision of the *production* DB.
 
 Two migration stacks share the prod database but stamp separate version
 tables (see each stack's ``alembic/env.py``):
@@ -22,7 +22,7 @@ import modal
 
 from modal_app import image, runtime_secrets
 
-app = modal.App("check-alembic-current-oneoff")
+app = modal.App("check-alembic-current")
 
 _VERSION_TABLES = {
     "oddish (core)": "alembic_version_oddish",
@@ -40,10 +40,12 @@ async def current() -> dict:
     async with get_session() as session:
         for label, table in _VERSION_TABLES.items():
             try:
-                result = await session.execute(
-                    text(f"SELECT version_num FROM {table}")  # noqa: S608 (fixed identifiers)
-                )
-                out[label] = [row[0] for row in result.fetchall()]
+                # A missing table must not abort the transaction for the other stack.
+                async with session.begin_nested():
+                    result = await session.execute(
+                        text(f"SELECT version_num FROM {table}")  # noqa: S608 (fixed identifiers)
+                    )
+                    out[label] = [row[0] for row in result.fetchall()]
             except Exception as exc:  # table missing => stack never migrated here
                 out[label] = [f"<error: {type(exc).__name__}: {exc}>"]
     return out

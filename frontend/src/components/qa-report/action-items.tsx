@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
-import { TIER_BADGE, TIER_META, TIER_ORDER } from "./tokens";
+import { TIER_BADGE, TIER_LABELS, TIER_ORDER } from "./tokens";
 import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
 import type { FeedbackRecord } from "./types";
@@ -15,30 +15,25 @@ function findingLocation(finding: PreTrialFinding): string | null {
   return `${finding.file}:${start}${end && end !== start ? `-${end}` : ""}`;
 }
 
-// One line of the item itself, for the collapsed group header. Titles are
-// short by construction; detail/recommendation are markdown bodies, so they
-// get flattened and capped rather than dumped into a <summary>.
-function findingPreview(finding: PreTrialFinding): string | null {
-  const raw = finding.title || finding.detail || finding.recommendation || "";
-  const flat = raw.replace(/\s+/g, " ").trim();
-  if (!flat) return null;
-  return flat.length > 120 ? `${flat.slice(0, 119).trimEnd()}…` : flat;
-}
-
 function ActionItemDetail({
   item,
   itemKey,
   onFeedback,
+  canVoteOn,
   renderItemFooter,
   findingLink,
+  onOpenSource,
 }: {
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
+  canVoteOn?: (item: PreTrialFinding, itemKey: string) => boolean;
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const where = findingLocation(item);
+  const voteable = onFeedback && (canVoteOn?.(item, itemKey) ?? true);
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -60,22 +55,25 @@ function ActionItemDetail({
         />
       </div>
 
-      {item.title ? (
-        <h4 className="text-foreground text-sm leading-snug font-medium text-pretty">
-          {findingLink ? (
-            <a className="hover:underline" href={findingLink(item)}>
-              {item.title}
-            </a>
-          ) : (
-            item.title
-          )}
-        </h4>
-      ) : null}
-
       {where ? (
         <p className="text-muted-foreground font-mono text-[10.5px] break-all">
           {findingLink ? (
-            <a className="underline" href={findingLink(item, true)}>
+            <a
+              className="underline"
+              href={findingLink(item, true)}
+              onClick={(event) => {
+                if (
+                  !onOpenSource ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                onOpenSource(item);
+              }}
+            >
               Open {where}
             </a>
           ) : (
@@ -105,7 +103,7 @@ function ActionItemDetail({
 
       {renderItemFooter?.(item, itemKey)}
 
-      {onFeedback ? (
+      {voteable ? (
         <FeedbackControl
           label={`action item: ${item.title ?? itemKey}`}
           className="mt-1.5"
@@ -122,145 +120,100 @@ function ActionItemDetail({
   );
 }
 
-/**
- * Action items grouped by severity tier, each tier its own independently
- * collapsible <details>, all starting collapsed.
- */
-export function SeverityGroups({
+/** Each finding opens independently; addressed findings open from the URL. */
+export function FindingList({
   items,
   onFeedback,
+  canVoteOn,
   className,
-  tierEffects,
   renderItemFooter,
   selectedFinding,
   findingLink,
+  onOpenSource,
 }: {
   selectedFinding?: string | null;
   findingLink?: (item: PreTrialFinding, file?: boolean) => string;
+  onOpenSource?: (item: PreTrialFinding) => void;
   items: PreTrialFinding[];
   onFeedback?: (record: FeedbackRecord) => Promise<void>;
+  /** Hide the vote control on items `onFeedback` has nothing to record against. */
+  canVoteOn?: (item: PreTrialFinding, itemKey: string) => boolean;
   className?: string;
-  /** Per-tier effect line; the default narrates trial classification. */
-  tierEffects?: Partial<Record<string, string>>;
   /** Extra content under an item — e.g. links to the trials that surfaced it. */
   renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!selectedFinding) return;
-    const item = Array.from(
+    const matches = Array.from(
       root.current?.querySelectorAll<HTMLElement>("[data-finding]") ?? []
-    ).find((node) => node.dataset.finding === selectedFinding);
-    const group = item?.closest("details");
-    if (group) group.open = true;
-    item?.scrollIntoView({ block: "center" });
+    ).filter(
+      (node) =>
+        node.dataset.finding === selectedFinding ||
+        node.dataset.findingLink === selectedFinding
+    );
+    for (const item of matches) {
+      const disclosure = item.closest("details");
+      if (disclosure) disclosure.open = true;
+    }
+    matches[0]?.scrollIntoView({ block: "center" });
   }, [selectedFinding, items]);
-  const groups = TIER_ORDER.map((tier) => {
-    const tierItems = items.filter((i) => (i.tier ?? "optional") === tier);
-    const previews = tierItems
-      .map(findingPreview)
-      .filter((p): p is string => Boolean(p));
-    return {
-      tier,
-      meta: TIER_META[tier],
-      items: tierItems,
-      previews,
-    };
-  }).filter((g) => g.items.length > 0);
-
-  if (!groups.length) return null;
+  const ordered = TIER_ORDER.flatMap((tier) =>
+    items.filter((item) => (item.tier ?? item.severity ?? "optional") === tier)
+  );
+  if (!ordered.length) return null;
 
   return (
     <div ref={root} className={cn("flex flex-col gap-2", className)}>
-      {groups.map((group) => (
-        <TierDetails
-          key={group.tier}
-          className="group border-border bg-background/40 rounded-lg border"
-          initiallyOpen={group.tier === "must_fix"}
-        >
-          <summary className="hover:bg-foreground/5 flex cursor-pointer list-none flex-wrap items-center gap-2.5 px-3 py-2 transition-colors select-none">
-            <span
-              aria-hidden="true"
-              className="text-muted-foreground text-[9px] transition-transform group-open:rotate-90"
-            >
-              &#9654;
-            </span>
-            <span
-              className={cn(
-                "rounded-md px-2 py-0.5 font-mono text-[9.5px] font-semibold tracking-wider",
-                TIER_BADGE[group.tier]
-              )}
-            >
-              {group.items.length} {group.meta.label}
-            </span>
-            {/* Collapsed, the line is worth more as the items themselves than
-                as the tier's effect, which the badge already implies. Open,
-                the items are right there, so the effect takes the line back. */}
-            {group.previews.length > 0 ? (
+      {ordered.map((item, index) => {
+        const tier = item.tier ?? item.severity ?? "optional";
+        const key = item.id ?? `${tier}-${item.title ?? index}`;
+        return (
+          <details
+            key={key}
+            data-finding={item.id}
+            data-finding-link={item.links_to}
+            className={cn(
+              "group border-border bg-background/40 rounded-lg border",
+              selectedFinding &&
+                (item.id === selectedFinding ||
+                  item.links_to === selectedFinding) &&
+                "ring-1 ring-amber-500/40"
+            )}
+          >
+            <summary className="hover:bg-foreground/5 flex cursor-pointer list-none items-start gap-3 px-4 py-3 select-none">
               <span
-                className="text-muted-foreground min-w-0 flex-1 truncate text-[11px] leading-relaxed group-open:hidden"
-                title={group.previews.join("\n")}
+                aria-hidden="true"
+                className="text-muted-foreground mt-1 text-[9px] transition-transform group-open:rotate-90"
               >
-                {group.previews.join(" · ")}
+                &#9654;
               </span>
-            ) : null}
-            <span
-              className={cn(
-                "text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty",
-                group.previews.length > 0 && "hidden group-open:block"
-              )}
-            >
-              {tierEffects?.[group.tier] ?? group.meta.labelEffect}
-            </span>
-          </summary>
-
-          <ul className="divide-border border-border flex flex-col divide-y border-t">
-            {group.items.map((item, index) => {
-              const key = item.id ?? `${group.tier}-${item.title ?? index}`;
-              return (
-                <li
-                  key={key}
-                  data-finding={item.id}
-                  className={cn(
-                    "px-3 py-3",
-                    item.id === selectedFinding &&
-                      "bg-amber-500/10 ring-1 ring-amber-500/40"
-                  )}
-                >
-                  <ActionItemDetail
-                    item={item}
-                    findingLink={findingLink}
-                    itemKey={key}
-                    onFeedback={onFeedback}
-                    renderItemFooter={renderItemFooter}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </TierDetails>
-      ))}
+              <span
+                className={cn(
+                  "shrink-0 rounded px-2 py-0.5 text-xs font-medium",
+                  TIER_BADGE[tier]
+                )}
+              >
+                {TIER_LABELS[tier]}
+              </span>
+              <h4 className="min-w-0 text-sm leading-relaxed font-medium">
+                {item.title || `Finding ${index + 1}`}
+              </h4>
+            </summary>
+            <div className="border-border border-t px-4 py-4">
+              <ActionItemDetail
+                item={item}
+                findingLink={findingLink}
+                onOpenSource={onOpenSource}
+                itemKey={key}
+                onFeedback={onFeedback}
+                canVoteOn={canVoteOn}
+                renderItemFooter={renderItemFooter}
+              />
+            </div>
+          </details>
+        );
+      })}
     </div>
-  );
-}
-
-function TierDetails({
-  initiallyOpen,
-  className,
-  children,
-}: {
-  initiallyOpen?: boolean;
-  className?: string;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(Boolean(initiallyOpen));
-  return (
-    <details
-      className={className}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      {children}
-    </details>
   );
 }

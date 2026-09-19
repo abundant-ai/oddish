@@ -1,6 +1,7 @@
 import type {
   DeliveryBoardResponse,
   DeliveryPageRow,
+  DeliveryPageResponse,
   DeliveryQAStatus,
   DeliveryTaskBoardRow,
   QAIssueCategory,
@@ -14,14 +15,16 @@ export const QA_ISSUE_LABELS: Record<QAIssueCategory, string> = {
   qa_execution: "QA execution",
 };
 
+// Four verdict words: accepted, rejected, pending (with what is still
+// missing), and failed, which is reserved for a QA run that did not complete.
 export const QA_STATUS_LABELS: Record<DeliveryQAStatus["status"], string> = {
-  accepted: "Accepted",
-  needs_fixes: "Blocking defects found",
-  outdated: "Review needs refresh",
-  queued: "Review queued",
-  running: "Review running",
-  error: "Review could not complete",
-  never: "Not reviewed",
+  accepted: "Verdict accepted",
+  needs_fixes: "Verdict rejected",
+  outdated: "Verdict pending: regeneration needed",
+  queued: "Verdict pending: generation queued",
+  running: "Verdict pending: generating",
+  error: "Verdict failed",
+  never: "Verdict pending: not yet generated",
 };
 
 export const DELIVERY_STATES = {
@@ -31,7 +34,7 @@ export const DELIVERY_STATES = {
     background: "bg-red-500/10",
   },
   qa_incomplete: {
-    label: "QA incomplete",
+    label: "Checks needed",
     tone: "text-amber-700 dark:text-amber-400",
     background: "bg-amber-500/10",
   },
@@ -70,6 +73,39 @@ export function deliveryTaskState(
   }
   if (failedChecks.length) return "qa_incomplete";
   return row.ready ? "ready" : "awaiting_signoff";
+}
+
+/** Shared QA-first order for row status labels and expanded check cards. */
+export function deliveryCheckOrder(key: string): number {
+  return { verdict_ok: 0, pre_trial_passed: 1, min_rollouts: 2 }[key] ?? 3;
+}
+
+/** Keep missing delivery requirements visible without parsing check prose. */
+export function deliveryTaskLabels(row: DeliveryTaskBoardRow): string[] {
+  const defects = row.defects.filter((finding) => !finding.acknowledged).length;
+  if (defects > 0) return [`Verdict rejected: ${defects} Must fix`];
+  const labels = row.checks
+    .filter((check) => check.kind === "automated" && check.status === "fail")
+    .sort((a, b) => deliveryCheckOrder(a.key) - deliveryCheckOrder(b.key))
+    .flatMap((check) =>
+      check.failure_labels?.length
+        ? check.failure_labels
+        : [
+            {
+              pre_trial_passed: "Pre-trial audit needed",
+              min_rollouts: "Run requirements unmet",
+              verdict_ok:
+                row.qa.status === "accepted"
+                  ? QA_STATUS_LABELS.outdated
+                  : QA_STATUS_LABELS[row.qa.status],
+              task_exists: "Task missing",
+              no_must_fix: "Finding decisions needed",
+            }[check.key] ?? check.label,
+          ]
+    );
+  return labels.length
+    ? [...new Set(labels)]
+    : [DELIVERY_STATES[deliveryTaskState(row)].label];
 }
 
 /** Ownership scopes current counts and rows, including completed tasks. */
@@ -212,4 +248,48 @@ export function deliveryPageQuery(params: Pick<URLSearchParams, "get">) {
     group: view.groupBy,
     task: view.focusTask,
   });
+}
+
+/** IDs across the full delivery take precedence over legacy task names,
+ * including when the matching member is not on the loaded page. */
+export function focusedDeliveryTask(
+  page: DeliveryPageResponse,
+  focusTask: string | null
+) {
+  return (
+    page.tasks.find((row) => row.task_id === focusTask) ??
+    (!page.member_task_ids.includes(focusTask ?? "")
+      ? page.tasks.find((row) => row.task_name === focusTask)
+      : undefined)
+  );
+}
+
+/** Reuse a loaded table when only its expanded row changes. Off-page links and
+ * filter exceptions still use the server to locate the correct page. */
+export function deliveryPageContainsView(
+  page: DeliveryPageResponse,
+  loadedQuery: string,
+  requestedQuery: string
+): boolean {
+  const loaded = parseDeliveryView(new URLSearchParams(loadedQuery));
+  const requested = parseDeliveryView(new URLSearchParams(requestedQuery));
+  if (
+    loaded.pageSize !== requested.pageSize ||
+    loaded.filter !== requested.filter ||
+    loaded.issueFilter !== requested.issueFilter ||
+    loaded.ownerFilter !== requested.ownerFilter ||
+    loaded.groupBy !== requested.groupBy
+  )
+    return false;
+  const focus = focusedDeliveryTask(page, requested.focusTask);
+  if (page.focus_outside_filters && focus?.task_id !== page.focus_task_id)
+    return false;
+  if (requested.focusTask) return Boolean(focus);
+  return (
+    page.page ===
+    Math.min(
+      requested.page + 1,
+      Math.max(1, Math.ceil(page.total / requested.pageSize))
+    )
+  );
 }

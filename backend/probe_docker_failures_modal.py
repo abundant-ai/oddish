@@ -1,4 +1,4 @@
-"""One-off: find trial-execution failures via the AUTHORITATIVE error source.
+"""Find trial-execution failures via the AUTHORITATIVE error source.
 
 Why this exists: ``trials.error_message`` is unreliable for these failures. It
 is wiped to NULL at the start of every attempt (``_prepare_trial_run``) and only
@@ -64,10 +64,8 @@ async def examine(hours: int, all_trials: bool, limit: int, needle: str) -> str:
     cutoff = utcnow() - timedelta(hours=hours)
 
     async with get_session() as session:
-        # Candidate set: every NON-success trial in the window. We do NOT filter
-        # on error_message — that's the whole point. ``reward IS NULL`` + a
-        # non-success status is the reliable "this trial did not produce a
-        # verifier score" signal.
+        # Unscored trials can be pending, running, or failed. Report their state
+        # alongside durable errors; missing reward alone does not prove failure.
         conditions = [
             TrialModel.created_at >= cutoff,
             TrialModel.superseded_by_trial_id.is_(None),
@@ -144,10 +142,13 @@ async def examine(hours: int, all_trials: bool, limit: int, needle: str) -> str:
     exc_infos = await asyncio.gather(*[_exc_info(p) for p in prefixes])
 
     rows = []
-    for m, jobs, exc in zip(trial_meta, [jobs_by_trial[m["id"]] for m in trial_meta], exc_infos):
+    for m, jobs, exc in zip(
+        trial_meta, [jobs_by_trial[m["id"]] for m in trial_meta], exc_infos
+    ):
         rows.append(
             {
                 **m,
+                "result_json_read_error": (exc or {}).get("_read_error"),
                 "result_json_exception_type": (exc or {}).get("exception_type"),
                 "result_json_exception_message": _trunc(
                     (exc or {}).get("exception_message"), 200
@@ -204,9 +205,9 @@ async def examine(hours: int, all_trials: bool, limit: int, needle: str) -> str:
         "per_hour_counts": dict(sorted(by_hour.items())),
         "trials_with_db_error_message": err_msg_present,
         "note": (
-            f"{total - err_msg_present}/{total} failed trials have a NULL "
-            "trials.error_message — confirming why a LIKE filter on that column "
-            "misses them. The real error is in result_json_exception_type."
+            f"{total - err_msg_present}/{total} unscored trials have no database error message. "
+            "Unscored trials may still be pending or running. Inspect status, "
+            "result_json_read_error, result_json_exception_type, and worker_jobs."
         ),
     }
 
@@ -221,7 +222,5 @@ def main(
     needle: str = "Docker daemon",
 ) -> None:
     print(
-        examine.remote(
-            hours=hours, all_trials=all_trials, limit=limit, needle=needle
-        )
+        examine.remote(hours=hours, all_trials=all_trials, limit=limit, needle=needle)
     )

@@ -7,6 +7,14 @@ from urllib.parse import quote
 import asyncpg
 import httpx
 from claude_agent_sdk import create_sdk_mcp_server, tool
+from carl_catfish import (
+    catfish_query_params,
+    catfish_view_url,
+    fetch_catfish_costs,
+    format_catfish_breakdown,
+    format_catfish_costs,
+    maybe_queue_catfish_chart,
+)
 from oddish.timing import RequestTimedAsyncClient
 from pglast.parser import ParseError as _ParseError
 from pglast.parser import parse_sql_json
@@ -608,6 +616,69 @@ async def oddish_sql(args: dict) -> dict:
     return _text(_format_rows(records[:_SQL_MAX_ROWS], truncated))
 
 
+@tool(
+    "catfish_costs",
+    "Billed cloud spend from Catfish (AWS / Anthropic / OpenAI / Azure / GCP / "
+    "Modal / Daytona / Thunder). Use for vendor invoices and cloud-bill questions, "
+    "not Oddish eval/queue spend. Optional range (default 7d; 1d is the last "
+    "settled UTC day), start/end YYYY-MM-DD, provider (default all), cost_kind "
+    "(compute|token). Returns totals, prior-window compare, daily series, and "
+    "coverage gaps — a pending provider day is not $0.",
+    {
+        "type": "object",
+        "properties": {
+            "range": {"type": "string"},
+            "start": {"type": "string"},
+            "end": {"type": "string"},
+            "provider": {"type": "string"},
+            "cost_kind": {"type": "string"},
+        },
+        "required": [],
+    },
+)
+async def catfish_costs(args: dict) -> dict:
+    params = catfish_query_params(args, default_group="provider")
+    if isinstance(params, str):
+        return _text(f":no_entry: {params}")
+    data = await fetch_catfish_costs(params)
+    if isinstance(data, str):
+        return _text(f":warning: {data}")
+    text = format_catfish_costs(data)
+    await maybe_queue_catfish_chart(params, catfish_view_url(data))
+    return _text(text)
+
+
+@tool(
+    "catfish_breakdown",
+    "Same Catfish cloud bill as catfish_costs, grouped. Use when asked for "
+    "spend by model, project, owner, API key, or provider. Optional range "
+    "(default 7d), start/end, provider, group (provider|model|project|owner|key, "
+    "default model), cost_kind.",
+    {
+        "type": "object",
+        "properties": {
+            "range": {"type": "string"},
+            "start": {"type": "string"},
+            "end": {"type": "string"},
+            "provider": {"type": "string"},
+            "group": {"type": "string"},
+            "cost_kind": {"type": "string"},
+        },
+        "required": [],
+    },
+)
+async def catfish_breakdown(args: dict) -> dict:
+    params = catfish_query_params(args, default_group="model")
+    if isinstance(params, str):
+        return _text(f":no_entry: {params}")
+    data = await fetch_catfish_costs(params)
+    if isinstance(data, str):
+        return _text(f":warning: {data}")
+    text = format_catfish_breakdown(data)
+    await maybe_queue_catfish_chart(params, catfish_view_url(data))
+    return _text(text)
+
+
 SERVER_NAME = "oddish"
 
 _TOOLS = [
@@ -617,6 +688,8 @@ _TOOLS = [
     oddish_trial_logs,
     oddish_tasks,
     oddish_sql,
+    catfish_costs,
+    catfish_breakdown,
 ]
 
 

@@ -10,6 +10,7 @@ import { QueueKeyIcon } from "./queue-key-icon";
 interface PassAtOneLeaderboardProps {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  groupEfforts?: boolean;
   hiddenAgents: Set<string>;
   onToggleAgent?: (agent: string) => void;
   hoverAgent?: string | null;
@@ -36,20 +37,15 @@ function getPassAtOneValue(trials: Trial[]): number | null {
 function calculateRows(
   tasks: Task[],
   agentSummaries: AgentSummary[],
+  groupEfforts: boolean
 ): LeaderboardRow[] {
-  const modelScopedAgents = new Set(
-    agentSummaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
-  );
   const rows: LeaderboardRow[] = [];
 
   for (const summary of agentSummaries) {
     const taskValues: number[] = [];
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
-        (trial) =>
-          getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
+        (trial) => getExperimentAgentKey(trial, groupEfforts) === summary.key
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -77,17 +73,18 @@ function calculateRows(
 export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   tasks,
   agentSummaries,
+  groupEfforts = false,
   hiddenAgents,
   hoverAgent,
   onHoverAgent,
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
-    () => calculateRows(tasks, agentSummaries),
-    [tasks, agentSummaries],
+    () => calculateRows(tasks, agentSummaries, groupEfforts),
+    [tasks, agentSummaries, groupEfforts]
   );
   const visibleRows = useMemo(
     () => rows.filter((row) => !hiddenAgents.has(row.key)),
-    [rows, hiddenAgents],
+    [rows, hiddenAgents]
   );
   const colorByAgent = useMemo(() => {
     const colors = new Map<string, string>();
@@ -105,7 +102,10 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   const scaleTicks = [0, 0.25, 0.5, 0.75, 1];
 
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
+    <section
+      aria-label="Leaderboard"
+      className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3"
+    >
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
           Leaderboard
@@ -115,7 +115,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
         </span>
       </div>
 
-      <div className="grid grid-cols-[1fr_60px] border-b border-[color:var(--paper-line-2)] pb-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+      <div className="grid grid-cols-[1fr_60px] border-b border-[color:var(--paper-line-2)] pb-1.5 font-mono text-[9.5px] font-semibold tracking-[0.12em] text-[color:var(--paper-ink-3)] uppercase">
         <span>Agent</span>
         <span className="text-right">Score</span>
       </div>
@@ -130,7 +130,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
           return (
             <div
               key={row.key}
-              className={`grid grid-cols-[1fr_60px] items-center pb-1.5 pt-2 transition-opacity ${
+              className={`grid grid-cols-[1fr_60px] items-center pt-2 pb-1.5 transition-opacity ${
                 isLast
                   ? ""
                   : "border-b border-dashed border-[color:var(--paper-line-2)]"
@@ -178,6 +178,6 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
           <span key={tick}>{Math.round(tick * 100)}%</span>
         ))}
       </div>
-    </div>
+    </section>
   );
 });

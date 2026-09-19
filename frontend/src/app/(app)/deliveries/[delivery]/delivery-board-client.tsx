@@ -22,8 +22,12 @@ import {
   parseDeliveryView,
   deliveryViewQuery,
   deliveryPageQuery,
+  deliveryPageContainsView,
+  focusedDeliveryTask,
   DELIVERY_STATES,
   deliveryTaskState,
+  deliveryTaskLabels,
+  deliveryCheckOrder,
   QA_ISSUE_LABELS,
 } from "@/lib/deliveries";
 import { DeliveryDisclosure } from "@/components/delivery-disclosure";
@@ -468,7 +472,7 @@ function QAHistoryVersionRow({
         </span>
         <span className="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1">
           <span>
-            source review:{" "}
+            Pre-trial audit:{" "}
             {version.pre_trial_status
               ? version.pre_trial_status.toLowerCase()
               : "not run"}
@@ -478,8 +482,6 @@ function QAHistoryVersionRow({
           </span>
           <span>
             defects: {version.must_fix} requiring resolution or acknowledgment
-            {version.pre_trial_should_fix > 0 &&
-              ` (${version.pre_trial_should_fix} recorded should_fix in source audit)`}
           </span>
           <span>
             QA runs:{" "}
@@ -495,7 +497,7 @@ function QAHistoryVersionRow({
         {version.pre_trial_error && (
           <p>
             <span className="font-medium text-red-600 dark:text-red-400">
-              source review could not complete:
+              Pre-trial audit could not complete:
             </span>{" "}
             <span className="text-muted-foreground break-words">
               {version.pre_trial_error}
@@ -527,7 +529,7 @@ function QAHistoryVersionRow({
                   : "font-medium text-red-600 dark:text-red-400"
               }
             >
-              verdict:{" "}
+              QA verdict:{" "}
               {verdict.verdict ?? (verdict.is_good ? "accept" : "reject")}
             </span>
             {verdict.primary_issue && (
@@ -598,7 +600,9 @@ function QAHistoryVersionRow({
 }
 
 function TaskRow({
-  row,
+  row: summary,
+  deliveryId,
+  onRefresh,
   frozen,
   isAdmin,
   focused,
@@ -614,13 +618,15 @@ function TaskRow({
   onRemove,
   groupBy,
   canEditWork,
-  busy,
+  busy: pageBusy,
   onClaim,
   onRelease,
   onSaveWork,
   pendingChecks,
 }: {
   row: DeliveryTaskBoardRow;
+  deliveryId: string;
+  onRefresh: () => Promise<unknown>;
   frozen: boolean;
   isAdmin: boolean;
   // True when the page URL's ?task= names this row: it opens expanded
@@ -654,9 +660,57 @@ function TaskRow({
   }) => Promise<void>;
 }) {
   const expanded = focused;
+  const {
+    data: details,
+    error: detailsError,
+    mutate: retryDetails,
+  } = useSWR<DeliveryTaskBoardRow>(
+    expanded && !frozen
+      ? `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(summary.task_id)}?version=${encodeURIComponent(summary.version_id ?? "")}`
+      : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      revalidateOnMount: true,
+    }
+  );
+  const matchingDetails =
+    details?.task_id === summary.task_id &&
+    details.delivery_task_id === summary.delivery_task_id &&
+    details.version_id === summary.version_id;
+  // The table response owns checks and acknowledgments, including per-check
+  // update progress. The task read supplies only full bodies for those same
+  // finding identities; an earlier detail response cannot undo a board write.
+  const row = matchingDetails
+    ? {
+        ...summary,
+        defects: summary.defects.map((defect) => ({
+          ...defect,
+          finding:
+            details.defects.find((item) => item.id === defect.id)?.finding ??
+            defect.finding,
+        })),
+      }
+    : summary;
+  const detailsReady = frozen || matchingDetails;
+  const busy = pageBusy || (expanded && !detailsReady);
+
   const openDefects = row.defects.filter((defect) => !defect.acknowledged);
   const taskHref = `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}&drawer=task&taskPane=overview` : ""}`;
   const state = DELIVERY_STATES[deliveryTaskState(row)];
+  const requirementBadges = (
+    <div className="flex max-w-sm flex-wrap gap-1.5">
+      {deliveryTaskLabels(row).map((label) => (
+        <span
+          key={label}
+          className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${state.tone} ${state.background}`}
+        >
+          {label}
+        </span>
+      ))}
+    </div>
+  );
   const [editingWork, setEditingWork] = useState<DeliveryTaskBoardRow | null>(
     null
   );
@@ -745,16 +799,11 @@ function TaskRow({
             {row.version != null ? `v${row.version}` : "No version"}
             {!row.is_visible && " · Hidden from customer"}
           </span>
+          {groupBy === "state" && (
+            <div className="mt-2">{requirementBadges}</div>
+          )}
         </TableCell>
-        {groupBy !== "state" && (
-          <TableCell>
-            <span
-              className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${state.tone} ${state.background}`}
-            >
-              {state.label}
-            </span>
-          </TableCell>
-        )}
+        {groupBy !== "state" && <TableCell>{requirementBadges}</TableCell>}
         {groupBy !== "owner" && (
           <TableCell onClick={(event) => event.stopPropagation()}>
             {row.qa_work.owner_user_id ? (
@@ -810,6 +859,27 @@ function TaskRow({
             className="pb-6 whitespace-normal"
           >
             <div className="max-w-4xl space-y-3">
+              {detailsError ? (
+                <div role="alert" className="text-sm">
+                  Could not load task details.{" "}
+                  <Button variant="link" onClick={() => void retryDetails()}>
+                    Retry task details
+                  </Button>
+                </div>
+              ) : !detailsReady ? (
+                details ? (
+                  <div role="status" className="text-sm">
+                    Task version changed.{" "}
+                    <Button variant="link" onClick={() => void onRefresh()}>
+                      Refresh delivery
+                    </Button>
+                  </div>
+                ) : (
+                  <p role="status" className="text-muted-foreground text-sm">
+                    Loading task details…
+                  </p>
+                )
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <DeliveryQAStatusBadge qa={row.qa} />
                 {groupBy === "owner" &&
@@ -845,13 +915,18 @@ function TaskRow({
                 const defects = row.defects.filter(
                   (defect) => defect.acknowledged === acknowledged
                 );
-                const checks = row.checks.filter(
-                  (check) =>
-                    check.kind === "automated" &&
-                    check.status === (acknowledged ? "waived" : "fail") &&
-                    // The individual findings already explain this aggregate check.
-                    (check.key !== "no_must_fix" || row.defects.length === 0)
-                );
+                const checks = row.checks
+                  .filter(
+                    (check) =>
+                      check.kind === "automated" &&
+                      check.status === (acknowledged ? "waived" : "fail") &&
+                      // The individual findings already explain this aggregate check.
+                      (check.key !== "no_must_fix" || row.defects.length === 0)
+                  )
+                  .sort(
+                    (a, b) =>
+                      deliveryCheckOrder(a.key) - deliveryCheckOrder(b.key)
+                  );
                 if (defects.length + checks.length === 0) return null;
                 return (
                   <DeliveryDisclosure
@@ -859,20 +934,25 @@ function TaskRow({
                     panel={acknowledged ? "acknowledged" : "decisions"}
                     defaultOpen={!acknowledged}
                   >
-                    <summary className="cursor-pointer py-2 text-base font-medium">
-                      {acknowledged ? "Acknowledged" : "Needs a decision"}
-                      {" · "}
-                      {[
-                        defects.length > 0
-                          ? `${defects.length} finding${defects.length === 1 ? "" : "s"}`
-                          : null,
-                        checks.length > 0
-                          ? `${checks.length} check${checks.length === 1 ? "" : "s"}`
-                          : null,
-                      ]
-                        .filter(Boolean)
-                        .join(", ")}
-                      {row.version != null && ` · v${row.version}`}
+                    <summary className="cursor-pointer py-2 text-base font-semibold">
+                      {acknowledged ? "Acknowledged" : "View Verdict Findings"}
+                      <span className="bg-muted text-muted-foreground mx-2 inline-block rounded-md px-2 py-0.5 text-xs font-medium">
+                        {[
+                          defects.length > 0
+                            ? `${defects.length} finding${defects.length === 1 ? "" : "s"}`
+                            : null,
+                          checks.length > 0
+                            ? `${checks.length} check${checks.length === 1 ? "" : "s"}`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                      {row.version != null && (
+                        <span className="text-muted-foreground font-mono text-xs font-normal">
+                          v{row.version}
+                        </span>
+                      )}
                     </summary>
                     <ul className="divide-y">
                       {defects.map((defect) => (
@@ -881,7 +961,7 @@ function TaskRow({
                           className="grid gap-x-6 gap-y-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"
                         >
                           <a
-                            className="block max-w-prose text-base leading-relaxed font-medium hover:underline sm:col-start-1"
+                            className="block max-w-prose min-w-0 text-base leading-relaxed font-medium break-words hover:underline sm:col-start-1"
                             href={
                               row.version != null
                                 ? findingHref(row.task_id, row.version, {
@@ -897,8 +977,8 @@ function TaskRow({
                           </a>
                           <p className="text-muted-foreground text-sm sm:col-start-1">
                             {defect.source === "pre_trial"
-                              ? "Source review"
-                              : "Execution review"}
+                              ? "Pre-trial audit"
+                              : "Trial analysis"}
                             {defect.recorded_tier &&
                               ` · Recorded severity: ${defect.recorded_tier}`}
                           </p>
@@ -911,7 +991,7 @@ function TaskRow({
                                 ? "Review evidence"
                                 : "Finding record"}
                             </summary>
-                            <div className="mt-2 max-w-prose space-y-3 leading-relaxed break-words">
+                            <div className="bg-muted/40 border-border mt-2 max-w-prose space-y-3 rounded-lg border p-3 leading-relaxed break-words">
                               {defect.finding && (
                                 <>
                                   {defect.finding.file && (
@@ -932,7 +1012,7 @@ function TaskRow({
                               </p>
                             </div>
                           </DeliveryDisclosure>
-                          {acknowledged ? (
+                          {acknowledged && (
                             <p className="text-muted-foreground text-sm sm:col-start-1">
                               Acknowledged by{" "}
                               {defect.acknowledged_by_name ??
@@ -940,89 +1020,117 @@ function TaskRow({
                                 "unknown person"}{" "}
                               for v{row.version}; finding retained
                             </p>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
-                              disabled={
-                                frozen ||
-                                !isAdmin ||
-                                busy ||
-                                !row.version_id ||
-                                !!pendingChecks[
-                                  `${row.delivery_task_id}:ack:${defect.id}`
-                                ]
-                              }
-                              onClick={() =>
-                                onSetCheck(
-                                  `ack:${defect.id}`,
-                                  row.delivery_task_id,
-                                  true
-                                )
-                              }
-                            >
-                              {pendingChecks[
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
+                            disabled={
+                              frozen ||
+                              !isAdmin ||
+                              busy ||
+                              !row.version_id ||
+                              !!pendingChecks[
                                 `${row.delivery_task_id}:ack:${defect.id}`
                               ]
-                                ? pendingChecks[
-                                    `${row.delivery_task_id}:ack:${defect.id}`
-                                  ] === "saving"
-                                  ? "Saving…"
-                                  : "Updating…"
-                                : `Acknowledge for v${row.version}`}
-                            </Button>
-                          )}
+                            }
+                            onClick={() =>
+                              onSetCheck(
+                                `ack:${defect.id}`,
+                                row.delivery_task_id,
+                                !acknowledged
+                              )
+                            }
+                          >
+                            {pendingChecks[
+                              `${row.delivery_task_id}:ack:${defect.id}`
+                            ]
+                              ? pendingChecks[
+                                  `${row.delivery_task_id}:ack:${defect.id}`
+                                ] === "saving"
+                                ? "Saving…"
+                                : "Updating…"
+                              : `${acknowledged ? "Unacknowledge" : "Acknowledge"} for v${row.version}`}
+                          </Button>
                         </li>
                       ))}
                       {checks.map((check) => (
-                        <li key={check.key} className="space-y-3 py-4">
-                          <p className="text-base font-medium">
-                            {(
-                              {
-                                pre_trial_passed: "Source review",
-                                min_rollouts: "Trial and agent coverage",
-                                verdict_ok: "Execution-review verdict",
-                                no_must_fix: "Finding decisions",
-                              } as Record<string, string>
-                            )[check.key] ?? check.label}{" "}
-                            ·{" "}
-                            {acknowledged
-                              ? "Exception acknowledged"
-                              : "Requirement unmet"}
-                          </p>
-                          <p className="max-w-prose text-base leading-relaxed">
-                            {check.detail}
-                          </p>
-                          {acknowledged ? (
-                            <p className="text-muted-foreground text-sm">
+                        <li
+                          key={check.key}
+                          className="grid gap-x-6 gap-y-2 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"
+                        >
+                          <Link
+                            className="hover:bg-muted/40 min-w-0 rounded-lg border p-3 sm:col-start-1"
+                            href={
+                              check.key === "min_rollouts"
+                                ? `/tasks/${encodeURIComponent(row.task_id)}${row.version != null ? `?version=${row.version}` : ""}`
+                                : taskHref
+                            }
+                          >
+                            <p className="text-base font-medium">
+                              {!acknowledged && check.failure_labels?.length
+                                ? check.key === "min_rollouts"
+                                  ? "Runs"
+                                  : check.failure_labels.join(" · ")
+                                : `${
+                                    (
+                                      {
+                                        pre_trial_passed: "Pre-trial audit",
+                                        min_rollouts:
+                                          "Trial and agent coverage",
+                                        verdict_ok: "QA verdict",
+                                        no_must_fix: "Finding decisions",
+                                      } as Record<string, string>
+                                    )[check.key] ?? check.label
+                                  } · ${acknowledged ? "Exception acknowledged" : "Requirement unmet"}`}
+                            </p>
+                            <p className="text-muted-foreground mt-1 max-w-prose text-sm leading-relaxed break-words whitespace-pre-wrap">
+                              {check.detail}
+                            </p>
+                          </Link>
+                          {acknowledged && (
+                            <p className="text-muted-foreground text-sm sm:col-start-1">
                               Acknowledged by{" "}
                               {check.checked_by_name ??
                                 check.checked_by_user_id ??
                                 "unknown person"}{" "}
                               for v{row.version}
                             </p>
-                          ) : (
-                            check.key !== "no_must_fix" &&
+                          )}
+                          {check.key !== "no_must_fix" &&
                             check.key !== "task_exists" && (
                               <Button
                                 variant="outline"
                                 size="sm"
+                                className="justify-self-start sm:col-start-2 sm:row-span-3 sm:row-start-1 sm:self-center"
                                 disabled={
-                                  frozen || !isAdmin || busy || !row.version_id
+                                  frozen ||
+                                  !isAdmin ||
+                                  busy ||
+                                  !row.version_id ||
+                                  !!pendingChecks[
+                                    `${row.delivery_task_id}:waive:${check.key}`
+                                  ]
                                 }
                                 onClick={() =>
                                   onSetCheck(
                                     `waive:${check.key}`,
                                     row.delivery_task_id,
-                                    true
+                                    !acknowledged
                                   )
                                 }
                               >
-                                Acknowledge exception for v{row.version}
+                                {pendingChecks[
+                                  `${row.delivery_task_id}:waive:${check.key}`
+                                ]
+                                  ? pendingChecks[
+                                      `${row.delivery_task_id}:waive:${check.key}`
+                                    ] === "saving"
+                                    ? "Saving…"
+                                    : "Updating…"
+                                  : `${acknowledged ? "Unacknowledge" : "Acknowledge"} exception for v${row.version}`}
                               </Button>
-                            )
-                          )}
+                            )}
                         </li>
                       ))}
                     </ul>
@@ -1085,13 +1193,13 @@ function TaskRow({
               )}
               <DeliveryDisclosure panel="checks">
                 <summary className="cursor-pointer py-2 text-sm">
-                  Review status and checks
+                  QA verdict status and delivery checks
                 </summary>
                 <div className="mt-2 max-w-prose space-y-3 text-sm leading-relaxed">
                   <p>{row.qa.detail}</p>
                   {row.qa.finished_at && (
                     <p className="text-muted-foreground">
-                      Review finished{" "}
+                      QA verdict generation finished{" "}
                       {frozen
                         ? new Date(row.qa.finished_at).toLocaleString()
                         : formatRelativeTime(row.qa.finished_at)}
@@ -1102,7 +1210,7 @@ function TaskRow({
                       className="underline"
                       href={`${taskHref}${taskHref.includes("?") ? "&" : "?"}trial=${encodeURIComponent(row.qa.trial_id)}`}
                     >
-                      Open execution-review run
+                      Open QA verdict run
                     </Link>
                   )}
                   {row.checks
@@ -1142,7 +1250,7 @@ function TaskRow({
                   frozen={frozen}
                 />
               </DeliveryDisclosure>
-              {isAdmin && !frozen && (
+              {isAdmin && !frozen && detailsReady && (
                 <DeliveryDisclosure panel="actions">
                   <summary className="cursor-pointer py-2 text-sm">
                     Task actions
@@ -1279,38 +1387,66 @@ function DeliveryBoardContent({
     new Map()
   );
   const query = deliveryPageQuery(searchParams);
-  const resourceKey = `/api/deliveries/${encodeURIComponent(deliveryId)}/view${query}`;
-  const { data, error, isValidating, mutate } = useSWR<
-    DeliveryPageResponse & {
-      requestKey: string;
-      fetchedAt: number;
-      selection?: DeliverySelectionItem[];
+  const pagePrefix = `/api/deliveries/${encodeURIComponent(deliveryId)}/view`;
+  const resourceKey = `${pagePrefix}${query}`;
+  // Reuse equivalent rows for immediate display, but keep the current URL as
+  // the request key so refreshes retain the expanded task outside filters.
+  type PageData = DeliveryPageResponse & {
+    requestKey: string;
+    fetchedAt: number;
+    selection?: DeliverySelectionItem[];
+  };
+  let cachedPageKey = resourceKey;
+  for (const key of cache.keys()) {
+    if (
+      typeof key !== "string" ||
+      (key !== pagePrefix && !key.startsWith(`${pagePrefix}?`))
+    )
+      continue;
+    const page = cache.get(key)?.data as PageData | undefined;
+    if (
+      page &&
+      deliveryPageContainsView(page, key.slice(pagePrefix.length), query)
+    ) {
+      cachedPageKey = key;
+      break;
     }
-  >(
+  }
+  const cachedPage = cache.get(cachedPageKey)?.data as PageData | undefined;
+  const { data, error, isValidating, mutate } = useSWR<PageData>(
     enabled ? resourceKey : null,
     async (key: string) => ({
       ...(await fetcher(key)),
       // Refresh off-page selection metadata with the board as well. A failed
       // selection read leaves the entire previous response marked stale.
       selection: selected.size
-        ? await fetcher<DeliverySelectionItem[]>(key.replace(/\/view(?=\?|$)/, "/selection"))
+        ? await fetcher<DeliverySelectionItem[]>(
+            key.replace(/\/view(?=\?|$)/, "/selection")
+          )
         : undefined,
       requestKey: key,
       fetchedAt: Date.now(),
     }),
     {
-      keepPreviousData: true,
-      refreshInterval: (board) => ((board ?? initialBoard)?.frozen ? 0 : 15000),
+      fallbackData: cachedPage,
+      keepPreviousData: !cachedPage,
+      refreshInterval: (board) =>
+        (board ?? cachedPage ?? initialBoard)?.frozen ? 0 : 15000,
       revalidateOnFocus: !initialBoard?.frozen,
       revalidateOnReconnect: !initialBoard?.frozen,
       revalidateIfStale: false,
       onSuccess: (board) => {
         // One polling owner: revalidate only the expanded history after each
         // successful board read, including reads following local mutations.
-        const expanded = board.tasks.find(
-          (row) => row.task_id === focusTask || row.task_name === focusTask
-        );
+        const expanded = focusedDeliveryTask(board, focusTask);
         if (expanded && !board.frozen) {
+          void mutateResource(
+            (key) =>
+              typeof key === "string" &&
+              key.startsWith(
+                `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/${encodeURIComponent(expanded.task_id)}?`
+              )
+          );
           void mutateResource(
             `/api/tasks/${encodeURIComponent(expanded.task_id)}/qa-history`,
             undefined,
@@ -1324,7 +1460,8 @@ function DeliveryBoardContent({
   // Cached/SSR pages render immediately. Refresh only a cached page older
   // than the polling interval; a new key already owns its initial request.
   useEffect(() => {
-    const cached = cache.get(resourceKey)?.data;
+    const cached =
+      cache.get(resourceKey)?.data ?? cache.get(cachedPageKey)?.data;
     if (
       enabled &&
       cached &&
@@ -1333,13 +1470,28 @@ function DeliveryBoardContent({
     ) {
       void mutate();
     }
-  }, [enabled, cache, resourceKey, mutate]);
-  const showingPreviousView = Boolean(data && data.requestKey !== resourceKey);
+  }, [enabled, cache, resourceKey, cachedPageKey, mutate]);
+  const showingPreviousView = Boolean(
+    data &&
+    data.requestKey !== resourceKey &&
+    !deliveryPageContainsView(data, data.requestKey.split("?")[1] ?? "", query)
+  );
   const changingView = showingPreviousView && isValidating;
   async function refreshBoard() {
     const isDeliveryPage = (key: unknown) =>
       typeof key === "string" &&
       key.startsWith(`/api/deliveries/${encodeURIComponent(deliveryId)}/view`);
+    const isTaskDetail = (key: unknown) =>
+      typeof key === "string" &&
+      key.startsWith(
+        `/api/deliveries/${encodeURIComponent(deliveryId)}/tasks/`
+      );
+    // Invalidate pre-write detail responses too, retaining the visible evidence.
+    await mutateResource(
+      isTaskDetail,
+      (current: DeliveryTaskBoardRow | undefined) => current,
+      { revalidate: false }
+    );
     // Mark every cached page stale and invalidate pre-write requests, retaining
     // displayed data on errors. An inactive page refreshes on its next activation.
     await mutateResource(
@@ -1352,7 +1504,10 @@ function DeliveryBoardContent({
     // mutation data returns before revalidation and loses per-check progress.
     // SWR catches read failures in revalidation and publishes them as `error`;
     // throwOnError controls mutation-data failures, not this read-only form.
-    return mutateResource(isDeliveryPage);
+    return Promise.all([
+      mutateResource(isDeliveryPage),
+      mutateResource(isTaskDetail),
+    ]);
   }
 
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1583,10 +1738,9 @@ function DeliveryBoardContent({
   const displayedView = parseDeliveryView(new URLSearchParams(displayedQuery));
   const frozen = data.frozen;
   const owners = new Map(Object.entries(data.owners));
-  const focusedTask = data.tasks.find(
-    (row) => row.task_id === data.focus_task_id
-  );
-  const focusOutsideFilters = data.focus_outside_filters;
+  const focusedTask = focusedDeliveryTask(data, focusTask);
+  const focusOutsideFilters =
+    data.focus_outside_filters && focusedTask?.task_id === data.focus_task_id;
   const groupLabel = (row: DeliveryTaskBoardRow) =>
     displayedView.groupBy === "owner"
       ? (row.qa_owner_name ?? row.qa_work.owner_user_id ?? "Unassigned")
@@ -1683,12 +1837,12 @@ function DeliveryBoardContent({
           queued += 1;
         } catch (error) {
           failures.push(
-            `${row.task_name}: ${error instanceof Error ? error.message : "QA request failed"}`
+            `${row.task_name}: ${error instanceof Error ? error.message : "QA verdict request failed"}`
           );
         }
       }
       setNotice(
-        `Requested QA for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
+        `Requested QA verdict generation for ${queued} tasks; ${failures.length} failed. Queued and running tasks were skipped.`
       );
       if (failures.length) throw new Error(failures.join("\n"));
     });
@@ -1991,7 +2145,7 @@ function DeliveryBoardContent({
                       }
                       onClick={rerunSelected}
                     >
-                      Rerun QA ({runnableRows.length})
+                      Regenerate QA verdicts ({runnableRows.length})
                     </Button>
                     <AlertDialog
                       onOpenChange={(open) => {
@@ -2121,7 +2275,7 @@ function DeliveryBoardContent({
                           Open findings
                         </TableHead>
                         <TableHead className="w-24 text-right">
-                          Last QA
+                          Last QA verdict run
                         </TableHead>
                       </TableRow>
                     </TableHeader>
@@ -2148,6 +2302,8 @@ function DeliveryBoardContent({
                               </TableRow>
                             )}
                           <TaskRow
+                            deliveryId={deliveryId}
+                            onRefresh={refreshBoard}
                             pendingChecks={pendingChecks}
                             groupBy={displayedView.groupBy}
                             busy={busy || changingView}

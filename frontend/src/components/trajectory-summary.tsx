@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Sparkles,
   ChevronRight,
@@ -31,10 +31,7 @@ interface TrajectorySummaryProps {
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
   /**
-   * Renderable step ids from the viewer, so a highlight's underline resolves
-   * through the same owner map the Activity card and step groups use. Without
-   * it gap-fill would be measured differently here and a highlight could wear a
-   * colour no other view gives that step.
+   * Renderable step IDs keep highlight colors aligned with the step groups.
    */
   renderableIds?: ReadonlySet<number>;
 }
@@ -52,18 +49,6 @@ export function TrajectorySummary({
   onStepSelect,
   renderableIds,
 }: TrajectorySummaryProps) {
-  // The initial stored-column GET is usually fast. Pending generation arrives
-  // as a resource state instead; this timer only owns the delayed read message.
-  const [slow, setSlow] = useState(false);
-  useEffect(() => {
-    if (!isLoading) {
-      setSlow(false);
-      return;
-    }
-    const timer = setTimeout(() => setSlow(true), 4000);
-    return () => clearTimeout(timer);
-  }, [isLoading]);
-
   const data = resource?.summary ?? null;
   const refresh = resource?.refresh ?? null;
   const activeRefresh = refresh?.status === "failed" ? null : refresh;
@@ -105,7 +90,7 @@ export function TrajectorySummary({
 
   const waitingForGeneration = data === null && activeRefresh !== null;
 
-  if (isLoading || waitingForGeneration) {
+  if (!data && (isLoading || waitingForGeneration)) {
     return (
       <Card className="my-3">
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-2">
@@ -119,15 +104,13 @@ export function TrajectorySummary({
             </Button>
           )}
         </CardHeader>
-        <CardContent className="text-muted-foreground flex items-center gap-2 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          {waitingForGeneration
-            ? activeRefresh?.status === "settling"
-              ? "Publishing summary…"
-              : "Generating summary…"
-            : slow
-              ? "Retrieving summary… (storage is taking longer than expected)"
-              : "Retrieving summary…"}
+        <CardContent
+          role="status"
+          aria-label="Loading summary"
+          className="space-y-2"
+        >
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-4/5" />
         </CardContent>
       </Card>
     );
@@ -161,8 +144,7 @@ export function TrajectorySummary({
 
   if (!data) return null;
 
-  // Same segment → color assignment as the Activity card and step groups, so
-  // a highlight's underline matches its component everywhere.
+  // Match each highlight's color to its step group.
   const segments = toSegments(data);
   const colorFor = phaseColorVars(segments.map((s) => s.key));
   const owner = segmentOwners(segments, renderableIds);
@@ -208,8 +190,7 @@ export function TrajectorySummary({
                   : "Couldn’t check for a newer summary"}
               </p>
               <p className="text-muted-foreground text-xs">
-                {failedRefresh?.detail ?? requestError?.message} The published
-                summary is still shown below.
+                {failedRefresh?.detail ?? requestError?.message}
               </p>
             </div>
             <Button

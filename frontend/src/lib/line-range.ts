@@ -43,25 +43,6 @@ export function lineRangesEqual(
   return a.start === b.start && a.end === b.end;
 }
 
-/**
- * Shift-click semantics: extend an existing selection to ``line``, anchored
- * at the existing start (or select the single line when nothing is
- * selected yet).
- */
-export function extendLineRange(
-  range: LineRange | null,
-  line: number
-): LineRange {
-  if (!range) return { start: line, end: line };
-  return line < range.start
-    ? { start: line, end: range.start }
-    : { start: range.start, end: line };
-}
-
-export function isLineInRange(range: LineRange | null, line: number): boolean {
-  return range !== null && line >= range.start && line <= range.end;
-}
-
 export function lineRangesIntersect(
   a: LineRange | null,
   b: LineRange | null

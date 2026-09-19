@@ -1,4 +1,4 @@
-"""One-off: dump the full audit trail for probe trials, inside Modal.
+"""Dump the full audit trail for probe trials, inside Modal.
 
 Stitches together the three records that document what happened to a probe
 trial but live in separate places today:
@@ -116,7 +116,7 @@ async def _trail_for_trial(session, storage, trial) -> dict:
     try:
         keys = await storage.list_keys(prefix)
         artifact_report["key_count"] = len(keys)
-        artifact_report["keys"] = [k[len(prefix):].lstrip("/") for k in keys[:60]]
+        artifact_report["keys"] = [k[len(prefix) :].lstrip("/") for k in keys[:60]]
         artifact_report["has_claude_code_txt"] = any(
             k.endswith("claude-code.txt") for k in keys
         )
@@ -171,7 +171,11 @@ async def _trail_for_trial(session, storage, trial) -> dict:
 
     # Verdict: where did it break? ----------------------------------------
     empty_transcript = (extracted.get("transcript_messages") or 0) == 0
-    if empty_transcript:
+    if extracted.get("resolve_error") or artifact_report.get("list_error"):
+        verdict = (
+            "READ ERROR: artifact availability or parsing could not be determined."
+        )
+    elif empty_transcript:
         if trial.error_message or lifecycle["reward"] is None:
             verdict = (
                 "TRIAL-LEVEL FAILURE: empty transcript + trial error/None reward. "

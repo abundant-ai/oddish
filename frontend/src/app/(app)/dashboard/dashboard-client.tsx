@@ -112,7 +112,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Rejected tasks" },
-  { value: "pending-verdict", label: "QA pending" },
+  { value: "pending-verdict", label: "Verdict pending" },
   { value: "failed", label: "Failures" },
 ] as const;
 
@@ -463,7 +463,7 @@ function ExperimentsTableBody({
         <Alert variant="destructive">
           <AlertTitle>Failed to load experiments</AlertTitle>
           <AlertDescription>
-            Check the API connection and try again.
+            Try refreshing the page. If this keeps happening, contact Abundant.
           </AlertDescription>
         </Alert>
       ) : experiments.length === 0 && !hasMore && !hasFilters ? (

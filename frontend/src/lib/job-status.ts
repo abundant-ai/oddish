@@ -140,9 +140,9 @@ export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
 export function rejectedMustFixLabel(task: Task): string {
   const count = task.must_fix_count ?? 0;
   if (count > 0) {
-    return `${count} Must Fix`;
+    return `Verdict rejected: ${count} Must fix`;
   }
-  return "Rejected";
+  return "Verdict rejected";
 }
 
 export function taskHasCancellableWork(task: Task | null | undefined): boolean {

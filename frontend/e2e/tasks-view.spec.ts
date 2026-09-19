@@ -649,17 +649,21 @@ test.describe("authenticated task view", () => {
     await expect(
       page.getByText("Showing 20 most recent of 25 trials")
     ).toBeVisible();
-    await expect(page.getByText("80% (20/25)")).toBeVisible();
+    await expect(page.getByText("80.0%", { exact: true })).toHaveCount(1);
+    await expect(page.getByText("80.0%", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^avg score$/i)).toHaveCount(1);
+    await expect(page.getByText("80% (20/25)", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("20/25 pass", { exact: true })).toHaveCount(0);
     await expect(page.getByText("1m 40s")).toBeVisible();
     await expect(page.getByText("$25.00").last()).toBeVisible();
     await expect(page.getByText("$1.00")).toBeVisible();
 
-    await page.getByRole("button", { name: /v2/ }).click();
+    await page.getByRole("button", { name: /^v2\b/ }).click();
     await page.getByText("v3", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Third experiment" }).last()
     ).toBeVisible();
-    await page.getByRole("button", { name: /v3/ }).click();
+    await page.getByRole("button", { name: /^v3\b/ }).click();
     await page.getByText("v1", { exact: true }).click();
     await historicalRequestStarted;
     releaseHistoricalRequest();
@@ -676,12 +680,12 @@ test.describe("authenticated task view", () => {
     // Revisit a resource cached before the mutation, then select the former
     // default. Every versioned cache must agree that v1 is now the default;
     // otherwise v3 treats v2 as bare/default and incorrectly jumps back to v1.
-    await page.getByRole("button", { name: /v1/ }).click();
+    await page.getByRole("button", { name: /^v1\b/ }).click();
     await page.getByText("v3", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Third experiment" }).last()
     ).toBeVisible();
-    await page.getByRole("button", { name: /v3/ }).click();
+    await page.getByRole("button", { name: /^v3\b/ }).click();
     await page.getByText("v2", { exact: true }).click();
     await expect(
       page.getByRole("link", { name: "Current experiment" }).last()
@@ -719,7 +723,9 @@ test.describe("authenticated task view", () => {
     );
 
     await page.goto(`/tasks/${READER_TASK_ID}`);
-    await page.getByRole("button", { name: "Run execution review" }).click();
+    await page
+      .getByRole("button", { name: /^Generate QA verdict(?: for v\d+)?$/ })
+      .click();
     await expect
       .poll(() => backfillBody)
       .toEqual({

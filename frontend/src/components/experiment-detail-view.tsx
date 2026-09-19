@@ -16,7 +16,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { ExperimentPageSkeleton } from "@/components/experiment-page-skeleton";
-import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import {
+  QaCostSuffix,
+  VerifierCostSuffix,
+} from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { useUserUiLayout } from "@/lib/use-user-ui-layout";
@@ -71,6 +74,7 @@ import { expandTrialParam } from "@/lib/trial-url";
 
 type DrawerMode = "task" | "trial";
 
+import { ExperimentRunDialog } from "@/components/experiment-run-dialog";
 import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 const TrialDetailPanel = dynamic(
@@ -95,9 +99,12 @@ const TaskFilesPanel = dynamic(
 
 function DrawerContentLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm">
+    <div
+      role="status"
+      aria-label={label}
+      className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm"
+    >
       <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
     </div>
   );
 }
@@ -116,6 +123,7 @@ type DrawerState = {
   trial: Trial | null;
   trialIndex: number | null;
   orderedTrials: Trial[];
+  groupEfforts: boolean;
   trialGroups: Array<{
     agent: string;
     model: string | null;
@@ -156,21 +164,11 @@ interface ExperimentDetailViewProps {
   loadFullTrialOnOpen?: boolean;
 }
 
-const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
+const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:v2:";
 
 function isRetryableFocusError(error: unknown): boolean {
   const status = (error as { status?: number } | null)?.status;
   return status == null || status === 408 || status === 429 || status >= 500;
-}
-
-function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
-): Set<string> {
-  return new Set(
-    summaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
-  );
 }
 
 type ExperimentSummary = {
@@ -199,6 +197,9 @@ type ExperimentSummary = {
   qaCostUsd: number;
   ownedQaCostUsd: number;
   qaHasEstimated: boolean;
+  verifierCostUsd: number;
+  ownedVerifierCostUsd: number;
+  verifierHasEstimated: boolean;
   ownedCostUsd: number;
   ownedTrialCount: number;
   ownedHasEstimated: boolean;
@@ -292,6 +293,9 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     qaCostUsd: 0,
     ownedQaCostUsd: 0,
     qaHasEstimated: false,
+    verifierCostUsd: 0,
+    ownedVerifierCostUsd: 0,
+    verifierHasEstimated: false,
     ownedCostUsd: 0,
     ownedTrialCount: 0,
     ownedHasEstimated: false,
@@ -469,10 +473,7 @@ function ExperimentPrLink({
   const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
   if (!prUrl) {
     return (
-      <span
-        title="No pull request linked to this experiment"
-        className="inline-flex h-8 items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60 select-none"
-      >
+      <span className="inline-flex h-8 items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60 select-none">
         <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
         no PR linked
       </span>
@@ -551,7 +552,6 @@ function ExperimentMetaStrip({
             onClick={handleCopyExperimentId}
             className="h-auto cursor-pointer rounded-sm bg-transparent p-0 font-mono text-[11.5px] font-normal text-[color:var(--paper-ink-2)] transition hover:bg-transparent hover:text-[color:var(--paper-ink)]"
             aria-label={`Copy experiment id ${experimentId}`}
-            title={copied ? "Copied" : "Click to copy experiment id"}
           >
             <span className="select-all">{experimentId}</span>
           </Button>
@@ -606,6 +606,7 @@ function ExperimentSummaryBar({
   isInitialLoading,
   isLoadingTrials,
   showNewSpend,
+  showVerifierSpend = true,
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
@@ -621,6 +622,8 @@ function ExperimentSummaryBar({
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
   showNewSpend: boolean;
+  /** CUA/verifier spend is internal recon; omit on public share pages. */
+  showVerifierSpend?: boolean;
   costStatus: ExperimentCostTotalsResource["status"];
   qa: {
     accepted: number;
@@ -634,7 +637,6 @@ function ExperimentSummaryBar({
     return (
       <div className="flex items-center gap-2 rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 text-xs text-[color:var(--paper-ink-3)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Loading experiment summary...
       </div>
     );
   }
@@ -677,16 +679,16 @@ function ExperimentSummaryBar({
       className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
         qa
           ? showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+            ? "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr_1fr]"
+            : "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr]"
           : showNewSpend
-            ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
-            : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
+            ? "md:grid-cols-[1fr_1.6fr_0.7fr_1fr_1fr]"
+            : "md:grid-cols-[1fr_1.6fr_0.7fr_1fr]"
       }`}
     >
       <KpiTile
         label="Avg score"
-        labelInfo="Average of per-task average reward, nop/oracle excluded"
+        labelInfo="Average task score, excluding baseline runs."
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {isLoadingTrials ? (
@@ -703,7 +705,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile
         label="Trials finished"
-        labelInfo="Trials that finished running, including failed and skipped trials. Download progress appears above the table."
+        labelInfo="Completed runs, including run errors and skipped runs."
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {doneTrials}
@@ -713,17 +715,66 @@ function ExperimentSummaryBar({
         </span>
         <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
           {completionPct.toFixed(0)}%
-          {summary.skippedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-ink-3)]">
-              · {summary.skippedTrials} skipped
-            </span>
-          )}
-          {summary.failedTrials > 0 && (
-            <span className="ml-1.5 text-[color:var(--paper-fail)]">
-              · {summary.failedTrials} failing
-            </span>
-          )}
         </span>
+        <div className="border-border mt-2 border-t pt-2 text-[10px] font-semibold tracking-wider text-[color:var(--paper-ink-3)] uppercase">
+          Outcome distribution
+        </div>
+        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
+          <span
+            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
+          />
+          <span
+            style={{
+              width: `${partialPct}%`,
+              background: "var(--paper-partial)",
+            }}
+          />
+          <span
+            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
+          />
+          <span
+            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
+          />
+          <span
+            style={{
+              width: `${skippedPct}%`,
+              background: "var(--paper-ink-3)",
+            }}
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
+            {summary.passCount}
+            <span className="text-[color:var(--paper-ink-3)]">pass</span>
+          </span>
+          {summary.partialCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
+              {summary.partialCount}
+              <span className="text-[color:var(--paper-ink-3)]">partial</span>
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
+            {summary.failCount}
+            <span className="text-[color:var(--paper-ink-3)]">fail</span>
+          </span>
+          {summary.harnessErrorCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
+              {summary.harnessErrorCount}
+              <span className="text-[color:var(--paper-ink-3)]">error</span>
+            </span>
+          )}
+          {summary.skippedTrials > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
+              {summary.skippedTrials}
+              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
+            </span>
+          )}
+        </div>
       </KpiTile>
       <KpiTile label="Tasks">
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
@@ -734,18 +785,15 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       {qa && (
-        <KpiTile
-          label="Verdicts"
-          labelInfo="Task verdicts for the loaded tasks. Counts update as results arrive. Source audits, per-trial reviews, and human delivery sign-off are separate. Select a count to filter the results."
-        >
+        <KpiTile label="QA verdicts">
           <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 text-xs">
             {(
               [
                 ["accepted", qa.accepted, "Accepted"],
                 ["rejected", qa.rejected, "Rejected"],
-                ["running", qa.running, "Pending"],
+                ["running", qa.running, "Pending: generating"],
                 ["failed", qa.failed, "Failed"],
-                ["unreviewed", qa.unreviewed, "No verdict"],
+                ["unreviewed", qa.unreviewed, "Pending: no current verdict"],
               ] as const
             )
               .filter(([, count]) => count > 0)
@@ -774,8 +822,8 @@ function ExperimentSummaryBar({
         </KpiTile>
       )}
       <KpiTile
-        label="Cost"
-        labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
+        label="Run cost (all versions)"
+        labelInfo="Run cost across all versions, including runs added from other experiments. QA costs are listed separately."
       >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -783,11 +831,11 @@ function ExperimentSummaryBar({
             costUnavailable
               ? "Experiment spend is unavailable"
               : costPending
-                ? "Calculating experiment spend…"
+                ? undefined
                 : summary.costTrialCount > 0
                   ? `Summed across ${summary.costTrialCount} trial${
                       summary.costTrialCount === 1 ? "" : "s"
-                    } shown in this experiment${
+                    } across all versions in this experiment${
                       // Gathered/shared-task spend is deliberately included: it
                       // prices the work on this page. Warn that those dollars
                       // are also reported on their home experiments so nobody
@@ -837,15 +885,28 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
           {!costPending && !costUnavailable && (
-            <QaCostSuffix
-              costUsd={summary.qaCostUsd}
-              size="tile"
-              title={
-                summary.qaHasEstimated
-                  ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
-                  : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
-              }
-            />
+            <>
+              <QaCostSuffix
+                costUsd={summary.qaCostUsd}
+                size="tile"
+                title={
+                  summary.qaHasEstimated
+                    ? "QA cost across this experiment's trials. Includes estimated QA costs. Not included in the cost figure."
+                    : "QA cost across this experiment's trials. Not included in the cost figure."
+                }
+              />
+              {showVerifierSpend && (
+                <VerifierCostSuffix
+                  costUsd={summary.verifierCostUsd}
+                  size="tile"
+                  title={
+                    summary.verifierHasEstimated
+                      ? "CUA/verifier LLM spend across this experiment's trials. Includes estimated verifier costs. Not included in the cost figure."
+                      : "CUA/verifier LLM spend across this experiment's trials. Not included in the cost figure."
+                  }
+                />
+              )}
+            </>
           )}
         </span>
         {!costPending && !costUnavailable && summary.tokenTrialCount > 0 && (
@@ -856,8 +917,8 @@ function ExperimentSummaryBar({
       </KpiTile>
       {showNewSpend && (
         <KpiTile
-          label="New spend"
-          labelInfo="Spend from trials this experiment ran itself — excludes trials gathered from other experiments."
+          label="This experiment's run cost"
+          labelInfo="Cost of this experiment’s own trials across all versions, excluding runs collected from other experiments. QA costs are listed separately."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -865,7 +926,7 @@ function ExperimentSummaryBar({
               costUnavailable
                 ? "New spend is unavailable"
                 : costPending
-                  ? "Calculating new spend…"
+                  ? undefined
                   : summary.ownedTrialCount > 0
                     ? `Summed across ${summary.ownedTrialCount} trial${
                         summary.ownedTrialCount === 1 ? "" : "s"
@@ -928,11 +989,20 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
             {!costPending && !costUnavailable && (
-              <QaCostSuffix
-                costUsd={summary.ownedQaCostUsd}
-                size="tile"
-                title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
-              />
+              <>
+                <QaCostSuffix
+                  costUsd={summary.ownedQaCostUsd}
+                  size="tile"
+                  title="QA cost on this experiment's own trials. Not included in the run cost."
+                />
+                {showVerifierSpend && (
+                  <VerifierCostSuffix
+                    costUsd={summary.ownedVerifierCostUsd}
+                    size="tile"
+                    title="CUA/verifier LLM spend on this experiment's own trials. Not included in the run cost."
+                  />
+                )}
+              </>
             )}
           </span>
           {!costPending &&
@@ -944,67 +1014,6 @@ function ExperimentSummaryBar({
             )}
         </KpiTile>
       )}
-      <KpiTile
-        label="Outcome distribution"
-        className="col-span-2 md:col-span-1"
-      >
-        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
-          <span
-            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
-          />
-          <span
-            style={{
-              width: `${partialPct}%`,
-              background: "var(--paper-partial)",
-            }}
-          />
-          <span
-            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
-          />
-          <span
-            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
-          />
-          <span
-            style={{
-              width: `${skippedPct}%`,
-              background: "var(--paper-ink-3)",
-            }}
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
-            {summary.passCount}
-            <span className="text-[color:var(--paper-ink-3)]">pass</span>
-          </span>
-          {summary.partialCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
-              {summary.partialCount}
-              <span className="text-[color:var(--paper-ink-3)]">partial</span>
-            </span>
-          )}
-          <span className="inline-flex items-center gap-1.5">
-            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
-            {summary.failCount}
-            <span className="text-[color:var(--paper-ink-3)]">fail</span>
-          </span>
-          {summary.harnessErrorCount > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
-              {summary.harnessErrorCount}
-              <span className="text-[color:var(--paper-ink-3)]">error</span>
-            </span>
-          )}
-          {summary.skippedTrials > 0 && (
-            <span className="inline-flex items-center gap-1.5">
-              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
-              {summary.skippedTrials}
-              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
-            </span>
-          )}
-        </div>
-      </KpiTile>
     </div>
   );
 }
@@ -1037,6 +1046,7 @@ export function ExperimentDetailView({
   loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
+  const groupEfforts = readOnly || searchParams.get("groupEfforts") === "1";
   // The experiment's own direct tags (the header editor chips); fetched
   // separately because no experiment payload carries them.
   const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
@@ -1202,19 +1212,15 @@ export function ExperimentDetailView({
   const agentSummaryStorageKey = experimentId
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
-  const { agentSummaries, modelScopedAgents } = useMemo(
-    () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+  const agentSummaries = useMemo(
+    () =>
+      buildExperimentAgentSummaries(deferredTasksForDerivedData, groupEfforts),
+    [deferredTasksForDerivedData, groupEfforts]
   );
   const displayAgentSummaries =
-    agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
-  const displayModelScopedAgents = useMemo(
-    () =>
-      agentSummaries.length > 0
-        ? modelScopedAgents
-        : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
-  );
+    agentSummaries.length > 0 || groupEfforts
+      ? agentSummaries
+      : cachedAgentSummaries;
 
   useEffect(() => {
     if (!agentSummaryStorageKey) {
@@ -1238,7 +1244,8 @@ export function ExperimentDetailView({
   }, [agentSummaryStorageKey]);
 
   useEffect(() => {
-    if (!agentSummaryStorageKey || agentSummaries.length === 0) return;
+    if (groupEfforts || !agentSummaryStorageKey || agentSummaries.length === 0)
+      return;
     setCachedAgentSummaries(agentSummaries);
     try {
       window.sessionStorage.setItem(
@@ -1248,7 +1255,7 @@ export function ExperimentDetailView({
     } catch {
       // Ignore storage failures; the live data still drives the table.
     }
-  }, [agentSummaryStorageKey, agentSummaries]);
+  }, [agentSummaryStorageKey, agentSummaries, groupEfforts]);
 
   const buildTrialGroups = useCallback(
     (task: Task) => {
@@ -1259,7 +1266,7 @@ export function ExperimentDetailView({
       }> = [];
       const trialsByAgent = new Map<string, Trial[]>();
       for (const trial of task.trials ?? []) {
-        const key = getExperimentAgentKey(trial, displayModelScopedAgents);
+        const key = getExperimentAgentKey(trial, groupEfforts);
         const existing = trialsByAgent.get(key) ?? [];
         existing.push(trial);
         trialsByAgent.set(key, existing);
@@ -1278,7 +1285,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents]
+    [groupEfforts]
   );
 
   useEffect(() => {
@@ -1369,6 +1376,7 @@ export function ExperimentDetailView({
             trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
             orderedTrials,
             trialGroups,
+            groupEfforts,
           });
           return;
         }
@@ -1398,8 +1406,9 @@ export function ExperimentDetailView({
       trialIndex: null,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
-  }, [tasksForExperiment, searchParams, buildTrialGroups]);
+  }, [tasksForExperiment, searchParams, buildTrialGroups, groupEfforts]);
 
   // Re-sync the open drawer with freshly-loaded trial data. On direct URL
   // loads the drawer opens as soon as the lightweight task shells arrive,
@@ -1480,7 +1489,8 @@ export function ExperimentDetailView({
       liveTask === drawerState.task &&
       nextTask.id === drawerState.task.id &&
       liveTrialCount === snapshotTrialCount &&
-      !orderedChanged
+      !orderedChanged &&
+      drawerState.groupEfforts === groupEfforts
     ) {
       return;
     }
@@ -1510,11 +1520,13 @@ export function ExperimentDetailView({
       trialIndex: resolvedTrialIndex,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
   }, [
     tasksForExperiment,
     drawerState,
     buildTrialGroups,
+    groupEfforts,
     reviewFilter,
     setReviewFilter,
   ]);
@@ -1576,6 +1588,7 @@ export function ExperimentDetailView({
         trialIndex: index >= 0 ? index : null,
         orderedTrials,
         trialGroups,
+        groupEfforts,
       });
       const next = new URLSearchParams(window.location.search);
       next.set("task", host.id);
@@ -1585,7 +1598,13 @@ export function ExperimentDetailView({
       window.history.replaceState(null, "", urlWithSearch(next.toString()));
       clearPendingDeepLink();
     },
-    [drawerState, tasksForExperiment, buildTrialGroups, clearPendingDeepLink]
+    [
+      drawerState,
+      tasksForExperiment,
+      buildTrialGroups,
+      clearPendingDeepLink,
+      groupEfforts,
+    ]
   );
 
   // The trial page can satisfy a pending URL before the focused read returns.
@@ -1659,6 +1678,7 @@ export function ExperimentDetailView({
       trialIndex: null,
       orderedTrials,
       trialGroups,
+      groupEfforts,
     });
     clearPendingDeepLink();
   }, [
@@ -1669,6 +1689,7 @@ export function ExperimentDetailView({
     tasksForExperiment,
     openDeepLinkTrial,
     buildTrialGroups,
+    groupEfforts,
     cancelPendingDeepLink,
     clearPendingDeepLink,
   ]);
@@ -1708,6 +1729,9 @@ export function ExperimentDetailView({
       qaCostUsd: exactCostTotals.qa_cost_usd ?? 0,
       ownedQaCostUsd: exactCostTotals.owned_qa_cost_usd ?? 0,
       qaHasEstimated: exactCostTotals.qa_has_estimated ?? false,
+      verifierCostUsd: exactCostTotals.verifier_cost_usd ?? 0,
+      ownedVerifierCostUsd: exactCostTotals.owned_verifier_cost_usd ?? 0,
+      verifierHasEstimated: exactCostTotals.verifier_has_estimated ?? false,
       tokenCount: exactCostTotals.token_count,
       tokenTrialCount: exactCostTotals.token_trial_count,
       // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
@@ -1788,6 +1812,14 @@ export function ExperimentDetailView({
     });
   };
 
+  const handleTrialRetried = (previousTrialId: string, replacement: Trial) => {
+    setDrawerState((current) =>
+      current?.mode === "trial" && current.trial?.id === previousTrialId
+        ? { ...current, trial: replacement, trialIndex: null }
+        : current
+    );
+  };
+
   // A trial link from the task overview's aggregated QA. Always opens in
   // this drawer: the overview hands over the full trial row, so even a
   // trial the grid hasn't streamed in yet (or one gathered from another
@@ -1806,10 +1838,11 @@ export function ExperimentDetailView({
         trialIndex: trialIndex >= 0 ? trialIndex : null,
         orderedTrials,
         trialGroups,
+        groupEfforts,
       });
       return true;
     },
-    [drawerState, buildTrialGroups, cancelPendingDeepLink]
+    [drawerState, buildTrialGroups, cancelPendingDeepLink, groupEfforts]
   );
 
   return (
@@ -1851,7 +1884,19 @@ export function ExperimentDetailView({
                 headerStatus={headerStatus}
                 showPassAtK={showPassAtK}
                 onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-                headerRight={headerRight}
+                headerRight={
+                  <>
+                    {!readOnly && allowRetry && experimentId && (
+                      <ExperimentRunDialog
+                        experimentId={experimentId}
+                        tasks={tasksForExperiment}
+                        disabled={!pagesComplete || isLoading}
+                        onSubmitted={onRerun}
+                      />
+                    )}
+                    {headerRight}
+                  </>
+                }
                 prLink={
                   // The PR chip links into GitHub for the experiment's source
                   // branch — internal context that shouldn't surface on the
@@ -1873,11 +1918,12 @@ export function ExperimentDetailView({
             taskCount={pageSummary?.task_count ?? tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
-            isLoadingTrials={isLoadingTrials}
+            isLoadingTrials={isLoadingTrials && !pagesComplete}
             // The owned-vs-gathered spend split (and the billing attribution
             // in its tooltip) is internal; keep it off the public share view
             // (the only readOnly consumer).
             showNewSpend={!readOnly}
+            showVerifierSpend={!readOnly}
             costStatus={costTotals.status}
             qa={showAnalysis ? qaRollup : null}
             reviewFilter={reviewFilter}
@@ -1917,9 +1963,9 @@ export function ExperimentDetailView({
               <ExperimentTrialsTable
                 tasks={reviewTasks}
                 agentSummaries={displayAgentSummaries}
-                modelScopedAgents={displayModelScopedAgents}
+                groupEfforts={groupEfforts}
                 isLoading={isLoading}
-                isLoadingTrials={isLoadingTrials}
+                isLoadingTrials={isLoadingTrials && !pagesComplete}
                 pagesComplete={pagesComplete}
                 showPassAtK={showPassAtK}
                 experimentId={experimentId}
@@ -1946,6 +1992,7 @@ export function ExperimentDetailView({
                     trialIndex: context.trialIndex,
                     orderedTrials: context.orderedTrials,
                     trialGroups: context.trialGroups,
+                    groupEfforts,
                   });
                 }}
                 onProbeSelect={(trial, task) => {
@@ -1973,6 +2020,7 @@ export function ExperimentDetailView({
                     trialIndex: null,
                     orderedTrials,
                     trialGroups,
+                    groupEfforts,
                   });
                 }}
                 onTaskNavChange={({ orderedTasks, taskNavScope }) => {
@@ -2038,7 +2086,7 @@ export function ExperimentDetailView({
               task={drawerState.task}
               staticChecksTaskId={drawerState.task.id}
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={isLoadingTrials && !pagesComplete}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               initialFilePath={taskPaneFile}
@@ -2079,6 +2127,7 @@ export function ExperimentDetailView({
                   taskIndex: nextIndex,
                   orderedTrials,
                   trialGroups,
+                  groupEfforts,
                 });
               }}
               onNavigateToFirstTrial={
@@ -2087,7 +2136,7 @@ export function ExperimentDetailView({
                   : undefined
               }
               onOpenTrial={handleOpenTrialFromOverview}
-              overviewTrialsLoading={isLoadingTrials}
+              overviewTrialsLoading={isLoadingTrials && !pagesComplete}
               initialFilePath={taskPaneFile}
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}
@@ -2109,6 +2158,7 @@ export function ExperimentDetailView({
                 onNavigate={handleNavigateToTrial}
                 onNavigateToTask={handleNavigateToTask}
                 onRetry={onRerun}
+                onRetried={handleTrialRetried}
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
                 showAnalysis={showAnalysis}

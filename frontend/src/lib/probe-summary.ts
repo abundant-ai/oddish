@@ -10,20 +10,18 @@ type ToolInsight = {
 };
 
 type Recommendation = {
-  priority: "must_fix" | "should_fix" | "optional";
+  priority: "must_fix" | "optional";
   action: string;
   rationale?: string;
 };
 
 const PRIORITY_ORDER: Record<string, number> = {
   must_fix: 0,
-  should_fix: 1,
-  optional: 2,
+  optional: 1,
 };
 
 export const PRIORITY_META: Record<string, { label: string; cls: string }> = {
   must_fix: { label: "Must fix", cls: "bg-red-500/15 text-red-600" },
-  should_fix: { label: "Should fix", cls: "bg-amber-500/15 text-amber-700" },
   optional: { label: "Optional", cls: "bg-slate-500/15 text-slate-600" },
 };
 
@@ -84,8 +82,4 @@ export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";
   if (m === "result_focus") return "result_focus";
   return "none";
-}
-
-export function isTerminalProbeStatus(status: string): boolean {
-  return status === "success" || status === "failed";
 }

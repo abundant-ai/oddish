@@ -42,6 +42,12 @@ modal setup
 
 ## Configure environment
 
+For a traced controller that invokes the CLI, optional `ODDISH_TRACE_CONTEXT`
+JSON carries W3C `traceparent` and `tracestate` to API requests. With tracing
+configured on both API and workers, new queue rows retain that parent through
+worker attempts. Existing rows need no migration. Invalid context is ignored,
+and storage requests do not receive it.
+
 ### Backend (`backend/.env`)
 
 ```bash
@@ -295,3 +301,12 @@ Per-model concurrency can be tuned via backend env vars:
 ODDISH_DEFAULT_MODEL_CONCURRENCY=64
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-sonnet-4-5": 32}'
 ```
+
+### Trial artifact isolation
+
+`ODDISH_TRIAL_ARTIFACT_NAMESPACE` adds a deployment namespace to new trial
+artifact paths. Use a distinct value (letters, digits, underscores, or hyphens)
+for each database sharing an S3 bucket. Modal deployments set it automatically
+to the secret environment plus app name. Existing stored artifact pointers
+remain readable; changing this value during an unfinished import is unsupported.
+The default empty value preserves the self-hosted storage layout.

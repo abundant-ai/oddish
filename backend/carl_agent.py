@@ -7,7 +7,14 @@ import time
 
 import modal
 
-from carl import _deliver, _escape, _log, _post, _release_event, _update
+from carl import (
+    _escape,
+    _finish_answer,
+    _log,
+    _post,
+    _release_event,
+    _update,
+)
 from modal_runtime import app, runtime_secret
 
 MODEL = "claude-opus-4-8"
@@ -25,21 +32,45 @@ carl_image = (
         "asyncpg==0.31.0",
         "pglast==8.4",
     )
+    # carl_tools imports oddish.timing; the slim Carl image does not uv_sync the
+    # worker pyproject, so copy the package onto PYTHONPATH.
+    .add_local_dir(
+        local_path="../oddish/src",
+        remote_path="/oddish-src",
+        copy=True,
+        ignore=["**/__pycache__/"],
+    )
     .env(
         {
             "MODAL_APP_NAME": os.environ.get("MODAL_APP_NAME", "oddish"),
             "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+            "PYTHONPATH": "/oddish-src",
         }
     )
     .add_local_python_source(
-        "carl", "carl_agent", "carl_tools", "modal_runtime", copy=True
+        "carl",
+        "carl_agent",
+        "carl_tools",
+        "carl_catfish",
+        "modal_runtime",
+        copy=True,
     )
 )
 
 SYSTEM_PROMPT = (
-    "You answer teammates' questions about the oddish eval platform (spend, "
-    "queue health, why a trial failed) using the provided read-only tools. Be concise. "
-    "Prefer the purpose-built tools (costs, queue health, trial logs, tasks); reach for "
+    "You answer teammates' questions about Oddish evals and Catfish billed cloud "
+    "using the provided read-only tools. Be concise. "
+    "Oddish tools (`oddish_costs`, `oddish_user_costs`, `oddish_queue_health`, "
+    "`oddish_trial_logs`, `oddish_tasks`, `oddish_sql`) cover trials, queues, why "
+    "a trial failed, and org eval/QA spend. "
+    "Catfish tools (`catfish_costs`, `catfish_breakdown`) cover the vendor cloud "
+    "bill (AWS / Anthropic / OpenAI / Azure / GCP / Modal / Daytona / Thunder) "
+    "and API-key owners. Do not answer Anthropic/OpenAI/Modal invoice questions "
+    "from `oddish_costs` — that is eval attribution, not the Catfish ledger. "
+    "If Catfish coverage says a provider is pending, say so and do not treat a "
+    "missing day as $0. "
+    "Prefer the purpose-built tools (costs, queue health, trial logs, tasks, "
+    "Catfish spend); reach for "
     "`oddish_sql` for anything they don't cover -- e.g. breaking down QA/analysis cost from "
     "the `analysis_costs` ledger, or joining trials to tasks. `oddish_sql` is READ ONLY "
     "(SELECT/WITH only), rejects `SELECT *`, and returns at most 200 rows, so name only the "
@@ -127,8 +158,10 @@ async def _carl_answer_impl(
         query,
     )
 
+    from carl_catfish import drain_catfish_charts
     from carl_tools import allowed_tool_names, build_server
 
+    drain_catfish_charts()
     try:
         budget = float(os.environ.get("ODDISH_CARL_MAX_BUDGET_USD", "1.0"))
     except ValueError:
@@ -245,7 +278,7 @@ async def _carl_answer_impl(
         turn_limit=hit_turn_limit,
         budget_limit=hit_budget_limit,
     )
-    delivery = _deliver(channel, status_ts, thread, body)
+    delivery = _finish_answer(channel, status_ts, thread, body)
     if delivery != "complete":
         if delivery == "failed":
             try:

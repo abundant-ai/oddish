@@ -22,6 +22,11 @@ Ensure your API key is set:
 export ODDISH_API_KEY="ok_..."
 ```
 
+A controller can set `ODDISH_TRACE_CONTEXT` to JSON containing a W3C
+`traceparent` and optional `tracestate`. API calls then join the controller's
+trace. Other fields, malformed headers, and storage upload/download requests
+are excluded. This does not enable trace export or replace `ODDISH_API_KEY`.
+
 ## Usage
 
 **Commands:**
@@ -134,7 +139,7 @@ Options
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
-- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator.
+- `--env`, `-e` - Execution environment. The flag accepts any Harbor environment name, but hosted Oddish honors only `modal`, `daytona`, `ec2`, `gke`, `archil`, `thunder`, and `numinous`; anything else is coerced to `modal` with a warning. EC2 and Numinous are deployment-controlled opt-in backends. When Numinous is enabled it is the first CPU candidate; otherwise Daytona is the CPU default. Numinous GPU availability is controlled separately by the deployment operator. A task that requests GPUs (`[environment].gpus` or `--override-gpus`) is placed by the deployment on its GPU backend: Thunder where the operator enabled it, otherwise Modal, and always Modal when the run pulls from a private registry (`--registry-login`). Pass `--env modal` for GPU types Thunder does not offer.
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
@@ -159,7 +164,7 @@ Options
 - `--force-build/--no-force-build` - Force a rebuild of the environment image
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
-- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
+- `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times. Omitted reasoning effort uses the agent’s own default. Set it explicitly with e.g. `--agent-kwarg reasoning_effort=high`; the server saves that choice with the trial.
 - `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
 - `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
@@ -190,6 +195,32 @@ without `--env` continue to use Daytona. V1 does not accept GPU/TPU requests,
 attach mode, retained instances, or caller overrides of platform EC2 settings.
 It uses a public address and key-only SSH; the instance is terminated after the
 trial or cancellation.
+
+### Run on Thunder
+
+A Thunder-enabled deployment runs GPU trials in disposable Thunder sandboxes.
+Any task whose `task.toml` requests GPUs (or any run with `--override-gpus`)
+routes there without an `--env` flag unless it needs a private-registry pull;
+the flag also selects it explicitly:
+
+```bash
+oddish run ./my-task --env thunder -a nop --n-trials 1 --max-trial-attempts 1
+```
+
+The hosted API rejects `thunder` unless its operator enabled the backend.
+Harbor's Thunder environment needs exactly one `[environment].gpu_types` entry
+(A6000, A100, or H100) and a GPU count of 1, 2, 4, or 8. `oddish run` reports
+the task's GPU type with its GPU request (an exact `gpu_type` environment kwarg,
+else its `gpu_types` list), so a task naming no type, several
+types, or one Thunder lacks is routed to Modal instead of failing on Thunder
+first; an unsupported GPU count still needs `--env modal`. A trial that fails twice on Thunder (the
+deployment's `ODDISH_THUNDER_MAX_FAILED_ATTEMPTS`) has its next retry run on
+Modal instead, within the trial's usual `--max-trial-attempts` budget; the
+trial keeps its id, and `oddish status` shows `environment: modal` from then
+on. Thunder is never a fallback for other providers. Its provider-wide
+capacity limit is shared across models, organizations, queue keys, and Harbor
+variants. Oddish persists the Thunder sandbox ID before operating it and uses
+that ID for normal teardown, cancellation, and orphan cleanup.
 
 ### Re-run with `--retry`
 
@@ -257,10 +288,29 @@ retry behavior.
 
 Use `oddish preflight` to check local task files for integrity problems before
 spending trials on them. It runs entirely locally — no API key needed. It
-parses `task.toml`, requires a justification for open internet access, rejects
+parses `task.toml`, validates task metadata, requires a justification for open internet access, rejects
 repository fetches or exposed `.git` data in the agent image, requires
 readable source rather than patch-only solutions, and rejects brittle
 source-scanning anti-cheat checks.
+
+The `task_metadata` check requires:
+
+- `[task].name` whose final component matches the task directory. For a
+  directory named `fix-login`, `abundant/fix-login`, `category/fix-login`, and
+  the legacy bare name `fix-login` are accepted. Prefer `abundant/` when
+  authoring new Abundant tasks; preflight does not rename tasks.
+- An explicit `[environment].network_mode` (`public`, `no-network`, or
+  `allowlist`), or the legacy boolean `allow_internet`. Separate verifier
+  environments must declare their own network baseline, including per-step
+  environments. Agent/verifier phase overrides can inherit the baseline.
+  A public-access declaration still needs the existing written justification.
+- A nonempty string in `[metadata].reward_type`. This currently checks the
+  declaration only, without imposing a score vocabulary or changing grading.
+- Nonblank entries in `gpu_types` when supplied. GPU types remain optional;
+  preflight does not impose a provider-specific list of supported hardware.
+
+These checks inspect local source files. They do not run the task, certify
+x86/ARM compatibility, or replace the AI source review.
 
 ```bash
 # Check a task or dataset directory
@@ -381,7 +431,7 @@ The command writes two UTF-8 CSV files (existing files are overwritten):
   agent-run analysis statuses, counts of exported findings by tier, and
   `fetch_error`. Structured detail is stored as JSON inside CSV cells.
 
-Default tiers are `must_fix` and `should_fix`. Repeat `--tier` to select tiers;
+The default tier is `must_fix`. Repeat `--tier` to select tiers;
 `optional` is also supported. Counts reflect exported occurrences, not unique
 defects. A finding reported by two runs keeps two rows with distinct trial IDs;
 version-audit findings appear once per version. CSV quoting preserves commas,
@@ -1015,6 +1065,14 @@ oddish delivery finalize august-batch
 
 # A task's QA trail: versions, audits, rollouts, defects, QA runs
 oddish delivery history task-1
+
+# Historical delivery metadata (docs/delivery-metadata-backfill.md):
+# export this organization's task identities for the planner, then preview
+# and apply a reviewed plan. --apply needs admin and a preview from the last day.
+oddish delivery inventory --output inventory.json
+oddish delivery import-history plan.json --inventory inventory.json --customer meta=Meta
+oddish delivery import-history plan.json --inventory inventory.json --apply
+oddish delivery import-receipts
 ```
 
 Commands
@@ -1122,8 +1180,21 @@ oversized CTRF reports are ignored and never change the settled `reward`;
 verifiers without a test report simply show no test line.
 
 Delivery sign-off requires resolving or individually acknowledging every
-reported defect, including historical `should_fix` and `optional` findings.
+reported defect, including historical `optional` findings.
 `oddish delivery check`, `ack`, and `signoff` send the task version shown by the
 board; a version change requires reviewing the board again. `oddish delivery
 history` retains original severity labels and shows the current shipment
 requirement. An acknowledgment permits an exception without deleting a finding.
+
+### Homebrew installation
+
+The private Homebrew tap requires GitHub read access to `abundant-ai/homebrew-tap`.
+Install `gh` with `brew install gh`, then run `gh auth login` and
+`gh auth setup-git`. Install with `brew install abundant-ai/tap/oddish`.
+Set `ODDISH_API_KEY` for your Oddish organization before making API requests.
+Update with `brew update && brew upgrade abundant-ai/tap/oddish`. Homebrew owns
+this installation; `oddish update` directs you to Homebrew instead of replacing
+it from PyPI. `oddish version --check` prints the Homebrew check command.
+The Homebrew package includes CLI and shared client helpers, not the Oddish
+server, database, or worker implementations. Releases are maintained in
+https://github.com/abundant-ai/homebrew-tap.
