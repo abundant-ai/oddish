@@ -1482,6 +1482,16 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     ]
 
 
+def _is_muse_code_agent(
+    *, agent: str | None, agent_config: HarborAgentConfig | None
+) -> bool:
+    """Whether a trial runs muse-code, by name or by class import path."""
+    if (agent or "").strip().lower() == "muse-code":
+        return True
+    import_path = (getattr(agent_config, "import_path", None) or "").strip().lower()
+    return "muse_code:" in import_path
+
+
 def _muse_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts muse-code needs across install *and* run.
 
@@ -1766,8 +1776,10 @@ def _resolve_provider_environment_config(
     environment_config = hc.environment.model_copy(deep=True)
     environment_config.type = environment
     if (
-        fallback_from_environment or ""
-    ).strip().lower() == EnvironmentType.THUNDER.value and environment != EnvironmentType.THUNDER:
+        (fallback_from_environment or "").strip().lower()
+        == EnvironmentType.THUNDER.value
+        and environment != EnvironmentType.THUNDER
+    ):
         environment_config.kwargs = {
             key: value
             for key, value in environment_config.kwargs.items()
@@ -2337,7 +2349,7 @@ async def _run_harbor_trial_async_impl(
         # agent-setup under the environment baseline and dials Meta's own
         # service rather than the host its model id names -- same lifecycle
         # problem and solution as the opencode arm above.
-        if (agent or "").strip().lower() == "muse-code" and not (
+        if _is_muse_code_agent(agent=agent, agent_config=agent_config) and not (
             _supports_daytona_compose_restricted_agent_network(
                 task_path=effective_task_path,
                 environment_config=env_config,

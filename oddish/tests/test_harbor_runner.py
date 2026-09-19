@@ -5805,3 +5805,17 @@ def test_muse_code_environment_hosts_cover_install_and_meta_service():
         assert mirror in hosts
     assert "staging.meta.ai" in hosts
     assert len(hosts) == len(set(hosts))
+
+
+def test_muse_code_arm_matches_import_path_configs():
+    """A config that names the class by import path (name=None) must still
+    get the installer hosts merged into the environment baseline."""
+    assert harbor_runner._is_muse_code_agent(agent="muse-code", agent_config=None)
+    assert harbor_runner._is_muse_code_agent(agent=" MUSE-CODE ", agent_config=None)
+    config = HarborAgentConfig(
+        name=None,
+        import_path="harbor.agents.installed.muse_code:MuseCode",
+        model_name="meta/muse-spark-1.2",
+    )
+    assert harbor_runner._is_muse_code_agent(agent=None, agent_config=config)
+    assert not harbor_runner._is_muse_code_agent(agent="tbh", agent_config=None)

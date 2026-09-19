@@ -222,6 +222,18 @@ _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
 _CLASS_BASENAME_RUNTIME_KEYS: dict[str, str] = {
     "oddishantigravitycli": "antigravity-cli",
     "antigravitycli": "antigravity-cli",
+    "musecode": "muse-code",
+}
+# Endpoint override variables consulted for an agent's OWN service, in the
+# precedence the harness itself applies. muse-code mirrors Harbor's
+# ``base_url -> MUSE_CODE_BASE_URL -> META_BASE_URL``; the other agent-keyed
+# entries keep the legacy shared pair.
+_DEFAULT_BASE_URL_OVERRIDE_KEYS: tuple[str, ...] = (
+    *TBH_BASE_URL_KEYS,
+    *DEEPSEEK_BASE_URL_KEYS,
+)
+_AGENT_BASE_URL_OVERRIDE_KEYS: dict[str, tuple[str, ...]] = {
+    "muse-code": (*MUSE_CODE_BASE_URL_KEYS, *META_BASE_URL_KEYS),
 }
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
@@ -330,6 +342,9 @@ def agent_runtime_hosts(
     hosts = list(_AGENT_RUNTIME_HOSTS.get(key, ()))
     if not hosts:
         return []
+    override_keys = _AGENT_BASE_URL_OVERRIDE_KEYS.get(
+        key, _DEFAULT_BASE_URL_OVERRIDE_KEYS
+    )
 
     override: Any = None
     if isinstance(agent_kwargs, Mapping):
@@ -337,28 +352,12 @@ def agent_runtime_hosts(
         extra_env = agent_kwargs.get("extra_env")
         if not override and isinstance(extra_env, Mapping):
             override = next(
-                (
-                    extra_env.get(k)
-                    for k in (
-                        *TBH_BASE_URL_KEYS,
-                        *MUSE_CODE_BASE_URL_KEYS,
-                        *DEEPSEEK_BASE_URL_KEYS,
-                    )
-                    if extra_env.get(k)
-                ),
+                (extra_env.get(k) for k in override_keys if extra_env.get(k)),
                 None,
             )
     if not override and isinstance(agent_env, Mapping):
         override = next(
-            (
-                agent_env.get(k)
-                for k in (
-                    *TBH_BASE_URL_KEYS,
-                    *MUSE_CODE_BASE_URL_KEYS,
-                    *DEEPSEEK_BASE_URL_KEYS,
-                )
-                if agent_env.get(k)
-            ),
+            (agent_env.get(k) for k in override_keys if agent_env.get(k)),
             None,
         )
     if isinstance(override, str):
