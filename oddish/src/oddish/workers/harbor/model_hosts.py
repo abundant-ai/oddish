@@ -120,6 +120,20 @@ _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 # is keyed on a ``cursor/`` model prefix.
 TBH_BASE_URL_KEYS = ("TBH_BASE_URL",)
 _TBH_RUNTIME_HOSTS = ("api.meta.ai",)
+# muse-code is Meta's public Muse Code CLI -- the same service tbh fronts,
+# shipped through Meta's installer instead of a partner build -- so it dials
+# api.meta.ai the same way and needs the same agent-keyed host. Its installer
+# chain (dev.meta.ai script -> api.meta.ai launcher manifest ->
+# lookaside.facebook.com binary) runs during agent SETUP under the environment
+# baseline, so those hosts ride the runner's muse-code arm like the opencode
+# installer arm below, NOT this runtime table.
+MUSE_CODE_BASE_URL_KEYS = ("MUSE_CODE_BASE_URL",)
+_MUSE_CODE_RUNTIME_HOSTS = ("api.meta.ai",)
+MUSE_CODE_INSTALL_HOSTS: tuple[str, ...] = (
+    "dev.meta.ai",  # install.sh
+    "api.meta.ai",  # muse-launcher.sh + muse-stable channel manifest
+    "lookaside.facebook.com",  # release binary download
+)
 _DSH_INSTALL_HOSTS: tuple[str, ...] = (
     "raw.githubusercontent.com",
     "github.com",
@@ -192,6 +206,7 @@ ANTIGRAVITY_RUNTIME_HOSTS: tuple[str, ...] = (
 )
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
+    "muse-code": _MUSE_CODE_RUNTIME_HOSTS,
     "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,
     "antigravity-cli": ANTIGRAVITY_RUNTIME_HOSTS,
 }
@@ -317,7 +332,11 @@ def agent_runtime_hosts(
             override = next(
                 (
                     extra_env.get(k)
-                    for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
+                    for k in (
+                        *TBH_BASE_URL_KEYS,
+                        *MUSE_CODE_BASE_URL_KEYS,
+                        *DEEPSEEK_BASE_URL_KEYS,
+                    )
                     if extra_env.get(k)
                 ),
                 None,
@@ -326,7 +345,11 @@ def agent_runtime_hosts(
         override = next(
             (
                 agent_env.get(k)
-                for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
+                for k in (
+                    *TBH_BASE_URL_KEYS,
+                    *MUSE_CODE_BASE_URL_KEYS,
+                    *DEEPSEEK_BASE_URL_KEYS,
+                )
                 if agent_env.get(k)
             ),
             None,
