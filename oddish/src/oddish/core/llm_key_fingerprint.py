@@ -17,6 +17,9 @@ _ODDISH_PROVIDER_ENV_KEYS = {
     "minimax": "MINIMAX_API_KEY",
     "moonshot": "MOONSHOT_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    # Never let this fall through to Harbor's PROVIDER_KEYS, which names the
+    # (non-secret) VERTEXAI_PROJECT for this provider.
+    "vertex_ai": "VERTEX_AI_CREDENTIALS_JSON",
 }
 
 
@@ -69,6 +72,12 @@ def platform_key_hash_for_provider(provider: str | None) -> str | None:
             raw = settings.meta_api_key or os.environ.get("META_API_KEY")
         elif provider == "geometric":
             raw = settings.geometric_api_key or os.environ.get("GEOMETRIC_API_KEY")
+        elif provider == "vertex_ai":
+            # The credential that actually pays: the service-account JSON, or
+            # the express-mode key. Read through Settings so a self-host .env
+            # value is hashed too (VertexAiConfigError falls to None below).
+            vertex = settings.vertex_ai_config()
+            raw = vertex.credentials_json or vertex.api_key
         else:
             variable = provider_key_var(provider)
             raw = os.environ.get(variable) if variable else None

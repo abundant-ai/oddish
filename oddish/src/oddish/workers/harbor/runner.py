@@ -36,6 +36,7 @@ from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
+from oddish.workers.harbor.vertex_ai import plan_for_model as _vertex_ai_plan
 from oddish.config import (
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
@@ -281,6 +282,9 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     # It is a credential value like the other two -- listed for redaction
     # coverage, never a base URL, so it cannot affect transport-host selection.
     "gemini": ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"),
+    # Vertex: the service-account JSON or the express-mode key. The runner also
+    # folds the resolved values explicitly (they may live only in Settings).
+    "vertex_ai": ("VERTEX_AI_CREDENTIALS_JSON", "VERTEX_AI_API_KEY", "GOOGLE_API_KEY"),
     "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
     "meta": ("META_API_KEY", "OPENAI_API_KEY"),
     "geometric": ("GEOMETRIC_API_KEY", "OPENAI_API_KEY"),
@@ -1485,7 +1489,9 @@ def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts Gemini CLI needs during environment setup and agent execution."""
     return [
         *GEMINI_CLI_INSTALL_HOSTS,
-        *gemini_cli_transport_hosts(agent_config.env),
+        *gemini_cli_transport_hosts(
+            agent_config.env, model_name=agent_config.model_name
+        ),
     ]
 
 
@@ -2143,9 +2149,21 @@ async def _run_harbor_trial_async_impl(
             else {}
         )
         runtime_transport_env = _resolved_runtime_transport_env(openai_env)
+        # Google Vertex AI: resolve the provider plan (configuration, worker
+        # credential file, process env) once; None for every other model. Keyed
+        # on the EFFECTIVE requested model (``openai_model`` above comes from
+        # _trial_requested_model, which falls back to the stored agent_config
+        # when the trial row carries no model), the same id the routed config
+        # builder installs the profile for. Its secret values join the
+        # redaction map here because the provider fold above reads only
+        # os.environ and the credential may live in Settings.
+        vertex_ai = _vertex_ai_plan(openai_model, extra_agent_env=extra_agent_env)
         if restricted_compose_kind == "dynamic":
             runtime_transport_replacements = _runtime_transport_redactions(
-                runtime_transport_env
+                {
+                    **runtime_transport_env,
+                    **(vertex_ai.redaction_env if vertex_ai is not None else {}),
+                }
             )
         # A BYOK user key arrives in the agent env, but claude-code's
         # direct-vs-Bedrock routing reads os.environ -- both to pick the model
@@ -2162,7 +2180,16 @@ async def _run_harbor_trial_async_impl(
             agent=agent, model=model, agent_env=extra_agent_env
         )
 
-        with _temporary_env(byok_anthropic_env):
+        # The Vertex process env must be ambient for the WHOLE config build, not
+        # only around Job.create/run: the restricted-network preparation below
+        # resolves ${VAR} templates (an express-mode key) and Harbor's
+        # os.environ-based Bedrock detection runs long before the Job scope.
+        with _temporary_env(
+            {
+                **byok_anthropic_env,
+                **(vertex_ai.process_env if vertex_ai is not None else {}),
+            }
+        ):
             agent_config = _build_agent_config(
                 agent=agent,
                 model=model,
@@ -2416,6 +2443,11 @@ async def _run_harbor_trial_async_impl(
         # platform key onto the AI SDK name here puts it on the exact surface
         # that forwarding reads, for the whole Job.create/run scope.
         runtime_env.update(_gemini_ai_sdk_alias_env(model))
+        if vertex_ai is not None:
+            # Host-side harnesses (terminus, single-llm) and Harbor's own
+            # VERTEXAI_PROJECT forwarding read the worker process; this also
+            # blanks the baked Bedrock flags for Harbor's os.environ check.
+            runtime_env.update(vertex_ai.process_env)
         is_claude_code = "claude-code" in (agent or "").strip().lower()
         if is_claude_code and (
             byok_anthropic_env or _claude_code_forces_direct_api(probe_routing)
@@ -2460,6 +2492,10 @@ async def _run_harbor_trial_async_impl(
                     job.on_verification_started(safe_hook_callback)
                     job.on_trial_ended(safe_hook_callback)
                     job.on_trial_cancelled(safe_hook_callback)
+                if vertex_ai is not None and vertex_ai.upload_hook is not None:
+                    # Service-account mode: place the key file in the sandbox
+                    # right before the agent phase, for every harness alike.
+                    job.on_agent_started(vertex_ai.upload_hook)
 
                 if trial_id is not None and org_id is not None:
                     from .quota_control import run_job_with_quota_control

@@ -1024,13 +1024,19 @@ def test_mini_swe_bare_openai_model_gets_openai_transport():
 def test_provider_aliases_resolve_transport_keys():
     # infer_model_provider_prefix normalizes provider aliases so
     # _model_transport_base_url_keys resolves them (claude -> anthropic,
-    # vertex_ai / palm -> gemini, moonshotai -> moonshot).
+    # palm -> gemini, vertex / google-vertex -> vertex_ai, moonshotai ->
+    # moonshot).
     from oddish.workers.harbor.restricted_network import (
         _model_transport_base_url_keys,
     )
 
     assert _model_transport_base_url_keys("claude/sonnet") == ("ANTHROPIC_BASE_URL",)
-    assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("vertex_ai/gemini")
+    assert _model_transport_base_url_keys("vertex_ai/gemini") == (
+        "ANTHROPIC_VERTEX_BASE_URL",
+    )
+    assert _model_transport_base_url_keys("google-vertex/gemini") == (
+        "ANTHROPIC_VERTEX_BASE_URL",
+    )
     assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("palm/x")
     assert _model_transport_base_url_keys("moonshotai/kimi") == ("MOONSHOT_BASE_URL",)
 
@@ -1251,10 +1257,12 @@ def test_azure_and_vertex_model_ids_are_not_silently_transport_free():
             base_url_keys=keys,
         ) == ("foo.openai.azure.com",)
 
+    # Vertex is its own provider: the endpoint follows the configured location
+    # (global by default) plus the service-account token host.
     vertex = AgentConfig(name="mini-swe-agent", model_name="vertex_ai/gemini-2")
     assert _selected_transport_hosts(
         vertex, {}, base_url_keys=consumed_transport_base_url_keys(vertex)
-    ) == ("generativelanguage.googleapis.com",)
+    ) == ("aiplatform.googleapis.com", "oauth2.googleapis.com")
 
 
 def test_host_arms_never_outrun_the_transport_key_map():
@@ -1291,8 +1299,8 @@ def test_host_arms_never_outrun_the_transport_key_map():
 
     # A spelling the alias map does not carry must resolve NEITHER, so it can
     # never substitute a public host for the operator's private route.
-    assert model_hosts.outbound_hosts_for_model("vertex-ai/gemini-2.5-pro") == []
-    assert _model_transport_base_url_keys("vertex-ai/gemini-2.5-pro") == ()
+    assert model_hosts.outbound_hosts_for_model("vertexai/gemini-2.5-pro") == []
+    assert _model_transport_base_url_keys("vertexai/gemini-2.5-pro") == ()
 
 
 def test_every_provider_alias_resolves_a_host_not_just_keys():

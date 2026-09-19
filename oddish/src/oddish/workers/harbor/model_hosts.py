@@ -30,12 +30,15 @@ from oddish.config import (
     is_meta_model,
     is_minimax_model,
     is_moonshot_model,
+    is_vertex_ai_model,
     is_xai_model,
     is_zai_model,
     looks_like_bedrock_model_id,
     settings,
 )
 from oddish.workers.agents.network import normalize_domain_or_url
+from oddish.workers.harbor.vertex_ai import default_hosts as _vertex_default_hosts
+from oddish.workers.harbor.vertex_ai import hosts_from_env as _vertex_hosts_from_env
 
 # Transport base-URL env keys, grouped by provider. These are the SINGLE SOURCE
 # for both host discovery (here) and the restricted-egress fail-closed filter
@@ -60,6 +63,10 @@ GEMINI_BASE_URL_KEYS = (
     "GOOGLE_API_BASE_URL",
 )
 CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
+# Claude Code's own Vertex endpoint override: the one Vertex base-URL env a
+# mainstream harness reads. Oddish never sets it; a caller may on public
+# shapes (restricted Compose rejects submitted routes like every other key).
+VERTEX_AI_BASE_URL_KEYS = ("ANTHROPIC_VERTEX_BASE_URL",)
 
 # Gemini's non-route OAuth toggles. They select credentials rather than widen
 # egress, so they are NOT transport base-URL keys and never enter the discovery
@@ -87,6 +94,7 @@ _BASE_URL_ENV_KEYS = (
     *DEEPSEEK_BASE_URL_KEYS,
     *GEMINI_BASE_URL_KEYS,
     *CURSOR_BASE_URL_KEYS,
+    *VERTEX_AI_BASE_URL_KEYS,
 )
 
 # Azure aliases for the SAME OpenAI-family transport that ``OPENAI_BASE_URL``
@@ -269,13 +277,22 @@ def _hosts_from_env(
     return hosts
 
 
-def gemini_cli_transport_hosts(agent_env: Mapping[str, str] | None = None) -> list[str]:
+def gemini_cli_transport_hosts(
+    agent_env: Mapping[str, str] | None = None, *, model_name: str | None = None
+) -> list[str]:
     """Return the Gemini CLI transport hosts, with an explicit route replacing Google.
 
     Gemini CLI always calls the Gemini API; its submitted model name is not a
     transport decision.  A configured Gemini base URL is therefore the whole
-    transport allowlist, matching the restricted-network Gemini profile.
+    transport allowlist, matching the restricted-network Gemini profile. On a
+    canonical ``vertex_ai/`` model Oddish's own Vertex profile is the transport
+    instead; the profile marker is honored only together with that model id, so
+    a caller-submitted marker cannot widen a Gemini API trial to Vertex.
     """
+    if is_vertex_ai_model(model_name):
+        vertex = _vertex_hosts_from_env(agent_env)
+        if vertex is not None:
+            return vertex
     return _hosts_from_env(agent_env, keys=GEMINI_BASE_URL_KEYS) or list(_GEMINI_HOSTS)
 
 
@@ -430,6 +447,15 @@ def outbound_hosts_for_model(
     elif is_anthropic_hdo_model(model_name):
         # Direct Anthropic API with the HDO key — same hosts as anthropic/.
         hosts.extend(_ANTHROPIC_HOSTS)
+    elif is_vertex_ai_model(model_name):
+        # Google Vertex AI: the endpoint follows the location (and the token
+        # host in service-account mode). Oddish's own profile in the env marks
+        # the mode and location; read paths without one use the configured
+        # provider defaults.
+        marked = _vertex_hosts_from_env(agent_env)
+        if marked is None and isinstance(extra_env, dict):
+            marked = _vertex_hosts_from_env(extra_env)
+        hosts.extend(marked if marked is not None else _vertex_default_hosts())
     elif _looks_like_bedrock_model(model_name):
         hosts.extend(bedrock_domains_for_model(model_name=model_name))
     elif model_name:
@@ -460,14 +486,11 @@ def outbound_hosts_for_model(
             azure_host = _host_from_url(settings.azure_openai_endpoint)
             if azure_host:
                 hosts.append(azure_host)
-        elif head in ("gemini", "google", "vertex_ai"):
-            # ``vertex_ai`` is spelled exactly as litellm spells it, which is
-            # also the key _MODEL_PROVIDER_ALIASES folds into ``gemini`` for
-            # transport-key selection. Adding a spelling that the alias map does
-            # NOT carry (e.g. a hyphenated ``vertex-ai``) would recreate the
-            # drift this arm exists to prevent: the id would resolve a host here
-            # while _model_transport_base_url_keys returned an empty key set,
-            # dropping the operator's real route and granting the public one.
+        elif head in ("gemini", "google"):
+            # The Gemini API key route. Vertex spellings resolve in the
+            # is_vertex_ai_model arm above; a spelling the alias map does NOT
+            # carry must resolve neither a host here nor transport keys, or
+            # the operator's real route would be dropped for the public one.
             hosts.extend(_GEMINI_HOSTS)
         elif head == "cursor":
             hosts.extend(_CURSOR_RUNTIME_HOSTS)

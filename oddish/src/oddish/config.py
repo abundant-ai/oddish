@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 from typing import ClassVar
@@ -118,6 +119,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "claude",
     "google",
     "gemini",
+    "vertex_ai",
     "default",
 }
 
@@ -834,6 +836,87 @@ def to_anthropic_hdo_model_id(model: str | None) -> str | None:
     return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
 
 
+# Google Vertex AI (Google now brands it "Gemini Enterprise Agent Platform").
+# One provider for both model families Vertex serves -- Gemini, and Anthropic
+# Claude through the Model Garden -- under one Google Cloud project, one
+# service account, and Vertex's own quotas and endpoints. ``vertex_ai`` is
+# LiteLLM's and Harbor's spelling (harbor ``PROVIDER_KEYS``), so it is the
+# canonical id; the shorter spellings are accepted as aliases. Prefix-only,
+# like meta and geometric: a bare ``gemini-*`` or ``claude-*`` id keeps its
+# existing route. Oddish publishes one standard Vertex environment to every
+# ``vertex_ai/`` trial (see workers/harbor/vertex_ai.py); whether a harness
+# honors it is the harness's business.
+VERTEX_AI_PROVIDER = "vertex_ai"
+VERTEX_AI_DEFAULT_LOCATION = "global"
+VERTEX_AI_MODE_SERVICE_ACCOUNT = "service_account"
+VERTEX_AI_MODE_API_KEY = "api_key"
+_VERTEX_AI_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {"vertex_ai", "vertex", "vertex-ai", "google-vertex"}
+)
+
+
+def is_vertex_ai_model(model: str | None) -> bool:
+    """Return True when *model* carries an explicit Vertex AI provider prefix."""
+    if not model:
+        return False
+    raw = model.strip()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(
+        provider_prefix
+        and provider_prefix.strip().lower() in _VERTEX_AI_PROVIDER_PREFIXES
+    )
+
+
+def vertex_ai_bare_model_id(model: str) -> str:
+    """Strip the Vertex prefix, returning the id Vertex serves."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _VERTEX_AI_PROVIDER_PREFIXES
+    ):
+        return str(bare).strip()
+    return raw
+
+
+def to_vertex_ai_model_id(model: str | None) -> str | None:
+    """Canonicalize a Vertex reference to ``vertex_ai/<bare-id>``.
+
+    The bare id passes through untouched: Vertex accepts both the dateless
+    Model Garden ids (``claude-sonnet-5``) and the dated spellings Claude Code
+    documents (``claude-haiku-4-5@20251001``), so there is no alias table to
+    maintain and a wrong id fails at the provider like any provider error.
+    """
+    if not is_vertex_ai_model(model):
+        return model
+    assert model is not None
+    return f"{VERTEX_AI_PROVIDER}/{vertex_ai_bare_model_id(model)}"
+
+
+def is_vertex_ai_claude_model(model: str | None) -> bool:
+    """Whether a Vertex reference names an Anthropic Claude model."""
+    return is_vertex_ai_model(model) and (
+        "claude" in vertex_ai_bare_model_id(model or "").lower()
+    )
+
+
+class VertexAiConfigError(ValueError):
+    """A ``vertex_ai/`` trial reached a worker with no usable Vertex configuration."""
+
+
+@dataclass(frozen=True)
+class VertexAiConfig:
+    """Resolved Vertex AI provider configuration (see ``Settings.vertex_ai_config``)."""
+
+    mode: str
+    project_id: str | None
+    location: str
+    credentials_json: str | None
+    api_key: str | None
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -1119,11 +1202,15 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "anthropic": "anthropic",
     "claude": "anthropic",
     "bedrock": "bedrock",
-    # Gemini / Google
+    # Gemini / Google (the Gemini API key route)
     "gemini": "gemini",
     "google": "gemini",
-    "vertex_ai": "gemini",
     "palm": "gemini",
+    # Google Vertex AI: its own provider, project, credential, and endpoints.
+    "vertex_ai": VERTEX_AI_PROVIDER,
+    "vertex": VERTEX_AI_PROVIDER,
+    "vertex-ai": VERTEX_AI_PROVIDER,
+    "google-vertex": VERTEX_AI_PROVIDER,
     # z.ai / GLM. All spellings collapse to the canonical "zai" provider so
     # GLM trials get their own queue/provider bucket instead of Bedrock's.
     "zai": ZAI_PROVIDER,
@@ -1252,8 +1339,8 @@ def infer_model_provider_prefix(model_name: str | None) -> str | None:
 
     Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
     so transport-key derivation does not depend on the id being slash-prefixed,
-    and normalizes provider aliases (``claude`` -> ``anthropic``, ``vertex_ai`` /
-    ``palm`` -> ``gemini``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
+    and normalizes provider aliases (``claude`` -> ``anthropic``, ``palm`` ->
+    ``gemini``, ``vertex`` -> ``vertex_ai``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
     name so key/host maps keyed on the canonical provider match. Falls back to the
     raw prefix when the provider is unknown to the normalizer.
     """
@@ -1752,6 +1839,17 @@ class Settings(BaseSettings):
     )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    # Google Vertex AI. One platform service account serves both Gemini and
+    # Claude on Vertex; express mode (API key, Gemini-only) is the alternative
+    # when no service-account key is configured. Resolved by vertex_ai_config().
+    vertex_ai_project_id: str | None = Field(default=None, alias="VERTEX_AI_PROJECT_ID")
+    vertex_ai_location: str = Field(
+        default=VERTEX_AI_DEFAULT_LOCATION, alias="VERTEX_AI_LOCATION"
+    )
+    vertex_ai_credentials_json: SecretStr | None = Field(
+        default=None, alias="VERTEX_AI_CREDENTIALS_JSON"
+    )
+    vertex_ai_api_key: SecretStr | None = Field(default=None, alias="VERTEX_AI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
     meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
@@ -2086,6 +2184,11 @@ class Settings(BaseSettings):
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
             return to_anthropic_hdo_model_id(cleaned)
+        # Explicit ``vertex_ai/`` (and its aliases) is its own provider: keep
+        # Claude ids off the Bedrock chokepoint and Gemini ids off the API-key
+        # route. Total by construction, so read-side callers never raise here.
+        if is_vertex_ai_model(cleaned):
+            return to_vertex_ai_model_id(cleaned)
 
         if strict:
             return to_bedrock_model_id(cleaned)
@@ -2109,6 +2212,11 @@ class Settings(BaseSettings):
         normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized
+        # Alias prefixes (``vertex/``, ``google-vertex/``) must land on the same
+        # bucket as the stored ``vertex_ai/`` id: admin concurrency overrides
+        # and the admin endpoint check call this on raw input.
+        if is_vertex_ai_model(normalized):
+            normalized = to_vertex_ai_model_id(normalized) or normalized
         if "/" in normalized:
             provider_prefix, canonical = normalized.split("/", 1)
             if (
@@ -2358,6 +2466,56 @@ class Settings(BaseSettings):
         if self.meta_session_id:
             env["ODDISH_META_SESSION_ID"] = self.meta_session_id
         return env
+
+    def vertex_ai_config(self) -> VertexAiConfig:
+        """Resolve the Vertex AI provider configuration, with defaults.
+
+        Service-account mode (whenever ``VERTEX_AI_CREDENTIALS_JSON`` is set)
+        needs a project id; express mode (``VERTEX_AI_API_KEY`` only) is
+        Gemini-only and always uses the global endpoint. Read through Settings
+        rather than ``os.environ`` so a self-host ``.env`` value counts too.
+        Raises ``VertexAiConfigError`` when neither is configured, so a
+        ``vertex_ai/`` trial fails at config build instead of with a 401.
+        """
+        credentials = (
+            self.vertex_ai_credentials_json.get_secret_value().strip()
+            if self.vertex_ai_credentials_json
+            else ""
+        )
+        api_key = (
+            self.vertex_ai_api_key.get_secret_value().strip()
+            if self.vertex_ai_api_key
+            else ""
+        )
+        project_id = (self.vertex_ai_project_id or "").strip() or None
+        location = (
+            self.vertex_ai_location or ""
+        ).strip().lower() or VERTEX_AI_DEFAULT_LOCATION
+        if credentials:
+            if not project_id:
+                raise VertexAiConfigError(
+                    "VERTEX_AI_CREDENTIALS_JSON is set but VERTEX_AI_PROJECT_ID "
+                    "is missing"
+                )
+            return VertexAiConfig(
+                mode=VERTEX_AI_MODE_SERVICE_ACCOUNT,
+                project_id=project_id,
+                location=location,
+                credentials_json=credentials,
+                api_key=None,
+            )
+        if api_key:
+            return VertexAiConfig(
+                mode=VERTEX_AI_MODE_API_KEY,
+                project_id=project_id,
+                location=VERTEX_AI_DEFAULT_LOCATION,
+                credentials_json=None,
+                api_key=api_key,
+            )
+        raise VertexAiConfigError(
+            "vertex_ai/ trials need VERTEX_AI_CREDENTIALS_JSON (+ "
+            "VERTEX_AI_PROJECT_ID) or VERTEX_AI_API_KEY on this worker"
+        )
 
     def get_geometric_anthropic_base_url(self) -> str:
         """Base URL for Geometric's Anthropic-compatible surface."""

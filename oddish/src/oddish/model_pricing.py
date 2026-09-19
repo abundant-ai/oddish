@@ -96,6 +96,8 @@ PRICING_TABLE: list[tuple[str, ModelPricing]] = [
 
 _DATED_SUFFIX_RE = re.compile(r"-(20\d{6}|\d{4}-\d{2}-\d{2})$")
 _VERSIONED_SUFFIX_RE = re.compile(r"-v\d+(?::\d+)?$")
+# Vertex AI spells dated Claude ids with an ``@`` (``claude-haiku-4-5@20251001``).
+_AT_DATED_SUFFIX_RE = re.compile(r"@20\d{6}$")
 
 _LITELLM_PREFIX_CANDIDATES: tuple[str, ...] = (
     "",
@@ -179,6 +181,10 @@ def _spelling_variants(value: str) -> list[str]:
         without_version = _VERSIONED_SUFFIX_RE.sub("", candidate)
         if without_version != candidate:
             pending.append(without_version)
+
+        without_at_date = _AT_DATED_SUFFIX_RE.sub("", candidate)
+        if without_at_date != candidate:
+            pending.append(without_at_date)
 
         dashed_claude = _CLAUDE_DOTTED_VERSION_RE.sub(r"\1-\2", candidate)
         if dashed_claude != candidate:

@@ -173,6 +173,25 @@ def scoped_model_env(
         return (
             {"GEMINI_API_KEY": key, "GOOGLE_GENERATIVE_AI_API_KEY": key} if key else {}
         )
+    if provider == "vertex_ai":
+        # Google Vertex AI: non-secret coordinates only. The credential rides
+        # the worker's sandbox upload (service-account file) or the runner's
+        # ambient express-mode key, never the bundle.
+        resolve = getattr(settings, "vertex_ai_config", None)
+        if resolve is None:
+            return {}
+        try:
+            config = resolve()
+        except Exception:
+            return {}
+        env = {
+            "VERTEXAI_LOCATION": config.location,
+            "GOOGLE_CLOUD_LOCATION": config.location,
+        }
+        if config.project_id:
+            env["VERTEXAI_PROJECT"] = config.project_id
+            env["GOOGLE_CLOUD_PROJECT"] = config.project_id
+        return env
     if provider == "meta":
         key = getattr(settings, "meta_api_key", None)
         return {"META_API_KEY": key, "MSWEA_API_KEY": key} if key else {}

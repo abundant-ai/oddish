@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Google Vertex AI is a first-class model provider: `--model vertex_ai/<model>`
+  (aliases `vertex/`, `vertex-ai/`, `google-vertex/`) runs Gemini models and
+  Anthropic Claude models on Vertex with their own queue bucket, provider,
+  egress allowlist, cost attribution, and key fingerprint. Configure
+  `VERTEX_AI_PROJECT_ID`, `VERTEX_AI_LOCATION` (default `global`), and
+  `VERTEX_AI_CREDENTIALS_JSON` (a service account), or `VERTEX_AI_API_KEY`
+  alone for Google's express mode (Gemini only). Oddish publishes the
+  standard Vertex environment to every `vertex_ai/` trial regardless of
+  agent, with the service-account key file placed in the sandbox in
+  service-account mode or the API key in express mode; whether a harness
+  honors it is the harness's business.
+
 ## [2026-08-28]
 
 ### Added

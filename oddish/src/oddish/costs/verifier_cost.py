@@ -25,7 +25,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import looks_like_bedrock_model_id
+from oddish.config import is_vertex_ai_model, looks_like_bedrock_model_id
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db import VerifierCostModel, generate_id, get_session, utcnow
@@ -107,6 +107,13 @@ def infer_verifier_route(model: str | None) -> str:
         or looks_like_bedrock_model_id(raw)
     ):
         return ROUTE_BEDROCK
+    if is_vertex_ai_model(raw):
+        # Claude on Vertex is not billed to the Anthropic console key, and the
+        # verifier sandbox never receives the Vertex profile (the agent env
+        # overlay is scoped off verifier commands), so there is no platform
+        # key to attribute: keep it in the bucket with no key hash, exactly as
+        # a Gemini judge is handled today.
+        return ROUTE_OTHER
     if (
         raw.startswith("anthropic/")
         or raw.startswith("claude")

@@ -279,6 +279,12 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
+    vertex_ai = payload.get("vertex_ai") or None
+    if vertex_ai:
+        # Google Vertex AI: the parent's process scope does not reach this
+        # child, so apply it here for host-side harnesses, ${VAR} template
+        # resolution, and Harbor's os.environ-based Bedrock check.
+        os.environ.update(dict(vertex_ai.get("process_env") or {}))
     job = await Job.create(config)
     job_dir = Path(job.job_dir)
 
@@ -309,6 +315,12 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         for register in registers:
             getattr(job, register)(hook)
+        if vertex_ai and vertex_ai.get("worker_path"):
+            from oddish.workers.harbor.vertex_ai import agent_started_upload_hook
+
+            job.on_agent_started(
+                agent_started_upload_hook(Path(vertex_ai["worker_path"]))
+            )
 
         job_result = await job.run()
     finally:
