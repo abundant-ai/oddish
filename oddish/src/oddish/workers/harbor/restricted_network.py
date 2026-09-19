@@ -29,7 +29,11 @@ from harbor.models.task.config import normalize_allowed_hosts
 from harbor.models.trial.config import AgentConfig
 from harbor.utils.import_path import import_class
 
-from oddish.config import infer_model_provider_prefix
+from oddish.config import (
+    VERTEX_AI_MODE_SERVICE_ACCOUNT,
+    infer_model_provider_prefix,
+    is_vertex_ai_model,
+)
 from oddish.workers.agents.network import normalize_domain_or_url
 
 from .model_hosts import (
@@ -68,6 +72,12 @@ from .model_hosts import (
 from .model_hosts import (
     OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
 )
+from .model_hosts import (
+    VERTEX_AI_BASE_URL_KEYS as _VERTEX_AI_BASE_URL_KEYS,
+)
+from .vertex_ai import MODE_ENV as _VERTEX_MODE_ENV
+from .vertex_ai import VERTEX_AUTH_HOSTS as _VERTEX_AUTH_HOSTS
+from .vertex_ai import hosts_from_env as _vertex_hosts_from_env
 
 
 class RestrictedNetworkProfileError(ValueError):
@@ -450,6 +460,10 @@ def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
         "moonshot": ("MOONSHOT_BASE_URL",),
         "google": _GEMINI_BASE_URL_KEYS,
         "gemini": _GEMINI_BASE_URL_KEYS,
+        # Vertex: the only base-URL env a supported harness reads is Claude
+        # Code's own override; LiteLLM and Gemini CLI take the endpoint from
+        # the location, which the host arm resolves.
+        "vertex_ai": _VERTEX_AI_BASE_URL_KEYS,
     }.get(provider, ())
 
 
@@ -457,7 +471,13 @@ def _no_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
     return ()
 
 
-def _anthropic_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+def _anthropic_base_url_keys(agent_config: AgentConfig) -> tuple[str, ...]:
+    # Claude Code reads its Vertex endpoint override only under
+    # CLAUDE_CODE_USE_VERTEX, so the key is consumed on a Vertex trial alone; a
+    # submitted one on any other Claude trial keeps tripping the fail-closed
+    # "does not consume" guard instead of becoming the transport.
+    if is_vertex_ai_model(agent_config.model_name):
+        return ("ANTHROPIC_BASE_URL", *_VERTEX_AI_BASE_URL_KEYS)
     return ("ANTHROPIC_BASE_URL",)
 
 
@@ -541,6 +561,14 @@ def _claude_profile(
         base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         default_hosts=_ANTHROPIC_RUNTIME_HOSTS,
     )
+    if (
+        is_vertex_ai_model(agent_config.model_name)
+        and resolved_env.get(_VERTEX_MODE_ENV) == VERTEX_AI_MODE_SERVICE_ACCOUNT
+    ):
+        # A selected base URL replaces the resolved transport (by design), but
+        # the service account still exchanges its JWT at the token host; union
+        # it back on the way _antigravity_profile keeps its startup hosts.
+        hosts = tuple(dict.fromkeys((*hosts, *_VERTEX_AUTH_HOSTS)))
     return RestrictedNetworkProfile(
         outbound_hosts=hosts,
         kwarg_overrides={"disallowed_tools": _CLAUDE_WEB_TOOLS},
@@ -650,10 +678,25 @@ def _gemini_profile(
             "its runtime service hosts are not bounded. Use API-key auth with an "
             "explicit GOOGLE_GEMINI_BASE_URL or a public agent phase."
         )
-    if uses_vertex and not has_custom_base_url:
+    # Oddish's own Vertex profile is marked and bounded: the endpoint follows
+    # the configured location, so it is granted. The marker counts only on a
+    # canonical ``vertex_ai/`` model (the worker force-assigns it there), so a
+    # caller-submitted marker on any other model, or a caller-requested Vertex
+    # flag without the marker, keeps failing closed as before.
+    vertex_hosts = (
+        _vertex_hosts_from_env(env)
+        if uses_vertex and is_vertex_ai_model(agent_config.model_name)
+        else None
+    )
+    if uses_vertex and vertex_hosts is None and not has_custom_base_url:
         raise RestrictedNetworkProfileError(
             "Restricted Gemini CLI phases require an explicit "
             "GOOGLE_GEMINI_BASE_URL for Vertex transport."
+        )
+    if vertex_hosts is not None and has_custom_base_url:
+        raise RestrictedNetworkProfileError(
+            "Restricted Gemini CLI phases cannot combine Oddish's Vertex AI "
+            "profile with a custom Gemini base URL."
         )
     hosts = _selected_transport_hosts(
         agent_config,
@@ -667,7 +710,9 @@ def _gemini_profile(
         # (for OpenAI-family: api.openai.com plus the worker's private Azure
         # endpoint), granting egress the CLI never dials while never granting
         # the Gemini host it does.
-        default_hosts=_GEMINI_RUNTIME_HOSTS,
+        default_hosts=(
+            tuple(vertex_hosts) if vertex_hosts is not None else _GEMINI_RUNTIME_HOSTS
+        ),
         infer_model=False,
     )
     return RestrictedNetworkProfile(
@@ -701,11 +746,25 @@ def _antigravity_profile(
             "Restricted Antigravity CLI phases do not support OAuth transport; "
             "use GEMINI_API_KEY auth (agy headless mode) with bounded hosts."
         )
-    if uses_vertex and not has_custom_base_url:
+    # Same rule as _gemini_profile: Oddish's marked Vertex profile is bounded
+    # and granted on a canonical ``vertex_ai/`` model (whether agy can use it
+    # is the harness's business); a caller-submitted marker on another model,
+    # or a Vertex flag without the marker, keeps failing closed.
+    vertex_hosts = (
+        _vertex_hosts_from_env(env)
+        if uses_vertex and is_vertex_ai_model(agent_config.model_name)
+        else None
+    )
+    if uses_vertex and vertex_hosts is None and not has_custom_base_url:
         raise RestrictedNetworkProfileError(
             "Restricted Antigravity CLI phases require an explicit "
             "GOOGLE_GEMINI_BASE_URL when Vertex routing is requested; note the "
             "agy agent itself ignores Vertex variables and runs API-key auth."
+        )
+    if vertex_hosts is not None and has_custom_base_url:
+        raise RestrictedNetworkProfileError(
+            "Restricted Antigravity CLI phases cannot combine Oddish's Vertex AI "
+            "profile with a custom Gemini base URL."
         )
     if env.get("AGY_ADC_AUTH", "").strip().lower() in {"1", "true", "yes", "on"}:
         raise RestrictedNetworkProfileError(
@@ -720,7 +779,11 @@ def _antigravity_profile(
         # agy is transport-authoritative like gemini-cli: modelProvider=gemini
         # fronts the Gemini API (or the explicit base URL), so pin the host and
         # do not let model-id inference substitute another provider's host.
-        default_hosts=ANTIGRAVITY_RUNTIME_HOSTS,
+        default_hosts=(
+            tuple(vertex_hosts)
+            if vertex_hosts is not None
+            else ANTIGRAVITY_RUNTIME_HOSTS
+        ),
         infer_model=False,
     )
     # A configured base URL REPLACES the resolved transport, so the startup

@@ -114,6 +114,7 @@ def scoped_model_env(
     settings: Any,
     is_probe: bool = False,
     byok_env: Mapping[str, str] | None = None,
+    raw_harbor_config: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
@@ -121,7 +122,20 @@ def scoped_model_env(
     just that provider's key env — never the full blanket key set. Unknown
     providers return ``{}`` so the caller's dual-read falls back to the blanket
     secret rather than shipping an empty credential.
+
+    ``raw_harbor_config`` is the trial's stored Harbor config: a row that
+    carries no model still names one in its ``agent_config``, and the bundle
+    must follow that effective model the way the runner does. Keyed on the
+    bare row model, such a trial would get its agent's default bundle (the
+    Bedrock flag, the Gemini key), which the runner applies last, over the
+    provider profile it built for the stored model.
     """
+    if raw_harbor_config:
+        from oddish.workers.harbor.agent_config import _trial_requested_model
+
+        agent, model = _trial_requested_model(
+            agent=agent, model=model, raw_harbor_config=dict(raw_harbor_config)
+        )
     provider = (settings.get_provider_for_trial(agent, model) or "").lower()
 
     if provider in _OPENAI_FAMILY:
@@ -173,6 +187,25 @@ def scoped_model_env(
         return (
             {"GEMINI_API_KEY": key, "GOOGLE_GENERATIVE_AI_API_KEY": key} if key else {}
         )
+    if provider == "vertex_ai":
+        # Google Vertex AI: non-secret coordinates only. The credential rides
+        # the worker's sandbox upload (service-account file) or the runner's
+        # ambient express-mode key, never the bundle.
+        resolve = getattr(settings, "vertex_ai_config", None)
+        if resolve is None:
+            return {}
+        try:
+            config = resolve()
+        except Exception:
+            return {}
+        env = {
+            "VERTEXAI_LOCATION": config.location,
+            "GOOGLE_CLOUD_LOCATION": config.location,
+        }
+        if config.project_id:
+            env["VERTEXAI_PROJECT"] = config.project_id
+            env["GOOGLE_CLOUD_PROJECT"] = config.project_id
+        return env
     if provider == "meta":
         key = getattr(settings, "meta_api_key", None)
         return {"META_API_KEY": key, "MSWEA_API_KEY": key} if key else {}
@@ -216,6 +249,7 @@ def build_bundle(
     model: str | None,
     is_probe: bool = False,
     byok_env: Mapping[str, str] | None = None,
+    raw_harbor_config: Mapping[str, Any] | None = None,
     trial_id: str,
     settings: Any,
     now: datetime,
@@ -236,6 +270,7 @@ def build_bundle(
             settings=settings,
             is_probe=is_probe,
             byok_env=byok_env,
+            raw_harbor_config=raw_harbor_config,
         ),
         s3_write_prefix=s3_write_prefix_for(trial_id),
         expires_at=now + timedelta(seconds=ttl_seconds),

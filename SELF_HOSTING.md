@@ -98,6 +98,25 @@ ANTHROPIC_API_KEY=...
 
 # Bedrock credentials are required when direct routing is disabled.
 AWS_BEARER_TOKEN_BEDROCK=...
+
+# Google Vertex AI (--model vertex_ai/<model>, Gemini and Claude alike). A
+# service account with roles/aiplatform.user and the Consumer Procurement
+# Entitlement Manager role; enable each Claude model in Model Garden first.
+# Oddish writes the key to a private worker file, uploads it into the sandbox
+# as /tmp/oddish-vertex/service-account.json, and publishes the standard
+# Vertex environment to every vertex_ai/ trial. Inside the sandbox the file is
+# readable by the trial's own processes, like every other provider key in an
+# agent env, so use a dedicated service account in a project that holds
+# nothing else, grant it only those two roles, and rotate the key.
+# VERTEX_AI_LOCATION defaults to "global". Alternatively VERTEX_AI_API_KEY
+# alone selects express mode
+# (Gemini only, API key, global endpoint; LiteLLM-based harnesses cannot use
+# it). On a GKE-enabled worker the process-level ADC path stays the GKE
+# account; LiteLLM harnesses still read the Vertex key from VERTEXAI_CREDENTIALS.
+VERTEX_AI_PROJECT_ID=...
+VERTEX_AI_CREDENTIALS_JSON='{"type":"service_account",...}'
+# VERTEX_AI_LOCATION=global
+# VERTEX_AI_API_KEY=...
 ```
 
 See `backend/.env.example` for the full list of optional knobs (CORS, GitHub

@@ -24,6 +24,7 @@ from oddish.config import (
     is_meta_model,
     is_minimax_model,
     is_moonshot_model,
+    is_vertex_ai_model,
     is_xai_model,
     is_zai_model,
     looks_like_bedrock_model_id,
@@ -40,6 +41,7 @@ from oddish.config import (
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
+    to_vertex_ai_model_id,
     to_xai_model_id,
     to_zai_model_id,
     zai_bare_model_id,
@@ -49,6 +51,7 @@ from .restricted_network import (
     agent_keeps_public_model_identity,
     set_runtime_model_name,
 )
+from .vertex_ai import merge_agent_env as _merge_vertex_ai_env
 
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
@@ -124,7 +127,11 @@ def _prepare_kimi_claude_code_agent(agent_config: AgentConfig) -> None:
         return
 
     model = (agent_config.model_name or "").strip()
-    if model:
+    # An explicit ``vertex_ai/`` id keeps its provider: rewriting it to
+    # ``moonshot/`` here would silently execute on Moonshot while the stored
+    # provider and queue say Vertex. The harness then decides what to do with
+    # the Vertex profile, like every other agent.
+    if model and not is_vertex_ai_model(model):
         bare = (
             moonshot_bare_model_id(model)
             if is_moonshot_model(model)
@@ -817,6 +824,20 @@ def _build_routed_agent_config(
             bare = anthropic_hdo_bare_model_id(canonical or "")
             api_id = to_anthropic_api_model_id(bare) or bare
             agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
+    elif is_vertex_ai_model(agent_config.model_name):
+        # Google Vertex AI: one provider-wide profile for every harness, no
+        # per-agent shaping. The canonical ``vertex_ai/<bare>`` id is what
+        # every consumer expects: Harbor's claude-code and gemini-cli strip
+        # the prefix themselves and LiteLLM wants it. The profile carries the
+        # project, location, credential path (or express-mode key template)
+        # and blanks the competing Bedrock/Gemini-key selectors; see
+        # workers/harbor/vertex_ai.py. An unconfigured worker raises here
+        # with the explicit message instead of failing with a 401 mid-run.
+        agent_config.model_name = to_vertex_ai_model_id(agent_config.model_name)
+        if not gateway_env:
+            agent_config.env = _merge_vertex_ai_env(
+                agent_config.env, settings.vertex_ai_config(), agent_config.model_name
+            )
     elif _is_single_llm_agent(agent_config) and looks_like_bedrock_model_id(
         agent_config.model_name
     ):
