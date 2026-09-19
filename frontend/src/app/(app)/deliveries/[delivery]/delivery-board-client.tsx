@@ -40,7 +40,6 @@ import type {
   DeliveryCheckResult,
   QAIssueCategory,
   DeliveryTaskBoardRow,
-  TaskBrowseResponse,
   TaskQAHistoryResponse,
 } from "@/lib/types";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -70,7 +69,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -110,194 +108,54 @@ function signoffBlockers(row: DeliveryTaskBoardRow) {
   return { checks, defects };
 }
 
-function AddTasksDialog({
+function PasteTasksDialog({
   open,
   onOpenChange,
-  existingTaskIds,
   busy,
   onAdd,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  existingTaskIds: Set<string>;
   busy: boolean;
-  onAdd: (taskIds: string[]) => void;
+  onAdd: (ids: string[]) => void;
 }) {
-  const [mode, setMode] = useState<"search" | "paste">("search");
-  const [search, setSearch] = useState("");
-  const [query, setQuery] = useState("");
-  const [pasteText, setPasteText] = useState("");
-  const [selected, setSelected] = useState<Map<string, string>>(new Map());
-
-  useEffect(() => {
-    const handle = setTimeout(() => setQuery(search.trim()), 300);
-    return () => clearTimeout(handle);
-  }, [search]);
-
-  const { data, error, isLoading } = useSWR<TaskBrowseResponse>(
-    open && mode === "search"
-      ? `/api/tasks/browse?q=${encodeURIComponent(query)}`
-      : null,
-    fetcher,
-    { keepPreviousData: true }
-  );
-  const results = (data?.items ?? []).filter(
-    (item) => !existingTaskIds.has(item.id)
-  );
-
-  const toggle = (id: string, name: string) => {
-    setSelected((current) => {
-      const next = new Map(current);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.set(id, name);
-      }
-      return next;
-    });
-  };
-
+  const [text, setText] = useState("");
+  const ids = Array.from(new Set(text.split(/[\s,]+/).filter(Boolean)));
   return (
     <Dialog
       open={open}
-      onOpenChange={(value) => {
-        onOpenChange(value);
-        if (!value) {
-          setSelected(new Map());
-          setSearch("");
-          setPasteText("");
-          setMode("search");
-        }
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next) setText("");
       }}
     >
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" disabled={busy}>
-          <Plus className="mr-1 h-4 w-4" />
-          Add tasks
+          Paste task IDs…
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add tasks</DialogTitle>
+          <DialogTitle>Paste task IDs or names</DialogTitle>
         </DialogHeader>
-        <div className="flex items-center gap-1">
-          <Button
-            variant={mode === "search" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setMode("search")}
-          >
-            Search
-          </Button>
-          <Button
-            variant={mode === "paste" ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => setMode("paste")}
-          >
-            Paste list
-          </Button>
-          {mode === "search" && results.length > 1 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto"
-              onClick={() =>
-                setSelected((current) => {
-                  const next = new Map(current);
-                  for (const item of results) {
-                    next.set(item.id, item.name);
-                  }
-                  return next;
-                })
-              }
-            >
-              Select all {results.length}
-            </Button>
-          )}
-        </div>
-        {mode === "paste" ? (
-          <Textarea
-            autoFocus
-            value={pasteText}
-            onChange={(e) => setPasteText(e.target.value)}
-            rows={6}
-            placeholder={
-              "One task name or id per line.\nCommas and spaces also work."
-            }
-          />
-        ) : (
-          <Input
-            autoFocus
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search tasks by name…"
-          />
-        )}
-        {mode === "paste" ? null : (
-          <div className="max-h-64 space-y-0.5 overflow-y-auto">
-            {error ? (
-              <p className="text-destructive py-2 text-sm">
-                Search failed: {error.message}
-              </p>
-            ) : isLoading && !data ? (
-              <div className="space-y-1 py-1">
-                <Skeleton className="h-7 w-full" />
-                <Skeleton className="h-7 w-full" />
-                <Skeleton className="h-7 w-3/4" />
-              </div>
-            ) : results.length === 0 ? (
-              <p className="text-muted-foreground py-2 text-sm">
-                {query
-                  ? "No matching tasks (or they are already in this delivery)."
-                  : "Type to search your tasks."}
-              </p>
-            ) : (
-              results.map((item) => (
-                <label
-                  key={item.id}
-                  className="hover:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5"
-                >
-                  <Checkbox
-                    checked={selected.has(item.id)}
-                    onCheckedChange={() => toggle(item.id, item.name)}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-sm">
-                    {item.name}
-                  </span>
-                  {item.current_version != null && (
-                    <span className="text-muted-foreground text-xs">
-                      v{item.current_version}
-                    </span>
-                  )}
-                </label>
-              ))
-            )}
-          </div>
-        )}
+        <Textarea
+          aria-label="Task IDs or names"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={6}
+          placeholder="One task name or ID per line"
+        />
+        {ids.length > 5000 ? (
+          <p role="alert">Select at most 5,000 tasks.</p>
+        ) : null}
         <DialogFooter>
-          {mode === "paste" ? (
-            <Button
-              onClick={() =>
-                onAdd(
-                  pasteText
-                    .split(/[\s,]+/)
-                    .map((ref) => ref.trim())
-                    .filter(Boolean)
-                )
-              }
-              disabled={busy || !pasteText.trim()}
-            >
-              Add pasted tasks
-            </Button>
-          ) : (
-            <Button
-              onClick={() => onAdd([...selected.keys()])}
-              disabled={busy || selected.size === 0}
-            >
-              {selected.size > 0
-                ? `Add ${selected.size} task${selected.size === 1 ? "" : "s"}`
-                : "Add"}
-            </Button>
-          )}
+          <Button
+            disabled={busy || !ids.length || ids.length > 5000}
+            onClick={() => onAdd(ids)}
+          >
+            Add {ids.length.toLocaleString()}{" "}
+            {ids.length === 1 ? "task" : "tasks"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -1935,10 +1793,10 @@ function DeliveryBoardContent({
           </div>
           {isAdmin && !frozen && (
             <div className="flex flex-wrap items-center gap-2">
-              <AddTasksDialog
+              <Button variant="outline" size="sm" asChild><Link href={`/tasks?${new URLSearchParams({delivery: deliveryId, ...(data.delivery.customer_name ? {not_delivered_to: data.delivery.customer_name} : {})})}`}><Plus className="mr-1 h-4 w-4" />Add tasks</Link></Button>
+              <PasteTasksDialog
                 open={addOpen}
                 onOpenChange={setAddOpen}
-                existingTaskIds={new Set(data.member_task_ids)}
                 busy={busy || changingView}
                 onAdd={addTasks}
               />

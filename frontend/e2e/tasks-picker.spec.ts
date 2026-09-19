@@ -1,0 +1,316 @@
+import { expect, test } from "@playwright/test";
+
+const storageKey = "oddish.tasks.selection.org-1";
+const ids = Array.from({ length: 1201 }, (_, i) => `task-${i}`);
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(
+    ({ storageKey, ids }) => {
+      if (!localStorage.getItem(storageKey)) {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            v: 1,
+            entries: ids.map((id) => [id, { cost: null, estimated: false }]),
+          })
+        );
+      }
+      const writes: string[] = [];
+      Object.assign(window, { selectionWrites: writes });
+      const remove = Storage.prototype.removeItem;
+      const set = Storage.prototype.setItem;
+      Storage.prototype.removeItem = function (key) {
+        if (key === storageKey) writes.push("removed");
+        return remove.call(this, key);
+      };
+      Storage.prototype.setItem = function (key, value) {
+        if (key === storageKey) writes.push(value);
+        return set.call(this, key, value);
+      };
+    },
+    { storageKey, ids }
+  );
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const data =
+      path === "/api/customers"
+        ? [{ id: "lab", name: "Lab" }]
+        : path === "/api/deliveries"
+          ? [
+              {
+                id: "existing",
+                name: "Existing",
+                status: "active",
+                task_count: 0,
+              },
+            ]
+          : path.endsWith("/facets")
+            ? {}
+            : path.endsWith("/count")
+              ? { total: 0 }
+              : { items: [], total: 0, has_more: false };
+    await route.fulfill({ json: data });
+  });
+  await page.goto("/picker");
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
+});
+
+test("restoration never removes stored picks, including Strict Mode and remount", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Remount picker" }).click();
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
+  const writes = await page.evaluate(
+    () => (window as unknown as { selectionWrites: string[] }).selectionWrites
+  );
+  expect(writes).not.toContain("removed");
+  for (const value of writes)
+    expect(JSON.parse(value).entries).toHaveLength(1201);
+});
+
+test("rapid author and sort changes preserve each other and pending search", async ({
+  page,
+}) => {
+  await page
+    .getByRole("textbox", { name: "Search tasks", exact: true })
+    .fill("some task");
+  await page.evaluate(() => {
+    const author = document.querySelector<HTMLSelectElement>(
+      'select[aria-label="Author"]'
+    )!;
+    const sort = document.querySelector<HTMLSelectElement>(
+      'select[aria-label="Sort tasks"]'
+    )!;
+    author.value = "me";
+    author.dispatchEvent(new Event("change", { bubbles: true }));
+    sort.value = "total_trials_desc";
+    sort.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("q"))
+    .toBe("some task");
+  expect(new URL(page.url()).searchParams.get("author")).toBe("me");
+  expect(new URL(page.url()).searchParams.get("sort")).toBe(
+    "total_trials_desc"
+  );
+  await expect(
+    page.getByRole("button", { name: "Ready to ship", exact: true })
+  ).toHaveCount(0);
+});
+
+test("creation sends the entire selection once and keeps it on failure", async ({
+  page,
+}) => {
+  const requests: string[][] = [];
+  await page.route("**/api/deliveries", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    requests.push(route.request().postDataJSON().task_ids);
+    await route.fulfill({
+      status: 404,
+      json: { detail: "tasks not found: task-1200" },
+    });
+  });
+  await page.getByRole("button", { name: "Add 1,201 to delivery" }).click();
+  await page.getByRole("menuitem", { name: "New delivery" }).click();
+  await page.getByLabel("Name", { exact: true }).fill("Batch");
+  await page.getByRole("combobox", { name: "Customer", exact: true }).click();
+  await page.getByRole("option", { name: "Lab", exact: true }).click();
+  await page.getByRole("button", { name: "Create and add 1,201" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "tasks not found: task-1200"
+  );
+  expect(requests).toEqual([ids]);
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
+});
+
+test("organization changes never overwrite either organization's picks", async ({
+  page,
+}) => {
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "oddish.tasks.selection.org-2",
+      JSON.stringify({
+        v: 1,
+        entries: [["other-task", { cost: null, estimated: false }]],
+      })
+    )
+  );
+  await page.getByRole("button", { name: "Switch organization" }).click();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Switch organization" }).click();
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("oddish.tasks.selection.org-2")!)
+          .entries
+    )
+  ).toEqual([["other-task", { cost: null, estimated: false }]]);
+});
+
+test("adding to an existing delivery uses one request for all picks", async ({
+  page,
+}) => {
+  const requests: string[][] = [];
+  await page.route("**/api/deliveries/existing/tasks", async (route) => {
+    requests.push(route.request().postDataJSON().task_ids);
+    await route.fulfill({ json: { added: ids.length } });
+  });
+  await page.getByRole("button", { name: "Add 1,201 to delivery" }).click();
+  await page.getByRole("menuitem", { name: /Existing/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Clear selection", exact: true })
+  ).toHaveCount(0);
+  expect(requests).toEqual([ids]);
+});
+
+test("filter presets and delivery context survive clearing filters", async ({
+  page,
+}) => {
+  await page.goto("/picker?delivery=existing&not_delivered_to=Lab");
+  await expect(
+    page.getByRole("heading", { name: "Add tasks to Existing" })
+  ).toBeVisible();
+  await page.getByRole("button", { name: /^Filters/ }).click();
+  await page.getByRole("textbox", { name: "Find a filter" }).fill("trial");
+  await page
+    .getByRole("combobox", { name: "Trial count", exact: true })
+    .selectOption("5");
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("total_trials_min"))
+    .toBe("5");
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Clear filters", exact: true })
+    .first()
+    .click();
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("total_trials_min"))
+    .toBe(null);
+  expect(new URL(page.url()).searchParams.get("delivery")).toBe("existing");
+});
+
+test("reviewing selection exposes picks outside the current empty results", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "Review selection" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "task-1200", exact: true })
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove", exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "1,200 selected tasks" })
+  ).toBeVisible();
+});
+
+const task = {
+  id: "visible-task",
+  name: "Queue recovery",
+  current_version: 3,
+  current_version_id: "version-3",
+  version_count: 3,
+  qa_outcome: "accepted",
+  total_trials: 40,
+  completed_trials: 29,
+  failed_trials: 1,
+  reward_success: 29,
+  reward_sum: 29,
+  reward_total: 30,
+  pass_count: 29,
+  partial_count: 0,
+  fail_count: 1,
+  harness_count: 0,
+  pending_count: 10,
+  agent_count: 3,
+  cost_usd: 4.5,
+  cost_trial_count: 30,
+  latest_trials: [],
+  latest_trials_truncated: true,
+  experiments: [],
+  user_tags: [],
+  deliveries: [],
+};
+
+test("delivery picker preserves trial counts and only adds to its named destination", async ({
+  page,
+}) => {
+  await page.route("**/api/tasks/browse?**", (route) =>
+    route.fulfill({
+      json: { items: [task], offset: 0, limit: 24, has_more: false },
+    })
+  );
+  await page.route("**/api/tasks/browse/count?**", (route) =>
+    route.fulfill({ json: { total: 1 } })
+  );
+  let submitted: string[] = [];
+  await page.route("**/api/deliveries/existing/tasks", (route) => {
+    submitted = route.request().postDataJSON().task_ids;
+    return route.fulfill({ json: { added: 1 } });
+  });
+  await page.goto("/picker?delivery=existing");
+  await expect(
+    page.getByRole("heading", { name: "Add tasks to Existing" })
+  ).toBeVisible();
+  await expect(page.getByText("29/40 completed")).toBeVisible();
+  await expect(page.getByText("10 pending · 1 failed")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Trial details", exact: true })
+    .click();
+  await expect(page.getByText("Avg score", { exact: true })).toBeVisible();
+  await page
+    .getByRole("checkbox", { name: "Select Queue recovery", exact: true })
+    .first()
+    .check();
+  await page
+    .getByRole("button", { name: "Add 1 to Existing", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/deliveries\/existing$/);
+  expect(submitted).toEqual(["visible-task"]);
+});
+
+test("numeric custom ranges apply once and reject inverted bounds", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: /^Filters/ }).click();
+  await page.getByRole("textbox", { name: "Find a filter" }).fill("median");
+  await page
+    .getByRole("combobox", { name: "Median steps", exact: true })
+    .selectOption("custom");
+  await page
+    .getByRole("spinbutton", { name: "Median steps minimum" })
+    .fill("100");
+  await page
+    .getByRole("spinbutton", { name: "Median steps maximum" })
+    .fill("50");
+  await expect(page.getByText("Minimum cannot exceed maximum")).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("steps_p50_min")).toBe(null);
+  await page
+    .getByRole("spinbutton", { name: "Median steps maximum" })
+    .fill("200");
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("steps_p50_min"))
+    .toBe("100");
+  expect(new URL(page.url()).searchParams.get("steps_p50_max")).toBe("200");
+});
+
+
+
+test("sorting legacy only-mine links keeps the author filter", async ({page}) => {
+  await page.goto("/picker?mine=only");
+  await page.getByRole("combobox", {name: "Sort tasks"}).selectOption("mine");
+  await expect.poll(() => new URL(page.url()).searchParams.get("author")).toBe("me");
+  await page.evaluate(() => {
+    const sort = document.querySelector<HTMLSelectElement>('select[aria-label="Sort tasks"]')!;
+    const author = document.querySelector<HTMLSelectElement>('select[aria-label="Author"]')!;
+    sort.value = "recent"; sort.dispatchEvent(new Event("change", {bubbles: true}));
+    author.value = "all"; author.dispatchEvent(new Event("change", {bubbles: true}));
+  });
+  await expect.poll(() => new URL(page.url()).searchParams.get("mine")).toBe("off");
+  expect(new URL(page.url()).searchParams.has("author")).toBe(false);
+});

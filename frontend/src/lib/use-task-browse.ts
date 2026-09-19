@@ -34,6 +34,8 @@ const BROWSE_IDS_KEY_PREFIX = "/api/tasks/browse/ids?";
  */
 export function browseKey(searchParams: URLSearchParams): string {
   const params = new URLSearchParams();
+  const delivery = searchParams.get("delivery");
+  if (delivery) params.set("delivery", delivery);
   const q = searchParams.get("q") ?? searchParams.get("query");
   if (q) params.set("q", q);
   for (const key of BROWSE_FORWARD_KEYS) {
@@ -54,6 +56,8 @@ export function browseKey(searchParams: URLSearchParams): string {
  */
 export function browseCountKey(searchParams: URLSearchParams): string {
   const params = new URLSearchParams();
+  const delivery = searchParams.get("delivery");
+  if (delivery) params.set("delivery", delivery);
   const q = searchParams.get("q") ?? searchParams.get("query");
   if (q) params.set("q", q);
   for (const key of BROWSE_FORWARD_KEYS) {
@@ -62,7 +66,7 @@ export function browseCountKey(searchParams: URLSearchParams): string {
     // range predicates come from the aggregate FILTERS -- which are keyed
     // above -- so the matching set is identical. Keying on it would miss the
     // cached total and re-run the count for a pure reordering.
-    if (key === "sort") continue;
+    if (key === "sort" || (key === "mine" && searchParams.get(key) !== "only")) continue;
     const value = searchParams.get(key);
     if (value) params.set(key, value);
   }
@@ -77,6 +81,8 @@ export function browseCountKey(searchParams: URLSearchParams): string {
  */
 export function browseIdsKey(searchParams: URLSearchParams): string {
   const params = new URLSearchParams();
+  const delivery = searchParams.get("delivery");
+  if (delivery) params.set("delivery", delivery);
   const q = searchParams.get("q") ?? searchParams.get("query");
   if (q) params.set("q", q);
   for (const key of BROWSE_FORWARD_KEYS) {

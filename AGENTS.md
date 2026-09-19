@@ -1038,9 +1038,11 @@ soft-deleted trials, and `combine:` copies. Any mutation that changes that
 population or its metrics must call
 `refresh_task_browse_summaries` inside the same transaction. This includes
 trial create/import, start/reset, completion, cancellation, retry/supersede,
-scoped deletion, and default-version selection. Advanced aggregate filters,
-comparisons, and non-default aggregate sorts intentionally retain their
-on-demand trial aggregation path.
+scoped deletion, and default-version selection. Trial-count thresholds,
+including OR-groups, use the same current-version
+summary as the cards and do not join the on-demand trial aggregate. Advanced
+aggregate filters, comparisons, and non-default aggregate sorts intentionally
+retain their on-demand trial aggregation path.
 
 The pre-trial audit enqueue claims `pre_trial_status IS NULL` with one conditional
 UPDATE, in the same transaction as audit creation. It must not upgrade the version
@@ -2414,6 +2416,24 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 ---
 
 ## `frontend/` — Next.js Dashboard
+
+Delivery create/add requests accept up to 5,000 task IDs or names, matching the
+browser selection limit. Each request validates the entire set and inserts its
+memberships in one transaction; a missing task rolls back the whole request.
+Clients can still send smaller batches. The task picker sends its selection in
+one request. Membership lookup returns existing requested IDs and maximum sort
+order in one aggregate query; inserts remain SQLAlchemy batches. Browse count
+requests skip pin-author resolution, and identical author/pin-author values
+share one attribution lookup.
+
+Task browse exposes `qa_outcome` and accepts `qa_outcomes` (CSV in the hosted
+route; a sequence in core). Accepted/rejected require a completed verdict for
+`current_version_id`, reusing `VERDICT_VERSION_SQL`; an older verdict is outdated.
+This projection does not claim delivery evidence/sign-off readiness. It adds no
+SQL round trip. `exclude_delivery_id` excludes live memberships within the
+request's organization for page, count, and ID selection. The task proxy maps
+its `delivery` context to that predicate; saved filters never persist the
+context, and applying them preserves the current destination.
 
 Task and experiment drawers share the `experiment.trial-drawer` layout saved
 through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).

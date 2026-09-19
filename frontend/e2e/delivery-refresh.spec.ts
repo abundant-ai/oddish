@@ -489,10 +489,9 @@ test("local add, remove and sign-off refresh immediately and checks carry the vi
     checked: true,
   });
   await expect.poll(() => state.reads.history).toBeGreaterThan(1);
-  await page.getByRole("button", { name: "Add tasks", exact: true }).click();
-  await page.getByRole("button", { name: "Paste list" }).click();
+  await page.getByRole("button", { name: "Paste task IDs…", exact: true }).click();
   await page.getByRole("textbox").fill("task-b");
-  await page.getByRole("button", { name: "Add pasted tasks" }).click();
+  await page.getByRole("button", { name: "Add 1 task" }).click();
   await expect(
     page.getByRole("link", { name: "Task B", exact: true })
   ).toBeVisible();

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  chunk,
-  DELIVERY_ADD_CHUNK,
   parseStoredSelection,
   SELECTION_LIMIT,
   selectionStorageKey,
@@ -52,14 +50,4 @@ test("cost total needs a cost on every entry", () => {
   priced.set("c", { cost: null, estimated: false });
   assert.equal(selectionTotals(priced).cost, null);
   assert.equal(selectionTotals(new Map()).cost, null);
-});
-
-test("delivery posts go out in API-sized chunks", () => {
-  const ids = Array.from({ length: 1201 }, (_, i) => String(i));
-  const parts = chunk(ids, DELIVERY_ADD_CHUNK);
-  assert.deepEqual(
-    parts.map((p) => p.length),
-    [500, 500, 201]
-  );
-  assert.deepEqual(chunk([], 500), []);
 });

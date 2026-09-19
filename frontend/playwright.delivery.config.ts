@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 const port = process.env.DELIVERY_TEST_PORT ?? "3109";
 export default defineConfig({
   testDir: "e2e",
-  testMatch: "delivery-refresh.spec.ts",
+  testMatch: ["delivery-refresh.spec.ts", "tasks-picker.spec.ts"],
   workers: 1,
   reporter: "list",
   use: {

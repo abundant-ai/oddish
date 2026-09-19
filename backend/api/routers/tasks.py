@@ -748,6 +748,8 @@ async def browse_tasks(
     ),
     statuses: str | None = Query(None, description="Task status CSV"),
     priorities: str | None = Query(None, description="Task priority CSV"),
+    exclude_delivery_id: str | None = Query(None),
+    qa_outcomes: str | None = Query(None, description="QA outcome on the current task version"),
     verdict_statuses: str | None = Query(None, description="Task verdict status CSV"),
     has_link: bool | None = Query(None),
     run_analysis: bool | None = Query(None),
@@ -919,11 +921,20 @@ async def browse_tasks(
             author_github_usernames,
             author_emails,
         ) = await _resolve_browse_authors(session, auth, author)
-        (
-            pin_author_user_ids,
-            pin_author_github_usernames,
-            pin_author_emails,
-        ) = await _resolve_browse_authors(session, auth, pin_author)
+        # Pinning only affects order, and resolving the same author twice
+        # repeats the attribution queries for the "Only mine" view.
+        if count_only:
+            pin_author_user_ids = pin_author_github_usernames = pin_author_emails = ()
+        elif pin_author == author:
+            pin_author_user_ids = author_user_ids
+            pin_author_github_usernames = author_github_usernames
+            pin_author_emails = author_emails
+        else:
+            (
+                pin_author_user_ids,
+                pin_author_github_usernames,
+                pin_author_emails,
+            ) = await _resolve_browse_authors(session, auth, pin_author)
         # Parse the OR-groups JSON defensively: a bad/deep-linked value must not
         # 500 the browse; keep only dict groups, drop the rest.
         parsed_or_groups: list[dict] | None = None
@@ -967,6 +978,8 @@ async def browse_tasks(
             statuses=_split_tag_csv(statuses),
             priorities=_split_tag_csv(priorities),
             verdict_statuses=_split_tag_csv(verdict_statuses),
+            qa_outcomes=_split_tag_csv(qa_outcomes),
+            exclude_delivery_id=exclude_delivery_id,
             has_link=has_link,
             run_analysis=run_analysis,
             run_probe=run_probe,
@@ -1061,7 +1074,7 @@ async def _resolve_browse_authors(
     ``me`` resolves through the dashboard's owner resolution (the signed-in
     user, or the creator of the API key, plus that user's attribution
     aliases); every other token goes through the search-bar resolution. An
-    unresolvable ``me`` (a key with no creator) contributes nothing. The
+    unresolvable ``me`` (a key with no creator) matches no tasks. The
     browse handler runs on a read session, so a first-time profile is not
     written here (``persist=False``); a background refresh stores it.
     """
@@ -1076,10 +1089,9 @@ async def _resolve_browse_authors(
         me_user_id, me_handles, me_emails = await resolve_experiments_author(
             session, auth, "me", persist=False
         )
-        if me_user_id and me_user_id != UNRESOLVED_EXPERIMENTS_OWNER:
-            user_ids.append(me_user_id)
-            handles.extend(me_handles)
-            emails.extend(me_emails)
+        user_ids.append(me_user_id or UNRESOLVED_EXPERIMENTS_OWNER)
+        handles.extend(me_handles)
+        emails.extend(me_emails)
     if others:
         other_ids, other_handles, other_emails = await resolve_search_authors(
             session, org_id=auth.org_id, tokens=others

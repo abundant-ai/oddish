@@ -1,10 +1,17 @@
 "use client";
 
+import { Fragment, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import { Button } from "@/components/ui/button";
+import { useSelection } from "./selection-context";
+import {
+  TASKS_PAGE_SIZE,
+  QA_OUTCOME_OPTIONS,
+  clearTaskFilters,
+} from "@/lib/tasks-filters";
 import { useTaskBrowse } from "@/lib/use-task-browse";
 import { cn } from "@/lib/utils";
 import { TaskCard } from "./task-card";
@@ -28,6 +35,8 @@ const pagerClass =
 // changes the SWR key.
 export function RecentTasksResults() {
   const searchParams = useSearchParams();
+  const { selection, toggle } = useSelection();
+  const [expanded, setExpanded] = useState<string | null>(null);
   const sp = new URLSearchParams(searchParams.toString());
   const offset = Math.max(Number(sp.get("offset") ?? "0") || 0, 0);
   const { data, error, isLoading, mutate } = useTaskBrowse(sp);
@@ -96,7 +105,10 @@ export function RecentTasksResults() {
             isLoading && "opacity-60"
           )}
         >
-          No tasks match the current filters.
+          <p>No tasks match the current filters.</p>
+          <Button variant="ghost" onClick={clearTaskFilters}>
+            Clear filters
+          </Button>
         </div>
       </div>
     );
@@ -107,11 +119,95 @@ export function RecentTasksResults() {
       className={cn("space-y-4 transition-opacity", isLoading && "opacity-60")}
     >
       {errorBanner}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {items.map((task) => (
-          <TaskCard key={task.id} task={task} />
-        ))}
-      </div>
+      {searchParams.has("delivery") ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-muted-foreground border-b text-xs">
+              <tr>
+                <th className="p-3">Select</th>
+                <th>Task</th>
+                <th>QA outcome</th>
+                <th>Trials</th>
+                <th>Agents</th>
+                <th>Delivery history</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((task) => (
+                <Fragment key={task.id}>
+                  <tr className="border-b">
+                    <td className="p-3">
+                      <input
+                        type="checkbox"
+                        checked={selection.has(task.id)}
+                        aria-label={`Select ${task.name}`}
+                        onChange={() => toggle(task)}
+                      />
+                    </td>
+                    <td className="py-3">
+                      <Link
+                        className="font-medium underline-offset-4 hover:underline"
+                        href={`/tasks/${encodeURIComponent(task.id)}`}
+                      >
+                        {task.name}
+                      </Link>
+                      <div className="text-muted-foreground text-xs">
+                        v{task.current_version ?? "—"}
+                      </div>
+                    </td>
+                    <td>
+                      {QA_OUTCOME_OPTIONS.find(
+                        (o) => o.value === task.qa_outcome
+                      )?.label ?? "Unreviewed"}
+                    </td>
+                    <td>
+                      <div>
+                        {task.completed_trials}/{task.total_trials} completed
+                      </div>
+                      <div className="text-muted-foreground text-xs">
+                        {task.pending_count} pending · {task.failed_trials}{" "}
+                        failed
+                      </div>
+                    </td>
+                    <td>{task.agent_count ?? 0}</td>
+                    <td>
+                      {Array.from(
+                        new Set((task.deliveries ?? []).map((d) => d.customer))
+                      ).join(", ") || "None recorded"}
+                    </td>
+                    <td>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-expanded={expanded === task.id}
+                        onClick={() =>
+                          setExpanded(expanded === task.id ? null : task.id)
+                        }
+                      >
+                        Trial details
+                      </Button>
+                    </td>
+                  </tr>
+                  {expanded === task.id ? (
+                    <tr>
+                      <td colSpan={7} className="p-3">
+                        <TaskCard task={task} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {items.map((task) => (
+            <TaskCard key={task.id} task={task} />
+          ))}
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-muted-foreground text-xs">

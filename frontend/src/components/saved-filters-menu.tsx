@@ -116,6 +116,8 @@ export function SavedFiltersMenu() {
   function applyFilter(filter: SavedFilterItem) {
     const ast = filter.filter_ast as SavedBlobV2 & LegacyBlob;
     const params = new URLSearchParams();
+    const delivery = searchParams.get("delivery");
+    if (delivery) params.set("delivery", delivery);
     const setTags = (
       tagIds: { all?: string[]; any?: string[]; none?: string[] } | undefined,
     ) => {

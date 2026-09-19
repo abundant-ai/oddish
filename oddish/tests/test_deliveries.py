@@ -1620,3 +1620,105 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
     if state == "qa_failed":
         assert check.detail == "worker crashed"
         assert qa.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_full_picker_selection_is_atomic_and_batched(session):
+    from oddish.db import DeliveryModel, DeliveryTaskModel
+    from sqlalchemy import func
+
+    tasks = [_task(f"picker-{i}") for i in range(5000)]
+    session.add_all(tasks)
+    await session.flush()
+    ids = [task.id for task in tasks]
+    with count_statements() as statements:
+        delivery = await create_delivery_core(
+            session,
+            data=DeliveryCreate(name="full-picker", customer="lab", task_ids=ids),
+            org_id=ORG,
+            user_id="u1",
+        )
+    # SQLAlchemy batches 5,000 memberships; no per-task query/insert loop.
+    assert len(statements) <= 15, statements
+    members = (
+        await session.execute(
+            select(
+                DeliveryTaskModel.task_id,
+                DeliveryTaskModel.sort_order,
+            )
+            .where(DeliveryTaskModel.delivery_id == delivery.id)
+            .order_by(DeliveryTaskModel.sort_order)
+        )
+    ).all()
+    assert members == list(zip(ids, range(5000)))
+    with count_statements() as repeated:
+        assert (
+            await add_delivery_tasks_core(
+                session,
+                delivery_id=delivery.id,
+                org_id=ORG,
+                data=DeliveryTasksAdd(task_ids=ids),
+            )
+            == 0
+        )
+    assert len(repeated) == 3, repeated
+
+    # Failure beyond the old 500-id chunk leaves no delivery behind.
+    with pytest.raises(HTTPException, match="tasks not found"):
+        async with session.begin_nested():
+            await create_delivery_core(
+                session,
+                data=DeliveryCreate(
+                    name="failed-picker",
+                    customer="lab",
+                    task_ids=ids[:500] + ["missing-task"],
+                ),
+                org_id=ORG,
+                user_id="u1",
+            )
+    assert (
+        await session.scalar(
+            select(func.count())
+            .select_from(DeliveryModel)
+            .where(DeliveryModel.name == "failed-picker")
+        )
+        == 0
+    )
+
+    extra = _task("picker-extra")
+    session.add(extra)
+    await session.flush()
+    with pytest.raises(HTTPException, match="tasks not found"):
+        async with session.begin_nested():
+            await add_delivery_tasks_core(
+                session,
+                delivery_id=delivery.id,
+                org_id=ORG,
+                data=DeliveryTasksAdd(task_ids=[extra.id, "missing-task"]),
+            )
+    assert (
+        await session.scalar(
+            select(func.count())
+            .select_from(DeliveryTaskModel)
+            .where(DeliveryTaskModel.delivery_id == delivery.id)
+        )
+        == 5000
+    )
+    assert (
+        await add_delivery_tasks_core(
+            session,
+            delivery_id=delivery.id,
+            org_id=ORG,
+            data=DeliveryTasksAdd(task_ids=[ids[0], extra.id, extra.name]),
+        )
+        == 1
+    )
+    assert (
+        await session.scalar(
+            select(DeliveryTaskModel.sort_order).where(
+                DeliveryTaskModel.delivery_id == delivery.id,
+                DeliveryTaskModel.task_id == extra.id,
+            )
+        )
+        == 5000
+    )

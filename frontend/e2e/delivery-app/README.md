@@ -33,3 +33,8 @@ separately exercise the real HTTP routes with PostgreSQL and no worker lifespan.
 Use `ODDISH_DATABASE_URL` pointing at a disposable local database with the core
 schema initialized, as for the existing delivery tests. Each test rolls back its
 outer transaction after exercising request commits in separate sessions.
+
+`/picker` mounts the production task lab bar, sidebar, and selection provider.
+`tasks-picker.spec.ts` runs with `playwright.delivery.config.ts` and covers rapid
+URL edits, Strict Mode storage restoration, organization changes, and atomic
+create/add requests. Its network responses and authentication are local fixtures.

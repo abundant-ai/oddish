@@ -3,6 +3,7 @@
 // org). Pure helpers here; the React side is app/(app)/tasks/selection-context.
 
 export type SelectionEntry = {
+  name?: string;
   // Known when the task was ticked from a card; null when it came from
   // "Select all" (ids only).
   cost: number | null;
@@ -14,8 +15,6 @@ export type Selection = Map<string, SelectionEntry>;
 // Matches the backend's BROWSE_IDS_LIMIT: "Select all" can hand over at most
 // this many ids, so the stored selection never grows past it either.
 export const SELECTION_LIMIT = 5000;
-// DeliveryTasksAdd accepts at most 500 ids per request.
-export const DELIVERY_ADD_CHUNK = 500;
 
 const STORAGE_PREFIX = "oddish.tasks.selection.";
 
@@ -37,6 +36,7 @@ export function parseStoredSelection(raw: string | null): Selection {
       if (!Array.isArray(item) || typeof item[0] !== "string") continue;
       const entry = item[1] as Partial<SelectionEntry> | undefined;
       out.set(item[0], {
+        ...(typeof entry?.name === "string" ? {name: entry.name} : {}),
         cost: typeof entry?.cost === "number" ? entry.cost : null,
         estimated: entry?.estimated === true,
       });
@@ -73,11 +73,4 @@ export function selectionTotals(selection: Selection): {
     cost: complete && selection.size > 0 ? cost : null,
     anyEstimated,
   };
-}
-
-export function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size)
-    out.push(items.slice(i, i + size));
-  return out;
 }

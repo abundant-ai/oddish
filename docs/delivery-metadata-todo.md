@@ -102,8 +102,8 @@ per request.
   the current name of another live task (107 on production). Each
   confirmation becomes a `task_aliases` row with evidence; a replay then
   attaches the skipped history.
-- [x] Lab picker bar on `/tasks` (recipient, never-sent, category, median
-  steps, agents, trials, QA pass, whose tasks, sort, "Ready to ship" preset),
+- [x] One task filter toolbar (delivery history, category, numeric presets,
+  version-aware QA outcome, author, and sort),
   every control a URL parameter; the signed-in user's tasks sort first by
   default (`pin_author=me`, `mine=first|only|off`); the selection persists
   in the browser per org, "Select all" materializes the filter through

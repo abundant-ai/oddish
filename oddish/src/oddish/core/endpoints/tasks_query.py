@@ -13,6 +13,7 @@ from sqlalchemy import (
     extract,
     func,
     literal,
+    literal_column,
     nulls_last,
     or_,
     select,
@@ -83,6 +84,7 @@ from oddish.core.task_browse_metrics import (
     resolve_browse_cost_breakdown,
     trial_bucket_label,
 )
+from oddish.core.endpoints.task_open_queries import VERDICT_VERSION_SQL
 from oddish.core.endpoints.qa_cost import get_task_qa_costs
 from oddish.core.endpoints.verifier_cost import get_task_verifier_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
@@ -1093,7 +1095,6 @@ _AGGREGATE_GROUP_KEYS = frozenset(
         "avg_score_max",
         "total_tokens_min",
         "total_tokens_max",
-        "total_trials_min",
         "completed_trials_min",
         "failed_trials_min",
         "pass_count_min",
@@ -1134,6 +1135,8 @@ async def browse_tasks_core(
     statuses: Sequence[str] | None = None,
     priorities: Sequence[str] | None = None,
     verdict_statuses: Sequence[str] | None = None,
+    qa_outcomes: Sequence[str] | None = None,
+    exclude_delivery_id: str | None = None,
     has_link: bool | None = None,
     run_analysis: bool | None = None,
     run_probe: bool | None = None,
@@ -1261,10 +1264,23 @@ async def browse_tasks_core(
     current_version = aliased(TaskVersionModel)
     normalized_query = query.strip() if query else None
 
+    review_current = func.coalesce(
+        literal_column(VERDICT_VERSION_SQL.format(task_id="tasks.id", verdict="tasks.verdict"))
+        == TaskModel.current_version_id, False,
+    )
+    qa_outcome = case(
+        (TaskModel.verdict_status.in_(["QUEUED", "RUNNING"]), "running"),
+        (TaskModel.verdict_status == "FAILED", "failed"),
+        (TaskModel.verdict["is_good"].astext.is_(None), "unreviewed"),
+        (or_(TaskModel.verdict_status.is_distinct_from("SUCCESS"), ~review_current), "outdated"),
+        (TaskModel.verdict["is_good"].astext == "true", "accepted"),
+        else_="rejected",
+    )
     ranked_tasks = (
         select(
             TaskModel.id.label("task_id"),
             TaskModel.name.label("name"),
+            qa_outcome.label("qa_outcome"),
             TaskModel.current_version_id.label("current_version_id"),
             current_version.version.label("current_version"),
             TaskModel.created_at.label("created_at"),
@@ -1357,6 +1373,16 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(TaskModel.status.in_(list(statuses)))
     if priorities:
         ranked_tasks = ranked_tasks.where(TaskModel.priority.in_(list(priorities)))
+    if exclude_delivery_id:
+        ranked_tasks = ranked_tasks.where(~exists(
+            select(DeliveryTaskModel.id).join(DeliveryModel).where(
+                DeliveryTaskModel.task_id == TaskModel.id,
+                DeliveryModel.id == exclude_delivery_id,
+                DeliveryModel.org_id == org_id,
+            )
+        ))
+    if qa_outcomes:
+        ranked_tasks = ranked_tasks.where(qa_outcome.in_(qa_outcomes))
     if verdict_statuses:
         ranked_tasks = ranked_tasks.where(
             TaskModel.verdict_status.in_(list(verdict_statuses))
@@ -1402,6 +1428,9 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             _category_assertion_exists(org_id, categories)
         )
+    group_specs = [
+        spec for spec in (or_groups or []) if isinstance(spec, Mapping) and spec
+    ]
     # Stored-summary thresholds: joined here (before ``name_rank`` / LIMIT) so
     # they filter the ranked set; the page query joins the same row again for
     # its columns. A version with no summary row or no recorded steps has a
@@ -1409,7 +1438,7 @@ async def browse_tasks_core(
     if any(
         value is not None
         for value in (steps_p50_min, steps_p50_max, agent_count_min, total_trials_min)
-    ):
+    ) or any(spec.get("total_trials_min") is not None for spec in group_specs):
         ranked_tasks = ranked_tasks.outerjoin(
             TaskBrowseSummaryModel,
             TaskBrowseSummaryModel.task_version_id == TaskModel.current_version_id,
@@ -1627,12 +1656,7 @@ async def browse_tasks_core(
             pass_rate_max,
         )
     )
-    # Phase 2.2 OR-groups ("Match any of…"): drop empty / non-mapping specs. If any
-    # group uses an aggregate condition, the metrics join must be present so the
-    # group predicate can reference its columns.
-    group_specs = [
-        spec for spec in (or_groups or []) if isinstance(spec, Mapping) and spec
-    ]
+    # OR-groups that use aggregate conditions need the metrics join.
     groups_use_aggregates = any(
         any(key in _AGGREGATE_GROUP_KEYS for key in spec) for spec in group_specs
     )
@@ -1919,6 +1943,9 @@ async def browse_tasks_core(
                 r_preds.append(TrialModel.reward <= r_max)
             preds.append(_trial_exists(*r_preds))
 
+        if spec.get("total_trials_min") is not None:
+            preds.append(TaskBrowseSummaryModel.total_trials >= spec["total_trials_min"])
+
         # Aggregate conditions reference the metrics join (present because
         # ``groups_use_aggregates`` forced it above).
         if task_metrics is not None:
@@ -1928,7 +1955,6 @@ async def browse_tasks_core(
                 "avg_score_max": lambda v: m.avg_reward * 100 <= v,
                 "total_tokens_min": lambda v: m.total_tokens >= v,
                 "total_tokens_max": lambda v: m.total_tokens <= v,
-                "total_trials_min": lambda v: m.total_trials >= v,
                 "completed_trials_min": lambda v: m.completed_trials >= v,
                 "failed_trials_min": lambda v: m.failed_trials >= v,
                 "pass_count_min": lambda v: m.pass_count >= v,
@@ -2017,6 +2043,7 @@ async def browse_tasks_core(
         select(
             ranked_tasks_subquery.c.task_id,
             ranked_tasks_subquery.c.name,
+            ranked_tasks_subquery.c.qa_outcome,
             ranked_tasks_subquery.c.current_version,
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
@@ -2159,7 +2186,7 @@ async def browse_tasks_core(
     specialized_path_active = bool(
         aggregate_filter_active
         or aggregate_sort_active
-        or group_specs
+        or any(key != "total_trials_min" for spec in group_specs for key in spec)
         or (compare_a and compare_b and compare_metric_known)
         or (top_value and top_subject_col is not None)
     )
@@ -2417,6 +2444,7 @@ async def browse_tasks_core(
             TaskBrowseItem(
                 id=str(row["task_id"]),
                 name=str(row["name"]),
+                qa_outcome=row["qa_outcome"],
                 current_version=(
                     int(row["current_version"])
                     if row["current_version"] is not None

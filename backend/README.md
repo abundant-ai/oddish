@@ -826,3 +826,8 @@ for each database sharing an S3 bucket. Modal deployments set it automatically
 to the secret environment plus app name. Existing stored artifact pointers
 remain readable; changing this value during an unfinished import is unsupported.
 The default empty value preserves the self-hosted storage layout.
+
+Task browse requests reuse attribution resolution when `author` and `pin_author`
+match. Count-only requests skip pin-author resolution because pinning affects
+ordering only. Delivery create/add accept up to 5,000 tasks in one transaction,
+so a failed validation cannot leave a partially filled new delivery.

@@ -403,6 +403,7 @@ export interface TaskBrowseDelivery {
 }
 
 export interface TaskBrowseItem {
+  qa_outcome?: "accepted" | "rejected" | "outdated" | "unreviewed" | "running" | "failed";
   id: string;
   name: string;
   current_version?: number | null;

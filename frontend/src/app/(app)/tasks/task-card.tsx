@@ -42,6 +42,7 @@ import {
   prBadge,
   taskPrUrl,
 } from "@/lib/utils";
+import { QA_OUTCOME_OPTIONS } from "@/lib/tasks-filters";
 import { useSelection } from "./selection-context";
 
 function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
@@ -418,6 +419,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.qa_outcome ? <Badge variant="outline">{QA_OUTCOME_OPTIONS.find(option => option.value === task.qa_outcome)?.label}</Badge> : null}
               {task.author_pinned ? (
                 <Badge
                   className="w-fit border-transparent bg-[#6f88b4]/20 text-[11px] text-[#3f5a8a] dark:text-[#a8b8d2]"

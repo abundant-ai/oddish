@@ -1724,6 +1724,7 @@ class TaskBrowseDelivery(BaseModel):
 
 
 class TaskBrowseItem(BaseModel):
+    qa_outcome: Literal["accepted", "rejected", "outdated", "unreviewed", "running", "failed"] = "unreviewed"
     id: str
     name: str
     current_version: int | None = None
@@ -2723,7 +2724,7 @@ class DeliveryCreate(BaseModel):
     customer: str = Field(min_length=1, max_length=255)
     description: str | None = None
     check_config: DeliveryCheckConfig | None = None
-    task_ids: list[str] = Field(default_factory=list, max_length=500)
+    task_ids: list[str] = Field(default_factory=list, max_length=5000)
 
 
 class DeliveryPatch(BaseModel):
@@ -2734,7 +2735,7 @@ class DeliveryPatch(BaseModel):
 
 
 class DeliveryTasksAdd(BaseModel):
-    task_ids: list[str] = Field(min_length=1, max_length=500)
+    task_ids: list[str] = Field(min_length=1, max_length=5000)
 
 
 class ManualCheckSet(BaseModel):

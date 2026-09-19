@@ -56,6 +56,7 @@ export interface FilterValues {
   statuses: string[];
   priorities: string[];
   verdictStatuses: string[];
+  qaOutcomes: string[];
   agents: string[];
   models: string[];
   agentModels: string[];
@@ -162,10 +163,19 @@ const PRIORITY_OPTIONS: Option[] = [
   { value: "LOW", label: "Low" },
 ];
 
+export const QA_OUTCOME_OPTIONS: Option[] = [
+  { value: "accepted", label: "Accepted" },
+  { value: "rejected", label: "Needs work" },
+  { value: "outdated", label: "Outdated" },
+  { value: "unreviewed", label: "Unreviewed" },
+  { value: "running", label: "In progress" },
+  { value: "failed", label: "Review failed" },
+];
 const VERDICT_OPTIONS: Option[] = [
-  { value: "SUCCESS", label: "Pass" },
-  { value: "FAILED", label: "Fail" },
-  { value: "PENDING", label: "Pending" },
+  { value: "SUCCESS", label: "Completed" },
+  { value: "FAILED", label: "Failed" },
+  { value: "QUEUED", label: "Queued" },
+  { value: "RUNNING", label: "Running" },
 ];
 
 // TrialStatus = JobStatus, stored as lowercase values via values_callable.
@@ -198,7 +208,6 @@ type ControlKind =
   | "tags"
   | "agentmodel"
   | "experiment"
-  | "sort"
   | "compare"
   | "top"
   | "matchany"
@@ -291,9 +300,10 @@ export interface FilterDef {
 // available via "Add filter". Adding a filter the backend already supports is a
 // single entry here — the control renders from `control`.
 export const FILTER_DEFS: FilterDef[] = [
+  { key: "qaOutcomes", label: "QA outcome", group: "Task", control: "multiselect", options: QA_OUTCOME_OPTIONS, pinned: true },
   {
     key: "statuses",
-    label: "Status",
+    label: "Task state",
     group: "Task",
     control: "multiselect",
     options: STATUS_OPTIONS,
@@ -304,7 +314,6 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Agent · Model",
     group: "Trial",
     control: "agentmodel",
-    pinned: true,
   },
   {
     key: "models",
@@ -324,14 +333,12 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Tags",
     group: "Task",
     control: "tags",
-    pinned: true,
   },
   {
     key: "created",
     label: "Created",
     group: "Task",
     control: "daterange",
-    pinned: true,
   },
   // Options come from the async /api/tasks/browse/experiment-options endpoint
   // (an org can hold 100k+ experiments), NOT from the facets payload — so no
@@ -380,11 +387,10 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "verdictStatuses",
-    label: "Verdict",
+    label: "Review execution",
     group: "Task",
     control: "select",
     options: VERDICT_OPTIONS,
-    hidden: true,
   },
   {
     key: "analysisClassifications",
@@ -464,14 +470,7 @@ export const FILTER_DEFS: FilterDef[] = [
     hidden: true,
   },
   // Phase 1.2-lite aggregate filters/sort (task-level rollups over the scoped
-  // current-version trials). Sort is pinned so it's always reachable.
-  {
-    key: "sort",
-    label: "Sort by",
-    group: "Task",
-    control: "sort",
-    pinned: true,
-  },
+  // current-version trials). Sorting lives in the results toolbar.
   {
     key: "avgScore",
     label: "Avg score %",
@@ -498,9 +497,10 @@ export const FILTER_DEFS: FilterDef[] = [
   },
   {
     key: "totalTrials",
-    label: "Total trials ≥",
+    label: "Trial count",
     group: "Task",
     control: "num",
+    pinned: true,
   },
   {
     key: "completedTrials",
@@ -566,15 +566,17 @@ export const FILTER_DEFS: FilterDef[] = [
   // per-version row the grid already joins, so no trial aggregation.
   {
     key: "stepsP50",
-    label: "Median steps (task)",
+    label: "Median steps",
     group: "Task",
     control: "numrange",
+    pinned: true,
   },
   {
     key: "agentCount",
-    label: "Agents ≥",
+    label: "Distinct agents",
     group: "Task",
     control: "num",
+    pinned: true,
   },
   // Delivery selection: pick tasks for a customer batch. Delivery records
   // come from the metadata import (history) and finalized deliveries; the
@@ -598,6 +600,7 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "No delivery record",
     group: "Delivery",
     control: "boolean",
+    pinned: true,
   },
   {
     key: "categories",
@@ -605,6 +608,7 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "multiselect",
     facet: "categories",
+    pinned: true,
   },
 ];
 
@@ -612,7 +616,7 @@ export const FILTER_DEFS: FilterDef[] = [
 export const CONDITION_DEFS: GroupConditionDef[] = [
   {
     id: "statuses",
-    label: "Status",
+    label: "Task state",
     control: "multiselect",
     options: STATUS_OPTIONS,
     keys: ["statuses"],
@@ -734,7 +738,7 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
   },
   {
     id: "totalTrials",
-    label: "Total trials ≥",
+    label: "Trial count",
     control: "num",
     keys: ["total_trials_min"],
   },
@@ -781,6 +785,8 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.statuses.length > 0;
     case "priorities":
       return f.priorities.length > 0;
+    case "qaOutcomes":
+      return f.qaOutcomes.length > 0;
     case "verdictStatuses":
       return f.verdictStatuses.length > 0;
     case "agents":
@@ -890,10 +896,6 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
   }
 }
 
-export function activeFilterCount(f: FilterValues): number {
-  return FILTER_DEFS.filter((def) => isFilterActive(def.key, f)).length;
-}
-
 // Serialize active filters into /tasks/browse query params. Lists are CSV;
 // dates become a full-day ISO bound; booleans become "true"/"false".
 export function filterParams(f: FilterValues): [string, string][] {
@@ -913,6 +915,7 @@ export function filterParams(f: FilterValues): [string, string][] {
   csv("statuses", f.statuses);
   csv("priorities", f.priorities);
   csv("verdict_statuses", f.verdictStatuses);
+  csv("qa_outcomes", f.qaOutcomes);
   csv("agents", f.agents);
   csv("models", f.models);
   csv("agent_models", f.agentModels);
@@ -1014,6 +1017,7 @@ export const FILTER_PARAM_KEYS = [
   "statuses",
   "priorities",
   "verdict_statuses",
+  "qa_outcomes",
   "agents",
   "models",
   "agent_models",
@@ -1131,6 +1135,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     statuses: csv("statuses"),
     priorities: csv("priorities"),
     verdictStatuses: csv("verdict_statuses"),
+    qaOutcomes: csv("qa_outcomes"),
     agents: csv("agents"),
     models: csv("models"),
     agentModels: csv("agent_models"),
@@ -1222,4 +1227,35 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
       }
     })(),
   };
+}
+
+// History writes are synchronous; React's search-params snapshot can lag behind
+// another control's click. Always merge against the browser's current URL.
+export function updateTaskSearchParams(update: (params: URLSearchParams) => void) {
+  const url = new URL(window.location.href);
+  const previous = url.search;
+  update(url.searchParams);
+  if (url.search === previous) return;
+  url.searchParams.delete("offset");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+export function setTaskFilters(update: Partial<FilterValues> | ((current: FilterValues) => Partial<FilterValues>)) {
+  updateTaskSearchParams((params) => {
+    const current = searchParamsToFilters(params);
+    const next = { ...current, ...(typeof update === "function" ? update(current) : update) };
+    for (const key of FILTER_PARAM_KEYS) params.delete(key);
+    for (const [key, value] of filterParams(next)) params.set(key, value);
+  });
+}
+
+export function clearTaskFilters() {
+  updateTaskSearchParams((params) => {
+    for (const key of BROWSE_FORWARD_KEYS) {
+      if (key !== "sort" && key !== "mine") params.delete(key);
+    }
+    if (params.get("mine") === "only") params.set("mine", "off");
+    params.delete("q");
+    params.delete("query");
+  });
 }

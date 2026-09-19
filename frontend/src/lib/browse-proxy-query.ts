@@ -27,6 +27,8 @@ export function buildBrowseQuery(
   }: { countOnly?: boolean; idsOnly?: boolean } = {}
 ): URLSearchParams {
   const query = new URLSearchParams();
+  const delivery = display.get("delivery");
+  if (delivery) query.set("exclude_delivery_id", delivery);
   if (countOnly) {
     query.set("count_only", "true");
   } else if (idsOnly) {
@@ -54,7 +56,7 @@ export function buildBrowseQuery(
     ...(display.get("author") ?? "").split(","),
   ]);
   if (author.length) query.set("author", author.join(","));
-  if (pinAuthor) query.set("pin_author", "me");
+  if (pinAuthor && !countOnly) query.set("pin_author", "me");
 
   // Rolling "Created" preset: resolve the token to (now - window) at request
   // time — including every background revalidation — so the window is always

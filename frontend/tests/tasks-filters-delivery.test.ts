@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeFilterCount,
   FILTER_DEFS,
   FILTER_PARAM_KEYS,
   filterParams,
@@ -18,7 +17,6 @@ test("delivery selection filters round-trip through the URL", () => {
   assert.deepEqual(empty.notDeliveredTo, []);
   assert.equal(empty.neverDelivered, null);
   assert.deepEqual(empty.categories, []);
-  assert.equal(activeFilterCount(empty), 0);
 
   const values = {
     ...empty,
@@ -52,7 +50,6 @@ test("delivery selection filters round-trip through the URL", () => {
       `${key} needs a sidebar registry entry`
     );
   }
-  assert.equal(activeFilterCount(values), 4);
 });
 
 test("delivery filters sit in their own Add-filter group", () => {

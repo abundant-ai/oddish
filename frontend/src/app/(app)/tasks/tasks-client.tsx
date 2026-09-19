@@ -2,10 +2,17 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useSearchParams } from "next/navigation";
-import { Clock, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { ChevronDown, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ImportDialog } from "@/components/import-dialog";
-import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import { useSelection } from "./selection-context";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu";
 import {
   useTaskBrowseCount,
   useTaskBrowseRevalidate,
@@ -15,12 +22,38 @@ import { cn } from "@/lib/utils";
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
 const REFRESH_MS = 60000;
 
-// The page number derives from the URL on the client, so filter and pager
-// changes update it without a server round trip.
-export function TasksPageNumber() {
-  const searchParams = useSearchParams();
-  const offset = Math.max(Number(searchParams.get("offset") ?? "0") || 0, 0);
-  return <>Page {Math.floor(offset / TASKS_PAGE_SIZE) + 1}</>;
+export function TasksHeader() {
+  const { deliveryId, delivery, deliveryError } = useSelection();
+  return (
+    <header className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        {deliveryId ? (
+          <Link
+            href={`/deliveries/${encodeURIComponent(deliveryId)}`}
+            className="text-muted-foreground mb-2 block text-sm"
+          >
+            ← Back to delivery
+          </Link>
+        ) : null}
+        <h1 className="text-2xl font-semibold">
+          {deliveryId
+            ? `Add tasks${delivery ? ` to ${delivery.name}` : ""}`
+            : "Tasks"}
+        </h1>
+        {delivery?.customer_name ? (
+          <p className="text-muted-foreground text-sm">
+            {delivery.customer_name}
+          </p>
+        ) : null}
+        {deliveryError ? (
+          <p role="alert" className="text-destructive text-sm">
+            {deliveryError}
+          </p>
+        ) : null}
+      </div>
+      <TasksToolbar showImport={!deliveryId} />
+    </header>
+  );
 }
 
 // How many tasks match the active filters across every page — the grid shows
@@ -50,7 +83,6 @@ export function TasksMatchCount() {
         {label}
         {isStale ? "…" : ""}
       </span>
-      {" · "}
     </>
   );
 }
@@ -58,29 +90,34 @@ export function TasksMatchCount() {
 // Every refresh path revalidates the grid's client-side browse fetch only —
 // nothing the page server-renders depends on task data, so there is no
 // router.refresh().
-export function TasksToolbar() {
+function TasksToolbar({ showImport }: { showImport: boolean }) {
   const revalidateBrowse = useTaskBrowseRevalidate();
   const [isPending, startTransition] = useTransition();
   const [autoRefresh, setAutoRefresh] = useState(false);
 
   // Restore the saved preference client-side (avoids a hydration mismatch).
   useEffect(() => {
-    setAutoRefresh(window.localStorage.getItem(AUTO_REFRESH_KEY) === "1");
+    try {
+      setAutoRefresh(window.localStorage.getItem(AUTO_REFRESH_KEY) === "1");
+    } catch {
+      /* Use the default when storage is unavailable. */
+    }
   }, []);
 
-  const toggleAuto = () => {
-    setAutoRefresh((prev) => {
-      const next = !prev;
+  const toggleAuto = (next: boolean) => {
+    setAutoRefresh(next);
+    try {
       window.localStorage.setItem(AUTO_REFRESH_KEY, next ? "1" : "0");
-      return next;
-    });
+    } catch {
+      /* Keep the in-memory preference. */
+    }
   };
 
   // Silent background refresh only while auto-refresh is on.
   useEffect(() => {
     if (!autoRefresh) return;
     const id = window.setInterval(() => {
-      void revalidateBrowse();
+      if (document.visibilityState === "visible") void revalidateBrowse();
     }, REFRESH_MS);
     return () => window.clearInterval(id);
   }, [autoRefresh, revalidateBrowse]);
@@ -106,26 +143,24 @@ export function TasksToolbar() {
       >
         <RefreshCw className={cn("h-4 w-4", isPending && "animate-spin")} />
       </Button>
-      <Button
-        type="button"
-        variant={autoRefresh ? "default" : "outline"}
-        size="sm"
-        className={cn(
-          "h-8 gap-1.5 text-xs",
-          !autoRefresh && "border-[#6f88b4]/20"
-        )}
-        onClick={toggleAuto}
-        aria-pressed={autoRefresh}
-        title={
-          autoRefresh
-            ? "Auto-refresh on (every 60s) — click to turn off"
-            : "Auto-refresh off — click to refresh every 60s"
-        }
-      >
-        <Clock className="h-3.5 w-3.5" />
-        Auto
-      </Button>
-      <ImportDialog onImported={() => void revalidateBrowse()} />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="icon" aria-label="Refresh settings">
+            <ChevronDown className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuCheckboxItem
+            checked={autoRefresh}
+            onCheckedChange={toggleAuto}
+          >
+            Auto-refresh every 60 seconds
+          </DropdownMenuCheckboxItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {showImport ? (
+        <ImportDialog onImported={() => void revalidateBrowse()} />
+      ) : null}
     </div>
   );
 }
