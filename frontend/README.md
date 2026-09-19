@@ -258,3 +258,27 @@ The frontend is intended to call `src/app/api/*`, not the backend directly from 
 
 - verify `NEXT_PUBLIC_API_URL` in `.env.local`
 - make sure the request is going through the Next.js route handlers
+
+### Task browsing and delivery selection
+
+Tasks keeps the per-agent trial cards; Dashboard remains the experiment view.
+The Tasks toolbar owns search, author, sort, and a single filter popover, with
+removable active conditions. Numeric filters offer presets and validated custom
+ranges. QA outcome refers to the verdict for the current task version, not the
+success of the QA process; delivery readiness remains on the delivery board.
+
+Delivery history appears first in Filters, with visible Sent to lab and Not sent
+to lab selectors using mapped customers and unmapped imported labels. Cards and
+delivery-picker rows share destination chips with batch/date details. No delivery
+recorded means missing history, not proof that a task was never sent. The Tasks
+page owns the search draft and debounce timer; both Clear filters buttons cancel
+pending search writes and reset that draft while retaining the delivery and sort.
+
+A delivery's Add tasks link opens `/tasks?delivery=<id>` with its customer history
+filter. The same browser uses a comparison table with completion/failure/pending
+counts and expandable trial cards. The destination stays in the URL through
+filters, saved searches, and pagination. Page/count/ID requests exclude existing
+members. Selections are stored separately per organization and delivery, and
+only submitted IDs are removed after a successful add. Paste task IDs remains
+available on the delivery board. Run these local flows with
+`pnpm exec playwright test -c playwright.delivery.config.ts`.

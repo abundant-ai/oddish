@@ -370,15 +370,13 @@ async def _persist_profile(
     _memory_set(user.org_id, user.id, profile)
 
 
-async def _compute_and_persist_profile(
+async def _compute_profile(
     session: AsyncSession,
     user: UserModel,
     *,
     org_id: str,
 ) -> AttributionProfile:
-    previous_raw = (
-        user.attribution_cache if isinstance(user.attribution_cache, dict) else None
-    )
+    """Discover the user's identities from org tasks. Reads only."""
     blocked_handles = await _other_member_github_handles(
         session, org_id=org_id, exclude_user_id=user.id
     )
@@ -388,7 +386,7 @@ async def _compute_and_persist_profile(
     baseline = _baseline_profile(
         user, blocked_handles=blocked_handles, blocked_emails=blocked_emails
     )
-    profile = await _discover_attribution_from_tasks(
+    return await _discover_attribution_from_tasks(
         session,
         user,
         org_id=org_id,
@@ -396,6 +394,18 @@ async def _compute_and_persist_profile(
         blocked_handles=blocked_handles,
         blocked_emails=blocked_emails,
     )
+
+
+async def _compute_and_persist_profile(
+    session: AsyncSession,
+    user: UserModel,
+    *,
+    org_id: str,
+) -> AttributionProfile:
+    previous_raw = (
+        user.attribution_cache if isinstance(user.attribution_cache, dict) else None
+    )
+    profile = await _compute_profile(session, user, org_id=org_id)
     await _persist_profile(session, user, profile)
     if _profile_gained_identities(profile, previous_raw):
         from dashboard_owner_backfill import reclaim_experiments_for_user
@@ -423,7 +433,15 @@ async def _load_attribution_profile(
     user: UserModel,
     *,
     org_id: str,
+    persist: bool = True,
 ) -> AttributionProfile:
+    """The user's attribution profile, from cache when possible.
+
+    With ``persist=False`` (read-only sessions, such as the task browser's)
+    a user with no stored profile gets one computed for this request and
+    cached in memory, while the write is left to a background refresh on
+    its own session -- the read session would refuse the flush.
+    """
     cached = _memory_get(org_id, user.id)
     if cached is not None:
         return cached
@@ -435,6 +453,11 @@ async def _load_attribution_profile(
             _schedule_profile_refresh(org_id=org_id, user_id=user.id)
         return db_profile
 
+    if not persist:
+        profile = await _compute_profile(session, user, org_id=org_id)
+        _memory_set(org_id, user.id, profile)
+        _schedule_profile_refresh(org_id=org_id, user_id=user.id)
+        return profile
     return await _compute_and_persist_profile(session, user, org_id=org_id)
 
 
@@ -478,8 +501,13 @@ async def resolve_experiments_author(
     session: AsyncSession,
     auth: AuthContext,
     experiments_author: str | None,
+    *,
+    persist: bool = True,
 ) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
-    """Resolve dashboard owner filter to ``(user_id, github_handles, emails)``."""
+    """Resolve dashboard owner filter to ``(user_id, github_handles, emails)``.
+
+    ``persist=False`` keeps the call read-only (see ``_load_attribution_profile``).
+    """
     normalized = (experiments_author or "").strip()
     if not normalized or normalized.lower() == "all":
         return None, (), ()
@@ -492,7 +520,9 @@ async def resolve_experiments_author(
     if user is None or user.org_id != auth.org_id or not user.is_active:
         return target_user_id, (), ()
 
-    profile = await _load_attribution_profile(session, user, org_id=auth.org_id)
+    profile = await _load_attribution_profile(
+        session, user, org_id=auth.org_id, persist=persist
+    )
     return user.id, profile.github_handles, profile.legacy_emails
 
 

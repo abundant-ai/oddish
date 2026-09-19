@@ -48,6 +48,14 @@ aggregation code. It does not launch evaluations. Every batch commits separately
 resume with `--after-id <last-logged-version-id>`. Without that argument a rerun
 starts at the beginning. Versions with no eligible trials do not stall paging.
 
+For a preview whose raw sample was loaded without rebuilding browse counters,
+run `uv run python ../.github/scripts/preview/refresh_browse_summaries.py` from
+`backend/`, with `ODDISH_DATABASE_URL` pointing to the preview and the normal
+preview source/project environment variables set. This rebuilds both browse
+and per-model counters from the preview's own trials, in batches of 200
+versions. The preparation pipeline runs it automatically after migrations and
+seeding; reruns repair partial or stale results without reseeding tasks.
+
 ## Urgent hotfix release rehearsal
 
 Read-only dry-run of the promote gates (never pushes):

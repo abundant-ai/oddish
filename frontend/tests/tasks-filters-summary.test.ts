@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeFilterCount,
   FILTER_DEFS,
   FILTER_PARAM_KEYS,
   filterParams,
@@ -18,7 +17,6 @@ test("summary threshold filters round-trip through the URL", () => {
   assert.equal(empty.stepsP50Min, null);
   assert.equal(empty.stepsP50Max, null);
   assert.equal(empty.agentCountMin, null);
-  assert.equal(activeFilterCount(empty), 0);
 
   const values = {
     ...empty,
@@ -40,14 +38,13 @@ test("summary threshold filters round-trip through the URL", () => {
   }
 
   assert.deepEqual(searchParamsToFilters(params), values);
-  for (const key of ["stepsP50", "agentCount", "sort"]) {
+  for (const key of ["stepsP50", "agentCount"]) {
     assert.ok(isFilterActive(key, values), `${key} should read as active`);
     assert.ok(
       FILTER_DEFS.some((def) => def.key === key),
       `${key} needs a sidebar registry entry`
     );
   }
-  assert.equal(activeFilterCount(values), 3);
 });
 
 test("stored-summary sorts are offered", () => {

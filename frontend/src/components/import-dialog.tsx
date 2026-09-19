@@ -239,12 +239,12 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
           className="h-8 px-3 text-[11px]"
         >
           <Upload className="mr-1 h-3.5 w-3.5" />
-          Import
+          Import runs…
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Import from .zip</DialogTitle>
+          <DialogTitle>Import runs</DialogTitle>
           <DialogDescription>
             Drop a Harbor run zip; the target task is inferred from the job-dir
             name. Same outcome as{" "}

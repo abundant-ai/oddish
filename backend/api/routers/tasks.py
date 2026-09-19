@@ -108,7 +108,9 @@ from api.routers.task_submission import (
     resolve_sweep_attribution,
     resolve_submission_identity,
 )
-from dashboard_attribution import resolve_search_authors
+from dashboard_attribution import resolve_experiments_author, resolve_search_authors
+from oddish.core.dashboard import UNRESOLVED_EXPERIMENTS_OWNER
+from oddish.core.endpoints.tasks_query import BROWSE_IDS_LIMIT
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -149,6 +151,7 @@ from oddish.schemas import (
     QARunRequest,
     TaskBrowseFacets,
     TaskBrowseCountResponse,
+    TaskBrowseIdsResponse,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -696,7 +699,7 @@ async def get_experiment_cost_totals_route(
 
 @router.get(
     "/tasks/browse",
-    response_model=TaskBrowseResponse | TaskBrowseCountResponse,
+    response_model=TaskBrowseResponse | TaskBrowseCountResponse | TaskBrowseIdsResponse,
 )
 async def browse_tasks(
     request: Request,
@@ -723,11 +726,30 @@ async def browse_tasks(
         description=(
             "Author search (the github:/author:/user: qualifier). Comma-separated "
             "tokens, each resolved to matching org members + their aliases and "
-            "ANDed with the free-text and tag filters."
+            "ANDed with the free-text and tag filters. The token `me` is the "
+            "caller (signed-in user, or the API key's creator)."
+        ),
+    ),
+    pin_author: str | None = Query(
+        None,
+        description=(
+            "Same tokens as `author`, but as an ordering: matching tasks come "
+            "first, then the rest in the requested sort. `pin_author=me` is the "
+            "dashboard's default ('mine first')."
+        ),
+    ),
+    ids_only: bool = Query(
+        False,
+        description=(
+            "Return the task ids of the whole matching set in page order, as "
+            "{'ids': [...], 'truncated': bool}, capped at 5000. The dashboard's "
+            "'Select all' uses it; `limit`/`offset` are ignored."
         ),
     ),
     statuses: str | None = Query(None, description="Task status CSV"),
     priorities: str | None = Query(None, description="Task priority CSV"),
+    exclude_delivery_id: str | None = Query(None),
+    qa_outcomes: str | None = Query(None, description="QA outcome on the current task version"),
     verdict_statuses: str | None = Query(None, description="Task verdict status CSV"),
     has_link: bool | None = Query(None),
     run_analysis: bool | None = Query(None),
@@ -889,26 +911,30 @@ async def browse_tasks(
             "ANDed with the flat filters."
         ),
     ),
-) -> TaskBrowseResponse | TaskBrowseCountResponse:
+) -> TaskBrowseResponse | TaskBrowseCountResponse | TaskBrowseIdsResponse:
     """Browse selected default versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
 
     async with get_read_session() as session:
-        author_tokens = [
-            token.strip() for token in (author or "").split(",") if token.strip()
-        ]
-        if author_tokens:
-            (
-                author_user_ids,
-                author_github_usernames,
-                author_emails,
-            ) = await resolve_search_authors(
-                session, org_id=auth.org_id, tokens=author_tokens
-            )
+        (
+            author_user_ids,
+            author_github_usernames,
+            author_emails,
+        ) = await _resolve_browse_authors(session, auth, author)
+        # Pinning only affects order, and resolving the same author twice
+        # repeats the attribution queries for the "Only mine" view.
+        if count_only:
+            pin_author_user_ids = pin_author_github_usernames = pin_author_emails = ()
+        elif pin_author == author:
+            pin_author_user_ids = author_user_ids
+            pin_author_github_usernames = author_github_usernames
+            pin_author_emails = author_emails
         else:
-            author_user_ids = ()
-            author_github_usernames = ()
-            author_emails = ()
+            (
+                pin_author_user_ids,
+                pin_author_github_usernames,
+                pin_author_emails,
+            ) = await _resolve_browse_authors(session, auth, pin_author)
         # Parse the OR-groups JSON defensively: a bad/deep-linked value must not
         # 500 the browse; keep only dict groups, drop the rest.
         parsed_or_groups: list[dict] | None = None
@@ -946,9 +972,14 @@ async def browse_tasks(
             author_user_ids=author_user_ids,
             author_github_usernames=author_github_usernames,
             author_emails=author_emails,
+            pin_author_user_ids=pin_author_user_ids,
+            pin_author_github_usernames=pin_author_github_usernames,
+            pin_author_emails=pin_author_emails,
             statuses=_split_tag_csv(statuses),
             priorities=_split_tag_csv(priorities),
             verdict_statuses=_split_tag_csv(verdict_statuses),
+            qa_outcomes=_split_tag_csv(qa_outcomes),
+            exclude_delivery_id=exclude_delivery_id,
             has_link=has_link,
             run_analysis=run_analysis,
             run_probe=run_probe,
@@ -1022,11 +1053,57 @@ async def browse_tasks(
             or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
             count_only=count_only,
+            ids_only=ids_only and not count_only,
         )
         if count_only:
             assert isinstance(result, int)
             return TaskBrowseCountResponse(total=result)
+        if ids_only:
+            assert isinstance(result, list)
+            return TaskBrowseIdsResponse(
+                ids=result[:BROWSE_IDS_LIMIT], truncated=len(result) > BROWSE_IDS_LIMIT
+            )
         return result
+
+
+async def _resolve_browse_authors(
+    session: AsyncSession, auth: AuthContext, raw: str | None
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Resolve a CSV of author tokens for the browser's ``author``/``pin_author``.
+
+    ``me`` resolves through the dashboard's owner resolution (the signed-in
+    user, or the creator of the API key, plus that user's attribution
+    aliases); every other token goes through the search-bar resolution. An
+    unresolvable ``me`` (a key with no creator) matches no tasks. The
+    browse handler runs on a read session, so a first-time profile is not
+    written here (``persist=False``); a background refresh stores it.
+    """
+    tokens = [token.strip() for token in (raw or "").split(",") if token.strip()]
+    if not tokens:
+        return (), (), ()
+    user_ids: list[str] = []
+    handles: list[str] = []
+    emails: list[str] = []
+    others = [token for token in tokens if token.lower() != "me"]
+    if len(others) < len(tokens):
+        me_user_id, me_handles, me_emails = await resolve_experiments_author(
+            session, auth, "me", persist=False
+        )
+        user_ids.append(me_user_id or UNRESOLVED_EXPERIMENTS_OWNER)
+        handles.extend(me_handles)
+        emails.extend(me_emails)
+    if others:
+        other_ids, other_handles, other_emails = await resolve_search_authors(
+            session, org_id=auth.org_id, tokens=others
+        )
+        user_ids.extend(other_ids)
+        handles.extend(other_handles)
+        emails.extend(other_emails)
+    return (
+        tuple(dict.fromkeys(user_ids)),
+        tuple(dict.fromkeys(handles)),
+        tuple(dict.fromkeys(emails)),
+    )
 
 
 @router.get("/tasks/browse/facets", response_model=TaskBrowseFacets)

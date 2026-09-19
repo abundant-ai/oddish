@@ -144,7 +144,12 @@ def backend_matches(path):
 
 
 def migrations_matches(path):
-    return path.startswith("backend/alembic/") or path.startswith("oddish/alembic/")
+    # A changed sample loader must also converge an already-created preview.
+    return (
+        path.startswith("backend/alembic/")
+        or path.startswith("oddish/alembic/")
+        or path in {"backend/preview_seed.py", ".github/scripts/preview/seed_preview_db.py"}
+    )
 
 
 def frontend_matches(path):

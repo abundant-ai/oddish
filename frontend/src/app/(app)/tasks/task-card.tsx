@@ -42,6 +42,7 @@ import {
   prBadge,
   taskPrUrl,
 } from "@/lib/utils";
+import { QA_OUTCOME_OPTIONS } from "@/lib/tasks-filters";
 import { useSelection } from "./selection-context";
 
 function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
@@ -85,11 +86,13 @@ function TrajectorySummary({ task }: { task: TaskBrowseItem }) {
 
 // One chip per customer the task is recorded as sent to, from the metadata
 // import (history) and finalized deliveries. Hover lists each batch. Nothing
-// renders when there is no record: the import's coverage is partial, so an
+// is inferred when there is no record: the import's coverage is partial, so an
 // absent record is not a claim the task was never sent.
-function DeliveredToChips({ task }: { task: TaskBrowseItem }) {
+export function TaskDeliveryHistory({ task }: { task: TaskBrowseItem }) {
   const records = task.deliveries ?? [];
-  if (records.length === 0) return null;
+  if (records.length === 0) {
+    return <span className="text-muted-foreground text-xs">No delivery recorded</span>;
+  }
   const byCustomer = new Map<string, typeof records>();
   for (const record of records) {
     const list = byCustomer.get(record.customer) ?? [];
@@ -99,7 +102,7 @@ function DeliveredToChips({ task }: { task: TaskBrowseItem }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
       <span className="text-muted-foreground text-[11px] tracking-wide uppercase">
-        Delivered to
+        Sent to lab
       </span>
       {[...byCustomer.entries()].map(([customer, list]) => (
         <Badge
@@ -403,7 +406,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
           <Checkbox
             checked={selected}
             onCheckedChange={() => toggle(task)}
-            aria-label={`Select ${task.name} for cost total`}
+            aria-label={`Select ${task.name}`}
             className="mt-0.5 shrink-0"
           />
           <div className="min-w-0 flex-1">
@@ -418,6 +421,15 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.qa_outcome ? <Badge variant="outline">{QA_OUTCOME_OPTIONS.find(option => option.value === task.qa_outcome)?.label}</Badge> : null}
+              {task.author_pinned ? (
+                <Badge
+                  className="w-fit border-transparent bg-[#6f88b4]/20 text-[11px] text-[#3f5a8a] dark:text-[#a8b8d2]"
+                  title="One of your tasks"
+                >
+                  yours
+                </Badge>
+              ) : null}
               {(() => {
                 const meta = task.github_meta;
                 const prUrl = taskPrUrl(task.link, meta);
@@ -526,7 +538,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
             ))}
           </div>
         ) : null}
-        <DeliveredToChips task={task} />
+        <TaskDeliveryHistory task={task} />
         <div className="space-y-1.5">
           <div className="flex items-baseline justify-between gap-3">
             <div className="text-muted-foreground text-[11px] tracking-wide uppercase">

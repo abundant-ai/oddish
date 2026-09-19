@@ -83,6 +83,40 @@ async def test_persist_profile_ignores_github_id_checked_at() -> None:
     invalidate_attribution_cache(org_id="org_1", user_id="user_persist")
 
 
+@pytest.mark.asyncio
+async def test_load_profile_without_persist_leaves_the_row_alone(monkeypatch) -> None:
+    """A read-only caller (the task browser's ``pin_author=me``) gets a
+    computed profile for a user with no stored one, but the row is not
+    mutated -- the read session would refuse the flush -- and the write is
+    handed to the background refresh."""
+    import dashboard_attribution as mod
+
+    user = _user(id="user_ro", attribution_cache=None)
+    computed = AttributionProfile(github_handles=("praxs",), legacy_emails=())
+    scheduled: list[tuple[str, str]] = []
+
+    async def fake_compute(session, target, *, org_id):
+        assert target is user
+        return computed
+
+    monkeypatch.setattr(mod, "_compute_profile", fake_compute)
+    monkeypatch.setattr(
+        mod,
+        "_schedule_profile_refresh",
+        lambda *, org_id, user_id: scheduled.append((org_id, user_id)),
+    )
+    invalidate_attribution_cache(org_id="org_1", user_id="user_ro")
+    profile = await mod._load_attribution_profile(
+        None, user, org_id="org_1", persist=False
+    )
+    assert profile == computed
+    assert user.attribution_cache is None
+    assert scheduled == [("org_1", "user_ro")]
+    # Served from memory on the next call, still without touching the row.
+    assert _memory_get("org_1", "user_ro") == computed
+    invalidate_attribution_cache(org_id="org_1", user_id="user_ro")
+
+
 def test_memory_cache_round_trip() -> None:
     profile = AttributionProfile(
         github_handles=("praxs", "dot-agi"),

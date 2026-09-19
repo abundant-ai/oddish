@@ -10,6 +10,7 @@ export default defineConfig({
   // Uses its own local app, with controlled responses and no Clerk credentials.
   testIgnore: [
     "delivery-refresh.spec.ts",
+    "tasks-picker.spec.ts",
     "file-loading.spec.ts",
     "reasoning-effort.spec.ts",
     "user-ui-layout.spec.ts",

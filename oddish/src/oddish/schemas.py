@@ -1724,6 +1724,7 @@ class TaskBrowseDelivery(BaseModel):
 
 
 class TaskBrowseItem(BaseModel):
+    qa_outcome: Literal["accepted", "rejected", "outdated", "unreviewed", "running", "failed"] = "unreviewed"
     id: str
     name: str
     current_version: int | None = None
@@ -1749,6 +1750,9 @@ class TaskBrowseItem(BaseModel):
     steps_p50: int | None = None
     steps_p75: int | None = None
     agent_count: int = 0
+    # True when the task matches the caller's ``pin_author`` (the browser's
+    # "mine first"); those rows sort ahead of the rest of the page order.
+    author_pinned: bool = False
     # Every customer this task is recorded as having been sent to, oldest
     # source first. Empty means no record, which is not proof it was never
     # sent: history coverage is partial (see the backfill docs).
@@ -1793,6 +1797,19 @@ class TaskBrowseCountResponse(BaseModel):
     """
 
     total: int
+
+
+class TaskBrowseIdsResponse(BaseModel):
+    """Task ids of a whole filter set, in page order.
+
+    Served by ``GET /tasks/browse?ids_only=true``; the dashboard's "Select all
+    N" reaches it through ``/api/tasks/browse/ids``. ``truncated`` is set when
+    the set was cut at the server's ceiling, so a selection built from it is
+    not the full match and the caller must say so.
+    """
+
+    ids: list[str]
+    truncated: bool = False
 
 
 class AgentModelFacet(BaseModel):
@@ -2707,7 +2724,7 @@ class DeliveryCreate(BaseModel):
     customer: str = Field(min_length=1, max_length=255)
     description: str | None = None
     check_config: DeliveryCheckConfig | None = None
-    task_ids: list[str] = Field(default_factory=list, max_length=500)
+    task_ids: list[str] = Field(default_factory=list, max_length=5000)
 
 
 class DeliveryPatch(BaseModel):
@@ -2718,7 +2735,7 @@ class DeliveryPatch(BaseModel):
 
 
 class DeliveryTasksAdd(BaseModel):
-    task_ids: list[str] = Field(min_length=1, max_length=500)
+    task_ids: list[str] = Field(min_length=1, max_length=5000)
 
 
 class ManualCheckSet(BaseModel):

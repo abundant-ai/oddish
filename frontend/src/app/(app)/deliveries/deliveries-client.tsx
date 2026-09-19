@@ -4,12 +4,13 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { Package, Plus } from "lucide-react";
 
 import { apiFetch, fetcher } from "@/lib/api";
 import { isOrgAdminRole } from "@/lib/org-roles";
-import type { Customer, DeliveryListItem } from "@/lib/types";
+import type { DeliveryListItem } from "@/lib/types";
+import { CustomerPicker } from "@/components/customer-picker";
 import { CustomerCreateDialog } from "@/components/customer-create-dialog";
 import { DeliveryStatusBadge } from "@/components/delivery-status";
 import { Button } from "@/components/ui/button";
@@ -23,13 +24,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import {
@@ -61,10 +55,7 @@ export function DeliveriesClient({
   const [customerId, setCustomerId] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const { data: customers, mutate: mutateCustomers } = useSWR<Customer[]>(
-    createOpen || customerOpen ? "/api/customers" : null,
-    fetcher
-  );
+  const { mutate: mutateCache } = useSWRConfig();
 
   const createDelivery = async () => {
     setCreating(true);
@@ -121,7 +112,7 @@ export function DeliveriesClient({
               open={customerOpen}
               onOpenChange={setCustomerOpen}
               onCreated={(customer) => {
-                void mutateCustomers();
+                void mutateCache("/api/customers");
                 setCustomerId(customer.id);
               }}
             />
@@ -146,31 +137,10 @@ export function DeliveriesClient({
                       placeholder="e.g. August batch"
                     />
                   </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="delivery-customer">Customer</Label>
-                    <Select
-                      value={customerId}
-                      onValueChange={(value) => {
-                        if (value === "__new__") {
-                          setCustomerOpen(true);
-                        } else {
-                          setCustomerId(value);
-                        }
-                      }}
-                    >
-                      <SelectTrigger id="delivery-customer">
-                        <SelectValue placeholder="Select a customer" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(customers ?? []).map((entry) => (
-                          <SelectItem key={entry.id} value={entry.id}>
-                            {entry.name}
-                          </SelectItem>
-                        ))}
-                        <SelectItem value="__new__">New customer…</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  <CustomerPicker
+                    value={customerId}
+                    onValueChange={setCustomerId}
+                  />
                   {createError && (
                     <p className="text-destructive text-sm">{createError}</p>
                   )}

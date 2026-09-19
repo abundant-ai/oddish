@@ -324,6 +324,11 @@ async def test_browse_aggregate_filters():
     try:
         await _setup(engine)
         await _insert_aggregate_tasks(engine)
+        # ``total_trials_min`` reads the stored summary row (kept current by
+        # the trial-finish hook in production), so the fixture refreshes it.
+        async with maker() as session:
+            await refresh_task_browse_summaries(session, ["v-e", "v-z", "v-h"])
+            await session.commit()
         async with maker() as session:
             # Avg score is a PERCENT (0-100). alpha & zeta = 100%, epsilon &
             # eta = 50%, beta = 0%, gamma = NULL (probe-only -> excluded).
@@ -922,5 +927,237 @@ async def test_browse_delivery_selection():
             facets = await browse_task_facets_core(session, org_id=ORG)
             assert facets.delivery_customers == ["GDM", "TML", "xai"]
             assert facets.categories == ["security"]
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_pinned_author_ids_and_trials_threshold():
+    """``pin_author_*`` orders the caller's tasks first without filtering,
+    ``ids_only`` returns the whole ordered set, and ``total_trials_min`` reads
+    the stored summary row instead of the trial aggregate."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        async with engine.begin() as c:
+            # gamma is attributed by user id, zeta by the github tag, beta by
+            # the legacy ``user`` column holding a handle.
+            await c.execute(
+                text("update tasks set created_by_user_id='user-k' where id='t-c'")
+            )
+            await c.execute(
+                text(
+                    "update tasks set tags='{\"github_username\": \"Kyle\"}'::jsonb "
+                    "where id='t-z'"
+                )
+            )
+            await c.execute(text("update tasks set \"user\"='kyle' where id='t-b'"))
+        async with maker() as session:
+            await refresh_task_browse_summaries(session, ["v-e", "v-z", "v-h"])
+            await session.commit()
+        pin = {
+            "pin_author_user_ids": ["user-k"],
+            "pin_author_github_usernames": ["kyle"],
+            "pin_author_emails": [],
+        }
+        async with maker() as session:
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="steps_p50_desc", **pin
+            )
+            names = [item.name for item in resp.items]
+            # Pinned rows first (sorted among themselves by the requested
+            # sort: beta median 200 before zeta 5; gamma has no steps so it
+            # is last of the pinned group), then everyone else by the sort.
+            assert names[:3] == ["beta", "zeta", "gamma"]
+            assert set(names[3:]) == {"alpha", "epsilon", "eta"}
+            assert [item.author_pinned for item in resp.items][:3] == [True] * 3
+            assert not any(item.author_pinned for item in resp.items[3:])
+            # Nothing is filtered out by pinning.
+            assert len(names) == 6
+            # Without a pin the flag is false everywhere.
+            plain = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            assert not any(item.author_pinned for item in plain.items)
+
+            # ids_only: the same order as the page, uncapped by limit/offset.
+            ids = await browse_tasks_core(
+                session,
+                org_id=ORG,
+                limit=2,
+                offset=1,
+                sort="steps_p50_desc",
+                ids_only=True,
+                **pin,
+            )
+            assert ids == [item.id for item in resp.items]
+            assert await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, ids_only=True, tags_all=["nope"]
+            ) == []
+
+            # total_trials_min comes from the summary row: epsilon has 3
+            # scoped trials, zeta/eta 2, alpha/beta 1, gamma 0 (probe only).
+            assert await _names(session, total_trials_min=3) == {"epsilon"}
+            assert await _names(session, total_trials_min=2) == {"epsilon", "zeta", "eta"}
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, total_trials_min=2)
+                == 3
+            )
+    finally:
+        await engine.dispose()
+
+
+async def test_grouped_trial_threshold_uses_summary_without_trial_aggregation(
+    monkeypatch,
+):
+    from sqlalchemy import event
+    from oddish.core.endpoints import tasks_query
+
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        # Deliberately disagree with the live aggregate, so reverting to it
+        # cannot accidentally pass this regression.
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "update task_version_browse_summaries set total_trials=8 "
+                    "where task_version_id='v-a'"
+                )
+            )
+
+        def unexpected_aggregation(*args, **kwargs):
+            pytest.fail("trial-count filters must not aggregate trial history")
+
+        monkeypatch.setattr(
+            tasks_query, "_task_metrics_subquery", unexpected_aggregation
+        )
+        statements = []
+        event.listen(
+            engine.sync_engine,
+            "after_cursor_execute",
+            lambda _conn, _cursor, statement, *_: statements.append(statement),
+        )
+        async with maker() as session:
+            for filters in (
+                {"total_trials_min": 5},
+                {"or_groups": [{"total_trials_min": 5}]},
+                {"total_trials_min": 5, "or_groups": [{"total_trials_min": 7}]},
+            ):
+                statements.clear()
+                assert await _names(session, **filters) == {"alpha"}
+                assert len(statements) == 8
+                statements.clear()
+                assert (
+                    await browse_tasks_count_core(session, org_id=ORG, **filters) == 1
+                )
+                assert len(statements) == 1
+                statements.clear()
+                assert await browse_tasks_core(
+                    session, org_id=ORG, ids_only=True, **filters
+                ) == ["t-a"]
+                assert len(statements) == 1
+            assert await _names(
+                session, or_groups=[{"total_trials_min": 5}, {"statuses": ["RUNNING"]}]
+            ) == {"alpha", "beta"}
+    finally:
+        await engine.dispose()
+
+
+async def test_grouped_trial_threshold_keeps_bounded_card_preview():
+    from oddish.db import TrialModel, TrialStatus
+
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            session.add_all(
+                [
+                    TrialModel(
+                        id=f"preview-{i}",
+                        name=f"preview-{i}",
+                        task_id="t-a",
+                        task_version_id="v-a",
+                        experiment_id="exp-real",
+                        org_id=ORG,
+                        agent="codex",
+                        provider="openai",
+                        queue_key="q",
+                        status=TrialStatus.SUCCESS,
+                    )
+                    for i in range(30)
+                ]
+            )
+            await session.flush()
+            await refresh_task_browse_summaries(session, ["v-a"])
+            for filters in (
+                {"total_trials_min": 5},
+                {"or_groups": [{"total_trials_min": 5}]},
+            ):
+                response = await browse_tasks_core(session, org_id=ORG, **filters)
+                assert len(response.items) == 1
+                item = response.items[0]
+                assert item.total_trials == 31
+                assert len(item.latest_trials) == 24
+                assert item.latest_trials_truncated
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_qa_outcome_matches_verdict_and_current_version():
+    from oddish.db import TrialModel, TrialStatus
+
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            for task_id, version_id in [("t-a", "v-a"), ("t-b", "v-b"), ("t-a", "v-a-old")]:
+                session.add(TrialModel(
+                    id=f"qa-{version_id}", name=f"qa-{version_id}", task_id=task_id,
+                    task_version_id=version_id, experiment_id="exp-real", org_id=ORG,
+                    agent="qa", provider="openai", queue_key="q", kind="qa",
+                    status=TrialStatus.SUCCESS,
+                ))
+            await session.flush()
+            await session.execute(text("""
+                update tasks set verdict_status='SUCCESS',
+                verdict=jsonb_build_object('is_good', id='t-a', '_graded_by', 'qa-' || current_version_id)
+                where id in ('t-a','t-b')
+            """))
+            response = await browse_tasks_core(session, org_id=ORG)
+            assert {item.id: item.qa_outcome for item in response.items} == {
+                "t-a": "accepted", "t-b": "rejected", "t-c": "unreviewed"
+            }
+            for outcome, task_id in [("accepted", "t-a"), ("rejected", "t-b"), ("unreviewed", "t-c")]:
+                assert await browse_tasks_core(session, org_id=ORG, qa_outcomes=[outcome], ids_only=True) == [task_id]
+                assert await browse_tasks_count_core(session, org_id=ORG, qa_outcomes=[outcome]) == 1
+            await session.execute(text("update tasks set verdict=jsonb_build_object('is_good',true,'_graded_by','qa-v-a-old') where id='t-a'"))
+            assert await _names(session, qa_outcomes=["accepted"]) == set()
+            assert await _names(session, qa_outcomes=["outdated"]) == {"alpha"}
+            await session.execute(text("update tasks set verdict_status='RUNNING' where id='t-a'"))
+            assert await _names(session, qa_outcomes=["running"]) == {"alpha"}
+            await session.execute(text("update tasks set verdict_status='FAILED', verdict=null where id='t-a'"))
+            assert await _names(session, qa_outcomes=["failed"]) == {"alpha"}
+    finally:
+        await engine.dispose()
+
+
+async def test_delivery_picker_excludes_members_from_page_count_and_ids():
+    from oddish.core.deliveries import create_delivery_core
+    from oddish.schemas import DeliveryCreate
+
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            delivery = await create_delivery_core(session, data=DeliveryCreate(
+                name="picker", customer="Lab", task_ids=["t-a"]), org_id=ORG, user_id=None)
+            filters = {"exclude_delivery_id": delivery.id}
+            assert await _names(session, **filters) == {"beta", "gamma"}
+            assert await browse_tasks_count_core(session, org_id=ORG, **filters) == 2
+            assert set(await browse_tasks_core(session, org_id=ORG, ids_only=True, **filters)) == {"t-b", "t-c"}
     finally:
         await engine.dispose()

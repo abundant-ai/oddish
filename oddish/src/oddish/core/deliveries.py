@@ -377,22 +377,18 @@ async def _add_tasks(
         raise HTTPException(
             status_code=404, detail=f"tasks not found: {', '.join(missing[:10])}"
         )
-    existing = set(
-        (
-            await session.scalars(
-                select(DeliveryTaskModel.task_id).where(
-                    DeliveryTaskModel.delivery_id == delivery.id,
-                    DeliveryTaskModel.task_id.in_(requested),
-                )
-            )
-        ).all()
-    )
-    max_order = await session.scalar(
-        select(func.coalesce(func.max(DeliveryTaskModel.sort_order), -1)).where(
-            DeliveryTaskModel.delivery_id == delivery.id
+    existing_ids, max_order = (
+        await session.execute(
+            select(
+                func.array_agg(DeliveryTaskModel.task_id).filter(
+                    DeliveryTaskModel.task_id.in_(requested)
+                ),
+                func.coalesce(func.max(DeliveryTaskModel.sort_order), -1),
+            ).where(DeliveryTaskModel.delivery_id == delivery.id)
         )
-    )
-    next_order = (max_order if max_order is not None else -1) + 1
+    ).one()
+    existing = set(existing_ids or [])
+    next_order = max_order + 1
     added = []
     for task_id in requested:
         if task_id in existing:

@@ -183,6 +183,22 @@ Approval changes reach a preview on its next preparation/sync, not immediately
 when production is edited. A standalone reset rebuilds from production and then
 reapplies the current decisions through the same final step.
 
+The final preparation step also runs `refresh_browse_summaries.py` against the
+preview database. Seeding copies a subset of trials without executing normal
+trial-write hooks; this step rebuilds browse and per-model counters from those
+sampled rows, including on reused branches. It uses the existing core refresh
+function in batches of 200 versions and commits each batch separately. Counters
+from production are never copied, and page reads add no aggregation queries.
+The job waits for summary repair, approval sync, and secret publication before
+deploying.
+
+The preview sample includes imported delivery history for its sampled tasks,
+with the referenced source records, import receipts, and mapped customer rows.
+Unmapped lab labels remain selectable. Live delivery checklists are not copied.
+Changes to the seed loader trigger sample reconciliation on reused previews;
+the source evidence and customer rows are retained when membership leaves the
+sample, so preview-owned work can continue referencing them.
+
 Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
 check approval before each job and every 15 seconds during execution; losing
 approval or failing to read it cancels the handler. The reconciler also cancels
@@ -826,3 +842,8 @@ for each database sharing an S3 bucket. Modal deployments set it automatically
 to the secret environment plus app name. Existing stored artifact pointers
 remain readable; changing this value during an unfinished import is unsupported.
 The default empty value preserves the self-hosted storage layout.
+
+Task browse requests reuse attribution resolution when `author` and `pin_author`
+match. Count-only requests skip pin-author resolution because pinning affects
+ordering only. Delivery create/add accept up to 5,000 tasks in one transaction,
+so a failed validation cannot leave a partially filled new delivery.

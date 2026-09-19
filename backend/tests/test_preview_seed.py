@@ -967,3 +967,89 @@ async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
     finally:
         await engine.dispose()
         await src.dispose()
+
+
+async def test_browse_summaries_rebuilt_from_sample_and_repaired_on_reuse():
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(engine, "select count(*) from task_version_browse_summaries") == 0
+        count = await preview_seed.refresh_browse_summaries(engine)
+        assert count == await _count(engine, "select count(*) from task_versions")
+        # Three raw rows include a superseded failure; only two belong to browse.
+        async with engine.connect() as conn:
+            row = (await conn.execute(text(
+                "select total_trials, completed_trials, failed_trials, agent_count "
+                "from task_version_browse_summaries where task_version_id='ver-solo-2'"
+            ))).one()
+            assert tuple(row) == (2, 1, 1, 1)
+        # Existing previews can carry stale summaries, including nonzero totals
+        # copied from a larger trial population. Recalculate instead of copying.
+        async with engine.begin() as conn:
+            await conn.execute(text("update task_version_browse_summaries set total_trials=900"))
+            await conn.execute(text("update trials set deleted_at=now() where id='tr-ok'"))
+        await preview_seed.refresh_browse_summaries(engine)
+        assert await _count(engine, "select total_trials from task_version_browse_summaries where task_version_id='ver-solo-2'") == 1
+        assert await _count(engine, "select total_trials from task_version_browse_summaries where task_version_id='ver-solo-1'") == 0
+    finally:
+        await src.dispose()
+        await engine.dispose()
+
+
+async def test_seed_keeps_sampled_delivery_history_and_its_evidence():
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from oddish.core.endpoints.tasks_query import browse_task_facets_core, _load_task_deliveries
+
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        statements = """
+            insert into customers (id,org_id,name,created_at,updated_at)
+            values ('lab-mapped','org-a','Mapped Lab',now(),now());
+            insert into metadata_import_receipts (id,org_id,plan_schema,plan_hash,mode,outcome,created_at)
+            values ('history-import','org-a','oddish-delivery-backfill-plan-v2','hash','apply','applied',now());
+            insert into task_source_records (org_id,record_id,kind,source_key,names,explicit_task_ids,source_urls,facts,content_hash,first_import_id,last_import_id,created_at,updated_at)
+            values ('org-a','record-mapped','delivery_membership','[]','[]','[]','[]','{}','one','history-import','history-import',now(),now()),
+                   ('org-a','record-legacy','delivery_membership','[]','[]','[]','[]','{}','two','history-import','history-import',now(),now()),
+                   ('org-a','record-excluded','delivery_membership','[]','[]','[]','[]','{}','three','history-import','history-import',now(),now());
+            insert into task_delivery_history (id,org_id,task_id,source_record_id,customer_label,customer_id,batch,source_date,membership,import_id,created_at,updated_at)
+            values ('history-mapped','org-a','task-solo','record-mapped','original lab label','lab-mapped','September batch','2026-09-01','sent','history-import',now(),now()),
+                   ('history-legacy','org-a','task-solo','record-legacy','Legacy Lab',null,'August batch','2026-08-01','sent','history-import',now(),now()),
+                   ('history-excluded','org-a','task-excluded','record-excluded','Excluded Lab',null,'Old batch',null,'sent','history-import',now(),now());
+        """
+        async with src.begin() as conn:
+            await conn.execute(Base.metadata.tables["tasks"].insert(), {
+                "id": "task-excluded", "name": "excluded", "org_id": "org-a",
+                "user": "tester", "status": "COMPLETED", "task_path": "p/excluded",
+                "deleted_at": preview_seed.SEED_EPOCH,
+            })
+            for statement in statements.split(";"):
+                if statement.strip():
+                    await conn.execute(text(statement))
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        assert {h["id"] for h in sampled["rows"]["task_delivery_history"]} == {"history-mapped", "history-legacy"}
+        assert {r["record_id"] for r in sampled["rows"]["task_source_records"]} == {"record-mapped", "record-legacy"}
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+        async with async_sessionmaker(engine)() as session:
+            facets = await browse_task_facets_core(session, org_id="org-a")
+            assert facets.delivery_customers == ["Legacy Lab", "Mapped Lab"]
+            history = await _load_task_deliveries(session, org_id="org-a", task_ids=["task-solo"])
+            assert [(h.customer, h.batch, h.date) for h in history["task-solo"]] == [
+                ("Legacy Lab", "August batch", "2026-08-01"),
+                ("Mapped Lab", "September batch", "2026-09-01"),
+            ]
+        assert await _count(engine, "select count(*) from metadata_import_receipts") == 1
+        # A subsequent sample removes stale task membership without deleting
+        # retained source evidence or customers used by preview-owned work.
+        async with src.begin() as conn:
+            await conn.execute(text("delete from task_delivery_history where id='history-legacy'"))
+        await preview_seed.seed(engine, sampled=await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY))
+        assert await _count(engine, "select count(*) from task_delivery_history") == 1
+        assert await _count(engine, "select count(*) from task_source_records") == 2
+    finally:
+        await src.dispose()
+        await engine.dispose()

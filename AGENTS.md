@@ -1038,9 +1038,11 @@ soft-deleted trials, and `combine:` copies. Any mutation that changes that
 population or its metrics must call
 `refresh_task_browse_summaries` inside the same transaction. This includes
 trial create/import, start/reset, completion, cancellation, retry/supersede,
-scoped deletion, and default-version selection. Advanced aggregate filters,
-comparisons, and non-default aggregate sorts intentionally retain their
-on-demand trial aggregation path.
+scoped deletion, and default-version selection. Trial-count thresholds,
+including OR-groups, use the same current-version
+summary as the cards and do not join the on-demand trial aggregate. Advanced
+aggregate filters, comparisons, and non-default aggregate sorts intentionally
+retain their on-demand trial aggregation path.
 
 The pre-trial audit enqueue claims `pre_trial_status IS NULL` with one conditional
 UPDATE, in the same transaction as audit creation. It must not upgrade the version
@@ -2310,6 +2312,26 @@ existing previews only when their next preparation or operator sync runs.
 
 ### Preview Branch Preserved Rows
 
+`preview_seed.py` samples `task_delivery_history` for sampled tasks together with
+its source records, import receipts, and mapped customers. It reconciles imported
+task membership but retains source evidence and customers, which preview-owned
+work may reference. `find_last_deploys.migrations_matches` includes seed-loader
+changes so reused branches receive changed sample coverage without a schema reset.
+
+After migrations, sample updates, and preserved-row restoration,
+`prepare_preview_database.sh` runs `refresh_browse_summaries.py` on both new and
+reused previews. Raw seed inserts bypass the trial-write hooks, so
+`backend.preview_seed.refresh_browse_summaries` recalculates stored browse and
+per-model statistics from the preview's own trials using the core refresh
+function, in transactions of 200 task versions. Both metric refreshers acquire
+their sorted per-version advisory locks in one SQL statement per batch, retaining
+the same transaction lifetime and lock keys without per-version round trips.
+Production aggregate totals
+must not be copied: production contains trials outside the preview sample.
+This also repairs existing previews; browse requests retain their stored-summary
+read path. Summary repair overlaps approval sync and secret publication, and
+all three must succeed before deployment.
+
 Each preview branch database holds a schema named `preview_preserved` with one
 table, `rows`. It keeps the API keys that a person creates from that preview
 dashboard, and the `organizations` and `users` rows those keys need.
@@ -2414,6 +2436,24 @@ attach response bodies, request payloads, credentials, or SQL parameter values.
 ---
 
 ## `frontend/` — Next.js Dashboard
+
+Delivery create/add requests accept up to 5,000 task IDs or names, matching the
+browser selection limit. Each request validates the entire set and inserts its
+memberships in one transaction; a missing task rolls back the whole request.
+Clients can still send smaller batches. The task picker sends its selection in
+one request. Membership lookup returns existing requested IDs and maximum sort
+order in one aggregate query; inserts remain SQLAlchemy batches. Browse count
+requests skip pin-author resolution, and identical author/pin-author values
+share one attribution lookup.
+
+Task browse exposes `qa_outcome` and accepts `qa_outcomes` (CSV in the hosted
+route; a sequence in core). Accepted/rejected require a completed verdict for
+`current_version_id`, reusing `VERDICT_VERSION_SQL`; an older verdict is outdated.
+This projection does not claim delivery evidence/sign-off readiness. It adds no
+SQL round trip. `exclude_delivery_id` excludes live memberships within the
+request's organization for page, count, and ID selection. The task proxy maps
+its `delivery` context to that predicate; saved filters never persist the
+context, and applying them preserves the current destination.
 
 Task and experiment drawers share the `experiment.trial-drawer` layout saved
 through `GET/PUT /users/me/ui-layouts/{layout_key}` (same `/api/` proxy path).

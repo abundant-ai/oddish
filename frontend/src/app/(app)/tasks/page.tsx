@@ -1,42 +1,96 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { clearTaskFilters, updateTaskSearchParams } from "@/lib/tasks-filters";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { TasksMatchCount, TasksHeader } from "./tasks-client";
+import { TasksFilters } from "./tasks-filters";
 import {
-  TasksMatchCount,
-  TasksPageNumber,
-  TasksToolbar,
-} from "./tasks-client";
-import { TasksFilterSidebar } from "./tasks-filter-sidebar";
-import { SelectionProvider } from "./selection-context";
+  SelectionBar,
+  SelectionProvider,
+  TasksSelectionControls,
+} from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
 
-// Forcing dynamic rendering avoids the static-prerender error for the client
-// components that call useSearchParams (sidebar, toolbar, results grid).
 export const dynamic = "force-dynamic";
 
 export default function TasksPage() {
+  const searchParams = useSearchParams();
+  // Free-text search lives in the URL `q` param (debounced). `query` is the
+  // legacy param some deep links still use — read it as a fallback.
+  const urlSearch = searchParams.get("q") ?? searchParams.get("query") ?? "";
+  const [searchQuery, setSearchQuery] = useState(urlSearch);
+
+  // Search values committed below whose navigations haven't landed yet. Lets
+  // the re-sync effect tell "our own commit landing" (skip — the input may
+  // already be ahead of it) from an external URL change.
+  const pendingSearchCommits = useRef<string[]>([]);
+
+  const searchTimer = useRef<number | null>(null);
+
+  // Re-sync the input when the URL search text changes externally (back/forward,
+  // applying a saved filter, Clear all) — but never for our own commits landing,
+  // which would clobber whatever the user has typed since.
+  useEffect(() => {
+    const pending = pendingSearchCommits.current;
+    const landed = pending.indexOf(urlSearch);
+    if (landed !== -1) {
+      pending.splice(0, landed + 1);
+      return;
+    }
+    pendingSearchCommits.current = [];
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    setSearchQuery((prev) => (prev.trim() === urlSearch ? prev : urlSearch));
+  }, [urlSearch]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      updateTaskSearchParams((params) => {
+        const trimmed = searchQuery.trim();
+        // Already committed (e.g. a whitespace-only edit) — skip the refetch.
+        if (trimmed === (params.get("q") ?? params.get("query") ?? "")) return;
+        if (trimmed) params.set("q", trimmed);
+        else params.delete("q");
+        params.delete("query"); // collapse the legacy param into `q`
+        pendingSearchCommits.current.push(trimmed);
+      });
+    }, 300);
+    searchTimer.current = handle;
+    return () => window.clearTimeout(handle);
+  }, [searchQuery]);
+
+  const [addedKeys, setAddedKeys] = useState<string[]>([]);
+
+  const clearFilters = () => {
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    pendingSearchCommits.current = [];
+    setSearchQuery("");
+    setAddedKeys([]);
+    clearTaskFilters();
+  };
+
   return (
     <SelectionProvider>
       <TooltipProvider>
-        <div className="space-y-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-            <TasksFilterSidebar />
-            <div className="min-w-0 flex-1">
-              <Card className="border-[#6f88b4]/20 shadow-xs">
-                <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="space-y-1">
-                    <CardTitle className="text-base">Recent Tasks</CardTitle>
-                    <div className="text-muted-foreground text-[11px]">
-                      <TasksMatchCount />
-                      <TasksPageNumber />
-                    </div>
-                  </div>
-                  <TasksToolbar />
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <RecentTasksResults />
-                </CardContent>
-              </Card>
-            </div>
+        <div className="space-y-5" data-testid="tasks-browser">
+          <TasksHeader />
+          <TasksFilters
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            addedKeys={addedKeys}
+            setAddedKeys={setAddedKeys}
+            onClearFilters={clearFilters}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-muted-foreground text-sm">
+              <TasksMatchCount />
+            </span>
+            <TasksSelectionControls />
+          </div>
+          <RecentTasksResults onClearFilters={clearFilters} />
+          <div className="bg-background/95 sticky bottom-3 z-10 rounded-lg">
+            <SelectionBar />
           </div>
         </div>
       </TooltipProvider>

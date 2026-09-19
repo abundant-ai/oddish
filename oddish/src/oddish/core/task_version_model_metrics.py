@@ -198,6 +198,20 @@ def metrics_query(version_ids: list[str]) -> Any:
     )
 
 
+async def lock_task_version_metrics(session: AsyncSession, version_ids: list[str]) -> None:
+    """Acquire the callers' sorted version locks in one database round trip."""
+    await session.execute(
+        text(
+            "WITH ordered AS MATERIALIZED ("
+            " SELECT version_id FROM unnest(CAST(:version_ids AS text[]))"
+            " WITH ORDINALITY AS versions(version_id, position) ORDER BY position"
+            ") SELECT pg_advisory_xact_lock(hashtextextended(version_id, 0))"
+            " FROM ordered"
+        ),
+        {"version_ids": version_ids},
+    )
+
+
 async def refresh_task_version_model_metrics(
     session: AsyncSession, task_version_ids: Iterable[str | None]
 ) -> None:
@@ -219,14 +233,7 @@ async def refresh_task_version_model_metrics(
     # crash. pg_advisory_xact_lock is re-entrant within a transaction, so taking
     # an already-held lock is free; the same sorted order keeps both paths in a
     # single global ordering and cannot deadlock against each other.
-    for version_id in version_ids:
-        await session.execute(
-            text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtextextended(CAST(:version_id AS text), 0))"
-            ),
-            {"version_id": version_id},
-        )
+    await lock_task_version_metrics(session, version_ids)
 
     known = (
         await session.execute(

@@ -6,11 +6,11 @@ import json
 import sys
 from typing import Any
 
-from sqlalchemy import JSON, MetaData, delete, text, tuple_
+from sqlalchemy import JSON, MetaData, delete, select, text, tuple_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
@@ -35,6 +35,7 @@ _RECONCILED_TABLES = (
     "task_versions",
     "task_experiments",
     "trials",
+    "task_delivery_history",
     "worker_jobs",
     "skills",
     "skill_files",
@@ -64,6 +65,39 @@ _LINKAGE_COLUMNS = {
 }
 
 _STATE_TABLE = "_preview_seed_state"
+
+
+async def refresh_browse_summaries(engine: AsyncEngine) -> int:
+    """Run after migrations: raw sample loads bypass trial-write refresh hooks."""
+    from oddish.core.task_browse_summary import refresh_task_browse_summaries
+    from oddish.db import TaskBrowseSummaryModel, TaskVersionModel
+
+    sessions = async_sessionmaker(engine)
+    last_id = ""
+    refreshed = 0
+    missing = 0
+    while True:
+        async with sessions.begin() as session:
+            rows = (
+                await session.execute(
+                    select(TaskVersionModel.id, TaskBrowseSummaryModel.task_version_id)
+                    .outerjoin(
+                        TaskBrowseSummaryModel,
+                        TaskBrowseSummaryModel.task_version_id == TaskVersionModel.id,
+                    )
+                    .where(TaskVersionModel.id > last_id)
+                    .order_by(TaskVersionModel.id)
+                    .limit(200)
+                )
+            ).all()
+            if not rows:
+                break
+            missing += sum(summary_id is None for _, summary_id in rows)
+            await refresh_task_browse_summaries(session, [row.id for row in rows])
+            last_id = rows[-1].id
+            refreshed += len(rows)
+    _warn(f"refreshed {refreshed} browse summaries ({missing} were missing)")
+    return refreshed
 
 
 def _warn(message: str) -> None:
@@ -199,6 +233,43 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         )
         for t in trials:
             t.pop("_rn", None)
+
+        # Historical shipments are source-backed facts, not active preview
+        # delivery checklists. Retain their evidence and customer mapping.
+        if await table_exists(conn, "task_delivery_history"):
+            history = await rows_of(
+                conn,
+                "SELECT * FROM task_delivery_history WHERE task_id = ANY(:ids)",
+                ids=kept_task_ids,
+            )
+            rows["task_delivery_history"] = history
+            _warn(f"sampled {len(history)} delivery history rows")
+            if history:
+                sources = await rows_of(
+                    conn,
+                    "SELECT r.* FROM task_source_records r"
+                    " JOIN task_delivery_history h"
+                    " ON h.org_id = r.org_id AND h.source_record_id = r.record_id"
+                    " WHERE h.task_id = ANY(:ids)",
+                    ids=kept_task_ids,
+                )
+                rows["task_source_records"] = sources
+                receipt_ids = {h["import_id"] for h in history}
+                receipt_ids.update(
+                    r[key]
+                    for r in sources
+                    for key in ("first_import_id", "last_import_id")
+                )
+                rows["metadata_import_receipts"] = await rows_of(
+                    conn,
+                    "SELECT * FROM metadata_import_receipts WHERE id = ANY(:ids)",
+                    ids=sorted(receipt_ids),
+                )
+                rows["customers"] = await rows_of(
+                    conn,
+                    "SELECT * FROM customers WHERE id = ANY(:ids)",
+                    ids=sorted({h["customer_id"] for h in history if h["customer_id"]}),
+                )
 
         trial_ids = {t["id"] for t in trials}
         failures: dict[str, str] = {}

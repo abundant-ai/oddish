@@ -3,11 +3,12 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
+  type Dispatch,
+  type SetStateAction,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { usePathname, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,6 @@ import type {
   TaskBrowseFacets,
 } from "@/lib/types";
 import {
-  activeFilterCount,
   cleanOrGroups,
   COMPARE_AGG_OPTIONS,
   COMPARE_METRIC_OPTIONS,
@@ -52,8 +52,7 @@ import {
   COMPARE_SUBJECT_OPTIONS,
   CONDITION_DEFS,
   FILTER_DEFS,
-  FILTER_PARAM_KEYS,
-  filterParams,
+  setTaskFilters,
   isFilterActive,
   searchParamsToFilters,
   SORT_OPTIONS,
@@ -70,6 +69,8 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   statuses: "statuses",
   priorities: "priorities",
   verdictStatuses: "verdictStatuses",
+  qaOutcomes: "qaOutcomes",
+  agentModels: "agentModels",
   agents: "agents",
   models: "models",
   providers: "providers",
@@ -121,7 +122,47 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
   return [];
 }
 
-const FILTERS_BODY_ID = "tasks-filters-body";
+const FILTER_FIELDS: Record<string, (keyof FilterValues)[]> = {
+  ...Object.fromEntries(
+    Object.entries(ARRAY_FIELD).map(([key, field]) => [key, [field]])
+  ),
+  ...NUMRANGE_FIELD,
+  ...Object.fromEntries(
+    Object.entries(NUM_FIELD).map(([key, field]) => [key, [field]])
+  ),
+  tags: ["tagsAll", "tagsAny", "tagsNone"],
+  created: ["createdAfter", "createdBefore", "createdWithin"],
+  trialFinished: [
+    "trialFinishedAfter",
+    "trialFinishedBefore",
+    "trialFinishedWithin",
+  ],
+  reward: ["rewardMin", "rewardMax"],
+  topPerformer: ["topBy", "topValue", "topMetric"],
+  agentCompare: [
+    "compareBy",
+    "compareA",
+    "compareB",
+    "compareMetric",
+    "compareAgg",
+    "compareMargin",
+    "compareMarginUnit",
+  ],
+  matchAny: ["orGroups"],
+  ...Object.fromEntries(
+    [
+      "hasLink",
+      "hasError",
+      "hasTrajectory",
+      "trialIsProbe",
+      "neverDelivered",
+      "sort",
+      "toolNames",
+      "trialMetricMatch",
+    ].map((key) => [key, [key as keyof FilterValues]])
+  ),
+};
+const EMPTY_FILTERS = searchParamsToFilters(new URLSearchParams());
 
 // Facet vocabularies drift as trials introduce new agents, models, and
 // environments, so they're not session-stable — but they needn't be
@@ -130,7 +171,19 @@ const FILTERS_BODY_ID = "tasks-filters-body";
 // background.
 const FACETS_DEDUPE_MS = 5 * 60_000;
 
-export function TasksFilterSidebar() {
+export function TasksFilters({
+  searchQuery,
+  onSearchChange,
+  addedKeys,
+  setAddedKeys,
+  onClearFilters,
+}: {
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  addedKeys: string[];
+  setAddedKeys: Dispatch<SetStateAction<string[]>>;
+  onClearFilters: () => void;
+}) {
   // Facets load client-side so a task-grid refresh never reloads the
   // filter options; the dedupe window above keeps remounts from re-asking
   // (the 2026-08-06 HAR showed this fetch running twice per session,
@@ -146,45 +199,7 @@ export function TasksFilterSidebar() {
   });
   const facets = facetsData ?? null;
 
-  const pathname = usePathname();
   const searchParams = useSearchParams();
-
-  // Freshest known URL params: updated by every write below, so a commit
-  // issued while an earlier navigation is still in flight builds on that write
-  // instead of on params the hook hasn't delivered yet (rapid filter clicks,
-  // debounced search). Re-seeded from the hook only for external URL changes —
-  // one of our own navigations landing must not rewind the ref past writes
-  // issued after it (`pendingWrites` tracks commits the hook hasn't delivered).
-  const paramsRef = useRef(searchParams.toString());
-  const pendingWrites = useRef<string[]>([]);
-  const lastHookParams = useRef(searchParams);
-  if (lastHookParams.current !== searchParams) {
-    lastHookParams.current = searchParams;
-    const hookParams = searchParams.toString();
-    const landed = pendingWrites.current.indexOf(hookParams);
-    if (landed !== -1) {
-      pendingWrites.current.splice(0, landed + 1);
-    } else {
-      pendingWrites.current = [];
-      paramsRef.current = hookParams;
-    }
-  }
-
-  // Every URL write goes through here so paramsRef/pendingWrites stay in
-  // sync. Writes go through the History API (Next syncs useSearchParams
-  // from it): a filter change only re-keys the grid's client-side browse
-  // fetch, so the dynamic-route RSC re-render that router.replace would
-  // trigger has nothing left to do. replaceState never scrolls, preserving
-  // the old scroll: false behavior.
-  const commitParams = (params: string) => {
-    pendingWrites.current.push(params);
-    paramsRef.current = params;
-    window.history.replaceState(
-      null,
-      "",
-      params ? `${pathname}?${params}` : pathname
-    );
-  };
 
   // Filter state lives in the URL so the grid's browse key changes (the
   // previous grid stays on screen while the next state loads) whenever a
@@ -194,78 +209,16 @@ export function TasksFilterSidebar() {
     [searchParams]
   );
 
-  const onChange = (next: FilterValues) => {
-    const params = new URLSearchParams(paramsRef.current);
-    for (const key of FILTER_PARAM_KEYS) params.delete(key);
-    for (const [key, value] of filterParams(next)) params.set(key, value);
-    params.delete("offset");
-    commitParams(params.toString());
-  };
-
-  // Merge onto the freshest params, not the memoized `values` — a second change
-  // made before the previous navigation commits must not drop the first.
-  const set = (patch: Partial<FilterValues>) =>
-    onChange({
-      ...searchParamsToFilters(new URLSearchParams(paramsRef.current)),
-      ...patch,
-    });
-
-  // Free-text search lives in the URL `q` param (debounced). `query` is the
-  // legacy param some deep links still use — read it as a fallback.
-  const urlSearch = searchParams.get("q") ?? searchParams.get("query") ?? "";
-  const [searchQuery, setSearchQuery] = useState(urlSearch);
-
-  // Search values committed below whose navigations haven't landed yet. Lets
-  // the re-sync effect tell "our own commit landing" (skip — the input may
-  // already be ahead of it) from an external URL change.
-  const pendingSearchCommits = useRef<string[]>([]);
-
-  const isFirstSearchRender = useRef(true);
-
-  // Re-sync the input when the URL search text changes externally (back/forward,
-  // applying a saved filter, Clear all) — but never for our own commits landing,
-  // which would clobber whatever the user has typed since.
-  useEffect(() => {
-    const pending = pendingSearchCommits.current;
-    const landed = pending.indexOf(urlSearch);
-    if (landed !== -1) {
-      pending.splice(0, landed + 1);
-      return;
-    }
-    pendingSearchCommits.current = [];
-    setSearchQuery((prev) => (prev.trim() === urlSearch ? prev : urlSearch));
-  }, [urlSearch]);
-
-  useEffect(() => {
-    if (isFirstSearchRender.current) {
-      isFirstSearchRender.current = false;
-      return;
-    }
-    const handle = window.setTimeout(() => {
-      const params = new URLSearchParams(paramsRef.current);
-      const trimmed = searchQuery.trim();
-      // Already committed (e.g. a whitespace-only edit) — skip the refetch.
-      if (trimmed === (params.get("q") ?? params.get("query") ?? "")) return;
-      if (trimmed) params.set("q", trimmed);
-      else params.delete("q");
-      params.delete("query"); // collapse the legacy param into `q`
-      params.delete("offset");
-      pendingSearchCommits.current.push(trimmed);
-      commitParams(params.toString());
-    }, 300);
-    return () => window.clearTimeout(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
-
-  const [addedKeys, setAddedKeys] = useState<string[]>([]);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [filterSearch, setFilterSearch] = useState("");
 
   // Optional filters are shown when explicitly added OR already active (e.g.
   // restored from the URL on load).
   const visibleDefs = useMemo(() => {
     return FILTER_DEFS.filter(
       (def) =>
-        !def.hidden &&
+        def.key !== "sort" &&
+        (!def.hidden || isFilterActive(def.key, values)) &&
         (def.pinned ||
           addedKeys.includes(def.key) ||
           isFilterActive(def.key, values))
@@ -273,248 +226,229 @@ export function TasksFilterSidebar() {
   }, [addedKeys, values]);
 
   const inactiveDefs = FILTER_DEFS.filter(
-    (def) => !def.hidden && !visibleDefs.some((v) => v.key === def.key)
+    (def) =>
+      !def.hidden &&
+      def.key !== "sort" &&
+      !visibleDefs.some((v) => v.key === def.key)
   );
 
   const clearKey = (key: string) => {
-    switch (key) {
-      case "created":
-        set({ createdAfter: null, createdBefore: null, createdWithin: null });
-        break;
-      case "trialFinished":
-        set({
-          trialFinishedAfter: null,
-          trialFinishedBefore: null,
-          trialFinishedWithin: null,
-        });
-        break;
-      case "tokens":
-        set({ minTokens: null, maxTokens: null });
-        break;
-      case "steps":
-        set({ minSteps: null, maxSteps: null });
-        break;
-      case "reward":
-        set({ rewardMin: null, rewardMax: null });
-        break;
-      case "avgScore":
-        set({ avgScoreMin: null, avgScoreMax: null });
-        break;
-      case "totalTokens":
-        set({ totalTokensMin: null, totalTokensMax: null });
-        break;
-      case "runtime":
-        set({ runtimeTotalMin: null, runtimeTotalMax: null });
-        break;
-      case "runtimeAvg":
-        set({ runtimeAvgMin: null, runtimeAvgMax: null });
-        break;
-      case "passRate":
-        set({ passRateMin: null, passRateMax: null });
-        break;
-      case "stepsP50":
-        set({ stepsP50Min: null, stepsP50Max: null });
-        break;
-      case "topPerformer":
-        set({ topBy: null, topValue: null, topMetric: null });
-        break;
-      case "hasLink":
-      case "hasError":
-      case "hasTrajectory":
-      case "trialIsProbe":
-      case "neverDelivered":
-        set({ [key]: null } as Partial<FilterValues>);
-        break;
-      case "sort":
-        set({ sort: null });
-        break;
-      case "matchAny":
-        set({ orGroups: null });
-        break;
-      case "agentCompare":
-        set({
-          compareBy: null,
-          compareA: null,
-          compareB: null,
-          compareMetric: null,
-          compareAgg: null,
-          compareMargin: null,
-          compareMarginUnit: null,
-        });
-        break;
-      case "minAttempts":
-      case "totalTrials":
-      case "completedTrials":
-      case "failedTrials":
-      case "passCount":
-      case "partialCount":
-      case "failCount":
-      case "harnessCount":
-      case "agentCount":
-        set({ [NUM_FIELD[key]]: null } as Partial<FilterValues>);
-        break;
-      default:
-        if (ARRAY_FIELD[key])
-          set({ [ARRAY_FIELD[key]]: [] } as Partial<FilterValues>);
-    }
+    const fields = FILTER_FIELDS[key];
+    setTaskFilters(
+      Object.fromEntries(fields.map((field) => [field, EMPTY_FILTERS[field]]))
+    );
     setAddedKeys((prev) => prev.filter((k) => k !== key));
   };
-
-  const activeCount = activeFilterCount(values);
-  const filtersLabel = (
-    <>
-      <Filter className="h-3.5 w-3.5" />
-      Filters
-      {activeCount > 0 ? (
-        <span className="text-muted-foreground text-[11px]">
-          ({activeCount})
-        </span>
-      ) : null}
-    </>
+  const activeDefs = FILTER_DEFS.filter(
+    (def) => def.key !== "sort" && isFilterActive(def.key, values)
   );
-
+  const summary = (def: FilterDef) => {
+    if (NUM_FIELD[def.key]) return `≥ ${values[NUM_FIELD[def.key]]}`;
+    if (NUMRANGE_FIELD[def.key]) {
+      const [min, max] = NUMRANGE_FIELD[def.key].map((field) => values[field]);
+      return min !== null && max !== null
+        ? `${min}–${max}`
+        : min !== null
+          ? `≥ ${min}`
+          : `≤ ${max}`;
+    }
+    if (def.key === "matchAny") return `${values.orGroups?.length} groups`;
+    return FILTER_FIELDS[def.key]
+      .flatMap((field) => {
+        const value = values[field];
+        if (value === null || value === "") return [];
+        const list = Array.isArray(value) ? value : [value];
+        return list.map(
+          (item) =>
+            def.options?.find((o) => o.value === item)?.label ??
+            (typeof item === "boolean" ? (item ? "Yes" : "No") : String(item))
+        );
+      })
+      .join(", ");
+  };
   return (
-    <aside className="w-full shrink-0 sm:w-56">
-      {/* Sticky only beside the results; stacked above them on a phone it
-          would pin a full-height panel over the list. */}
-      <div className="bg-card/95 rounded-lg border border-[#6f88b4]/20 p-3 shadow-xs sm:sticky sm:top-4">
-        <div className="mb-2 flex items-center justify-between">
-          {/* Only the phone layout hides the body, so only it gets a control —
-              at sm+ a toggle would be a no-op reporting a false expanded state. */}
+    <div className="space-y-3" data-testid="tasks-filters">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-56 flex-1">
+          <Input
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search tasks…"
+            aria-label="Search tasks"
+            className="pr-8"
+          />
+          <SearchSyntaxHelp>
+            <p className="font-medium">Search syntax</p>
+            <SearchSyntaxRow
+              example="node vulnerability"
+              hint="every word must match"
+            />
+            <SearchSyntaxRow example="auth OR rbac" hint="either word" />
+            <SearchSyntaxRow example={'"command exec"'} hint="exact phrase" />
+            <SearchSyntaxMultiRow
+              examples={["author:alice", "tag:security"]}
+              hint="author or tag"
+            />
+          </SearchSyntaxHelp>
+        </div>
+        <select
+          aria-label="Author"
+          className="border-input bg-background h-9 rounded-md border px-3 text-sm"
+          value={
+            values.mine === "only" || (values.author.length === 1 && values.author[0] === "me")
+              ? "me"
+              : values.author.length
+                ? "custom"
+                : "all"
+          }
+          onChange={(e) =>
+            setTaskFilters(current => ({
+              author: e.target.value === "me" ? ["me"] : [],
+              mine: current.mine === "only" ? "off" : current.mine,
+            }))
+          }
+        >
+          <option value="all">Author: Everyone</option>
+          <option value="me">Author: Me</option>
+          {values.author.length > 0 && !(values.author.length === 1 && values.author[0] === "me") ? (
+            <option value="custom">Author: {values.author.join(", ")}</option>
+          ) : null}
+        </select>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline">
+              <Filter className="mr-2 h-4 w-4" />
+              Filters{activeDefs.length ? ` (${activeDefs.length})` : ""}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-[min(440px,calc(100vw-2rem))] p-4"
+            aria-label="Task filters"
+          >
+            <Input
+              aria-label="Find a filter"
+              placeholder="Find a filter…"
+              value={filterSearch}
+              onChange={(e) => setFilterSearch(e.target.value)}
+              className="mb-4"
+            />
+            <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+              {(["Delivery", "Task", "Trial"] as const).map((group) => {
+                const defs = (
+                  filterSearch
+                    ? FILTER_DEFS.filter((d) => !d.hidden)
+                    : visibleDefs
+                ).filter(
+                  (d) =>
+                    d.group === group &&
+                    d.key !== "sort" &&
+                    d.label.toLowerCase().includes(filterSearch.toLowerCase())
+                );
+                return defs.length ? (
+                  <section key={group} className="space-y-3">
+                    <h3 className="text-muted-foreground text-xs font-medium">
+                      {group === "Delivery"
+                        ? "Delivery history"
+                        : group === "Trial"
+                          ? "Trial filters"
+                          : "Task filters"}
+                    </h3>
+                    {defs.map((def) => (
+                      <FilterGroup
+                        key={def.key}
+                        def={def}
+                        values={values}
+                        set={setTaskFilters}
+                        facets={facets}
+                        facetsLoading={facetsLoading}
+                        facetsError={Boolean(facetsError)}
+                        onRetryFacets={() => mutateFacets()}
+                        onRemove={
+                          isFilterActive(def.key, values) ||
+                          addedKeys.includes(def.key)
+                            ? () => clearKey(def.key)
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </section>
+                ) : null;
+              })}
+              {!filterSearch && inactiveDefs.length ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" className="w-full">
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add filter
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="max-h-72 overflow-auto">
+                    {(["Task", "Delivery", "Trial"] as const).map((group) => (
+                      <div key={group}>
+                        <DropdownMenuLabel>{group}</DropdownMenuLabel>
+                        {inactiveDefs
+                          .filter((d) => d.group === group)
+                          .map((def) => (
+                            <DropdownMenuItem
+                              key={def.key}
+                              onSelect={() =>
+                                setAddedKeys((prev) => [...prev, def.key])
+                              }
+                            >
+                              {def.label}
+                            </DropdownMenuItem>
+                          ))}
+                      </div>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <SortControl values={values} />
+        <SavedFiltersMenu />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {activeDefs.map((def) => (
+          <button
+            key={def.key}
+            type="button"
+            onClick={() => clearKey(def.key)}
+            aria-label={`Remove ${def.label} filter`}
+            className="bg-muted hover:bg-muted/70 flex max-w-full items-center gap-2 rounded-md px-2.5 py-1 text-xs"
+          >
+            <span className="truncate">
+              {def.label}: {summary(def)}
+            </span>
+            <X className="h-3 w-3 shrink-0" />
+          </button>
+        ))}
+        {values.author.length || values.mine === "only" ? (
           <button
             type="button"
-            onClick={() => setMobileOpen((open) => !open)}
-            aria-expanded={mobileOpen}
-            aria-controls={FILTERS_BODY_ID}
-            className="flex items-center gap-1.5 text-sm font-medium sm:hidden"
+            className="bg-muted rounded-md px-2.5 py-1 text-xs"
+            onClick={() =>
+              setTaskFilters({
+                author: [],
+                mine: values.mine === "only" ? "off" : values.mine,
+              })
+            }
           >
-            {filtersLabel}
-            <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform ${mobileOpen ? "rotate-180" : ""}`}
-            />
+            Author: {values.mine === "only" ? "Me" : values.author.join(", ")} ×
           </button>
-          <span className="hidden items-center gap-1.5 text-sm font-medium sm:flex">
-            {filtersLabel}
-          </span>
-          <div className="flex items-center gap-1">
-            <SavedFiltersMenu />
-            {activeCount > 0 || searchQuery.trim().length > 0 ? (
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground text-[11px]"
-                onClick={() => {
-                  // Wipe every browse param (filters, tags, search, offset).
-                  commitParams("");
-                  setSearchQuery("");
-                  setAddedKeys([]);
-                }}
-              >
-                Clear all
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        <div
-          id={FILTERS_BODY_ID}
-          className={mobileOpen ? undefined : "hidden sm:block"}
-        >
-          <div className="mb-3 border-b border-[#6f88b4]/10 pb-3">
-            <div className="relative">
-              <Input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search anything..."
-                className="h-8 w-full border-[#6f88b4]/20 pr-7"
-              />
-              <SearchSyntaxHelp>
-                <p className="font-medium">Search syntax</p>
-                <p className="text-muted-foreground">
-                  Matches task name or author. Use the Tags filter below for tag
-                  filtering.
-                </p>
-                <SearchSyntaxRow
-                  example="node vulnerability"
-                  hint="every word must match (AND)"
-                />
-                <SearchSyntaxRow
-                  example="auth OR rbac"
-                  hint="either word (OR)"
-                />
-                <SearchSyntaxRow
-                  example={'"command exec"'}
-                  hint="exact phrase"
-                />
-                <SearchSyntaxRow example="-no-skill" hint="exclude" />
-                <SearchSyntaxMultiRow
-                  examples={["github:alice", "author:alice", "user:alice"]}
-                  hint="by author — GitHub handle, email, or name"
-                />
-              </SearchSyntaxHelp>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {visibleDefs.map((def) => (
-              <FilterGroup
-                key={def.key}
-                def={def}
-                values={values}
-                set={set}
-                facets={facets}
-                facetsLoading={facetsLoading}
-                facetsError={Boolean(facetsError)}
-                onRetryFacets={() => mutateFacets()}
-                onRemove={def.pinned ? undefined : () => clearKey(def.key)}
-              />
-            ))}
-          </div>
-
-          {inactiveDefs.length > 0 ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-3 w-full border-dashed text-xs"
-                >
-                  <Plus className="mr-1 h-3.5 w-3.5" />
-                  Add filter
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="z-30 max-h-80 overflow-auto"
-              >
-                {(["Delivery", "Task", "Trial"] as const).map((group) => {
-                  const groupDefs = inactiveDefs.filter(
-                    (d) => d.group === group
-                  );
-                  if (!groupDefs.length) return null;
-                  return (
-                    <div key={group}>
-                      <DropdownMenuLabel className="text-muted-foreground text-[11px] uppercase">
-                        {group}
-                      </DropdownMenuLabel>
-                      {groupDefs.map((def) => (
-                        <DropdownMenuItem
-                          key={def.key}
-                          onSelect={() =>
-                            setAddedKeys((prev) => [...prev, def.key])
-                          }
-                        >
-                          {def.label}
-                        </DropdownMenuItem>
-                      ))}
-                    </div>
-                  );
-                })}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-        </div>
+        ) : null}
+        {activeDefs.length ||
+        searchQuery.trim() ||
+        values.author.length ||
+        values.mine === "only" ? (
+          <Button variant="ghost" size="sm" onClick={onClearFilters}>
+            Clear filters
+          </Button>
+        ) : null}
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -538,7 +472,7 @@ function FilterGroup({
   onRemove?: () => void;
 }) {
   return (
-    <div className="border-b border-[#6f88b4]/10 pb-3 last:border-0 last:pb-0">
+    <div role="group" aria-label={def.label} className="border-b border-[#6f88b4]/10 pb-3 last:border-0 last:pb-0">
       <div className="mb-1.5 flex items-center justify-between">
         <span className="text-xs font-medium">{def.label}</span>
         {onRemove ? (
@@ -660,11 +594,9 @@ function FilterControl({
     case "daterange":
       return <DateRange fieldKey={def.key} values={values} set={set} />;
     case "numrange":
-      return <NumRange fieldKey={def.key} values={values} set={set} />;
+      return <NumericFilter key={def.key} label={def.label} range min={values[NUMRANGE_FIELD[def.key][0]] as number | null} max={values[NUMRANGE_FIELD[def.key][1]] as number | null} presets={def.key === "stepsP50" ? [50, 100, 250] : [10, 50, 100]} onChange={(min, max) => set({[NUMRANGE_FIELD[def.key][0]]: min, [NUMRANGE_FIELD[def.key][1]]: max})} />;
     case "rewardthreshold":
       return <RewardThreshold values={values} set={set} />;
-    case "sort":
-      return <SortControl values={values} set={set} />;
     case "compare":
       return <CompareControl values={values} set={set} facets={facets} />;
     case "top":
@@ -690,7 +622,7 @@ function FilterControl({
         />
       );
     case "num":
-      return <NumControl fieldKey={def.key} values={values} set={set} />;
+      return <NumericFilter key={def.key} label={def.label} min={values[NUM_FIELD[def.key]] as number | null} max={null} presets={def.key === "agentCount" ? [2, 3, 5] : [5, 10, 20]} onChange={min => set({[NUM_FIELD[def.key]]: min})} />;
     case "tags":
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
@@ -786,7 +718,7 @@ function AgentModelControl({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-64 p-2">
+      <PopoverContent align="start" className="w-64 p-2">
         <Input
           autoFocus
           value={search}
@@ -908,7 +840,7 @@ function ExperimentControl({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-64 p-2">
+      <PopoverContent align="start" className="w-64 p-2">
         <Input
           autoFocus
           value={search}
@@ -1023,9 +955,9 @@ function TagsControl({
     <div className="space-y-2">
       <Segmented
         options={[
-          { value: "all", label: "All" },
-          { value: "any", label: "Any" },
-          { value: "none", label: "None" },
+          { value: "all", label: "Has all" },
+          { value: "any", label: "Has any" },
+          { value: "none", label: "Has none" },
         ]}
         value={mode}
         onChange={(v) => setMode(v as "all" | "any" | "none")}
@@ -1043,7 +975,7 @@ function TagsControl({
             <ChevronDown className="h-3.5 w-3.5 opacity-60" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="z-30 w-56 p-2">
+        <PopoverContent align="start" className="w-56 p-2">
           <Input
             autoFocus
             value={search}
@@ -1129,7 +1061,7 @@ function MultiSelect({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-56 p-2">
+      <PopoverContent align="start" className="w-56 p-2">
         {options.length > 8 ? (
           <Input
             autoFocus
@@ -1248,21 +1180,11 @@ function BooleanControl({
 }) {
   const current = values[fieldKey as keyof FilterValues] as boolean | null;
   const value = current === null ? "any" : current ? "yes" : "no";
-  return (
-    <Segmented
-      options={[
-        { value: "any", label: "Any" },
-        { value: "yes", label: "Yes" },
-        { value: "no", label: "No" },
-      ]}
-      value={value}
-      onChange={(v) =>
-        set({
-          [fieldKey]: v === "any" ? null : v === "yes",
-        } as Partial<FilterValues>)
-      }
-    />
-  );
+  return <select aria-label={FILTER_DEFS.find(def => def.key === fieldKey)?.label ?? fieldKey} value={value} className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm" onChange={e => set({[fieldKey]: e.target.value === "any" ? null : e.target.value === "yes"})}>
+    <option value="any">{fieldKey === "neverDelivered" ? "Any history" : "Any"}</option>
+    <option value="yes">{fieldKey === "neverDelivered" ? "None recorded" : "Yes"}</option>
+    <option value="no">{fieldKey === "neverDelivered" ? "Has recorded delivery" : "No"}</option>
+  </select>;
 }
 
 type DateMode = "" | CreatedPreset | "custom";
@@ -1453,23 +1375,31 @@ function DateRange({
 // options. Empty value clears the sort and restores the default recency order.
 function SortControl({
   values,
-  set,
 }: {
   values: FilterValues;
-  set: (patch: Partial<FilterValues>) => void;
 }) {
+  const pinned = values.mine === null || values.mine === "first";
   return (
     <select
-      className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
-      value={values.sort ?? ""}
-      onChange={(e) =>
-        set({ sort: e.target.value === "" ? null : e.target.value })
-      }
+      aria-label="Sort tasks"
+      className="border-input bg-background h-9 max-w-64 rounded-md border px-3 text-sm"
+      value={pinned ? "mine" : (values.sort ?? "recent")}
+      onChange={e => setTaskFilters(current => ({
+        ...(current.mine === "only" ? {author: Array.from(new Set([...current.author, "me"]))} : {}),
+        mine: e.target.value === "mine" ? "first" : "off",
+        sort: ["recent", "mine"].includes(e.target.value) ? null : e.target.value,
+      }))}
     >
-      <option value="">Default (recent)</option>
+      <option value="mine">
+        Sort: Mine first
+        {values.sort
+          ? ` · ${SORT_OPTIONS.find((o) => o.value === values.sort)?.label ?? values.sort}`
+          : ""}
+      </option>
+      <option value="recent">Sort: Recent activity</option>
       {SORT_OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>
-          {o.label}
+          Sort: {o.label}
         </option>
       ))}
     </select>
@@ -1531,7 +1461,6 @@ function ApplyBar({
   );
 }
 
-type NumRangeDraft = { min: number | null; max: number | null };
 
 // --- Phase 2.2 "Match any of…" OR block ------------------------------------
 
@@ -1772,7 +1701,7 @@ function GroupCard({
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="start"
-            className="z-30 max-h-72 overflow-auto"
+            className="max-h-72 overflow-auto"
           >
             {available.map((d) => (
               <DropdownMenuItem
@@ -2185,96 +2114,103 @@ function CompareControl({
   );
 }
 
-function NumRange({
-  fieldKey,
-  values,
-  set,
+function NumericFilter({
+  label,
+  min,
+  max,
+  range = false,
+  presets,
+  onChange,
 }: {
-  fieldKey: string;
-  values: FilterValues;
-  set: (patch: Partial<FilterValues>) => void;
+  label: string;
+  min: number | null;
+  max: number | null;
+  range?: boolean;
+  presets: number[];
+  onChange: (min: number | null, max: number | null) => void;
 }) {
-  const [minField, maxField] = NUMRANGE_FIELD[fieldKey] ?? [
-    "minTokens",
-    "maxTokens",
-  ];
-  const applied: NumRangeDraft = {
-    min: (values[minField] as number | null) ?? null,
-    max: (values[maxField] as number | null) ?? null,
-  };
-  const commit = (d: NumRangeDraft) =>
-    set({ [minField]: d.min, [maxField]: d.max } as Partial<FilterValues>);
-  const validate = (d: NumRangeDraft) =>
-    d.min !== null && d.max !== null && d.min > d.max
-      ? "Min can't exceed max"
-      : null;
+  const [custom, setCustom] = useState(false);
+  const applied = { min, max };
   const { draft, setDraft, dirty, error, apply } = useDraft(
     applied,
-    commit,
-    validate
+    (d) => onChange(d.min, d.max),
+    (d) =>
+      [d.min, d.max].some(
+        (n) =>
+          n !== null &&
+          (!Number.isFinite(n) || n < 0 || (!range && !Number.isInteger(n)))
+      )
+        ? "Enter a valid non-negative number"
+        : d.min !== null && d.max !== null && d.min > d.max
+          ? "Minimum cannot exceed maximum"
+          : null
   );
-  const toNum = (s: string) => (s === "" ? null : Number(s));
-  const onKeyDown = (e: ReactKeyboardEvent) => {
-    if (e.key === "Enter") apply();
-  };
+  const value =
+    custom || max !== null || (min !== null && !presets.includes(min))
+      ? "custom"
+      : min === null
+        ? "any"
+        : String(min);
   return (
-    <div>
-      <div className="flex items-center gap-1">
-        <Input
-          type="number"
-          min={0}
-          className="h-8 text-xs"
-          placeholder="min"
-          value={draft.min ?? ""}
-          onChange={(e) => setDraft({ ...draft, min: toNum(e.target.value) })}
-          onKeyDown={onKeyDown}
-        />
-        <span className="text-muted-foreground text-xs">–</span>
-        <Input
-          type="number"
-          min={0}
-          className="h-8 text-xs"
-          placeholder="max"
-          value={draft.max ?? ""}
-          onChange={(e) => setDraft({ ...draft, max: toNum(e.target.value) })}
-          onKeyDown={onKeyDown}
-        />
-      </div>
-      <ApplyBar dirty={dirty} error={error} onApply={apply} />
-    </div>
-  );
-}
-
-function NumControl({
-  fieldKey,
-  values,
-  set,
-}: {
-  fieldKey: string;
-  values: FilterValues;
-  set: (patch: Partial<FilterValues>) => void;
-}) {
-  const field = NUM_FIELD[fieldKey] ?? "minAttempts";
-  const applied = { v: (values[field] as number | null) ?? null };
-  const commit = (d: { v: number | null }) =>
-    set({ [field]: d.v } as Partial<FilterValues>);
-  const { draft, setDraft, dirty, error, apply } = useDraft(applied, commit);
-  return (
-    <div>
-      <Input
-        type="number"
-        min={1}
-        className="h-8 text-xs"
-        placeholder="2"
-        value={draft.v ?? ""}
-        onChange={(e) =>
-          setDraft({ v: e.target.value === "" ? null : Number(e.target.value) })
-        }
-        onKeyDown={(e) => {
-          if (e.key === "Enter") apply();
+    <div className="space-y-2">
+      <select
+        aria-label={label}
+        className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+        value={value}
+        onChange={(e) => {
+          const next = e.target.value;
+          setCustom(next === "custom");
+          if (next !== "custom")
+            onChange(next === "any" ? null : Number(next), null);
         }}
-      />
-      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+      >
+        <option value="any">Any</option>
+        {presets.map((n) => (
+          <option key={n} value={n}>
+            At least {n}
+          </option>
+        ))}
+        <option value="custom">Custom…</option>
+      </select>
+      {value === "custom" ? (
+        <>
+          <div className="flex gap-2">
+            <Input
+              aria-label={`${label} minimum`}
+              type="number"
+              min={0}
+              inputMode="decimal"
+              className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+              placeholder="Minimum"
+              value={draft.min ?? ""}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  min: e.target.value === "" ? null : Number(e.target.value),
+                })
+              }
+            />
+            {range ? (
+              <Input
+                aria-label={`${label} maximum`}
+                type="number"
+                min={0}
+                inputMode="decimal"
+                className="[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                placeholder="Maximum"
+                value={draft.max ?? ""}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    max: e.target.value === "" ? null : Number(e.target.value),
+                  })
+                }
+              />
+            ) : null}
+          </div>
+          <ApplyBar dirty={dirty} error={error} onApply={apply} />
+        </>
+      ) : null}
     </div>
   );
 }

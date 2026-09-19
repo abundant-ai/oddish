@@ -102,8 +102,14 @@ per request.
   the current name of another live task (107 on production). Each
   confirmation becomes a `task_aliases` row with evidence; a replay then
   attaches the skipped history.
-- [ ] "Add selected to delivery" from the browser, posting the filter rather
-  than the ID list and recording it on the delivery; the board shows the
+- [x] One task filter toolbar (delivery history, category, numeric presets,
+  version-aware QA outcome, author, and sort),
+  every control a URL parameter; the signed-in user's tasks sort first by
+  default (`pin_author=me`, `mine=first|only|off`); the selection persists
+  in the browser per org, "Select all" materializes the filter through
+  `ids_only=true` (capped at 5,000), and "Add to delivery" posts the ids to
+  an active delivery or a new one (2026-09-18).
+- [ ] Record the originating filter on the delivery; the board shows the
   delivered-before warning and the summary columns.
 - [ ] Capture lab/program requirements with revisions and required evidence.
 - [ ] Show meets / fails / unknown for each requirement and exact task version.

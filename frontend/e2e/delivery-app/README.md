@@ -1,7 +1,9 @@
 # Delivery refresh browser tests
 
 Run `pnpm test:e2e:delivery` from `frontend/`. The dedicated Playwright config
-starts this local Next.js app on port 3109. It imports the production delivery
+builds this local Next.js app and starts it in production mode on port 3109.
+This avoids development hot-reload messages racing router initialization during
+fixture navigation. It imports the production delivery
 board, SWR provider, styles, and controls. Only Clerk authentication is replaced
 with a test admin; production middleware and routes are unchanged. No credentials,
 backend service, analysis workers, or paid providers are used.
@@ -33,3 +35,8 @@ separately exercise the real HTTP routes with PostgreSQL and no worker lifespan.
 Use `ODDISH_DATABASE_URL` pointing at a disposable local database with the core
 schema initialized, as for the existing delivery tests. Each test rolls back its
 outer transaction after exercising request commits in separate sessions.
+
+`/picker` mounts the production Tasks toolbar, filters, and selection provider.
+`tasks-picker.spec.ts` runs with `playwright.delivery.config.ts` and covers rapid
+URL edits, Strict Mode storage restoration, organization changes, and atomic
+create/add requests. Its network responses and authentication are local fixtures.

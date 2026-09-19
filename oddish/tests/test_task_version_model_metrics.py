@@ -371,7 +371,8 @@ async def test_backfill_is_idempotent(session):
 
 
 @pytest.mark.asyncio
-async def test_recompute_takes_the_version_advisory_lock(session):
+@pytest.mark.parametrize("browse", [False, True])
+async def test_recompute_takes_the_version_advisory_lock(session, browse):
     """Callers may invoke this directly, so it cannot rely on a caller's lock.
 
     Without a lock, a backfill batch racing a live refresh overwrites a fresh
@@ -381,6 +382,7 @@ async def test_recompute_takes_the_version_advisory_lock(session):
     import asyncio
 
     import oddish.db.connection as conn
+    from oddish.core.task_browse_summary import refresh_task_browse_summaries
     from sqlalchemy import text as sa_text
 
     _, version_id = await _seed(session, [{"reward": 1.0, "total_steps": 12}])
@@ -401,7 +403,9 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         try:
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(
-                    refresh_task_version_model_metrics(blocked, [version_id]),
+                    (refresh_task_browse_summaries if browse else refresh_task_version_model_metrics)(
+                        blocked, [version_id, "another-version"]
+                    ),
                     timeout=2.0,
                 )
         finally:
@@ -411,6 +415,37 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         await holder.rollback()
         await holder.close()
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_batch_locks_use_one_statement_and_release_on_rollback(session):
+    from sqlalchemy import event, text
+
+    import oddish.db.connection as conn
+    from oddish.core.task_version_model_metrics import lock_task_version_metrics
+
+    version_ids = [f"lock-test-{i:03}" for i in range(200)]
+    statements = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(conn.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        await lock_task_version_metrics(session, version_ids)
+    finally:
+        event.remove(conn.engine.sync_engine, "before_cursor_execute", record)
+    assert len(statements) == 1
+    query = text(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended(version_id, 0)) "
+        "FROM unnest(CAST(:ids AS text[])) AS versions(version_id)"
+    )
+    async with conn.async_session_maker() as contender:
+        held = (await contender.execute(query, {"ids": version_ids})).scalars().all()
+        assert held == [False] * 200
+        await session.rollback()
+        released = (await contender.execute(query, {"ids": version_ids})).scalars().all()
+        assert released == [True] * 200
 
 
 @pytest.mark.asyncio

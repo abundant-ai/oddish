@@ -1,4 +1,5 @@
 import {
+  backendAuthorParams,
   BROWSE_FORWARD_KEYS,
   PRESET_MS,
   TASKS_PAGE_SIZE,
@@ -20,11 +21,19 @@ import { parseTaskSearch } from "@/lib/tag-query";
  */
 export function buildBrowseQuery(
   display: URLSearchParams,
-  { countOnly = false }: { countOnly?: boolean } = {}
+  {
+    countOnly = false,
+    idsOnly = false,
+  }: { countOnly?: boolean; idsOnly?: boolean } = {}
 ): URLSearchParams {
   const query = new URLSearchParams();
+  const delivery = display.get("delivery");
+  if (delivery) query.set("exclude_delivery_id", delivery);
   if (countOnly) {
     query.set("count_only", "true");
+  } else if (idsOnly) {
+    // The whole set, ordered like the page; the page window does not apply.
+    query.set("ids_only", "true");
   } else {
     query.set("limit", String(TASKS_PAGE_SIZE));
     query.set(
@@ -40,7 +49,14 @@ export function buildBrowseQuery(
     display.get("q") ?? display.get("query") ?? ""
   );
   if (parsed.text) query.set("query", parsed.text);
-  if (parsed.authors.length) query.set("author", parsed.authors.join(","));
+  // `author` (the lab bar / deep links) unions with the search box's author
+  // tokens; `mine` is not a backend param (see backendAuthorParams).
+  const { author, pinAuthor } = backendAuthorParams(display.get("mine"), [
+    ...parsed.authors,
+    ...(display.get("author") ?? "").split(","),
+  ]);
+  if (author.length) query.set("author", author.join(","));
+  if (pinAuthor && !countOnly) query.set("pin_author", "me");
 
   // Rolling "Created" preset: resolve the token to (now - window) at request
   // time — including every background revalidation — so the window is always
@@ -63,6 +79,7 @@ export function buildBrowseQuery(
 
   for (const key of BROWSE_FORWARD_KEYS) {
     if (key === "created_within" || key === "trial_finished_within") continue;
+    if (key === "author" || key === "mine") continue;
     // Ordering is meaningless for a count, and an aggregate sort would add its
     // metric join to the count query for no change in the answer.
     if (countOnly && key === "sort") continue;
