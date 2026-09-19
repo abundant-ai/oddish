@@ -133,6 +133,13 @@ MUSE_CODE_INSTALL_HOSTS: tuple[str, ...] = (
     "dev.meta.ai",  # install.sh
     "api.meta.ai",  # muse-launcher.sh + muse-stable channel manifest
     "lookaside.facebook.com",  # release binary download
+    # Harbor's muse-code install only reaches for a package manager when the
+    # image lacks curl, bash, coreutils or a CA bundle; when it does, the
+    # distribution mirrors must be reachable or ``apt-get update`` fails.
+    "deb.debian.org",  # Debian images (python:*-slim)
+    "security.debian.org",  # Debian security pocket
+    "archive.ubuntu.com",  # Ubuntu images
+    "security.ubuntu.com",  # Ubuntu security pocket
 )
 _DSH_INSTALL_HOSTS: tuple[str, ...] = (
     "raw.githubusercontent.com",

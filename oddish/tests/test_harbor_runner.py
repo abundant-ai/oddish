@@ -5799,5 +5799,9 @@ def test_muse_code_environment_hosts_cover_install_and_meta_service():
     )
     hosts = harbor_runner._muse_code_environment_hosts(agent_config)
     assert hosts[:3] == ["dev.meta.ai", "api.meta.ai", "lookaside.facebook.com"]
+    # Images without curl bootstrap it with apt first, so the distribution
+    # mirrors ride along (Debian for python:*-slim, Ubuntu for ubuntu:*).
+    for mirror in ("deb.debian.org", "security.debian.org", "archive.ubuntu.com"):
+        assert mirror in hosts
     assert "staging.meta.ai" in hosts
     assert len(hosts) == len(set(hosts))
