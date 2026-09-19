@@ -11,7 +11,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: `node node_modules/next/dist/bin/next dev e2e/delivery-app --webpack -p ${port}`,
+    command: `node node_modules/next/dist/bin/next build e2e/delivery-app --webpack && node node_modules/next/dist/bin/next start e2e/delivery-app -p ${port}`,
     url: `http://localhost:${port}`,
     reuseExistingServer: false,
     timeout: 120000,
