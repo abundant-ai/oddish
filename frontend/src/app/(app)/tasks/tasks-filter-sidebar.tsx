@@ -78,6 +78,9 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   origins: "origins",
   analysisClassifications: "analysisClassifications",
   experiments: "experimentIds",
+  deliveredTo: "deliveredTo",
+  notDeliveredTo: "notDeliveredTo",
+  categories: "categories",
 };
 
 // numrange filter key -> [min field, max field] on FilterValues.
@@ -111,7 +114,9 @@ const NUM_FIELD: Record<string, keyof FilterValues> = {
 function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
   if (def.options) return def.options;
   if (def.facet && facets) {
-    return (facets[def.facet] as string[]).map((v) => ({ value: v, label: v }));
+    // A facets response cached before a vocabulary was added omits it.
+    const values = (facets[def.facet] as string[] | undefined) ?? [];
+    return values.map((v) => ({ value: v, label: v }));
   }
   return [];
 }
@@ -317,6 +322,7 @@ export function TasksFilterSidebar() {
       case "hasError":
       case "hasTrajectory":
       case "trialIsProbe":
+      case "neverDelivered":
         set({ [key]: null } as Partial<FilterValues>);
         break;
       case "sort":
@@ -480,7 +486,7 @@ export function TasksFilterSidebar() {
                 align="start"
                 className="z-30 max-h-80 overflow-auto"
               >
-                {(["Task", "Trial"] as const).map((group) => {
+                {(["Delivery", "Task", "Trial"] as const).map((group) => {
                   const groupDefs = inactiveDefs.filter(
                     (d) => d.group === group
                   );

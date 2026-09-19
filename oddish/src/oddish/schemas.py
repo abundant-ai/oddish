@@ -1706,6 +1706,23 @@ class TaskBrowseTrial(BaseModel):
     model: str | None = None
 
 
+class TaskBrowseDelivery(BaseModel):
+    """One record of the task having been sent to a customer.
+
+    ``source`` says where the record came from: ``history`` is an imported
+    row in ``task_delivery_history`` (the delivery-metadata backfill, quoted
+    from spreadsheets and trackers), ``delivery`` is a finalized Oddish
+    delivery that contains the task. ``batch`` is the source's batch name or
+    the delivery's name; ``date`` is verbatim from the source for history
+    rows (not normalized) and the finalize date for deliveries.
+    """
+
+    customer: str
+    batch: str | None = None
+    date: str | None = None
+    source: Literal["history", "delivery"]
+
+
 class TaskBrowseItem(BaseModel):
     id: str
     name: str
@@ -1732,6 +1749,10 @@ class TaskBrowseItem(BaseModel):
     steps_p50: int | None = None
     steps_p75: int | None = None
     agent_count: int = 0
+    # Every customer this task is recorded as having been sent to, oldest
+    # source first. Empty means no record, which is not proof it was never
+    # sent: history coverage is partial (see the backfill docs).
+    deliveries: list[TaskBrowseDelivery] = Field(default_factory=list)
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1802,6 +1823,12 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Customers a task can have been delivered to: every ``customers`` row
+    # plus every imported history label not yet mapped to one. Values are
+    # what the ``delivered_to`` / ``not_delivered_to`` browse filters accept.
+    delivery_customers: list[str] = Field(default_factory=list)
+    # Distinct, unretracted ``category`` assertions from the metadata import.
+    categories: list[str] = Field(default_factory=list)
     # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 

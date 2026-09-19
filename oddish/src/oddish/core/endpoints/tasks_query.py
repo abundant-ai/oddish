@@ -12,11 +12,13 @@ from sqlalchemy import (
     exists,
     extract,
     func,
+    literal,
     nulls_last,
     or_,
     select,
     text,
     tuple_,
+    union_all,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
@@ -45,9 +47,14 @@ from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.db import (
+    CustomerModel,
+    DeliveryModel,
+    DeliveryTaskModel,
     ExperimentModel,
     TagModel,
     TagState,
+    TaskDeliveryHistoryModel,
+    TaskMetadataAssertionModel,
     TaskModel,
     TaskVersionModel,
     TaskBrowseSummaryModel,
@@ -60,6 +67,7 @@ from oddish.schemas import (
     AgentModelFacet,
     ExperimentOption,
     ExperimentOptionsResponse,
+    TaskBrowseDelivery,
     TaskBrowseExperiment,
     TaskBrowseFacets,
     TaskBrowseItem,
@@ -929,6 +937,149 @@ _SUMMARY_SORTS: dict[str, tuple[str, bool]] = {
     "agent_count_asc": ("agent_count", False),
 }
 
+
+def _customer_ids_named(org_id: str | None, names: Sequence[str]) -> Any:
+    stmt = select(CustomerModel.id).where(
+        CustomerModel.name.in_(list(names)), CustomerModel.deleted_at.is_(None)
+    )
+    if org_id is not None:
+        stmt = stmt.where(CustomerModel.org_id == org_id)
+    return stmt
+
+
+def _delivery_record_exists(
+    org_id: str | None, customers: Sequence[str] | None = None
+) -> Any:
+    """The ``tasks`` row has a record of being sent to a customer.
+
+    Two sources, either suffices: an imported ``task_delivery_history`` row
+    (the delivery-metadata backfill; ``customer_label`` is the source's own
+    wording and ``customer_id`` is set once an operator mapped that label to
+    a ``customers`` row) or membership in a finalized Oddish delivery. With
+    ``customers`` the record must name one of them, by mapped customer name
+    or by verbatim label, so an unmapped label still filters. History
+    coverage is partial, so a task without a record has not been shown to
+    be undelivered.
+    """
+    history_conds = [TaskDeliveryHistoryModel.task_id == TaskModel.id]
+    live_conds = [
+        DeliveryTaskModel.task_id == TaskModel.id,
+        DeliveryTaskModel.deleted_at.is_(None),
+        DeliveryModel.status == "finalized",
+        DeliveryModel.deleted_at.is_(None),
+    ]
+    if org_id is not None:
+        history_conds.append(TaskDeliveryHistoryModel.org_id == org_id)
+        live_conds.append(DeliveryModel.org_id == org_id)
+    if customers:
+        names = list(customers)
+        history_conds.append(
+            or_(
+                TaskDeliveryHistoryModel.customer_label.in_(names),
+                TaskDeliveryHistoryModel.customer_id.in_(
+                    _customer_ids_named(org_id, names)
+                ),
+            )
+        )
+        live_conds.append(
+            DeliveryModel.customer_id.in_(_customer_ids_named(org_id, names))
+        )
+    history = exists(select(TaskDeliveryHistoryModel.id).where(and_(*history_conds)))
+    live = exists(
+        select(DeliveryTaskModel.id)
+        .select_from(DeliveryTaskModel)
+        .join(DeliveryModel, DeliveryModel.id == DeliveryTaskModel.delivery_id)
+        .where(and_(*live_conds))
+    )
+    return or_(history, live)
+
+
+def _category_assertion_exists(org_id: str | None, categories: Sequence[str]) -> Any:
+    """The task carries an unretracted ``category`` assertion in the set."""
+    conds = [
+        TaskMetadataAssertionModel.task_id == TaskModel.id,
+        TaskMetadataAssertionModel.field == "category",
+        TaskMetadataAssertionModel.value.in_(list(categories)),
+        TaskMetadataAssertionModel.retracted_at.is_(None),
+    ]
+    if org_id is not None:
+        conds.append(TaskMetadataAssertionModel.org_id == org_id)
+    return exists(select(TaskMetadataAssertionModel.id).where(and_(*conds)))
+
+
+async def _load_task_deliveries(
+    session: AsyncSession, *, org_id: str | None, task_ids: Sequence[str]
+) -> dict[str, list[TaskBrowseDelivery]]:
+    """Every delivery record for the page's tasks, one statement.
+
+    Same two sources as ``_delivery_record_exists``: imported history rows
+    (customer shown by mapped name, else the source's label) and finalized
+    Oddish deliveries. Ordered per task by date text, then customer, then
+    batch; history dates are verbatim source strings, so the order is only
+    as good as the source's formatting.
+    """
+    history_customer = aliased(CustomerModel)
+    history = (
+        select(
+            TaskDeliveryHistoryModel.task_id.label("task_id"),
+            func.coalesce(
+                history_customer.name, TaskDeliveryHistoryModel.customer_label
+            ).label("customer"),
+            TaskDeliveryHistoryModel.batch.label("batch"),
+            TaskDeliveryHistoryModel.source_date.label("date"),
+            literal("history").label("source"),
+        )
+        .select_from(TaskDeliveryHistoryModel)
+        .outerjoin(
+            history_customer,
+            history_customer.id == TaskDeliveryHistoryModel.customer_id,
+        )
+        .where(TaskDeliveryHistoryModel.task_id.in_(list(task_ids)))
+    )
+    live = (
+        select(
+            DeliveryTaskModel.task_id.label("task_id"),
+            CustomerModel.name.label("customer"),
+            DeliveryModel.name.label("batch"),
+            func.to_char(DeliveryModel.finalized_at, "YYYY-MM-DD").label("date"),
+            literal("delivery").label("source"),
+        )
+        .select_from(DeliveryTaskModel)
+        .join(DeliveryModel, DeliveryModel.id == DeliveryTaskModel.delivery_id)
+        .join(CustomerModel, CustomerModel.id == DeliveryModel.customer_id)
+        .where(
+            DeliveryTaskModel.task_id.in_(list(task_ids)),
+            DeliveryTaskModel.deleted_at.is_(None),
+            DeliveryModel.status == "finalized",
+            DeliveryModel.deleted_at.is_(None),
+        )
+    )
+    if org_id is not None:
+        history = history.where(TaskDeliveryHistoryModel.org_id == org_id)
+        live = live.where(DeliveryModel.org_id == org_id)
+    rows = (await session.execute(union_all(history, live))).mappings().all()
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            str(row["task_id"]),
+            row["date"] or "",
+            str(row["customer"]),
+            row["batch"] or "",
+        ),
+    )
+    out: dict[str, list[TaskBrowseDelivery]] = {}
+    for row in ordered:
+        out.setdefault(str(row["task_id"]), []).append(
+            TaskBrowseDelivery(
+                customer=str(row["customer"]),
+                batch=row["batch"],
+                date=row["date"],
+                source=row["source"],
+            )
+        )
+    return out
+
+
 # Phase 2.2: aggregate condition keys allowed inside an OR-group. If any group
 # uses one, the ``_task_metrics_subquery`` join is added so the group predicate
 # can reference its columns (same columns the global aggregate filters use).
@@ -1028,6 +1179,11 @@ async def browse_tasks_core(
     pass_rate_min: float | None = None,
     pass_rate_max: float | None = None,
     sort: str | None = None,
+    # --- Delivery selection (imported history, deliveries, assertions) ---
+    delivered_to: Sequence[str] | None = None,
+    not_delivered_to: Sequence[str] | None = None,
+    never_delivered: bool | None = None,
+    categories: Sequence[str] | None = None,
     # --- Stored summary thresholds (task_version_browse_summaries) ---
     steps_p50_min: int | None = None,
     steps_p50_max: int | None = None,
@@ -1081,6 +1237,11 @@ async def browse_tasks_core(
     * ``steps_p50_*`` and ``agent_count_min`` read the stored summary row
       (``task_version_browse_summaries``), as do the ``_SUMMARY_SORTS`` sort
       tokens, so they cost a joined column read rather than a trial aggregate.
+    * Delivery-selection filters pick tasks for a customer batch. ``delivered_to``
+      / ``not_delivered_to`` / ``never_delivered`` are ``EXISTS`` probes over the
+      imported ``task_delivery_history`` rows and finalized Oddish deliveries
+      (``_delivery_record_exists``); ``categories`` probes the imported
+      ``task_metadata_assertions``. Indexed by task on both sides.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1196,6 +1357,24 @@ async def browse_tasks_core(
             )
         )
 
+    # --- Delivery selection ---------------------------------------------------
+    # "Sent to customer X before?" from the two record sources; a task
+    # matches ``not_delivered_to`` when NO record names any listed customer.
+    if delivered_to:
+        ranked_tasks = ranked_tasks.where(_delivery_record_exists(org_id, delivered_to))
+    if not_delivered_to:
+        ranked_tasks = ranked_tasks.where(
+            ~_delivery_record_exists(org_id, not_delivered_to)
+        )
+    if never_delivered is not None:
+        any_record = _delivery_record_exists(org_id)
+        ranked_tasks = ranked_tasks.where(
+            ~any_record if never_delivered else any_record
+        )
+    if categories:
+        ranked_tasks = ranked_tasks.where(
+            _category_assertion_exists(org_id, categories)
+        )
     # Stored-summary thresholds: joined here (before ``name_rank`` / LIMIT) so
     # they filter the ranked set; the page query joins the same row again for
     # its columns. A version with no summary row or no recorded steps has a
@@ -2141,6 +2320,21 @@ async def browse_tasks_core(
                     else:
                         cost_agg["billed_has_native"] = True
 
+    # Delivery records for the page (history import + finalized deliveries),
+    # one statement, so a card can say which customers already have the task.
+    deliveries_started_at = now()
+    deliveries_by_task = (
+        await _load_task_deliveries(session, org_id=org_id, task_ids=task_ids)
+        if task_ids
+        else {}
+    )
+    if record_timing is not None:
+        record_timing(
+            "browse_deliveries",
+            elapsed_ms(deliveries_started_at),
+            "Browse delivery records query",
+        )
+
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
     # the browser can render the tag chips alongside the row.
@@ -2205,6 +2399,7 @@ async def browse_tasks_core(
                 steps_p50=row["steps_p50"],
                 steps_p75=row["steps_p75"],
                 agent_count=int(row["agent_count"] or 0),
+                deliveries=deliveries_by_task.get(str(row["task_id"]), []),
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
@@ -2356,6 +2551,44 @@ async def browse_task_facets_core(
         logger.exception("browse facets: vocabulary read failed")
         await session.rollback()
 
+    # Delivery-selection vocabularies. Customers are every ``customers`` row
+    # plus every imported history label nobody has mapped to one yet, so a
+    # lab that only exists in the spreadsheets is still selectable; both are
+    # what ``_delivery_record_exists`` matches on. Categories are the
+    # unretracted ``category`` assertions; index-only reads on
+    # ``(org_id, field, value)`` and ``(org_id, customer_label)``.
+    delivery_customers: list[str] = []
+    categories: list[str] = []
+    try:
+        customer_names = select(CustomerModel.name).where(
+            CustomerModel.deleted_at.is_(None)
+        )
+        unmapped_labels = select(TaskDeliveryHistoryModel.customer_label).where(
+            TaskDeliveryHistoryModel.customer_id.is_(None)
+        )
+        category_values = select(TaskMetadataAssertionModel.value).where(
+            TaskMetadataAssertionModel.field == "category",
+            TaskMetadataAssertionModel.retracted_at.is_(None),
+        )
+        if org_id is not None:
+            customer_names = customer_names.where(CustomerModel.org_id == org_id)
+            unmapped_labels = unmapped_labels.where(
+                TaskDeliveryHistoryModel.org_id == org_id
+            )
+            category_values = category_values.where(
+                TaskMetadataAssertionModel.org_id == org_id
+            )
+        names = set((await session.execute(customer_names)).scalars().all())
+        names |= set((await session.execute(unmapped_labels.distinct())).scalars())
+        delivery_customers = sorted(names, key=str.casefold)
+        categories = sorted(
+            (await session.execute(category_values.distinct())).scalars().all(),
+            key=str.casefold,
+        )
+    except Exception:  # noqa: BLE001 - facets are best-effort
+        logger.exception("browse facets: delivery vocabulary read failed")
+        await session.rollback()
+
     return TaskBrowseFacets(
         agents=lists["agent"],
         models=lists["model"],
@@ -2364,6 +2597,8 @@ async def browse_task_facets_core(
         environments=lists["environment"],
         harbor_stages=lists["harbor_stage"],
         analysis_classifications=lists["analysis_classification"],
+        delivery_customers=delivery_customers,
+        categories=categories,
         # Deprecated, always empty — see browse_experiment_options_core.
         experiments=[],
     )

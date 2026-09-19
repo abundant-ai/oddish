@@ -82,8 +82,29 @@ the first upload of a plan this size through the hosted API.
 
 ## 3. Select tasks for a lab
 
-- [ ] Add task filters for category, domain, language, environment, source, and
-  previous recipients. Preserve original classifications during normalization.
+The task browser (`/tasks`) is the selection surface; the delivery board
+stays the place that verifies and ships. Backfilled facts reach the browser
+through `browse_tasks_core` as `EXISTS` probes over the imported tables and
+finalized deliveries, and the per-version summary row carries the stored
+numbers the selection sorts on, so choosing a batch never aggregates trials
+per request.
+
+- [x] Browser filters for previous recipients (`delivered_to`,
+  `not_delivered_to`, `never_delivered`; imported history plus finalized
+  deliveries), imported `category`, median trajectory length, and distinct
+  agent count, with sorts on those stored columns; cards show every
+  recorded recipient (2026-09-18).
+- [ ] Filters for domain, language, environment, and source. Preserve original
+  classifications during normalization.
+- [ ] Review tool for identity matches the planner refuses on its own: the
+  name-only groups with exactly one live candidate (1,870 on production,
+  2,696 unattached observations) and the explicit IDs whose group carries
+  the current name of another live task (107 on production). Each
+  confirmation becomes a `task_aliases` row with evidence; a replay then
+  attaches the skipped history.
+- [ ] "Add selected to delivery" from the browser, posting the filter rather
+  than the ID list and recording it on the delivery; the board shows the
+  delivered-before warning and the summary columns.
 - [ ] Capture lab/program requirements with revisions and required evidence.
 - [ ] Show meets / fails / unknown for each requirement and exact task version.
 - [ ] Exclude prior deliveries to the same lab by default, including across

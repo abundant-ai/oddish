@@ -808,3 +808,119 @@ async def test_browse_summary_columns():
             assert by_name["gamma"].agent_count == 0
     finally:
         await engine.dispose()
+
+
+async def _insert_delivery_records(engine):
+    """Delivery-selection fixture on top of ``_setup`` + ``_insert_aggregate_tasks``.
+
+    Records, and what each proves:
+
+    - alpha: two imported history rows -- label ``xai`` with no customer
+      mapping (an unmapped label must still be selectable) and label ``gdm``
+      mapped to the ``GDM`` customer row (matches by mapped name too).
+    - beta: member of a FINALIZED Oddish delivery to ``TML``.
+    - epsilon: member of an ACTIVE delivery to ``TML`` -- not delivered yet.
+    - zeta: member of a finalized delivery that was soft-deleted -- ignored.
+    - epsilon carries a ``category=security`` assertion; eta's ``security``
+      assertion is retracted and must not match or appear in the facet.
+    """
+    stmts = """
+        insert into customers (id,org_id,name,created_at,updated_at)
+        values ('cust-gdm','org1','GDM',now(),now()),
+               ('cust-tml','org1','TML',now(),now()),
+               ('cust-other','org2','Other Org Lab',now(),now());
+        insert into deliveries (id,org_id,name,customer_id,status,check_config,is_public,finalized_at,created_at,updated_at)
+        values ('dl-final','org1','TML September','cust-tml','finalized','{}'::jsonb,false,timestamp '2026-09-02 12:00:00+00',now(),now()),
+               ('dl-active','org1','TML October','cust-tml','active','{}'::jsonb,false,null,now(),now()),
+               ('dl-gone','org1','TML deleted','cust-tml','finalized','{}'::jsonb,false,now(),now(),now());
+        update deliveries set deleted_at = now() where id = 'dl-gone';
+        insert into delivery_tasks (id,delivery_id,task_id,is_visible,sort_order,created_at,updated_at)
+        values ('dt-1','dl-final','t-b',true,0,now(),now()),
+               ('dt-2','dl-active','t-e',true,0,now(),now()),
+               ('dt-3','dl-gone','t-z',true,0,now(),now());
+        insert into metadata_import_receipts (id,org_id,plan_schema,plan_hash,mode,outcome,created_at)
+        values ('imp-1','org1','oddish-delivery-backfill-plan-v2','h','apply','applied',now());
+        insert into task_source_records (org_id,record_id,kind,source_key,names,explicit_task_ids,source_urls,facts,content_hash,first_import_id,last_import_id,created_at,updated_at)
+        values ('org1','rec-xai','delivery_membership','[]'::jsonb,'["alpha"]'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,'c1','imp-1','imp-1',now(),now()),
+               ('org1','rec-gdm','delivery_membership','[]'::jsonb,'["alpha"]'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,'c2','imp-1','imp-1',now(),now());
+        insert into task_delivery_history (id,org_id,task_id,source_record_id,customer_label,customer_id,batch,source_date,membership,import_id,created_at,updated_at)
+        values ('hist-xai','org1','t-a','rec-xai','xai',null,'xai-batch-3','2025-07-27','current','imp-1',now(),now()),
+               ('hist-gdm','org1','t-a','rec-gdm','gdm','cust-gdm','gdm-wave-1','2025-09-03','current','imp-1',now(),now());
+        insert into task_metadata_assertions (id,org_id,task_id,field,value,source,evidence_ids,import_id,created_at,updated_at)
+        values ('as-e','org1','t-e','category','security','delivery_backfill','[]'::jsonb,'imp-1',now(),now()),
+               ('as-h','org1','t-h','category','security','delivery_backfill','[]'::jsonb,'imp-1',now(),now()),
+               ('as-h2','org1','t-h','category','retracted-only','delivery_backfill','[]'::jsonb,'imp-1',now(),now());
+        update task_metadata_assertions set retracted_at = now() where id in ('as-h','as-h2');
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_browse_delivery_selection():
+    """Delivery records (imported history rows and finalized Oddish
+    deliveries) drive the delivered-to filters, the per-card recipient list,
+    and the customer facet; imported category assertions drive the rest."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        await _insert_delivery_records(engine)
+        everyone = {"alpha", "beta", "gamma", "epsilon", "zeta", "eta"}
+        async with maker() as session:
+            # Delivered-to matches an unmapped label, a mapped customer name
+            # (or its label), and a finalized delivery; never an active or
+            # soft-deleted delivery.
+            assert await _names(session, delivered_to=["xai"]) == {"alpha"}
+            assert await _names(session, delivered_to=["GDM"]) == {"alpha"}
+            assert await _names(session, delivered_to=["gdm"]) == {"alpha"}
+            assert await _names(session, delivered_to=["TML"]) == {"beta"}
+            assert await _names(session, delivered_to=["xai", "TML"]) == {
+                "alpha",
+                "beta",
+            }
+            assert await _names(session, not_delivered_to=["TML"]) == everyone - {
+                "beta"
+            }
+            assert await _names(session, not_delivered_to=["xai", "TML"]) == (
+                everyone - {"alpha", "beta"}
+            )
+            assert await _names(session, never_delivered=True) == everyone - {
+                "alpha",
+                "beta",
+            }
+            assert await _names(session, never_delivered=False) == {"alpha", "beta"}
+            # Another org's customer name matches nothing here.
+            assert await _names(session, delivered_to=["Other Org Lab"]) == set()
+            # The count path applies the same predicate.
+            assert (
+                await browse_tasks_count_core(session, org_id=ORG, delivered_to=["TML"])
+                == 1
+            )
+
+            # Category: unretracted assertions only.
+            assert await _names(session, categories=["security"]) == {"epsilon"}
+            assert await _names(session, categories=["retracted-only"]) == set()
+
+            # Card data: the per-task delivery records, oldest date first.
+            resp = await browse_tasks_core(session, org_id=ORG, limit=50, offset=0)
+            by_name = {item.name: item for item in resp.items}
+            alpha = by_name["alpha"].deliveries
+            assert [(d.customer, d.batch, d.date, d.source) for d in alpha] == [
+                ("xai", "xai-batch-3", "2025-07-27", "history"),
+                ("GDM", "gdm-wave-1", "2025-09-03", "history"),
+            ]
+            assert [
+                (d.customer, d.batch, d.date, d.source)
+                for d in by_name["beta"].deliveries
+            ] == [("TML", "TML September", "2026-09-02", "delivery")]
+            assert by_name["epsilon"].deliveries == []
+
+            # Facets: customer rows plus unmapped labels; live categories.
+            facets = await browse_task_facets_core(session, org_id=ORG)
+            assert facets.delivery_customers == ["GDM", "TML", "xai"]
+            assert facets.categories == ["security"]
+    finally:
+        await engine.dispose()

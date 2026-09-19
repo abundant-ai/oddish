@@ -815,6 +815,28 @@ async def browse_tasks(
             "order."
         ),
     ),
+    # --- Delivery selection (imported history, deliveries, assertions) ---
+    delivered_to: str | None = Query(
+        None,
+        description=(
+            "Customer CSV: tasks with a delivery record naming any of them "
+            "(imported history label or mapped customer name, or a finalized "
+            "Oddish delivery to that customer)."
+        ),
+    ),
+    not_delivered_to: str | None = Query(
+        None,
+        description=(
+            "Customer CSV: tasks with NO delivery record naming any of them. "
+            "History coverage is partial; absence is not proof."
+        ),
+    ),
+    never_delivered: bool | None = Query(
+        None, description="true: no delivery record at all; false: at least one"
+    ),
+    categories: str | None = Query(
+        None, description="Imported task category CSV (task_metadata_assertions)"
+    ),
     # --- Stored summary thresholds (task_version_browse_summaries) ---
     steps_p50_min: int | None = Query(
         None, ge=0, description="Median trajectory length (steps), min"
@@ -980,6 +1002,10 @@ async def browse_tasks(
             pass_rate_min=pass_rate_min,
             pass_rate_max=pass_rate_max,
             sort=sort,
+            delivered_to=_split_tag_csv(delivered_to),
+            not_delivered_to=_split_tag_csv(not_delivered_to),
+            never_delivered=never_delivered,
+            categories=_split_tag_csv(categories),
             steps_p50_min=steps_p50_min,
             steps_p50_max=steps_p50_max,
             agent_count_min=agent_count_min,

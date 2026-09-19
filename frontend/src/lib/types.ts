@@ -391,6 +391,17 @@ interface TaskBrowseTrial {
   model: string | null;
 }
 
+// One record of a task having been sent to a customer. `history` rows come
+// from the delivery-metadata import (quoted from spreadsheets and trackers;
+// `date` is verbatim, not normalized); `delivery` rows are finalized Oddish
+// deliveries (`batch` is the delivery name, `date` the finalize day).
+export interface TaskBrowseDelivery {
+  customer: string;
+  batch?: string | null;
+  date?: string | null;
+  source: "history" | "delivery";
+}
+
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -417,6 +428,9 @@ export interface TaskBrowseItem {
   steps_p50?: number | null;
   steps_p75?: number | null;
   agent_count?: number;
+  // Every customer the task is recorded as sent to; empty is "no record",
+  // not "never sent" (history coverage is partial).
+  deliveries?: TaskBrowseDelivery[];
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
@@ -461,6 +475,11 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
+  // Customers a task can have been delivered to (customer rows plus
+  // unmapped import labels) and imported task categories. Optional: a
+  // cached response from before these existed omits them.
+  delivery_customers?: string[];
+  categories?: string[];
 }
 
 // GET /api/tasks/browse/experiment-options — async options for the sidebar
