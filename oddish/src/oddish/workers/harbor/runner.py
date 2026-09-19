@@ -79,6 +79,7 @@ from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_CLI_INSTALL_HOSTS,
     GEMINI_OAUTH_ENV_KEYS,
+    MUSE_CODE_INSTALL_HOSTS,
     OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
     gemini_cli_transport_hosts,
@@ -1481,6 +1482,40 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     ]
 
 
+def _is_muse_code_agent(
+    *, agent: str | None, agent_config: HarborAgentConfig | None
+) -> bool:
+    """Whether a trial runs muse-code, by name or by class import path."""
+    if (agent or "").strip().lower() == "muse-code":
+        return True
+    import_path = (getattr(agent_config, "import_path", None) or "").strip().lower()
+    return "muse_code:" in import_path
+
+
+def _muse_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts muse-code needs across install *and* run.
+
+    muse-code self-installs (Meta's install.sh -> launcher manifest -> release
+    binary) during agent SETUP, which runs under the ENVIRONMENT baseline --
+    same shape as the opencode arm above. Its model transport is Meta's own
+    service (api.meta.ai), which the model id never names, so the agent-keyed
+    runtime host (plus any ``base_url`` / ``MUSE_CODE_BASE_URL`` override)
+    rides along instead of a model-derived one.
+    """
+    return list(
+        dict.fromkeys(
+            [
+                *MUSE_CODE_INSTALL_HOSTS,
+                *agent_runtime_hosts(
+                    agent_name="muse-code",
+                    agent_kwargs=agent_config.kwargs,
+                    agent_env=agent_config.env,
+                ),
+            ]
+        )
+    )
+
+
 def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts Gemini CLI needs during environment setup and agent execution."""
     return [
@@ -2305,6 +2340,22 @@ async def _run_harbor_trial_async_impl(
             )
         ):
             hosts = _opencode_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # muse-code self-installs (Meta's install.sh -> launcher -> binary) at
+        # agent-setup under the environment baseline and dials Meta's own
+        # service rather than the host its model id names -- same lifecycle
+        # problem and solution as the opencode arm above.
+        if _is_muse_code_agent(agent=agent, agent_config=agent_config) and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _muse_code_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],

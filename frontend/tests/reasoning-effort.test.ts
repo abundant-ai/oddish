@@ -32,6 +32,11 @@ for (const [agent, model, expected] of [
   ["copilot-cli", "gpt-5.6", [...standard, "xhigh"]],
   ["dsh", "gpt-5.6", ["low", "high", "max"]],
   ["tbh", "openai/gpt-5.6", ["none", "minimal", ...standard, "xhigh", "ultra"]],
+  [
+    "muse-code",
+    "meta/muse-spark-1.2",
+    ["minimal", ...standard, "xhigh", "max", "ultra"],
+  ],
 ] as [string, string, string[]][]) {
   test(`${agent} / ${model} exposes and submits its effort choices`, () => {
     assert.ok(REASONING_EFFORT_AGENTS.includes(agent));
@@ -43,7 +48,7 @@ for (const [agent, model, expected] of [
       model,
       expected,
       1,
-      "operation"
+      "operation",
     );
     const body = JSON.parse(request.body) as {
       configs: {
@@ -53,7 +58,7 @@ for (const [agent, model, expected] of [
     };
     assert.deepEqual(
       body.configs.map((config) => config.agent_config.kwargs.reasoning_effort),
-      expected
+      expected,
     );
     assert.ok(body.configs.every((config) => config.model === model));
   });
@@ -63,19 +68,19 @@ test("Gemini 2.5, unknown models, and embedded Cursor effort keep agent default"
   for (const agent of ["gemini-cli", "antigravity-cli", "mini-swe-agent"]) {
     assert.deepEqual(
       reasoningEffortOptions(agent, "google/gemini-2.5-flash"),
-      []
+      [],
     );
   }
   assert.deepEqual(
     reasoningEffortOptions(
       "cursor-cli",
-      "openai/gpt-5.6[context=1m,effort=high]"
+      "openai/gpt-5.6[context=1m,effort=high]",
     ),
-    []
+    [],
   );
   assert.deepEqual(
     reasoningEffortOptions("unknown-agent", "openai/gpt-5.6"),
-    []
+    [],
   );
   assert.deepEqual(reasoningEffortOptions("codex", "openai/gpt-4o"), []);
   assert.deepEqual(reasoningEffortOptions("grok-build", ""), []);
@@ -84,6 +89,6 @@ test("Gemini 2.5, unknown models, and embedded Cursor effort keep agent default"
 test("agent and model matching ignores input case and whitespace", () => {
   assert.deepEqual(
     reasoningEffortOptions(" CODEX ", " OpenAI/GPT-5.6 "),
-    extended
+    extended,
   );
 });

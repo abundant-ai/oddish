@@ -16,6 +16,7 @@ export const REASONING_EFFORT_AGENTS = [
   "copilot-cli",
   "dsh",
   "tbh",
+  "muse-code",
 ];
 
 /** Choices for the bundled runners, including their model-specific restrictions. */
@@ -35,6 +36,10 @@ export function reasoningEffortOptions(agent: string, model: string): string[] {
   if (agent === "dsh") return ["low", "high", "max"];
   if (agent === "tbh")
     return ["none", "minimal", ...STANDARD_EFFORTS, "xhigh", "ultra"];
+  // The Meta provider rejects "none"; "ultra" is client-side and runs at
+  // xhigh where the provider lacks it.
+  if (agent === "muse-code")
+    return ["minimal", ...STANDARD_EFFORTS, "xhigh", "max", "ultra"];
 
   const modelRouted = ["mini-swe-agent", "aider", "openhands"].includes(agent);
   if (agent === "gemini-cli" || agent === "antigravity-cli" || modelRouted) {

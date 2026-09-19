@@ -137,6 +137,61 @@ def test_tbh_gets_its_own_service_host_which_the_model_id_never_names():
     assert agent_runtime_hosts(agent_name="tbh") == ["api.meta.ai"]
 
 
+def test_muse_code_gets_the_meta_service_host_like_tbh():
+    # muse-code is Meta's public Muse Code CLI: the same service as tbh, so a
+    # meta/ model id names the wrong host for it too.
+    assert outbound_hosts_for_model("meta/muse-spark-1.2") == ["api.ai.meta.com"]
+    assert agent_runtime_hosts(agent_name="muse-code") == ["api.meta.ai"]
+    assert agent_runtime_hosts(agent_name="MUSE-CODE") == ["api.meta.ai"]
+
+
+def test_muse_code_custom_endpoint_is_added_alongside_the_default():
+    assert agent_runtime_hosts(
+        agent_name="muse-code",
+        agent_kwargs={"base_url": "https://staging.meta.ai/v1"},
+    ) == ["api.meta.ai", "staging.meta.ai"]
+    assert agent_runtime_hosts(
+        agent_name="muse-code",
+        agent_env={"MUSE_CODE_BASE_URL": "https://staging.meta.ai"},
+    ) == ["api.meta.ai", "staging.meta.ai"]
+    assert agent_runtime_hosts(
+        agent_name="muse-code",
+        agent_kwargs={"extra_env": {"MUSE_CODE_BASE_URL": "https://staging.meta.ai"}},
+    ) == ["api.meta.ai", "staging.meta.ai"]
+
+
+def test_muse_code_endpoint_precedence_matches_harbor():
+    # Harbor resolves base_url -> MUSE_CODE_BASE_URL -> META_BASE_URL for
+    # muse-code; the allowlist must follow the same order and ignore the tbh
+    # variable, or a restricted baseline admits the wrong endpoint.
+    assert agent_runtime_hosts(
+        agent_name="muse-code", agent_env={"META_BASE_URL": "https://meta.example/v1"}
+    ) == ["api.meta.ai", "meta.example"]
+    assert agent_runtime_hosts(
+        agent_name="muse-code",
+        agent_env={
+            "TBH_BASE_URL": "https://tbh.example",
+            "MUSE_CODE_BASE_URL": "https://muse.example",
+            "META_BASE_URL": "https://meta.example",
+        },
+    ) == ["api.meta.ai", "muse.example"]
+    assert agent_runtime_hosts(
+        agent_name="muse-code",
+        agent_kwargs={"base_url": "https://kwarg.example/v1"},
+        agent_env={"MUSE_CODE_BASE_URL": "https://muse.example"},
+    ) == ["api.meta.ai", "kwarg.example"]
+    # tbh keeps its own variable and never picks up the muse ones.
+    assert agent_runtime_hosts(
+        agent_name="tbh", agent_env={"MUSE_CODE_BASE_URL": "https://muse.example"}
+    ) == ["api.meta.ai"]
+
+
+def test_muse_code_import_path_config_gets_its_runtime_host():
+    assert agent_runtime_hosts(
+        agent_name=None, import_path="harbor.agents.installed.muse_code:MuseCode"
+    ) == ["api.meta.ai"]
+
+
 def test_agent_runtime_hosts_are_empty_for_provider_talking_agents():
     # Every other agent reaches the endpoint its model id names, so it must not
     # gain a host here.

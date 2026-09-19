@@ -100,8 +100,21 @@ _BASE_URL_ENV_KEYS = (
 # that front their own transport.
 AZURE_BASE_URL_KEYS = ("AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT")
 
+# muse-code's own endpoint override: Harbor's muse-code agent points the Muse
+# process at ``base_url`` / ``MUSE_CODE_BASE_URL`` / ``META_BASE_URL``. The key
+# is agent-keyed rather than model-keyed, so like the Azure aliases it stays
+# out of the discovery tuple above (discovery infers hosts from model ids), but
+# it redirects the process to another host and so belongs in the fail-closed
+# set below: a restricted Compose submission cannot smuggle a route under it,
+# and the attested muse-code profile, which only sees the safe-profile env,
+# stays consistent with what the process dials. Runtime-host handling for the
+# public and non-Compose shapes lives with the muse-code runtime table below.
+MUSE_CODE_BASE_URL_KEYS = ("MUSE_CODE_BASE_URL",)
+
 # Full known-transport key set for the restricted-egress fail-closed filter.
-KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset((*_BASE_URL_ENV_KEYS, *AZURE_BASE_URL_KEYS))
+KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
+    (*_BASE_URL_ENV_KEYS, *AZURE_BASE_URL_KEYS, *MUSE_CODE_BASE_URL_KEYS)
+)
 
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
@@ -120,6 +133,27 @@ _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 # is keyed on a ``cursor/`` model prefix.
 TBH_BASE_URL_KEYS = ("TBH_BASE_URL",)
 _TBH_RUNTIME_HOSTS = ("api.meta.ai",)
+# muse-code is Meta's public Muse Code CLI -- the same service tbh fronts,
+# shipped through Meta's installer instead of a partner build -- so it dials
+# api.meta.ai the same way and needs the same agent-keyed host. Its installer
+# chain (dev.meta.ai script -> api.meta.ai launcher manifest ->
+# lookaside.facebook.com binary) runs during agent SETUP under the environment
+# baseline, so those hosts ride the runner's muse-code arm like the opencode
+# installer arm below, NOT this runtime table. Its endpoint override key,
+# MUSE_CODE_BASE_URL_KEYS, is declared with the fail-closed transport set above.
+_MUSE_CODE_RUNTIME_HOSTS = ("api.meta.ai",)
+MUSE_CODE_INSTALL_HOSTS: tuple[str, ...] = (
+    "dev.meta.ai",  # install.sh
+    "api.meta.ai",  # muse-launcher.sh + muse-stable channel manifest
+    "lookaside.facebook.com",  # release binary download
+    # Harbor's muse-code install only reaches for a package manager when the
+    # image lacks curl, bash, coreutils or a CA bundle; when it does, the
+    # distribution mirrors must be reachable or ``apt-get update`` fails.
+    "deb.debian.org",  # Debian images (python:*-slim)
+    "security.debian.org",  # Debian security pocket
+    "archive.ubuntu.com",  # Ubuntu images
+    "security.ubuntu.com",  # Ubuntu security pocket
+)
 _DSH_INSTALL_HOSTS: tuple[str, ...] = (
     "raw.githubusercontent.com",
     "github.com",
@@ -192,6 +226,7 @@ ANTIGRAVITY_RUNTIME_HOSTS: tuple[str, ...] = (
 )
 _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
     "tbh": _TBH_RUNTIME_HOSTS,
+    "muse-code": _MUSE_CODE_RUNTIME_HOSTS,
     "dsh": _DSH_INSTALL_HOSTS + _DSH_DEEPSEEK_RUNTIME_HOSTS,
     "antigravity-cli": ANTIGRAVITY_RUNTIME_HOSTS,
 }
@@ -200,6 +235,18 @@ _AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
 _CLASS_BASENAME_RUNTIME_KEYS: dict[str, str] = {
     "oddishantigravitycli": "antigravity-cli",
     "antigravitycli": "antigravity-cli",
+    "musecode": "muse-code",
+}
+# Endpoint override variables consulted for an agent's OWN service, in the
+# precedence the harness itself applies. muse-code mirrors Harbor's
+# ``base_url -> MUSE_CODE_BASE_URL -> META_BASE_URL``; the other agent-keyed
+# entries keep the legacy shared pair.
+_DEFAULT_BASE_URL_OVERRIDE_KEYS: tuple[str, ...] = (
+    *TBH_BASE_URL_KEYS,
+    *DEEPSEEK_BASE_URL_KEYS,
+)
+_AGENT_BASE_URL_OVERRIDE_KEYS: dict[str, tuple[str, ...]] = {
+    "muse-code": (*MUSE_CODE_BASE_URL_KEYS, *META_BASE_URL_KEYS),
 }
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
@@ -308,6 +355,9 @@ def agent_runtime_hosts(
     hosts = list(_AGENT_RUNTIME_HOSTS.get(key, ()))
     if not hosts:
         return []
+    override_keys = _AGENT_BASE_URL_OVERRIDE_KEYS.get(
+        key, _DEFAULT_BASE_URL_OVERRIDE_KEYS
+    )
 
     override: Any = None
     if isinstance(agent_kwargs, Mapping):
@@ -315,20 +365,12 @@ def agent_runtime_hosts(
         extra_env = agent_kwargs.get("extra_env")
         if not override and isinstance(extra_env, Mapping):
             override = next(
-                (
-                    extra_env.get(k)
-                    for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
-                    if extra_env.get(k)
-                ),
+                (extra_env.get(k) for k in override_keys if extra_env.get(k)),
                 None,
             )
     if not override and isinstance(agent_env, Mapping):
         override = next(
-            (
-                agent_env.get(k)
-                for k in (*TBH_BASE_URL_KEYS, *DEEPSEEK_BASE_URL_KEYS)
-                if agent_env.get(k)
-            ),
+            (agent_env.get(k) for k in override_keys if agent_env.get(k)),
             None,
         )
     if isinstance(override, str):

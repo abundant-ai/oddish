@@ -5786,3 +5786,36 @@ def test_thunder_fallback_rejects_gpu_on_cpu_only_destination(tmp_path):
             environment=EnvironmentType.DAYTONA,
             backend=DaytonaBackend(),
         )
+
+
+def test_muse_code_environment_hosts_cover_install_and_meta_service():
+    """muse-code self-installs (dev.meta.ai installer -> api.meta.ai launcher
+    manifest -> lookaside.facebook.com binary) during agent SETUP, which runs
+    under the environment baseline, and dials api.meta.ai at run time."""
+    agent_config = HarborAgentConfig(
+        name="muse-code",
+        model_name="meta/muse-spark-1.2",
+        kwargs={"base_url": "https://staging.meta.ai/v1"},
+    )
+    hosts = harbor_runner._muse_code_environment_hosts(agent_config)
+    assert hosts[:3] == ["dev.meta.ai", "api.meta.ai", "lookaside.facebook.com"]
+    # Images without curl bootstrap it with apt first, so the distribution
+    # mirrors ride along (Debian for python:*-slim, Ubuntu for ubuntu:*).
+    for mirror in ("deb.debian.org", "security.debian.org", "archive.ubuntu.com"):
+        assert mirror in hosts
+    assert "staging.meta.ai" in hosts
+    assert len(hosts) == len(set(hosts))
+
+
+def test_muse_code_arm_matches_import_path_configs():
+    """A config that names the class by import path (name=None) must still
+    get the installer hosts merged into the environment baseline."""
+    assert harbor_runner._is_muse_code_agent(agent="muse-code", agent_config=None)
+    assert harbor_runner._is_muse_code_agent(agent=" MUSE-CODE ", agent_config=None)
+    config = HarborAgentConfig(
+        name=None,
+        import_path="harbor.agents.installed.muse_code:MuseCode",
+        model_name="meta/muse-spark-1.2",
+    )
+    assert harbor_runner._is_muse_code_agent(agent=None, agent_config=config)
+    assert not harbor_runner._is_muse_code_agent(agent="tbh", agent_config=None)
