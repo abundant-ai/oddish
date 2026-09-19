@@ -471,11 +471,14 @@ def _no_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
     return ()
 
 
-def _anthropic_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
-    # Claude Code also consumes its Vertex endpoint override, so a submitted
-    # one on a Vertex trial is consumed rather than tripping the fail-closed
-    # "does not consume" guard.
-    return ("ANTHROPIC_BASE_URL", *_VERTEX_AI_BASE_URL_KEYS)
+def _anthropic_base_url_keys(agent_config: AgentConfig) -> tuple[str, ...]:
+    # Claude Code reads its Vertex endpoint override only under
+    # CLAUDE_CODE_USE_VERTEX, so the key is consumed on a Vertex trial alone; a
+    # submitted one on any other Claude trial keeps tripping the fail-closed
+    # "does not consume" guard instead of becoming the transport.
+    if is_vertex_ai_model(agent_config.model_name):
+        return ("ANTHROPIC_BASE_URL", *_VERTEX_AI_BASE_URL_KEYS)
+    return ("ANTHROPIC_BASE_URL",)
 
 
 def _openai_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:

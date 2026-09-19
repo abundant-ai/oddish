@@ -717,6 +717,32 @@ def test_claude_profile_keeps_the_token_host_with_a_vertex_override(service_acco
     )
 
 
+def test_vertex_override_is_consumed_only_on_a_vertex_trial():
+    """Claude Code reads ANTHROPIC_VERTEX_BASE_URL only under CLAUDE_CODE_USE_VERTEX.
+
+    On any other Claude trial a submitted value must trip the fail-closed
+    "does not consume" guard instead of replacing the Anthropic or Bedrock
+    allowlist with a caller-chosen host.
+    """
+    from oddish.workers.agents.claude_code import OddishClaudeCode
+    from oddish.workers.harbor.restricted_network import (
+        RestrictedNetworkProfileError,
+        _claude_profile,
+    )
+
+    for model in ("global.anthropic.claude-sonnet-5", "claude-sonnet-5"):
+        config = AgentConfig(
+            import_path="oddish.workers.agents.claude_code:OddishClaudeCode",
+            model_name=model,
+        )
+        with pytest.raises(RestrictedNetworkProfileError, match="does not consume"):
+            _claude_profile(
+                OddishClaudeCode,
+                config,
+                {"ANTHROPIC_VERTEX_BASE_URL": "https://vertex-gateway.example"},
+            )
+
+
 def test_vertex_hosts_are_allowlisted_on_every_restricted_shape(
     service_account, monkeypatch
 ):
