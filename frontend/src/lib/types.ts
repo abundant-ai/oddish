@@ -856,6 +856,7 @@ export interface OrgQuotaUsage {
 }
 
 export interface DashboardExperiment {
+  summary_pending?: boolean;
   id: string;
   name: string;
   is_public: boolean;

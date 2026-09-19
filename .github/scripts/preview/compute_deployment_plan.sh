@@ -64,11 +64,14 @@ else
   fi
 fi
 
-# A migrated schema must be boot-tested by the preview backend, and the branch
-# DB password rotated by wait_for_supabase_branch.sh must be re-published to
-# the Modal secret -- so any migration run also redeploys the backend.
-if [ "$run_migrations" = "true" ]; then
+# Database preparation also runs for an existing backend on frontend-only or
+# no-code pushes. It rotates the password; updating the Modal secret does not
+# replace credentials already injected into running containers. Redeploy every
+# existing preview backend so both the API and scheduled workers get the new
+# password. A migrated schema must also be boot-tested by the backend.
+if [ "$run_migrations" = "true" ] || [ -n "$BACKEND_BASE" ]; then
   deploy_backend=true
+  deploy_frontend=true
 fi
 
 any_change=false

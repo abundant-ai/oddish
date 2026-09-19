@@ -518,11 +518,23 @@ def test_migrations_imply_backend_deploy():
 
 @needs_bash
 def test_no_migrations_no_backend_implication():
-    outputs = _run_compute_plan({})
+    outputs = _run_compute_plan({"BACKEND_BASE": ""})
     assert outputs["deploy_backend"] == "false"
     assert outputs["run_migrations"] == "false"
     assert outputs["deploy_frontend"] == "false"
     assert outputs["any_change"] == "false"
+
+
+@needs_bash
+@pytest.mark.parametrize("frontend_changed", ["false", "true"])
+def test_existing_backend_redeploys_after_database_password_rotation(frontend_changed):
+    # Database preparation runs whenever a preview backend exists, even when
+    # only the frontend changed. Existing containers retain the old secret.
+    outputs = _run_compute_plan({"PR_FRONTEND_CHANGED": frontend_changed})
+    assert outputs["preview_backend_live"] == "true"
+    assert outputs["deploy_backend"] == "true"
+    assert outputs["deploy_frontend"] == "true"
+    assert outputs["run_migrations"] == "false"
 
 
 def _reset_wf():

@@ -3,6 +3,7 @@ export default defineConfig({
   testDir: "e2e",
   testMatch: [
     "file-loading.spec.ts",
+    "prepared-reads.spec.ts",
     "review-meaning.spec.ts",
     "ui-duplication.spec.ts",
     "user-ui-layout.spec.ts",

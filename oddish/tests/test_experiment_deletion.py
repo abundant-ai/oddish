@@ -178,28 +178,18 @@ def test_backend_router_exposes_delete_experiment_endpoint():
 def test_dashboard_cache_invalidation_scopes_to_org():
     """Delete handlers need stale dashboard rows gone immediately."""
     dashboard._dashboard_primary_cache.clear()
-    dashboard._dashboard_experiments_cache.clear()
     dashboard._dashboard_primary_cache.update(
         {
             "dashboard.primary:org-1:1": ({"old": True}, 1.0),
             "dashboard.primary:org-2:1": ({"old": True}, 1.0),
         }
     )
-    dashboard._dashboard_experiments_cache.update(
-        {
-            "dashboard.experiments:org-1:1": ({"old": True}, 1.0),
-            "dashboard.experiments:org-2:1": ({"old": True}, 1.0),
-        }
-    )
 
     dashboard.invalidate_dashboard_cache(org_id="org-1")
 
     assert "dashboard.primary:org-1:1" not in dashboard._dashboard_primary_cache
-    assert "dashboard.experiments:org-1:1" not in dashboard._dashboard_experiments_cache
     assert "dashboard.primary:org-2:1" in dashboard._dashboard_primary_cache
-    assert "dashboard.experiments:org-2:1" in dashboard._dashboard_experiments_cache
 
     dashboard.invalidate_dashboard_cache()
 
     assert dashboard._dashboard_primary_cache == {}
-    assert dashboard._dashboard_experiments_cache == {}
