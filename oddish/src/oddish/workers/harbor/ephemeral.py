@@ -371,8 +371,11 @@ def _build_payload(
         if resolved_agent_env:
             agent_kwargs["extra_env"] = resolved_agent_env
         inferred_hosts = [
+            # The effective requested model, not the bare argument: a trial
+            # whose row carries no model still names one in its stored
+            # agent_config, and that is the id the hosts must follow.
             *outbound_hosts_for_model(
-                model,
+                requested_model,
                 agent_env=resolved_agent_env,
                 agent_kwargs=agent_kwargs,
             ),

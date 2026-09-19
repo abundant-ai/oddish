@@ -239,6 +239,7 @@ def test_profile_is_identical_across_agents_and_keeps_the_canonical_id(service_a
     assert env["GEMINI_API_KEY"] == "" and env["GOOGLE_API_KEY"] == ""
     assert env["GOOGLE_GENERATIVE_AI_API_KEY"] == ""
     assert env["GEMINI_FORCE_OAUTH"] == "false" and env["GEMINI_OAUTH_CREDS_PATH"] == ""
+    assert env["CLAUDE_CODE_USE_FOUNDRY"] == ""
     assert env["ANTHROPIC_BASE_URL"] == ""
     # The secret never enters the agent env.
     assert not any("SECRETMATERIAL" in v for v in env.values())
@@ -287,12 +288,14 @@ def test_submitted_competing_credentials_are_overwritten(service_account):
         env={
             "GEMINI_API_KEY": "leaked",
             "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CODE_USE_FOUNDRY": "1",
             "ANTHROPIC_BASE_URL": "https://relay.example",
             "GOOGLE_CLOUD_PROJECT": "someone-elses-project",
         },
     )
     assert built.env["GEMINI_API_KEY"] == ""
     assert built.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert built.env["CLAUDE_CODE_USE_FOUNDRY"] == ""
     assert built.env["ANTHROPIC_BASE_URL"] == ""
     assert built.env["GOOGLE_CLOUD_PROJECT"] == "oddish-vertex"
 
@@ -387,6 +390,25 @@ def test_effective_model_comes_from_the_stored_agent_config(
     assert payload["agent_config"]["env"]["GOOGLE_APPLICATION_CREDENTIALS"] == (
         "/tmp/oddish-vertex/service-account.json"
     )
+    # On a restricted single-container task the child's allowlist follows the
+    # same effective model, so the Vertex hosts are granted.
+    monkeypatch.setattr(
+        ephemeral, "_supports_auto_restricted_agent_network", lambda **_: True
+    )
+    restricted = ephemeral._build_payload(
+        task_path=tmp_path / "task",
+        jobs_dir=tmp_path / "jobs",
+        outcome_path=tmp_path / "outcome.json",
+        agent="gemini-cli",
+        model=None,
+        environment_config=EnvironmentConfig(type=EnvironmentType.MODAL),
+        raw_harbor_config=raw,
+        is_probe=False,
+    )
+    assert restricted["agent_config"]["extra_allowed_hosts"] == [
+        "aiplatform.googleapis.com",
+        "oauth2.googleapis.com",
+    ]
 
 
 def test_kimi_preprocessing_keeps_an_explicit_vertex_id(service_account):

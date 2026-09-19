@@ -91,6 +91,9 @@ _CLAUDE_MODEL_ALIAS_KEYS = (
 _BLANKED_ENV: dict[str, str] = {
     "CLAUDE_CODE_USE_BEDROCK": "",
     "AWS_BEARER_TOKEN_BEDROCK": "",
+    # Claude Code's other cloud-provider selector; a submitted value would
+    # compete with CLAUDE_CODE_USE_VERTEX for the same precedence slot.
+    "CLAUDE_CODE_USE_FOUNDRY": "",
     "GEMINI_API_KEY": "",
     "GOOGLE_GENERATIVE_AI_API_KEY": "",
     "GEMINI_FORCE_OAUTH": "false",
