@@ -1,13 +1,20 @@
 name: "E2E: CLI smoke"
 
-# Runs the opt-in end-to-end CLI suite (backend/tests/e2e) against a real
-# uvicorn server, the real oddish CLI subprocess, and a real Postgres. This is
-# the repo's only pytest job in CI: the ASGITransport unit tests never boot a
-# socket or exercise the CLI, so a bug in wire framing, the uvicorn lifespan, or
-# how `oddish run` builds its payload is invisible to them and to every other
-# workflow here. See docs/e2e-test-plan.md for what each path proves.
+# Two independent pytest suites on separate runners. They used to run
+# back-to-back in one job after a single uv sync: e2e's session `schema`
+# fixture created tables, then the delivery suite reused that same Postgres.
+# Split into parallel jobs, each with its own Postgres service; the delivery
+# job therefore creates the schema itself (same create_all + index DDL as
+# tests/e2e/conftest.py) before collecting.
 #
-# The job runs directly on ubuntu-latest (NOT in a job container) on purpose:
+# `e2e` runs the opt-in end-to-end CLI suite (backend/tests/e2e) against a real
+# uvicorn server, the real oddish CLI subprocess, and a real Postgres. This is
+# the repo's only pytest job that boots a socket and exercises the CLI; the
+# ASGITransport unit tests never do. See docs/e2e-test-plan.md for coverage.
+#
+# `delivery` runs the delivery-page and approval-rule unit/integration tests.
+#
+# Both jobs run directly on ubuntu-latest (NOT in a job container) on purpose:
 # the e2e conftest hard-refuses any non-localhost DB host, and a job container
 # would reach the postgres service under the hostname `postgres`, tripping that
 # guard. With the service ports mapped to the host, the DB is reachable at
@@ -90,6 +97,79 @@ jobs:
           ODDISH_E2E: "1"
           ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
         run: uv run pytest tests/e2e -v
+
+  delivery:
+    name: "delivery pages and approval rules"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oddish
+          POSTGRES_PASSWORD: oddish
+          POSTGRES_DB: oddish
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U oddish -d oddish"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      # Mirrors backend/tests/e2e/conftest.py::schema. Delivery tests insert into
+      # core/cloud tables but have no create_all of their own; when they shared
+      # the e2e job they inherited that session fixture's empty-Postgres bootstrap.
+      - name: Create database schema
+        env:
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          import os
+
+          from sqlalchemy import text
+          from sqlalchemy.ext.asyncio import create_async_engine
+
+          import models  # noqa: F401 — register cloud tables on shared Base
+          from oddish.db.models import Base
+
+          INDEX_DDL = (
+              "CREATE UNIQUE INDEX IF NOT EXISTS uq_worker_jobs_tag_project_active "
+              "ON worker_jobs (kind, subject_table, subject_id) "
+              "WHERE kind = 'TAG_PROJECT' "
+              "AND status IN ('QUEUED', 'RETRYING') "
+              "AND subject_id IS NOT NULL"
+          )
+
+          async def main() -> None:
+              engine = create_async_engine(os.environ["ODDISH_DATABASE_URL"])
+              try:
+                  async with engine.begin() as conn:
+                      await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+                      await conn.execute(text(INDEX_DDL))
+              finally:
+                  await engine.dispose()
+
+          asyncio.run(main())
+          PY
 
       - name: Check delivery pages and approval rules
         env:
