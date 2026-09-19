@@ -100,8 +100,21 @@ _BASE_URL_ENV_KEYS = (
 # that front their own transport.
 AZURE_BASE_URL_KEYS = ("AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT")
 
+# muse-code's own endpoint override: Harbor's muse-code agent points the Muse
+# process at ``base_url`` / ``MUSE_CODE_BASE_URL`` / ``META_BASE_URL``. The key
+# is agent-keyed rather than model-keyed, so like the Azure aliases it stays
+# out of the discovery tuple above (discovery infers hosts from model ids), but
+# it redirects the process to another host and so belongs in the fail-closed
+# set below: a restricted Compose submission cannot smuggle a route under it,
+# and the attested muse-code profile, which only sees the safe-profile env,
+# stays consistent with what the process dials. Runtime-host handling for the
+# public and non-Compose shapes lives with the muse-code runtime table below.
+MUSE_CODE_BASE_URL_KEYS = ("MUSE_CODE_BASE_URL",)
+
 # Full known-transport key set for the restricted-egress fail-closed filter.
-KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset((*_BASE_URL_ENV_KEYS, *AZURE_BASE_URL_KEYS))
+KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
+    (*_BASE_URL_ENV_KEYS, *AZURE_BASE_URL_KEYS, *MUSE_CODE_BASE_URL_KEYS)
+)
 
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
@@ -126,8 +139,8 @@ _TBH_RUNTIME_HOSTS = ("api.meta.ai",)
 # chain (dev.meta.ai script -> api.meta.ai launcher manifest ->
 # lookaside.facebook.com binary) runs during agent SETUP under the environment
 # baseline, so those hosts ride the runner's muse-code arm like the opencode
-# installer arm below, NOT this runtime table.
-MUSE_CODE_BASE_URL_KEYS = ("MUSE_CODE_BASE_URL",)
+# installer arm below, NOT this runtime table. Its endpoint override key,
+# MUSE_CODE_BASE_URL_KEYS, is declared with the fail-closed transport set above.
 _MUSE_CODE_RUNTIME_HOSTS = ("api.meta.ai",)
 MUSE_CODE_INSTALL_HOSTS: tuple[str, ...] = (
     "dev.meta.ai",  # install.sh

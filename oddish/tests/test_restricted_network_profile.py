@@ -1133,6 +1133,48 @@ def test_azure_transport_aliases_are_fail_closed_routes():
     )
 
 
+def test_muse_code_base_url_is_a_fail_closed_route():
+    """MUSE_CODE_BASE_URL redirects the Muse process to another host.
+
+    Harbor's muse-code agent honours ``base_url`` / ``MUSE_CODE_BASE_URL`` /
+    ``META_BASE_URL`` for its transport, and its attested restricted profile
+    only ever sees the safe-profile env. A restricted Compose submission that
+    carries the agent-keyed override must therefore be rejected up front, like
+    the Azure aliases, instead of the process dialling a host the profile never
+    allowed. The key stays out of the public discovery tuple, which infers
+    hosts from model ids, not from agent-keyed overrides.
+    """
+    from oddish.workers.harbor import model_hosts, restricted_network
+
+    for key in model_hosts.MUSE_CODE_BASE_URL_KEYS:
+        assert key in model_hosts.KNOWN_TRANSPORT_BASE_URL_KEYS
+        assert key in restricted_network._SAFE_PROFILE_ENV_KEYS
+        for raw, field in (
+            (
+                {"agent_config": {"env": {key: "https://attacker.example/v1"}}},
+                f"agent_config.env.{key}",
+            ),
+            (
+                {
+                    "agent_config": {
+                        "kwargs": {"extra_env": {key: "https://attacker.example/v1"}}
+                    }
+                },
+                f"agent_config.kwargs.extra_env.{key}",
+            ),
+        ):
+            with pytest.raises(RestrictedNetworkProfileError) as excinfo:
+                reject_submitted_restricted_routes(raw)
+            # The error names the field path, never the submitted value.
+            assert field in str(excinfo.value)
+            assert "attacker.example" not in str(excinfo.value)
+
+    # Not in discovery: public-path allowlists are unchanged by this addition.
+    assert set(model_hosts.MUSE_CODE_BASE_URL_KEYS).isdisjoint(
+        model_hosts._BASE_URL_ENV_KEYS
+    )
+
+
 def test_azure_routed_openai_trial_still_resolves_one_host():
     """The fail-closed guard must not reject Oddish's default Azure routing.
 
@@ -1415,7 +1457,9 @@ def test_ensure_web_tool_wrapper_when_disabling_wraps_public_cursor_and_gemini()
         ("cursor-cli", "oddish.workers.agents.cursor_cli:OddishCursorCli"),
         ("gemini-cli", "oddish.workers.agents.gemini_cli:OddishGeminiCli"),
     ]:
-        cfg = AgentConfig(name=name, model_name="x/y", kwargs={"disable_web_tools": True})
+        cfg = AgentConfig(
+            name=name, model_name="x/y", kwargs={"disable_web_tools": True}
+        )
         runner._ensure_web_tool_wrapper_when_disabling(cfg)
         assert cfg.import_path == expected
 
