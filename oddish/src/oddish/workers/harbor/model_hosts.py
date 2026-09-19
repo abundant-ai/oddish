@@ -287,12 +287,14 @@ def gemini_cli_transport_hosts(
     transport allowlist, matching the restricted-network Gemini profile. On a
     canonical ``vertex_ai/`` model Oddish's own Vertex profile is the transport
     instead; the profile marker is honored only together with that model id, so
-    a caller-submitted marker cannot widen a Gemini API trial to Vertex.
+    a caller-submitted marker cannot widen a Gemini API trial to Vertex, and a
+    canonical id without the marker resolves the configured Vertex endpoint
+    (the same fallback ``outbound_hosts_for_model`` takes), never the Gemini
+    API host.
     """
     if is_vertex_ai_model(model_name):
         vertex = _vertex_hosts_from_env(agent_env)
-        if vertex is not None:
-            return vertex
+        return vertex if vertex is not None else _vertex_default_hosts()
     return _hosts_from_env(agent_env, keys=GEMINI_BASE_URL_KEYS) or list(_GEMINI_HOSTS)
 
 

@@ -14,15 +14,15 @@ from pydantic import SecretStr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.config import (  # noqa: E402
+from oddish.config import (
     VertexAiConfigError,
     is_vertex_ai_model,
     settings,
     to_bedrock_model_id,
     to_vertex_ai_model_id,
 )
-from oddish.workers.harbor import vertex_ai  # noqa: E402
-from oddish.workers.harbor.agent_config import _build_agent_config  # noqa: E402
+from oddish.workers.harbor import vertex_ai
+from oddish.workers.harbor.agent_config import _build_agent_config
 
 _SA_JSON = json.dumps(
     {
@@ -570,6 +570,12 @@ def test_outbound_hosts_for_vertex_models(service_account, monkeypatch):
     assert model_hosts.gemini_cli_transport_hosts(
         env, model_name="vertex_ai/gemini-3.8-flash"
     ) == ["aiplatform.googleapis.com", "oauth2.googleapis.com"]
+    # A canonical id without the marker resolves the configured default
+    # location, the same fallback outbound_hosts_for_model takes, never the
+    # Gemini API host.
+    assert model_hosts.gemini_cli_transport_hosts(
+        {}, model_name="vertex_ai/gemini-3.8-flash"
+    ) == ["us-east5-aiplatform.googleapis.com", "oauth2.googleapis.com"]
     assert model_hosts.gemini_cli_transport_hosts({}) == [
         "generativelanguage.googleapis.com"
     ]
@@ -786,7 +792,8 @@ def test_vertex_hosts_are_allowlisted_on_every_restricted_shape(
 def test_express_mode_allowlists_only_the_global_endpoint(express, monkeypatch):
     from harbor.utils.env import resolve_env_vars
 
-    from oddish.workers.harbor import model_hosts, runner as harbor_runner
+    from oddish.workers.harbor import model_hosts
+    from oddish.workers.harbor import runner as harbor_runner
     from oddish.workers.harbor.restricted_network import (
         restricted_network_profile_for_config,
     )

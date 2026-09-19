@@ -1547,7 +1547,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   `VERTEX_AI_CREDENTIALS_JSON`, `VERTEX_AI_API_KEY`) and must not be persisted
   on trial rows. The Vertex service-account JSON never enters an agent env at
   all: only the sandbox file path does, and Harbor's env serializer would
-  redact a literal under a CREDENTIAL-named key anyway.
+  redact a literal under a CREDENTIAL-named key anyway. The uploaded file is
+  readable inside the trial sandbox, the same trust boundary as the plaintext
+  provider keys every trial carries in its env, so the deployment guidance is
+  a dedicated, minimally scoped service account (see `SELF_HOSTING.md`).
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)

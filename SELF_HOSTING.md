@@ -104,8 +104,12 @@ AWS_BEARER_TOKEN_BEDROCK=...
 # Entitlement Manager role; enable each Claude model in Model Garden first.
 # Oddish writes the key to a private worker file, uploads it into the sandbox
 # as /tmp/oddish-vertex/service-account.json, and publishes the standard
-# Vertex environment to every vertex_ai/ trial. VERTEX_AI_LOCATION defaults to
-# "global". Alternatively VERTEX_AI_API_KEY alone selects express mode
+# Vertex environment to every vertex_ai/ trial. Inside the sandbox the file is
+# readable by the trial's own processes, like every other provider key in an
+# agent env, so use a dedicated service account in a project that holds
+# nothing else, grant it only those two roles, and rotate the key.
+# VERTEX_AI_LOCATION defaults to "global". Alternatively VERTEX_AI_API_KEY
+# alone selects express mode
 # (Gemini only, API key, global endpoint; LiteLLM-based harnesses cannot use
 # it). On a GKE-enabled worker the process-level ADC path stays the GKE
 # account; LiteLLM harnesses still read the Vertex key from VERTEXAI_CREDENTIALS.
