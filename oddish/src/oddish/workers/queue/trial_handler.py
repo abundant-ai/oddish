@@ -230,12 +230,15 @@ async def _issue_job_credentials(
     trial_id: str,
     is_probe: bool = False,
     byok_env: Mapping[str, str] | None = None,
+    raw_harbor_config: Mapping[str, object] | None = None,
 ) -> job_tokens.JobCredentialBundle | None:
     """Mint a job-scoped credential bundle and persist its token hash.
 
     Returns the bundle (the worker injects its scoped model env into the agent);
     best-effort -- on failure returns None so the caller dual-reads the blanket
     secret instead (spec §6.6). Gated by the caller on job_scoped_tokens_enabled.
+    ``raw_harbor_config`` lets the bundle follow a model that lives only in the
+    trial's stored ``agent_config``.
     """
     try:
         from sqlalchemy import update
@@ -251,6 +254,7 @@ async def _issue_job_credentials(
             now=utcnow(),
             is_probe=is_probe,
             byok_env=byok_env,
+            raw_harbor_config=raw_harbor_config,
         )
         async with get_session() as session:
             await session.execute(
@@ -2322,6 +2326,7 @@ async def run_trial_job(
                 trial_id=trial_id,
                 is_probe=_prepared_trial_uses_probe_routing(prepared_trial),
                 byok_env=byok_env,
+                raw_harbor_config=prepared_trial.trial_harbor_config,
             )
 
         from oddish.workers.queue.model_gateway import (

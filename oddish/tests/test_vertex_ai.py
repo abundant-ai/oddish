@@ -789,6 +789,123 @@ def test_vertex_hosts_are_allowlisted_on_every_restricted_shape(
         assert profile.outbound_hosts == tuple(vertex_hosts), agent
 
 
+def _write_kube_chart_task(tmp_path: Path) -> Path:
+    """A task whose Kubernetes chart opts into Oddish's egress-host contract."""
+    task_path = tmp_path / "task"
+    chart = task_path / "environment" / "chart"
+    chart.mkdir(parents=True)
+    (task_path / "task.toml").write_text(
+        'schema_version = "1.3"\n\n[metadata]\n'
+        'oddish_agent_egress_allowed_hosts = ["task-static.test"]\n\n'
+        '[environment]\nnetwork_mode = "public"\n\n[agent]\nuser = "agent"\n',
+        encoding="utf-8",
+    )
+    (chart / "Chart.yaml").write_text(
+        "apiVersion: v2\nname: test\nversion: 0.1.0\n", encoding="utf-8"
+    )
+    (chart / "values.yaml").write_text("{}\n", encoding="utf-8")
+    (chart / ".oddish-agent-egress-hosts").write_text(
+        "agentEgressProxy.runtimeAllowedHosts\n", encoding="utf-8"
+    )
+    return task_path
+
+
+def test_vertex_hosts_reach_the_kube_chart_allowlist(
+    service_account, tmp_path, monkeypatch
+):
+    """The fourth policy shape: a chart-side egress proxy fed through Helm values."""
+    from harbor.models.environment_type import EnvironmentType
+
+    from oddish.workers.harbor import runner as harbor_runner
+
+    task_path = _write_kube_chart_task(tmp_path)
+
+    def allowlist(agent: str, model: str) -> set[str]:
+        environment_config = harbor_runner.HarborEnvironmentConfig(
+            type=EnvironmentType.DAYTONA
+        )
+        built = _build(agent, model)
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=built,
+        )
+        raw = environment_config.kwargs["helm_values"]["agentEgressProxy"][
+            "runtimeAllowedHosts"
+        ]
+        return set(raw.split(";"))
+
+    for agent, model in (
+        ("claude-code", "vertex_ai/claude-sonnet-5"),
+        ("gemini-cli", "vertex_ai/gemini-3.8-flash"),
+        ("mini-swe-agent", "vertex_ai/gemini-3.8-flash"),
+    ):
+        hosts = allowlist(agent, model)
+        assert {"aiplatform.googleapis.com", "oauth2.googleapis.com"} <= hosts, agent
+        assert "generativelanguage.googleapis.com" not in hosts, agent
+
+    # Express mode: the global endpoint alone, no token host. The runner makes
+    # the key ambient for the whole network preparation, so the profile's
+    # ``${VERTEX_AI_API_KEY}`` template resolves here as it does there.
+    monkeypatch.setattr(settings, "vertex_ai_credentials_json", None)
+    monkeypatch.setattr(settings, "vertex_ai_project_id", None)
+    monkeypatch.setattr(settings, "vertex_ai_api_key", SecretStr("express-key"))
+    monkeypatch.setenv("VERTEX_AI_API_KEY", "express-key")
+    hosts = allowlist("gemini-cli", "vertex_ai/gemini-3.8-flash")
+    assert "aiplatform.googleapis.com" in hosts
+    assert "oauth2.googleapis.com" not in hosts
+    assert "generativelanguage.googleapis.com" not in hosts
+
+
+def test_job_scoped_bundle_follows_the_stored_vertex_model(
+    service_account, monkeypatch
+):
+    """The queue mints the credential bundle before the runner resolves anything.
+
+    Keyed on the bare row model, a trial whose model lives only in its stored
+    ``agent_config`` would receive the agent-default bundle (the Bedrock flag
+    for claude-code, the AI Studio key for gemini-cli), and that bundle is
+    applied last, over the Vertex profile's blanks. The bundle must follow the
+    same effective model the runner and the ephemeral parent resolve.
+    """
+    from oddish.workers.queue.job_tokens import scoped_model_env
+
+    monkeypatch.setattr(settings, "gemini_api_key", "studio-key")
+    for agent, model, stale_key in (
+        ("claude-code", "vertex_ai/claude-sonnet-5", "CLAUDE_CODE_USE_BEDROCK"),
+        ("gemini-cli", "vertex_ai/gemini-3.8-flash", "GEMINI_API_KEY"),
+    ):
+        raw = {"agent_config": {"name": agent, "model_name": model}}
+        bundle = scoped_model_env(
+            agent=agent, model=None, settings=settings, raw_harbor_config=raw
+        )
+        assert stale_key not in bundle, agent
+        assert bundle["VERTEXAI_PROJECT"] == "oddish-vertex"
+        assert bundle["GOOGLE_CLOUD_LOCATION"] == "global"
+        # The merged agent env keeps the profile's blanks and selectors.
+        built = _build_agent_config(
+            agent=agent, model=None, raw_harbor_config=raw, probe_oddish_env=bundle
+        )
+        assert built.env["CLAUDE_CODE_USE_BEDROCK"] == "", agent
+        assert built.env["GEMINI_API_KEY"] == "", agent
+        assert built.env["ODDISH_VERTEX_AI_MODE"] == "service_account"
+        assert built.env["VERTEXAI_PROJECT"] == "oddish-vertex"
+    # A row that names its model behaves exactly the same.
+    assert scoped_model_env(
+        agent="claude-code", model="vertex_ai/claude-sonnet-5", settings=settings
+    ) == scoped_model_env(
+        agent="claude-code",
+        model=None,
+        settings=settings,
+        raw_harbor_config={
+            "agent_config": {
+                "name": "claude-code",
+                "model_name": "vertex_ai/claude-sonnet-5",
+            }
+        },
+    )
+
+
 def test_express_mode_allowlists_only_the_global_endpoint(express, monkeypatch):
     from harbor.utils.env import resolve_env_vars
 
