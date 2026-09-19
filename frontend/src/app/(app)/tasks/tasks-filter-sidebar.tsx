@@ -92,6 +92,7 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
     runtimeAvg: ["runtimeAvgMin", "runtimeAvgMax"],
     passRate: ["passRateMin", "passRateMax"],
+    stepsP50: ["stepsP50Min", "stepsP50Max"],
   };
 
 // "num" (≥ N) filter key -> the single min field it writes.
@@ -104,6 +105,7 @@ const NUM_FIELD: Record<string, keyof FilterValues> = {
   partialCount: "partialCountMin",
   failCount: "failCountMin",
   harnessCount: "harnessCountMin",
+  agentCount: "agentCountMin",
 };
 
 function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
@@ -305,6 +307,9 @@ export function TasksFilterSidebar() {
       case "passRate":
         set({ passRateMin: null, passRateMax: null });
         break;
+      case "stepsP50":
+        set({ stepsP50Min: null, stepsP50Max: null });
+        break;
       case "topPerformer":
         set({ topBy: null, topValue: null, topMetric: null });
         break;
@@ -339,6 +344,7 @@ export function TasksFilterSidebar() {
       case "partialCount":
       case "failCount":
       case "harnessCount":
+      case "agentCount":
         set({ [NUM_FIELD[key]]: null } as Partial<FilterValues>);
         break;
       default:
