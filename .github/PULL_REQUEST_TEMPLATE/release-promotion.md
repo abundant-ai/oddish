@@ -11,14 +11,27 @@
      along — and /promote <sha> overrides it. An unfilled placeholder fails
      the promotion checks; deleting the whole line promotes the staging tip. -->
 
-## Summary
+<!-- Keep the complete body under 300 words, including the release warning.
+     Each included PR description must be under 50 words.
+     Delete drafting instructions; retain promote-warning and promotion-target. -->
 
-<!-- One sentence: what this release ships. -->
+## TL;DR
 
-## Commits in this promotion
+<One sentence explaining what this release changes and why it matters.>
 
-<!-- Paste: git log --oneline origin/main..origin/staging -->
+- **App code lines:** +<added> / −<removed>
+- **Test code lines:** +<added> / −<removed>
+- **Docs/other:** +<added> / −<removed>
+- **Net:** <signed total> lines across <N> files
 
-## Validation
+### What changed
 
-<!-- Staging Deploy is green on the pinned target. Note anything soak-tested on staging.oddish.app. -->
+- [#<number>](<PR URL>): <Explain this PR's effect in one or two plain
+  sentences, under 50 words. Repeat for each included PR.>
+
+### Tests
+
+<State verification for the pinned commit, including Staging Deploy status
+and relevant staging checks. Include material failures or coverage gaps.>
+
+---
