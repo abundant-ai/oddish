@@ -90,9 +90,12 @@ fi
 # reused branches that did not need any schema/data changes.
 ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/sync_org_approvals.py" ) &
 approval_sync_pid=$!
+( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/refresh_browse_summaries.py" ) &
+summary_refresh_pid=$!
 # Unconditional: the supabase step rotates the DB password every run, so the
 # secret must carry the new value even when no backend deploy follows.
 # Publication does not depend on organization rows; overlap the network calls.
 "$script_dir/publish_modal_db_secret.sh"
 published_modal_secret=true
 wait "$approval_sync_pid"
+wait "$summary_refresh_pid"

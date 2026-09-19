@@ -33,13 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { CustomerPicker } from "@/components/customer-picker";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { isOrgAdminRole } from "@/lib/org-roles";
@@ -52,7 +46,6 @@ import {
   type Selection,
 } from "@/lib/tasks-selection";
 import type {
-  Customer,
   DeliveryListItem,
   TaskBrowseIdsResponse,
   TaskBrowseItem,
@@ -560,21 +553,8 @@ function NewDeliveryDialog({
   onCreate: (name: string, customer: string) => void;
   error: ReactNode;
 }) {
-  const { data: customers } = useSWR<Customer[]>(
-    open ? "/api/customers" : null,
-    fetcher
-  );
   const [name, setName] = useState("");
   const [customerId, setCustomerId] = useState("");
-  // The lab picked in the bar ("not yet sent to X") is the obvious
-  // recipient, so it is preselected when it names a known customer.
-  useEffect(() => {
-    if (!open || !customers || customerId) return;
-    const match = customers.find(
-      (c) => c.name.toLowerCase() === defaultCustomer.toLowerCase()
-    );
-    if (match) setCustomerId(match.id);
-  }, [open, customers, customerId, defaultCustomer]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -596,21 +576,11 @@ function NewDeliveryDialog({
               placeholder="xAI · September batch"
             />
           </div>
-          <div className="space-y-1">
-            <Label>Customer</Label>
-            <Select value={customerId} onValueChange={setCustomerId}>
-              <SelectTrigger aria-label="Customer">
-                <SelectValue placeholder="Choose a customer" />
-              </SelectTrigger>
-              <SelectContent>
-                {(customers ?? []).map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <CustomerPicker
+            value={customerId}
+            onValueChange={setCustomerId}
+            defaultName={defaultCustomer}
+          />
         </div>
         {error ? (
           <p role="alert" className="text-destructive text-sm">

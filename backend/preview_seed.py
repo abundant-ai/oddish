@@ -6,11 +6,11 @@ import json
 import sys
 from typing import Any
 
-from sqlalchemy import JSON, MetaData, delete, text, tuple_
+from sqlalchemy import JSON, MetaData, delete, select, text, tuple_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
@@ -64,6 +64,39 @@ _LINKAGE_COLUMNS = {
 }
 
 _STATE_TABLE = "_preview_seed_state"
+
+
+async def refresh_browse_summaries(engine: AsyncEngine) -> int:
+    """Run after migrations: raw sample loads bypass trial-write refresh hooks."""
+    from oddish.core.task_browse_summary import refresh_task_browse_summaries
+    from oddish.db import TaskBrowseSummaryModel, TaskVersionModel
+
+    sessions = async_sessionmaker(engine)
+    last_id = ""
+    refreshed = 0
+    missing = 0
+    while True:
+        async with sessions.begin() as session:
+            rows = (
+                await session.execute(
+                    select(TaskVersionModel.id, TaskBrowseSummaryModel.task_version_id)
+                    .outerjoin(
+                        TaskBrowseSummaryModel,
+                        TaskBrowseSummaryModel.task_version_id == TaskVersionModel.id,
+                    )
+                    .where(TaskVersionModel.id > last_id)
+                    .order_by(TaskVersionModel.id)
+                    .limit(200)
+                )
+            ).all()
+            if not rows:
+                break
+            missing += sum(summary_id is None for _, summary_id in rows)
+            await refresh_task_browse_summaries(session, [row.id for row in rows])
+            last_id = rows[-1].id
+            refreshed += len(rows)
+    _warn(f"refreshed {refreshed} browse summaries ({missing} were missing)")
+    return refreshed
 
 
 def _warn(message: str) -> None:

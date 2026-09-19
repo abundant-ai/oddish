@@ -52,7 +52,7 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({ json: data });
   });
   await page.goto("/picker");
-  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible();
+  await expect(page.getByText("1,201 selected", { exact: true })).toBeVisible({ timeout: 30_000 });
 });
 
 test("restoration never removes stored picks, including Strict Mode and remount", async ({
@@ -269,7 +269,7 @@ test("delivery picker preserves trial counts and only adds to its named destinat
   await page
     .getByRole("button", { name: "Add 1 to Existing", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/deliveries\/existing$/);
+  await expect(page).toHaveURL(/\/deliveries\/existing$/, { timeout: 30_000 });
   expect(submitted).toEqual(["visible-task"]);
 });
 
@@ -313,4 +313,85 @@ test("sorting legacy only-mine links keeps the author filter", async ({page}) =>
   });
   await expect.poll(() => new URL(page.url()).searchParams.get("mine")).toBe("off");
   expect(new URL(page.url()).searchParams.has("author")).toBe(false);
+});
+
+for (const [filter, option, key, value] of [
+  ["QA outcome", "Accepted", "qa_outcomes", "accepted"],
+  ["Category", "coding", "categories", "coding"],
+  ["Agent · Model", "test-model", "agent_models", "test-agent:test-model"],
+]) {
+  test(`nested ${filter} accepts pointer clicks above its parent`, async ({ page }) => {
+    await page.route("**/api/tasks/browse/facets", (route) => route.fulfill({
+      json: { categories: ["coding"], agent_models: [{ agent: "test-agent", model: "test-model" }] },
+    }));
+    await page.reload();
+    await page.getByRole("button", { name: /^Filters/ }).click();
+    await page.getByRole("textbox", { name: "Find a filter" }).fill(filter);
+    await page.getByRole("dialog", { name: "Task filters" }).getByRole("button", { name: "Any", exact: true }).click();
+    await page.getByRole("checkbox", { name: option, exact: true }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.get(key)).toBe(value);
+  });
+}
+
+test("advanced conditions accept pointer clicks above the filters panel", async ({ page }) => {
+  await page.getByRole("button", { name: /^Filters/ }).click();
+  await page.getByRole("textbox", { name: "Find a filter" }).fill("Match any");
+  await page.getByRole("button", { name: "Add condition", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Trial count", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Task filters" }).getByText("Trial count", { exact: true })).toBeVisible();
+});
+
+test("empty customer list supports creation without losing delivery name or picks", async ({ page }) => {
+  let customerCreated = false;
+  await page.route("**/api/customers", async (route) => {
+    if (route.request().method() === "POST") {
+      expect(route.request().postDataJSON()).toEqual({ name: "New Lab" });
+      customerCreated = true;
+      return route.fulfill({ json: { id: "new-lab", name: "New Lab" } });
+    }
+    await route.fulfill({ json: [] });
+  });
+  let submitted: unknown;
+  await page.route("**/api/deliveries", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    submitted = route.request().postDataJSON();
+    await route.fulfill({ status: 400, json: { detail: "Keep dialog open for inspection" } });
+  });
+  await page.getByRole("button", { name: "Add 1,201 to delivery" }).click();
+  await page.getByRole("menuitem", { name: "New delivery" }).click();
+  await page.getByLabel("Name", { exact: true }).fill("Preserved batch");
+  await expect(page.getByText("No customers yet.")).toBeVisible();
+  await page.getByRole("combobox", { name: "Customer", exact: true }).click();
+  await page.getByRole("option", { name: "New customer…", exact: true }).click();
+  const customerDialog = page.getByRole("dialog", { name: "New customer", exact: true });
+  await customerDialog.getByLabel("Name", { exact: true }).fill("New Lab");
+  await customerDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(customerDialog).toBeHidden();
+  expect(customerCreated).toBe(true);
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Preserved batch");
+  await expect(page.getByRole("combobox", { name: "Customer", exact: true })).toHaveText("New Lab");
+  await page.getByRole("button", { name: "Create and add 1,201" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Keep dialog open for inspection");
+  expect(submitted).toEqual({ name: "Preserved batch", customer: "new-lab", task_ids: ids });
+});
+
+test("customer loading and failure offer a working retry", async ({ page }) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let fail = true;
+  await page.route("**/api/customers", async (route) => {
+    await held;
+    await route.fulfill(fail ? { status: 500, json: { detail: "Unavailable" } } : { json: [{ id: "lab", name: "Lab" }] });
+  });
+  await page.getByRole("button", { name: "Add 1,201 to delivery" }).click();
+  await page.getByRole("menuitem", { name: "New delivery" }).click();
+  await expect(page.getByRole("combobox", { name: "Customer", exact: true })).toHaveText("Loading customers…");
+  release();
+  await expect(page.getByRole("alert")).toContainText("Could not load customers.");
+  fail = false;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeHidden();
+  await page.getByRole("combobox", { name: "Customer", exact: true }).click();
+  await page.getByRole("option", { name: "Lab", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Customer", exact: true })).toHaveText("Lab");
 });

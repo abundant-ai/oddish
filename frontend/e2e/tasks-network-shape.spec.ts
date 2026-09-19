@@ -195,9 +195,7 @@ test.describe("tasks page network shape", () => {
     // Phase 1 — a hard navigation is a fresh JS heap, so this is the
     // session's cold load. Exactly one browse fetch serves the grid.
     await page.goto("/tasks");
-    // CardTitle renders a styled <div>, not an <h*>, so this is text — not a
-    // heading role.
-    await expect(page.getByText("Recent Tasks", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
     await expect(settled.first()).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => countSince(log, 0, BROWSE_RE), { timeout: 10_000 })
@@ -251,7 +249,7 @@ test.describe("tasks page network shape", () => {
     // not.
     const filterMark = Date.now();
     await page
-      .getByPlaceholder("Search anything...")
+      .getByRole("textbox", { name: "Search tasks", exact: true })
       .fill("zzz-network-shape-probe");
     await expect
       .poll(() => countSince(log, filterMark, BROWSE_RE), { timeout: 10_000 })

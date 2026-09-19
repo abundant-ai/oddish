@@ -967,3 +967,33 @@ async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
     finally:
         await engine.dispose()
         await src.dispose()
+
+
+async def test_browse_summaries_rebuilt_from_sample_and_repaired_on_reuse():
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(engine, "select count(*) from task_version_browse_summaries") == 0
+        count = await preview_seed.refresh_browse_summaries(engine)
+        assert count == await _count(engine, "select count(*) from task_versions")
+        # Three raw rows include a superseded failure; only two belong to browse.
+        async with engine.connect() as conn:
+            row = (await conn.execute(text(
+                "select total_trials, completed_trials, failed_trials, agent_count "
+                "from task_version_browse_summaries where task_version_id='ver-solo-2'"
+            ))).one()
+            assert tuple(row) == (2, 1, 1, 1)
+        # Existing previews can carry stale summaries, including nonzero totals
+        # copied from a larger trial population. Recalculate instead of copying.
+        async with engine.begin() as conn:
+            await conn.execute(text("update task_version_browse_summaries set total_trials=900"))
+            await conn.execute(text("update trials set deleted_at=now() where id='tr-ok'"))
+        await preview_seed.refresh_browse_summaries(engine)
+        assert await _count(engine, "select total_trials from task_version_browse_summaries where task_version_id='ver-solo-2'") == 1
+        assert await _count(engine, "select total_trials from task_version_browse_summaries where task_version_id='ver-solo-1'") == 0
+    finally:
+        await src.dispose()
+        await engine.dispose()

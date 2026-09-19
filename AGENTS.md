@@ -2312,6 +2312,17 @@ existing previews only when their next preparation or operator sync runs.
 
 ### Preview Branch Preserved Rows
 
+After migrations, sample updates, and preserved-row restoration,
+`prepare_preview_database.sh` runs `refresh_browse_summaries.py` on both new and
+reused previews. Raw seed inserts bypass the trial-write hooks, so
+`backend.preview_seed.refresh_browse_summaries` recalculates stored browse and
+per-model statistics from the preview's own trials using the core refresh
+function, in transactions of 200 task versions. Production aggregate totals
+must not be copied: production contains trials outside the preview sample.
+This also repairs existing previews; browse requests retain their stored-summary
+read path. Summary repair overlaps approval sync and secret publication, and
+all three must succeed before deployment.
+
 Each preview branch database holds a schema named `preview_preserved` with one
 table, `rows`. It keeps the API keys that a person creates from that preview
 dashboard, and the `organizations` and `users` rows those keys need.

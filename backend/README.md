@@ -183,6 +183,15 @@ Approval changes reach a preview on its next preparation/sync, not immediately
 when production is edited. A standalone reset rebuilds from production and then
 reapplies the current decisions through the same final step.
 
+The final preparation step also runs `refresh_browse_summaries.py` against the
+preview database. Seeding copies a subset of trials without executing normal
+trial-write hooks; this step rebuilds browse and per-model counters from those
+sampled rows, including on reused branches. It uses the existing core refresh
+function in batches of 200 versions and commits each batch separately. Counters
+from production are never copied, and page reads add no aggregation queries.
+The job waits for summary repair, approval sync, and secret publication before
+deploying.
+
 Hosted dispatch excludes unapproved organizations. Both Modal and EC2 runners
 check approval before each job and every 15 seconds during execution; losing
 approval or failing to read it cancels the handler. The reconciler also cancels

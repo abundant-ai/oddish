@@ -758,7 +758,7 @@ function AgentModelControl({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-64 p-2">
+      <PopoverContent align="start" className="w-64 p-2">
         <Input
           autoFocus
           value={search}
@@ -880,7 +880,7 @@ function ExperimentControl({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-64 p-2">
+      <PopoverContent align="start" className="w-64 p-2">
         <Input
           autoFocus
           value={search}
@@ -1015,7 +1015,7 @@ function TagsControl({
             <ChevronDown className="h-3.5 w-3.5 opacity-60" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="z-30 w-56 p-2">
+        <PopoverContent align="start" className="w-56 p-2">
           <Input
             autoFocus
             value={search}
@@ -1101,7 +1101,7 @@ function MultiSelect({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="z-30 w-56 p-2">
+      <PopoverContent align="start" className="w-56 p-2">
         {options.length > 8 ? (
           <Input
             autoFocus
@@ -1741,7 +1741,7 @@ function GroupCard({
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="start"
-            className="z-30 max-h-72 overflow-auto"
+            className="max-h-72 overflow-auto"
           >
             {available.map((d) => (
               <DropdownMenuItem
