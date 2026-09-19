@@ -112,7 +112,13 @@ def evaluate_delivery_qa(
     sources: list[TrialModel],
 ) -> DeliveryQAStatus:
     result = DeliveryQAStatus(trial_id=qa.id, finished_at=qa.finished_at)
-    if version is None or qa.task_version_id != version.id:
+    if task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
+        task.verdict_error
+    ):
+        # The task settled after this run (any version) with no QA-eligible
+        # trials, so the run's outcome no longer describes the task.
+        result.status, result.detail = "never", task.verdict_error or ""
+    elif version is None or qa.task_version_id != version.id:
         result.status, result.detail = "outdated", "QA verdict covers a different task version"
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
@@ -123,12 +129,6 @@ def evaluate_delivery_qa(
         result.detail = (
             "QA verdict generation is running" if result.status == "running" else "QA verdict generation is queued"
         )
-    elif task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
-        task.verdict_error
-    ):
-        # The task settled after this run with no QA-eligible trials, so the
-        # run's outcome no longer describes the task.
-        result.status, result.detail = "never", task.verdict_error or ""
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",

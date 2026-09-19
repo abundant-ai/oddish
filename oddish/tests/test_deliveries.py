@@ -1549,6 +1549,7 @@ async def test_delivery_failure_labels_identify_audit_state(
         ("rejected", "Verdict rejected"),
         ("no_evidence", "Verdict pending: needs solver runs"),
         ("stale_failed_qa", "Verdict pending: needs solver runs"),
+        ("older_version_qa", "Verdict pending: needs solver runs"),
         ("never", "Verdict pending: not yet generated"),
         ("qa_failed", "Verdict failed"),
     ],
@@ -1572,6 +1573,14 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
             # QA-eligible trials; the task's current state wins.
             qa_trials[0].status = TrialStatus.FAILED
             qa_trials[0].error_message = "worker crashed"
+        elif state == "older_version_qa":
+            # The only QA run belongs to the previous version.
+            newer = _version(
+                task, 2, pre_trial_status=VerdictStatus.SUCCESS, pre_trial={"items": []}
+            )
+            session.add(newer)
+            await session.flush()
+            task.current_version_id = newer.id
         else:
             for stale in qa_trials:
                 await session.delete(stale)
@@ -1580,6 +1589,7 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
         task.verdict_error = {
             "no_evidence": INSUFFICIENT_EVIDENCE_ERROR,
             "stale_failed_qa": INSUFFICIENT_EVIDENCE_ERROR,
+            "older_version_qa": INSUFFICIENT_EVIDENCE_ERROR,
             "qa_failed": "worker crashed",
         }.get(state)
         if state == "qa_failed":
@@ -1602,10 +1612,10 @@ async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
     assert check.status == "fail"
     assert check.failure_labels == [label]
     qa = board.tasks[0].qa
-    if state in ("no_evidence", "stale_failed_qa"):
+    if state in ("no_evidence", "stale_failed_qa", "older_version_qa"):
         assert check.detail == INSUFFICIENT_EVIDENCE_ERROR
         assert qa.status == "never"
-    if state == "stale_failed_qa":
+    if state in ("stale_failed_qa", "older_version_qa"):
         assert qa.detail == INSUFFICIENT_EVIDENCE_ERROR
     if state == "qa_failed":
         assert check.detail == "worker crashed"
