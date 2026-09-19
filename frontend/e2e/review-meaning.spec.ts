@@ -281,7 +281,7 @@ test.describe("real components with local fixture API", () => {
       name: "Open findings for Task A",
       exact: true,
     });
-    await expect(badge).toHaveText("Rejected: 1 Must Fix");
+    await expect(badge).toHaveText("Verdict rejected: 1 Must fix");
     await expect(row).not.toContainText(
       "The verifier accepts an empty answer."
     );
@@ -504,7 +504,9 @@ test.describe("real components with local fixture API", () => {
           checks.getByText("1 Must fix", { exact: true })
         ).toHaveCount(0);
         await expect(
-          checks.locator("../..").getByText("1 Must fix", { exact: true })
+          checks
+            .locator("../..")
+            .getByText("Verdict rejected: 1 Must fix", { exact: true })
         ).toBeVisible();
         await expect(
           checks.getByText("No required fixes", { exact: true })
@@ -569,9 +571,12 @@ test.describe("real components with local fixture API", () => {
       await expect(
         checks
           .locator("../..")
-          .getByText(includeMustFix ? "2 Must fix" : "1 Must fix", {
-            exact: true,
-          })
+          .getByText(
+            includeMustFix
+              ? "Verdict rejected: 2 Must fix"
+              : "Verdict rejected: 1 Must fix",
+            { exact: true }
+          )
       ).toBeVisible();
       await expect(checks.getByText(/Must fix/)).toHaveCount(0);
       await expect(
@@ -676,12 +681,12 @@ test.describe("real components with local fixture API", () => {
         name: "Open findings for Task A",
         exact: true,
       })
-    ).toHaveText("Rejected: 1 Must Fix");
+    ).toHaveText("Verdict rejected: 1 Must fix");
     await expect(
-      rejectedRow.getByText("Rejected: 1 Must Fix", { exact: true })
+      rejectedRow.getByText("Verdict rejected: 1 Must fix", { exact: true })
     ).toHaveCount(1);
     await page
-      .getByRole("button", { name: "2 QA verdict failed", exact: true })
+      .getByRole("button", { name: "2 Failed", exact: true })
       .click();
     await expect(page).toHaveURL(/verdict=failed/);
     await expect(
@@ -826,7 +831,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=live-review");
     await page
-      .getByRole("button", { name: "4 QA verdict in progress", exact: true })
+      .getByRole("button", { name: "4 Pending: generating", exact: true })
       .click();
     for (const name of [
       "Unreviewed version",
@@ -841,7 +846,7 @@ test.describe("real components with local fixture API", () => {
       page.getByRole("button", { name: "Task A", exact: true })
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "0 No current QA verdict", exact: true })
+      page.getByRole("button", { name: "0 Pending: no current verdict", exact: true })
     ).toHaveCount(0);
     await page.getByRole("button", { name: "3 Accepted", exact: true }).click();
     await expect(
@@ -854,7 +859,7 @@ test.describe("real components with local fixture API", () => {
     await page.reload();
     await expect(
       page.getByRole("button", {
-        name: "4 QA verdict in progress",
+        name: "4 Pending: generating",
         exact: true,
       })
     ).toHaveAttribute("aria-pressed", "true");
@@ -865,7 +870,7 @@ test.describe("real components with local fixture API", () => {
   }) => {
     await page.goto("/experiments/review-demo?scenario=unreviewed-only");
     await page
-      .getByRole("button", { name: "2 No current QA verdict", exact: true })
+      .getByRole("button", { name: "2 Pending: no current verdict", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Unreviewed version", exact: true })
@@ -878,7 +883,7 @@ test.describe("real components with local fixture API", () => {
     ).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: "0 QA verdict in progress",
+        name: "0 Pending: generating",
         exact: true,
       })
     ).toHaveCount(0);
@@ -949,7 +954,7 @@ test.describe("real components with local fixture API", () => {
       "/tasks/stale-review?version=8&drawer=task&taskPane=overview"
     );
     await expect(
-      page.getByText("No QA verdict for this version", { exact: true }).first()
+      page.getByText("Verdict pending: regenerate for this version", { exact: true }).first()
     ).toBeVisible();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page
@@ -958,16 +963,16 @@ test.describe("real components with local fixture API", () => {
     await page.getByRole("menuitem", { name: /^v7/ }).click();
     await expect(page).toHaveURL(/version=(?:stale-review-v)?7/);
     await expect(
-      page.getByText("Accepted", { exact: true }).first()
+      page.getByText("Verdict accepted", { exact: true }).first()
     ).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/version=8/);
     await expect(
-      page.getByText("No QA verdict for this version", { exact: true }).first()
+      page.getByText("Verdict pending: regenerate for this version", { exact: true }).first()
     ).toBeVisible();
     await page.goForward();
     await expect(
-      page.getByText("Accepted", { exact: true }).first()
+      page.getByText("Verdict accepted", { exact: true }).first()
     ).toBeVisible();
   });
 
@@ -1019,7 +1024,7 @@ test.describe("real components with local fixture API", () => {
       })
       .click();
     await expect(
-      page.getByText("Accepted", { exact: true }).first()
+      page.getByText("Verdict accepted", { exact: true }).first()
     ).toBeVisible();
     await expect(
       page.getByText("Awaiting sign-off on v1", { exact: true })
@@ -1089,7 +1094,7 @@ test("task-page findings are counted and open independently", async ({
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Pre-trial audit", { exact: true })
+    page.getByText("Verdict rejected · Pre-trial audit", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("2 Must fix", { exact: true })).toBeVisible();
   await expect(page.getByText(/high confidence|The source audit/)).toHaveCount(
@@ -1162,7 +1167,9 @@ test("linked retained must-fix survives a historical optional audit finding", as
   await expect(findings.getByText("1 Must fix", { exact: true })).toHaveCount(
     0
   );
-  await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(/^(Verdict rejected: )?1 Must fix$/)
+  ).toBeVisible();
   await expect(
     page.locator('details[data-finding="retained-fix"]')
   ).toBeVisible();
@@ -1201,7 +1208,9 @@ test("rejection without structured findings keeps its reason behind a disclosure
     }
   );
   await page.goto("/tasks/task-a");
-  await expect(page.getByText("Rejected", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Verdict rejected", { exact: true })
+  ).toBeVisible();
   await expect(page.getByText(reason, { exact: true })).not.toBeVisible();
   await page
     .getByRole("button", { name: "View findings", exact: true })
@@ -1258,7 +1267,7 @@ test("a first run-review finding is counted without detailed findings in open", 
   );
   await page.goto("/tasks/task-a");
   await expect(
-    page.getByText("Rejected · Trial analysis", { exact: true })
+    page.getByText("Verdict rejected · Trial analysis", { exact: true })
   ).toBeVisible();
   await expect(page.getByText("1 Must fix", { exact: true })).toBeVisible();
   await page

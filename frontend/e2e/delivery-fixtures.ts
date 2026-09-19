@@ -108,8 +108,8 @@ export function reviewTaskRow(): DeliveryTaskBoardRow {
   const row = taskRow(1);
   row.task_name = "qa-golden-source-vadimdemedes__ink-303-927e39b0-88267eec";
   row.qa = {
-    status: "error",
-    detail: "No current QA verdict was generated",
+    status: "outdated",
+    detail: "No current QA verdict was generated; regenerate the QA verdict",
     trial_id: "qa-1",
     finished_at: null,
   };

@@ -48,19 +48,19 @@ for (const status of ["queued", "running"] as const) {
 }
 
 test("rejected experiment copy uses the must-fix count", () => {
-  expect(rejectedMustFixLabel(rejected)).toBe("Rejected");
+  expect(rejectedMustFixLabel(rejected)).toBe("Verdict rejected");
   expect(
     rejectedMustFixLabel({
       ...rejected,
       must_fix_count: 1,
     })
-  ).toBe("Rejected: 1 Must Fix");
+  ).toBe("Verdict rejected: 1 Must fix");
   expect(
     rejectedMustFixLabel({
       ...rejected,
       must_fix_count: 3,
     })
-  ).toBe("Rejected: 3 Must Fix");
+  ).toBe("Verdict rejected: 3 Must fix");
 });
 
 test("a failing solver run alone does not reject a task", () => {

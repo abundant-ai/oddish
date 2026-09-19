@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from test_statement_budgets import count_statements
@@ -16,6 +17,7 @@ from oddish.core.deliveries import (
     patch_delivery_core,
     set_manual_check_core,
 )
+from oddish.core.verdict_state import INSUFFICIENT_EVIDENCE_ERROR
 from oddish.db import (
     DeliverySnapshotModel,
     ExperimentModel,
@@ -1538,3 +1540,83 @@ async def test_delivery_failure_labels_identify_audit_state(
     check = _checks(board, task.id)["pre_trial_passed"]
     assert check.failure_labels == ([] if label is None else [label])
     assert check.status == ("pass" if label is None else "fail")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state, label",
+    [
+        ("rejected", "Verdict rejected"),
+        ("no_evidence", "Verdict pending: needs solver runs"),
+        ("stale_failed_qa", "Verdict pending: needs solver runs"),
+        ("older_version_qa", "Verdict pending: needs solver runs"),
+        ("never", "Verdict pending: not yet generated"),
+        ("qa_failed", "Verdict failed"),
+    ],
+)
+async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
+    session, state, label
+):
+    task, version, experiment = await _green_task(session, f"verdict-label-{state}")
+    if state == "rejected":
+        task.verdict = {"is_good": False, "verdict": "reject", "primary_issue": "x"}
+    else:
+        qa_trials = list(
+            await session.scalars(
+                select(TrialModel).where(
+                    TrialModel.task_id == task.id, TrialModel.kind == "qa"
+                )
+            )
+        )
+        if state == "stale_failed_qa":
+            # A failed run for this version predates the task settling without
+            # QA-eligible trials; the task's current state wins.
+            qa_trials[0].status = TrialStatus.FAILED
+            qa_trials[0].error_message = "worker crashed"
+        elif state == "older_version_qa":
+            # The only QA run belongs to the previous version.
+            newer = _version(
+                task, 2, pre_trial_status=VerdictStatus.SUCCESS, pre_trial={"items": []}
+            )
+            session.add(newer)
+            await session.flush()
+            task.current_version_id = newer.id
+        else:
+            for stale in qa_trials:
+                await session.delete(stale)
+        task.verdict = None
+        task.verdict_status = VerdictStatus.FAILED if state != "never" else None
+        task.verdict_error = {
+            "no_evidence": INSUFFICIENT_EVIDENCE_ERROR,
+            "stale_failed_qa": INSUFFICIENT_EVIDENCE_ERROR,
+            "older_version_qa": INSUFFICIENT_EVIDENCE_ERROR,
+            "qa_failed": "worker crashed",
+        }.get(state)
+        if state == "qa_failed":
+            failed_qa = _trial(
+                task, experiment, version.id, kind="qa", status=TrialStatus.FAILED
+            )
+            failed_qa.error_message = "worker crashed"
+            session.add(failed_qa)
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme", name=f"verdict-label-{state}", task_ids=[task.id]
+        ),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["verdict_ok"]
+    assert check.status == "fail"
+    assert check.failure_labels == [label]
+    qa = board.tasks[0].qa
+    if state in ("no_evidence", "stale_failed_qa", "older_version_qa"):
+        assert check.detail == INSUFFICIENT_EVIDENCE_ERROR
+        assert qa.status == "never"
+    if state in ("stale_failed_qa", "older_version_qa"):
+        assert qa.detail == INSUFFICIENT_EVIDENCE_ERROR
+    if state == "qa_failed":
+        assert check.detail == "worker crashed"
+        assert qa.status == "error"

@@ -15,7 +15,7 @@ test("retained findings take precedence over incomplete QA and a recorded sign-o
   row.checks.find((check) => check.key === "no_must_fix")!.status = "pass";
   row.ready = true;
   assert.equal(deliveryTaskState(row), "ready");
-  assert.equal(row.qa.status, "error"); // Explicit exceptions satisfy requirements; QA did not pass.
+  assert.equal(row.qa.status, "outdated"); // Explicit exceptions satisfy requirements; QA did not pass.
 });
 
 test("QA acceptance is not sign-off, and elapsed days do not change readiness", () => {
@@ -150,7 +150,7 @@ test("delivery rows expose only unsatisfied checks with configured counts", () =
       status: "waived",
       label: "Verdict",
       detail: "",
-      failure_labels: ["QA verdict needed"],
+      failure_labels: ["Verdict pending: not yet generated"],
     },
     {
       key: "signoff",
@@ -185,7 +185,7 @@ test("missing-version checks share one label and old snapshots do not invent cou
   row.checks.forEach((check) => delete check.failure_labels);
   // QA-first, matching deliveryCheckOrder: the verdict label leads.
   assert.deepEqual(deliveryTaskLabels(row), [
-    "QA verdict needed",
+    "Verdict pending: not yet generated",
     "Pre-trial audit needed",
     "Run requirements unmet",
   ]);
@@ -194,5 +194,7 @@ test("missing-version checks share one label and old snapshots do not invent cou
 test("delivery defect badges count only unacknowledged findings", () => {
   const row = reviewTaskRow();
   const count = row.defects.filter((defect) => !defect.acknowledged).length;
-  assert.deepEqual(deliveryTaskLabels(row), [`Rejected: ${count} Must Fix`]);
+  assert.deepEqual(deliveryTaskLabels(row), [
+    `Verdict rejected: ${count} Must fix`,
+  ]);
 });
