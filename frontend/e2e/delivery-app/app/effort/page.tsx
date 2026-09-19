@@ -41,6 +41,8 @@ const tasks: Task[] = ["repair-queue", "repair-writes", "repair-timeout"].map(
       status: "completed",
       priority: "low",
       experiment_id: "effort-preview",
+      experiment_name: "effort-preview",
+      experiment_is_public: false,
       total: 20,
       completed: 20,
       failed: 0,

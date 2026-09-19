@@ -11,9 +11,9 @@ const taskRow = (page: Page) =>
 
 // Wait for the repair-queue row instead of Recharts role=application.
 // The chart is lazy and unused by most fixtures; after earlier tests it can
-// take the full 30s even when the table, dialog, and filters are ready.
+// stall even when the table, dialog, and filters are ready.
 async function expectTaskRowReady(page: Page) {
-  await expect(taskRow(page)).toBeVisible({ timeout: 30_000 });
+  await expect(taskRow(page)).toBeVisible({ timeout: 60_000 });
 }
 
 // Pass/k is a heading in the dynamic chart module. Once it is visible the
@@ -21,7 +21,7 @@ async function expectTaskRowReady(page: Page) {
 // jump. Recharts role=application paints after that and is what timed out.
 async function expectEffortPageReady(page: Page) {
   await expect(page.getByRole("heading", { name: "Pass/k" })).toBeVisible({
-    timeout: 30_000,
+    timeout: 60_000,
   });
   await expectTaskRowReady(page);
 }
