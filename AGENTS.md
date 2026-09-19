@@ -2317,7 +2317,10 @@ After migrations, sample updates, and preserved-row restoration,
 reused previews. Raw seed inserts bypass the trial-write hooks, so
 `backend.preview_seed.refresh_browse_summaries` recalculates stored browse and
 per-model statistics from the preview's own trials using the core refresh
-function, in transactions of 200 task versions. Production aggregate totals
+function, in transactions of 200 task versions. Both metric refreshers acquire
+their sorted per-version advisory locks in one SQL statement per batch, retaining
+the same transaction lifetime and lock keys without per-version round trips.
+Production aggregate totals
 must not be copied: production contains trials outside the preview sample.
 This also repairs existing previews; browse requests retain their stored-summary
 read path. Summary repair overlaps approval sync and secret publication, and

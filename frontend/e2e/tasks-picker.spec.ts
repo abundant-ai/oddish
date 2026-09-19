@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
               },
             ]
           : path.endsWith("/facets")
-            ? {}
+            ? { categories: ["coding"], agent_models: [{ agent: "test-agent", model: "test-model" }] }
             : path.endsWith("/count")
               ? { total: 0 }
               : { items: [], total: 0, has_more: false };
@@ -321,10 +321,6 @@ for (const [filter, option, key, value] of [
   ["Agent · Model", "test-model", "agent_models", "test-agent:test-model"],
 ]) {
   test(`nested ${filter} accepts pointer clicks above its parent`, async ({ page }) => {
-    await page.route("**/api/tasks/browse/facets", (route) => route.fulfill({
-      json: { categories: ["coding"], agent_models: [{ agent: "test-agent", model: "test-model" }] },
-    }));
-    await page.reload();
     await page.getByRole("button", { name: /^Filters/ }).click();
     await page.getByRole("textbox", { name: "Find a filter" }).fill(filter);
     await page.getByRole("dialog", { name: "Task filters" }).getByRole("button", { name: "Any", exact: true }).click();

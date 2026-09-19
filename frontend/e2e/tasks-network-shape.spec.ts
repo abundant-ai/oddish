@@ -212,6 +212,13 @@ test.describe("tasks page network shape", () => {
       .toBe(1);
     expect(countSince(log, 0, COUNT_RE)).toBe(1);
 
+    // Tags are lazy now: opening Filters loads them once, then the dashboard
+    // and subsequent filter mounts must reuse that same vocabulary.
+    expect(countSince(log, 0, TAGS_RE)).toBe(0);
+    await page.getByRole("button", { name: /^Filters/ }).click();
+    await expect.poll(() => countSince(log, 0, TAGS_RE)).toBe(1);
+    await page.keyboard.press("Escape");
+
     // Phase 2 — leave through the nav (client-side, cache intact) and come
     // back. The grid must paint from the cache: the browse revalidation is
     // held open until after the rows are checked, so they cannot have come
@@ -233,7 +240,7 @@ test.describe("tasks page network shape", () => {
     await page.getByRole("link", { name: "Tasks" }).first().click();
     await expect(page).toHaveURL(/\/tasks/);
     await expect(settled.first()).toBeVisible({ timeout: 10_000 });
-    // Coming back re-mounted the sidebar too — it must not have re-asked
+    // Coming back re-mounted the toolbar too — it must not have re-asked
     // for its vocabularies (the dashboard leg is included in this window).
     expect(countSince(log, returnMark, FACETS_RE)).toBe(0);
     expect(countSince(log, returnMark, TAGS_RE)).toBe(0);

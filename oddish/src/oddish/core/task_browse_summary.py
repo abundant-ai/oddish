@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from sqlalchemy import Integer, case, func, select, text
+from sqlalchemy import Integer, case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,10 @@ from oddish.core.task_browse_metrics import (
     browse_trial_scope,
     trial_bucket_label,
 )
-from oddish.core.task_version_model_metrics import refresh_task_version_model_metrics
+from oddish.core.task_version_model_metrics import (
+    lock_task_version_metrics,
+    refresh_task_version_model_metrics,
+)
 from oddish.db import (
     TaskBrowseSummaryModel,
     TaskVersionModel,
@@ -97,14 +100,7 @@ async def refresh_task_browse_summaries(
     # Sorted transaction-scoped advisory locks preserve deterministic batch
     # ordering, and READ COMMITTED gives each aggregate statement a snapshot
     # taken after any preceding refresher commits.
-    for version_id in version_ids:
-        await session.execute(
-            text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtextextended(CAST(:version_id AS text), 0))"
-            ),
-            {"version_id": version_id},
-        )
+    await lock_task_version_metrics(session, version_ids)
     versions = (
         await session.execute(
             select(TaskVersionModel.id, TaskVersionModel.task_id)
