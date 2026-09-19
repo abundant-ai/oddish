@@ -1061,7 +1061,9 @@ async def _resolve_browse_authors(
     ``me`` resolves through the dashboard's owner resolution (the signed-in
     user, or the creator of the API key, plus that user's attribution
     aliases); every other token goes through the search-bar resolution. An
-    unresolvable ``me`` (a key with no creator) contributes nothing.
+    unresolvable ``me`` (a key with no creator) contributes nothing. The
+    browse handler runs on a read session, so a first-time profile is not
+    written here (``persist=False``); a background refresh stores it.
     """
     tokens = [token.strip() for token in (raw or "").split(",") if token.strip()]
     if not tokens:
@@ -1072,7 +1074,7 @@ async def _resolve_browse_authors(
     others = [token for token in tokens if token.lower() != "me"]
     if len(others) < len(tokens):
         me_user_id, me_handles, me_emails = await resolve_experiments_author(
-            session, auth, "me"
+            session, auth, "me", persist=False
         )
         if me_user_id and me_user_id != UNRESOLVED_EXPERIMENTS_OWNER:
             user_ids.append(me_user_id)
