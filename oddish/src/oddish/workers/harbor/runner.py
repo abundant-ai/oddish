@@ -152,6 +152,26 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # Compose agent-phase bridge below and remains unchanged for Modal and
 # single-container trials.
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
+# Every ``installed`` Harbor agent begins its install by asking the distro
+# package manager for curl (claude-code/opencode also want bash, nodejs, npm,
+# procps). That step runs under the ENVIRONMENT baseline like the rest of agent
+# setup, so on a closed task the mirrors have to be on the baseline too --
+# otherwise apt exits 100 "unable to fetch" and no agent is ever installed,
+# which is not distinguishable downstream from the agent failing the task
+# (3 LHTB trials died exactly this way once the blackhole was lifted, and 18
+# more hung on the blackhole itself, 2026-09-11).
+#
+# Slim Debian images are the common case; the Ubuntu and Alpine mirrors are
+# here because the same install step branches on apt-get/apk and a task may
+# ship either base.
+_SYSTEM_PACKAGE_HOSTS = (
+    "deb.debian.org",
+    "security.debian.org",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "ports.ubuntu.com",
+    "dl-cdn.alpinelinux.org",
+)
 # Gemini env the stock gemini-cli agent forwards: its transport base-URL keys
 # and its OAuth toggles. Both are single-sourced in model_hosts (the same source
 # the restricted-egress filter and host discovery read), so this fold cannot
@@ -1457,6 +1477,7 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1477,6 +1498,7 @@ def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """
     return [
         *OPENCODE_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1485,6 +1507,7 @@ def _gemini_cli_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
     """Hosts Gemini CLI needs during environment setup and agent execution."""
     return [
         *GEMINI_CLI_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *gemini_cli_transport_hosts(agent_config.env),
     ]
 
@@ -1499,6 +1522,7 @@ def _antigravity_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *ANTIGRAVITY_INSTALL_HOSTS,
+        *_SYSTEM_PACKAGE_HOSTS,
         *ANTIGRAVITY_RUNTIME_HOSTS,
         *outbound_hosts_for_model(
             agent_config.model_name,
@@ -1633,6 +1657,45 @@ def _assert_tpu_backend(environment, backend, override_tpu) -> None:
         f"environment=gke ('oddish run' auto-routes TPU tasks)."
     )
 
+
+def _numinous_trial_labels(
+    *,
+    existing: Any,
+    trial_id: str | None,
+    agent: str | None,
+    model: str | None,
+    experiment_id: str | None,
+    experiment_name: str | None,
+    org_id: str | None,
+    trial_kind: str | None,
+) -> dict[str, str]:
+    """Labels the Numinous environment puts on the sandbox at create.
+
+    Numinous Cloud groups trials into experiments and shows agent and reward
+    on the customer's console from these labels; without them a trial is an
+    anonymous sandbox there. The reward is stamped later from the END hook
+    (see ``_handle_harbor_event``). Empty values are dropped.
+    """
+    labels: dict[str, str] = {}
+    if isinstance(existing, dict):
+        labels.update({str(k): str(v) for k, v in existing.items() if v is not None})
+    # Which oddish deployment this trial belongs to (prod / staging / pr-N),
+    # so a provider console can link back to the right dashboard instead of
+    # assuming one. MODAL_APP_NAME is baked into every worker container.
+    deployment = os.environ.get("MODAL_APP_NAME") or None
+    for key, value in (
+        ("oddish.deployment", deployment),
+        ("oddish.experiment_id", experiment_id),
+        ("oddish.experiment_name", experiment_name),
+        ("oddish.trial_id", trial_id),
+        ("oddish.agent", agent),
+        ("oddish.model", model),
+        ("oddish.org_id", org_id),
+        ("oddish.kind", trial_kind),
+    ):
+        if value:
+            labels[key] = str(value)[:256]
+    return labels
 
 def _fallback_gpu_types(
     *,
@@ -1815,6 +1878,8 @@ async def run_harbor_trial_async(
     billed_user_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
     sandbox_launch: SandboxLaunchContext | None = None,
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
     trial_kind: str = "agent",
     fallback_from_environment: str | None = None,
 ) -> HarborOutcome:
@@ -1866,8 +1931,122 @@ async def run_harbor_trial_async(
             raw=raw,
             hc=hc,
             backend=backend,
+            experiment_id=experiment_id,
+            experiment_name=experiment_name,
         )
 
+
+def widen_environment_baseline_for_agent_install(
+    *,
+    env_config: HarborEnvironmentConfig,
+    agent: str,
+    agent_config: Any,
+    task_path: Path,
+) -> None:
+    """Grant the agent's installer hosts on the ENVIRONMENT baseline.
+
+    Harbor installs an ``installed`` agent during ``_setup_agent()``, which
+    runs under the environment baseline -- the agent-phase allowlist only
+    takes effect around ``agent.run()``. A closed task (``[environment]
+    allow_internet=false`` -> a no-network baseline for every phase) therefore
+    has to widen the baseline, or the installer cannot be fetched at all.
+
+    This lives in one function because it must apply to EVERY way a trial can
+    reach Harbor. It used to be inline in the in-process path only, so a run
+    that pinned its own Harbor (``--harbor <sha>``, the ephemeral variant,
+    which returns early and serializes the environment config before this
+    point) silently skipped it: the sandbox came up with a bare no-network
+    policy, apt and curl blackholed rather than being refused, and agent setup
+    died on Harbor's 360 s cap. 23 of 47 LHTB trials failed that way with no
+    agent ever installed (2026-09-11).
+    """
+    # Claude Code downloads its CLI at agent-setup and calls its model
+    # endpoint during agent.run(). On closed-internet tasks, installer CDN
+    # hosts and custom model routes are not always in the task allowlist, so
+    # allow both via the environment baseline (which spans install + run).
+    # Model API hosts are also injected automatically for restricted agent
+    # phases via _apply_restricted_agent_network_defaults.
+    #
+    # This preserves the existing setup lifecycle for every non-Compose
+    # shape, and is independent from the class-profile boundary that owns
+    # the restricted Daytona Compose agent phase -- which is why that shape
+    # is excluded here rather than having both paths widen the baseline.
+    if "claude-code" in (agent or "").strip().lower() and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _claude_code_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
+    # runs under the environment baseline -- same lifecycle problem as the
+    # claude-code arm above, same solution: allow install + model hosts via
+    # the environment baseline, which spans install and run. On a public
+    # baseline the merge is a no-op (harbor ignores extras there), so
+    # modern swe-marathon-shaped tasks (public setup -> restricted agent)
+    # keep their agent phase free of the install hosts.
+    if (agent or "").strip().lower() == "opencode" and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _opencode_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # Gemini CLI's nvm, Node, and npm install happens during agent setup,
+    # under the environment baseline.  Do not merge it for a restricted
+    # Daytona Compose task: that shape owns a runtime-only agent profile and
+    # its setup phase is already public.
+    if (
+        (agent or "").strip().lower() == "gemini-cli"
+        or "gemini_cli:"
+        in (getattr(agent_config, "import_path", None) or "").strip().lower()
+    ) and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _gemini_cli_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
+
+    # agy self-installs (install.sh -> manifest -> GCS tarball) at
+    # agent-setup, which runs under the environment baseline -- same
+    # lifecycle problem as the opencode arm above, same solution: allow
+    # install + model hosts via the environment baseline, which spans
+    # install and run. Checked on the raw requested agent (not
+    # agent_config.name/import_path, which only diverge here via the
+    # Compose wrapper swap this branch already excludes by construction)
+    # OR an explicit import_path, mirroring the is_gemini check in
+    # _resolved_runtime_transport_env, so a caller-submitted
+    # raw_agent_config import_path is covered too.
+    if (
+        (agent or "").strip().lower() == "antigravity-cli"
+        or "antigravity_cli:"
+        in (getattr(agent_config, "import_path", None) or "").strip().lower()
+    ) and not (
+        _supports_daytona_compose_restricted_agent_network(
+            task_path=task_path,
+            environment_config=env_config,
+        )
+    ):
+        hosts = _antigravity_environment_hosts(agent_config)
+        env_config.extra_allowed_hosts = [
+            *env_config.extra_allowed_hosts,
+            *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+        ]
 
 def uses_probe_routing(*, harbor_config: dict | None, trial_kind: str | None) -> bool:
     """Whether a trial uses the routing rules shared with operator probes.
@@ -1909,6 +2088,8 @@ async def _run_harbor_trial_async_impl(
     sandbox_launch: SandboxLaunchContext | None,
     trial_kind: str,
     fallback_from_environment: str | None,
+    experiment_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> HarborOutcome:
     from oddish.workers.analysis_trials import is_analysis_kind
 
@@ -1992,6 +2173,20 @@ async def _run_harbor_trial_async_impl(
         sandbox_launch=sandbox_launch,
         fallback_from_environment=fallback_from_environment,
     )
+    if environment == EnvironmentType.NUMINOUS:
+        resolved_environment_config.kwargs = {
+            **resolved_environment_config.kwargs,
+            "labels": _numinous_trial_labels(
+                existing=resolved_environment_config.kwargs.get("labels"),
+                trial_id=trial_id,
+                agent=agent,
+                model=model,
+                experiment_id=experiment_id,
+                experiment_name=experiment_name,
+                org_id=org_id,
+                trial_kind=trial_kind,
+            ),
+        }
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
@@ -2034,6 +2229,23 @@ async def _run_harbor_trial_async_impl(
                 job_dir=None,
                 exception_type="RestrictedNetworkProfileError",
             )
+        # The ephemeral variant serializes the environment config and runs
+        # out-of-process, so it must widen the baseline here: the in-process
+        # arm below is past this return. Without it a closed task reaches the
+        # sandbox as a bare no-network policy and the agent is never installed.
+        widen_environment_baseline_for_agent_install(
+            env_config=resolved_environment_config,
+            agent=agent,
+            agent_config=_build_agent_config(
+                agent=agent,
+                model=model,
+                raw_harbor_config=raw,
+                is_probe=probe_routing,
+                probe_oddish_env=extra_agent_env,
+            ),
+            task_path=task_path,
+        )
+
         from .ephemeral import run_ephemeral_harbor_trial
 
         fallback_tmpdir: tempfile.TemporaryDirectory | None = None
@@ -2268,94 +2480,12 @@ async def _run_harbor_trial_async_impl(
             if restricted_compose_kind in ("dynamic", "static"):
                 assert_no_serialized_restricted_routes(agent_config)
 
-        # Claude Code downloads its CLI at agent-setup and calls its model
-        # endpoint during agent.run(). On closed-internet tasks, installer CDN
-        # hosts and custom model routes are not always in the task allowlist, so
-        # allow both via the environment baseline (which spans install + run).
-        # Model API hosts are also injected automatically for restricted agent
-        # phases via _apply_restricted_agent_network_defaults.
-        #
-        # This preserves the existing setup lifecycle for every non-Compose
-        # shape, and is independent from the class-profile boundary that owns
-        # the restricted Daytona Compose agent phase -- which is why that shape
-        # is excluded here rather than having both paths widen the baseline.
-        if "claude-code" in (agent or "").strip().lower() and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _claude_code_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
-        # runs under the environment baseline -- same lifecycle problem as the
-        # claude-code arm above, same solution: allow install + model hosts via
-        # the environment baseline, which spans install and run. On a public
-        # baseline the merge is a no-op (harbor ignores extras there), so
-        # modern swe-marathon-shaped tasks (public setup -> restricted agent)
-        # keep their agent phase free of the install hosts.
-        if (agent or "").strip().lower() == "opencode" and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _opencode_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # Gemini CLI's nvm, Node, and npm install happens during agent setup,
-        # under the environment baseline.  Do not merge it for a restricted
-        # Daytona Compose task: that shape owns a runtime-only agent profile and
-        # its setup phase is already public.
-        if (
-            (agent or "").strip().lower() == "gemini-cli"
-            or "gemini_cli:"
-            in (getattr(agent_config, "import_path", None) or "").strip().lower()
-        ) and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _gemini_cli_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
-        # agy self-installs (install.sh -> manifest -> GCS tarball) at
-        # agent-setup, which runs under the environment baseline -- same
-        # lifecycle problem as the opencode arm above, same solution: allow
-        # install + model hosts via the environment baseline, which spans
-        # install and run. Checked on the raw requested agent (not
-        # agent_config.name/import_path, which only diverge here via the
-        # Compose wrapper swap this branch already excludes by construction)
-        # OR an explicit import_path, mirroring the is_gemini check in
-        # _resolved_runtime_transport_env, so a caller-submitted
-        # raw_agent_config import_path is covered too.
-        if (
-            (agent or "").strip().lower() == "antigravity-cli"
-            or "antigravity_cli:"
-            in (getattr(agent_config, "import_path", None) or "").strip().lower()
-        ) and not (
-            _supports_daytona_compose_restricted_agent_network(
-                task_path=effective_task_path,
-                environment_config=env_config,
-            )
-        ):
-            hosts = _antigravity_environment_hosts(agent_config)
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
-            ]
-
+        widen_environment_baseline_for_agent_install(
+            env_config=env_config,
+            agent=agent,
+            agent_config=agent_config,
+            task_path=effective_task_path,
+        )
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
         # failure never blocks a trial run.
@@ -2468,6 +2598,7 @@ async def _run_harbor_trial_async_impl(
                         job,
                         trial_id=trial_id,
                         org_id=org_id,
+                        environment=environment,
                         billed_user_id=billed_user_id,
                     )
                 else:

@@ -264,3 +264,109 @@ async def test_quota_control_failure_does_not_wait_forever_for_job(monkeypatch):
 
     release_cleanup.set()
     await quota_control.asyncio.wait_for(cleanup_finished.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_quota_control_signals_the_provider_on_each_transition(monkeypatch):
+    """Pausing a harbor job suspends the sandbox; the provider also needs to
+    know WHY, so it records paused-for-credit (TTL clock stopped, storage-only
+    billing) rather than a plain suspend. credit_exhausted goes out before the
+    pause, credit_restored after the resume, and the order is the contract."""
+    stop = quota_control.asyncio.Event()
+    controller = quota_control.QuotaPauseController()
+    events: list[str] = []
+
+    async def pause():
+        events.append("job.pause")
+
+    async def resume():
+        events.append("job.resume")
+
+    job = SimpleNamespace(pause=pause, resume=resume)
+    monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
+    monkeypatch.setattr(settings, "quota_pause_refresh_seconds", 1000)
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    monkeypatch.setattr(
+        quota_control, "quota_pause_requested", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(quota_control, "_record_pause_state", AsyncMock())
+
+    async def fake_signal(environment, trial_id, *, kind, **_):
+        events.append(f"signal:{kind}:{environment}")
+        return True
+
+    monkeypatch.setattr(quota_control, "signal_spend", fake_signal)
+
+    async def finish_after_resume():
+        while "job.pause" not in events:
+            await quota_control.asyncio.sleep(0)
+        controller.requested = False
+        while "job.resume" not in events:
+            await quota_control.asyncio.sleep(0)
+        stop.set()
+
+    await quota_control.asyncio.gather(
+        quota_control.control_job_quota_pause(
+            job,
+            trial_id="trial-1",
+            org_id="org-1",
+            billed_user_id="user-1",
+            stop=stop,
+            controller=controller,
+            environment="numinous",
+        ),
+        finish_after_resume(),
+    )
+
+    assert events == [
+        "signal:credit_exhausted:numinous",
+        "job.pause",
+        "job.resume",
+        "signal:credit_restored:numinous",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_quota_control_without_a_provider_still_pauses(monkeypatch):
+    """The signal is additive. A caller that passes no environment (every
+    call site before this change) behaves exactly as before."""
+    stop = quota_control.asyncio.Event()
+    controller = quota_control.QuotaPauseController()
+    job = SimpleNamespace(pause=AsyncMock(), resume=AsyncMock())
+    monkeypatch.setattr(settings, "quota_pause_poll_seconds", 0.001)
+    monkeypatch.setattr(settings, "quota_pause_refresh_seconds", 1000)
+    monkeypatch.setattr(quota_control, "get_session", _empty_session)
+    monkeypatch.setattr(
+        quota_control, "quota_pause_requested", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(quota_control, "_record_pause_state", AsyncMock())
+    signal = AsyncMock(return_value=False)
+    monkeypatch.setattr(quota_control, "signal_spend", signal)
+
+    async def finish():
+        while not job.pause.await_count:
+            await quota_control.asyncio.sleep(0)
+        controller.requested = False
+        while not job.resume.await_count:
+            await quota_control.asyncio.sleep(0)
+        stop.set()
+
+    await quota_control.asyncio.gather(
+        quota_control.control_job_quota_pause(
+            job,
+            trial_id="trial-1",
+            org_id="org-1",
+            billed_user_id="user-1",
+            stop=stop,
+            controller=controller,
+        ),
+        finish(),
+    )
+    job.pause.assert_awaited_once_with()
+    job.resume.assert_awaited_once_with()
+    # signalled with environment=None, which the helper turns into a no-op
+    assert [c.kwargs["kind"] for c in signal.await_args_list] == [
+        "credit_exhausted",
+        "credit_restored",
+    ]
+    assert all(c.args[0] is None for c in signal.await_args_list)

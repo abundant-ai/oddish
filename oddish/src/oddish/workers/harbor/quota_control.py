@@ -9,6 +9,7 @@ from typing import Any
 from oddish.config import settings
 from oddish.core.quota_pause import quota_pause_requested
 from oddish.db import TrialModel, TrialStatus, get_session
+from oddish.workers.harbor.spend_signal import signal_spend
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ async def control_job_quota_pause(
     billed_user_id: str | None,
     stop: asyncio.Event,
     controller: QuotaPauseController,
+    environment: Any = None,
 ) -> None:
     last_refresh = 0.0
     while not stop.is_set():
@@ -81,9 +83,16 @@ async def control_job_quota_pause(
             try:
                 if controller.requested:
                     logger.warning("metric=quota.job_pausing trial_id=%s", trial_id)
+                    # Tell the provider why before the pause, so the sandbox
+                    # is recorded as paused-for-credit (TTL clock stopped,
+                    # storage-only billing) rather than merely suspended, and
+                    # so a provider that pauses on this signal alone is
+                    # already pausing when job.pause() arrives.
+                    await signal_spend(environment, trial_id, kind="credit_exhausted")
                     await job.pause()
                 else:
                     await job.resume()
+                    await signal_spend(environment, trial_id, kind="credit_restored")
             except asyncio.CancelledError:
                 raise
             except NotImplementedError:
@@ -139,6 +148,7 @@ async def run_job_with_quota_control(
     trial_id: str,
     org_id: str,
     billed_user_id: str | None,
+    environment: Any = None,
 ) -> Any:
     controller = QuotaPauseController()
     _controllers[trial_id] = controller
@@ -152,6 +162,7 @@ async def run_job_with_quota_control(
             billed_user_id=billed_user_id,
             stop=stop,
             controller=controller,
+            environment=environment,
         )
     )
     try:
@@ -199,6 +210,9 @@ async def run_job_with_quota_control(
                 if controller.paused:
                     try:
                         await job.resume()
+                        await signal_spend(
+                            environment, trial_id, kind="credit_restored"
+                        )
                     except Exception:
                         logger.exception(
                             "Failed to resume quota-paused Harbor job after normal "
