@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from rich.console import Console
@@ -54,17 +54,37 @@ console = Console()
 # Environments the hosted (Modal-backed) API dispatches directly; any other
 # ``--env`` on that path is coerced to Modal. Explicitly selected cloud backends
 # must reach the hosted API unchanged.
-_HOSTED_PASSTHROUGH_ENVIRONMENTS = {
-    EnvironmentType.MODAL,
-    EnvironmentType.DAYTONA,
-    EnvironmentType.EC2,
-    EnvironmentType.GKE,
-}
-# Public Harbor releases may lag fork-only environments.
-if hasattr(EnvironmentType, "ARCHIL"):
-    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.ARCHIL)
-if hasattr(EnvironmentType, "NUMINOUS"):
-    _HOSTED_PASSTHROUGH_ENVIRONMENTS.add(EnvironmentType.NUMINOUS)
+def _hosted_passthrough_environments(
+    environment_type: Any = EnvironmentType,
+) -> set[Any]:
+    environments = {
+        environment_type.MODAL,
+        environment_type.DAYTONA,
+        environment_type.EC2,
+        environment_type.GKE,
+    }
+    # Public Harbor releases may lag fork-only environments.
+    for name in ("ARCHIL", "NUMINOUS", "THUNDER"):
+        member = getattr(environment_type, name, None)
+        if member is not None:
+            environments.add(member)
+    return environments
+
+
+_HOSTED_PASSTHROUGH_ENVIRONMENTS = _hosted_passthrough_environments()
+
+
+def _normalize_hosted_environment(
+    environment: EnvironmentType | None, *, is_modal_api: bool
+) -> EnvironmentType | None:
+    """Preserve supported hosted providers and coerce local-only ones to Modal."""
+    if (
+        environment is not None
+        and is_modal_api
+        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
+    ):
+        return EnvironmentType.MODAL
+    return environment
 
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
@@ -77,6 +97,25 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     # it unset -> None); treat an absent value as 0 GPUs instead of crashing
     # on ``None > 0``.
     return (task_config.environment.gpus or 0) > 0
+
+
+def _task_config_gpu_types(task_path: Path) -> list[str] | None:
+    """The task's requested GPU types, or ``None`` for any type.
+
+    An exact ``gpu_type`` environment kwarg wins over the
+    ``[environment].gpu_types`` list, as it does when Harbor launches the
+    environment and in the Thunder handoff remap.
+    """
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return None
+    environment = task_config.environment
+    exact_gpu_type = (environment.kwargs or {}).get("gpu_type")
+    if exact_gpu_type is not None:
+        return [str(exact_gpu_type)]
+    return environment.gpu_types or None
 
 
 def _task_config_requests_tpu(task_path: Path) -> bool:
@@ -140,18 +179,31 @@ def _validate_explicit_environment_for_task(
         )
 
 
+def _task_requires_gpu(task_path: Path | None, *, override_gpus: int | None) -> bool:
+    """Whether this run needs GPUs: the override wins, else task.toml decides."""
+    if override_gpus is not None:
+        return override_gpus > 0
+    return task_path is not None and _task_config_requests_gpu(task_path)
+
+
 def _default_cloud_environment_for_task(
     task_path: Path | None,
     *,
     override_gpus: int | None,
-) -> EnvironmentType:
-    from oddish.runtime.routing import default_cloud_environment
+) -> EnvironmentType | None:
+    """Pick the environment for a cloud run that named none, or ``None`` to let
+    the hosted API negotiate it.
+
+    The CLI resolves only what needs no knowledge of the deployment: TPU work
+    can run nowhere but GKE, and plain CPU work keeps the established Daytona
+    (or opt-in Numinous) default. Which GPU backend a deployment offers, and
+    whether a private-registry pull forces Modal, is the hosted policy's call:
+    the payload carries ``requires_gpu`` and ``registry_auth`` so it can decide.
+    """
+    from oddish.config import settings
 
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
-    if override_gpus is not None:
-        requires_gpu = override_gpus > 0
-    else:
-        requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+    requires_gpu = _task_requires_gpu(task_path, override_gpus=override_gpus)
 
     if requires_gpu and requires_tpu:
         raise typer.BadParameter(
@@ -165,7 +217,13 @@ def _default_cloud_environment_for_task(
         # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
         # hosted deployment validates the choice against its own cloud policy.
         return EnvironmentType.GKE
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    # Client defaults must not import server-side sandbox implementations.
+    # The hosted API validates the requested environment against its policy.
+    if settings.numinous_enabled and (not requires_gpu or settings.numinous_gpu_enabled):
+        return EnvironmentType.NUMINOUS
+    if requires_gpu:
+        return None
+    return EnvironmentType.DAYTONA
 
 
 def _map_batch_sweep_results(
@@ -330,7 +388,7 @@ def run(
             "-e",
             help=(
                 "Execution environment (docker, daytona, ec2, e2b, modal, archil, "
-                "runloop, gke). "
+                "runloop, gke, thunder). "
                 "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
                 "tasks, docker otherwise."
             ),
@@ -912,16 +970,17 @@ def run(
 
     if environment is None and not existing_task_ids and not is_modal_api:
         environment = EnvironmentType.DOCKER
-    elif (
-        environment is not None
-        and is_modal_api
-        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
-    ):
-        console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
-            "--env gke, --env archil, and --env numinous; forcing --env modal[/yellow]"
+    else:
+        normalized_environment = _normalize_hosted_environment(
+            environment, is_modal_api=is_modal_api
         )
-        environment = EnvironmentType.MODAL
+        if environment is not None and normalized_environment != environment:
+            console.print(
+                "[yellow]Oddish Cloud supports --env modal, --env daytona, --env ec2, "
+                "--env gke, --env archil, --env numinous, and --env thunder; "
+                "forcing --env modal[/yellow]"
+            )
+        environment = normalized_environment
 
     # Upload and submit all tasks
     all_results = []
@@ -941,8 +1000,13 @@ def run(
 
         task_configs = copy.deepcopy(configs)
         task_environment = environment
+        requires_gpu = False
+        gpu_types: list[str] | None = None
         _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
+            requires_gpu = _task_requires_gpu(task_path, override_gpus=override_gpus)
+            if requires_gpu:
+                gpu_types = _task_config_gpu_types(task_path)
             task_environment = _default_cloud_environment_for_task(
                 task_path,
                 override_gpus=override_gpus,
@@ -951,6 +1015,8 @@ def run(
             task_id=task_id,
             configs=task_configs,
             environment=task_environment,
+            requires_gpu=requires_gpu,
+            gpu_types=gpu_types,
             user=user,
             priority=priority,
             experiment_id=experiment_id,

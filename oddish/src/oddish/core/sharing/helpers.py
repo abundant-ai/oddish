@@ -15,7 +15,6 @@ from sqlalchemy.orm.attributes import set_committed_value
 from oddish.core.cost_exclusions import load_cost_exclusions
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
-    build_task_status_responses_from_counts,
     build_trial_response,
     fetch_trial_queue_info,
 )
@@ -37,7 +36,7 @@ from oddish.db import (
     get_storage_client,
     task_experiments,
 )
-from oddish.schemas import TaskStatusResponse, TrialResponse
+from oddish.schemas import TrialResponse
 
 
 def generate_public_token() -> str:
@@ -171,44 +170,6 @@ async def get_public_trial_for_experiment(
         .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
-
-
-async def get_task_status_counts(
-    session: AsyncSession,
-    task_id: str,
-    filters: list,
-    *,
-    join_experiment: bool = False,
-) -> TaskStatusResponse:
-    """Get task status with aggregated trial counts."""
-    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
-    # but its response builder still reads ``task.experiments``.
-    query = (
-        select(TaskModel)
-        .options(selectinload(TaskModel.experiments))
-        .where(TaskModel.id == task_id)
-    )
-    if join_experiment:
-        query = query.join(
-            task_experiments, task_experiments.c.task_id == TaskModel.id
-        ).join(
-            ExperimentModel,
-            ExperimentModel.id == task_experiments.c.experiment_id,
-        )
-        query = query.where(task_experiments.c.deleted_at.is_(None))
-        # A task can belong to several matching experiments; without
-        # DISTINCT the join yields one row per membership and
-        # scalar_one_or_none() raises MultipleResultsFound.
-        query = query.distinct()
-    for clause in filters:
-        query = query.where(clause)
-
-    result = await session.execute(query)
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-    return (await build_task_status_responses_from_counts(session, tasks=[task]))[0]
 
 
 async def list_experiment_trials_for_org(
@@ -531,12 +492,13 @@ async def list_trial_files_s3(
     cursor: str | None = None,
     presign: bool = True,
     presign_expiration: int = 900,
+    attempt: int | None = None,
 ) -> dict:
     """List files in a trial's S3 directory with optional presigned URLs."""
     storage = get_storage_client()
 
     try:
-        layout = await resolve_trial_artifact_layout(trial, storage)
+        layout = await resolve_trial_artifact_layout(trial, storage, attempt=attempt)
         if layout.mode is TrialArtifactMode.UNAVAILABLE:
             raise HTTPException(status_code=404, detail="No authoritative trial files")
         assert layout.artifact_prefix is not None
@@ -559,6 +521,7 @@ async def list_trial_files_s3(
 async def get_trial_file_content_s3(
     trial: TrialModel,
     file_path: str,
+    attempt: int | None = None,
 ) -> tuple[bytes, str]:
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
@@ -570,7 +533,7 @@ async def get_trial_file_content_s3(
         media_type = "application/octet-stream"
 
     storage = get_storage_client()
-    layout = await resolve_trial_artifact_layout(trial, storage)
+    layout = await resolve_trial_artifact_layout(trial, storage, attempt=attempt)
     if layout.mode is TrialArtifactMode.UNAVAILABLE:
         raise HTTPException(status_code=404, detail="No authoritative trial files")
     assert layout.artifact_prefix is not None

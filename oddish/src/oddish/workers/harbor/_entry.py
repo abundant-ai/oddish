@@ -48,6 +48,23 @@ logger = logging.getLogger("oddish.harbor_entry")
 EVENT_SENTINEL = "_oddish_harbor_event"
 
 
+def _thunder_capacity_error_metadata(exc: BaseException) -> dict[str, Any]:
+    """Return provider metadata only for the exact typed capacity signal."""
+    from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
+    from thunder_sandbox import CapacityError
+
+    if not isinstance(exc, CapacityError):
+        return {}
+    code = exc.code
+    if code != THUNDER_CAPACITY_UNAVAILABLE_CODE:
+        return {}
+    return {
+        "provider_error_code": code,
+        "http_status": exc.status,
+        "retry_after_seconds": exc.retry_after,
+    }
+
+
 def _read_payload_and_unlink(payload_path: Path) -> dict[str, Any]:
     """Read the private parent/child payload and remove it immediately."""
     try:
@@ -69,9 +86,14 @@ def _event_name(event: Any) -> str:
     return raw.lower().replace("_", "-")
 
 
-def _apply_sibling_harbor_patches(*, require_ec2: bool = False) -> Any:
+def _apply_sibling_harbor_patches(
+    *, require_ec2: bool = False, require_thunder: bool = False
+) -> Any:
     module = importlib.import_module("oddish.workers.harbor.patches")
-    module.apply_harbor_patches(require_ec2=require_ec2)
+    module.apply_harbor_patches(
+        require_ec2=require_ec2,
+        require_thunder=require_thunder,
+    )
     return module
 
 
@@ -204,6 +226,16 @@ def _build_job_config(payload: dict[str, Any]):
             **dict(payload.get("extra_agent_env") or {}),
         }
 
+    # A probe's Task-tool subagents need an explicit model, and Harbor only
+    # forwards one on its custom-base-url branch. The parent pins it for every
+    # other agent, but claude-code's model id is resolved here, so the pin has
+    # to be taken from the model this child actually runs -- otherwise the probe
+    # and its subagents end up on different ids.
+    if payload.get("probe_subagent_model") and agent_kwargs.get("model_name"):
+        env = dict(agent_kwargs.get("env") or {})
+        env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_kwargs["model_name"])
+        agent_kwargs["env"] = env
+
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:
         agent_kwargs["name"] = None
@@ -240,7 +272,10 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     from oddish.core.harbor_artifacts import write_trial_selection_manifest
 
     environment_type = (payload.get("environment_config") or {}).get("type")
-    patch_module = _apply_sibling_harbor_patches(require_ec2=environment_type == "ec2")
+    patch_module = _apply_sibling_harbor_patches(
+        require_ec2=environment_type == "ec2",
+        require_thunder=environment_type == "thunder",
+    )
     Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
@@ -319,6 +354,7 @@ def main(argv: list[str]) -> int:
             "error": f"{type(exc).__name__}: {exc}",
             "exception_type": type(exc).__name__,
             "traceback": traceback.format_exc()[-4000:],
+            **_thunder_capacity_error_metadata(exc),
         }
         outcome_path.write_text(json.dumps(outcome))
         return 1

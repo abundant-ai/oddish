@@ -9,7 +9,7 @@ from fastapi import Body, FastAPI, Header, HTTPException, Query, Response, statu
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from typing import Annotated, cast
+from typing import Annotated
 import uvicorn
 from rich.console import Console
 
@@ -131,15 +131,6 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 _CONCURRENCY_OVERRIDES: dict[str, int] = {}
-
-
-def get_queue_concurrency(queue_key: str) -> int:
-    """Get concurrency limit for a queue key (with runtime overrides)."""
-    overrides = _get_concurrency_overrides()
-    normalized = settings.normalize_queue_key(queue_key)
-    if normalized in overrides:
-        return overrides[normalized]
-    return cast(int, settings.get_model_concurrency(normalized))
 
 
 def _get_concurrency_overrides() -> dict[str, int]:
@@ -994,8 +985,13 @@ async def list_trial_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    attempt: int | None = Query(None, ge=1),
 ) -> dict:
-    """List all files in S3 for a trial, with presigned URLs for direct access."""
+    """List all files in S3 for a trial, with presigned URLs for direct access.
+
+    ``attempt`` names one retry directory explicitly, for a retried trial whose
+    sibling attempts the server refuses to choose between.
+    """
     trial = await _get_detached_trial(trial_id)
     return await list_trial_files_s3(
         trial,
@@ -1004,6 +1000,7 @@ async def list_trial_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        attempt=attempt,
     )
 
 
@@ -1017,15 +1014,21 @@ async def debug_trial_files_endpoint(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/files/{file_path:path}")
-async def get_trial_file(trial_id: str, file_path: str) -> Response:
+async def get_trial_file(
+    trial_id: str,
+    file_path: str,
+    attempt: int | None = Query(None, ge=1),
+) -> Response:
     """Get a file from a trial's S3 directory by relative path."""
     trial = await _get_detached_trial(trial_id)
     try:
-        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        content, media_type = await get_trial_file_content_s3(
+            trial, file_path, attempt=attempt
+        )
         return Response(content=content, media_type=media_type)
     except HTTPException:
         pass
-    content, media_type = await read_trial_agent_file(trial, file_path)
+    content, media_type = await read_trial_agent_file(trial, file_path, attempt=attempt)
     return Response(content=content, media_type=media_type)
 
 

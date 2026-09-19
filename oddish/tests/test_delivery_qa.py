@@ -175,7 +175,7 @@ async def test_qa_verdict_provenance(session, with_verdict, grader):
     await session.flush()
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     owns_verdict = grader == "current" or (grader == "missing" and with_verdict)
-    assert board.tasks[0].qa.status == ("accepted" if owns_verdict else "error")
+    assert board.tasks[0].qa.status == ("accepted" if owns_verdict else "outdated")
 
 
 @pytest.mark.asyncio
@@ -214,7 +214,6 @@ async def test_qa_status_tracks_replacement_and_evidence_changes(session, change
         qa.harbor_config = {}
     elif change == "no_verdict":
         task.verdict = None
-        expected = "error"
     else:
         expected = change
         replacement = _trial(

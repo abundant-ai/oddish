@@ -13,6 +13,7 @@ the queue execution code.
 from __future__ import annotations
 
 
+from oddish.core.harbor_artifacts import THUNDER_CAPACITY_UNAVAILABLE_CODE
 from oddish.db import (
     TrialModel,
     TrialStatus,
@@ -24,8 +25,15 @@ from oddish.registry_auth import (
     current_registry_credentials,
     decrypt_credentials,
 )
+from oddish.runtime.sandbox_lifecycle import DEFAULT_EXECUTION_LANE
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
+from oddish.workers.queue.thunder_fallback import (
+    THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+    emit_thunder_handoff_event,
+    thunder_attempt_budget_fallback_provider,
+    thunder_capacity_fallback_provider,
+)
 from oddish.workers.queue.trial_handler import run_trial_job
 
 
@@ -38,6 +46,7 @@ class WorkerJobLike:
     worker_id: str | None
     queue_slot: int | None
     modal_function_call_id: str | None
+    reroute_from_environment: str | None
 
 
 def _fail_retryable(message: str) -> JobOutcome:
@@ -76,6 +85,7 @@ class TrialJobHandler:
                 modal_function_call_id=job.modal_function_call_id,
                 worker_job_id=job.id,
                 worker_job_attempt=job.attempts,
+                fallback_from_environment=job.reroute_from_environment,
             )
         finally:
             current_registry_credentials.reset(cred_token)
@@ -84,17 +94,58 @@ class TrialJobHandler:
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
                 return _fail_permanent(f"Trial {trial_id} vanished mid-run")
+            environment = getattr(trial, "environment", None)
+            retry_after_seconds = (
+                harbor_outcome.retry_after_seconds
+                if harbor_outcome is not None
+                else None
+            )
+            fallback_provider = thunder_capacity_fallback_provider(
+                environment, harbor_outcome
+            )
+            if fallback_provider is not None:
+                return JobOutcome.reroute_to(
+                    target_environment=fallback_provider,
+                    target_execution_lane=DEFAULT_EXECUTION_LANE,
+                    reason=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+                    retry_after_seconds=retry_after_seconds,
+                    subject_attempt=trial.attempts,
+                )
             if trial.status == TrialStatus.SUCCESS:
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:
+                error_message = (
+                    trial.error_message or f"Trial {trial_id} marked RETRYING"
+                )
+                budget_provider = thunder_attempt_budget_fallback_provider(
+                    environment,
+                    status=trial.status,
+                    attempts=getattr(trial, "attempts", None),
+                )
+                if budget_provider is not None:
+                    # Ordinary settlement already marked this retry; the
+                    # dispatcher moves it to the fallback provider atomically
+                    # and records the plain retry instead if it cannot.
+                    emit_thunder_handoff_event(
+                        "requested",
+                        job_id=job.id,
+                        trial_id=trial_id,
+                        target=budget_provider,
+                        handoff=THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+                        reason=f"failed_thunder_attempts={trial.attempts}",
+                    )
+                    return JobOutcome.reroute_to(
+                        target_environment=budget_provider,
+                        target_execution_lane=DEFAULT_EXECUTION_LANE,
+                        reason=THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+                        retry_after_seconds=retry_after_seconds,
+                        subject_attempt=trial.attempts,
+                        error_message=error_message,
+                    )
                 return JobOutcome.fail(
-                    trial.error_message or f"Trial {trial_id} marked RETRYING",
+                    error_message,
                     retryable=True,
-                    retry_after_seconds=(
-                        harbor_outcome.retry_after_seconds
-                        if harbor_outcome is not None
-                        else None
-                    ),
+                    retry_after_seconds=retry_after_seconds,
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"

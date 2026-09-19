@@ -118,6 +118,97 @@ async def test_sandbox_run_is_created_before_provider_launch(
 
 
 @pytest.mark.asyncio
+async def test_thunder_sandbox_run_is_created_before_provider_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = SimpleNamespace(
+        id="worker-job-1",
+        status=WorkerJobStatus.RUNNING,
+        attempts=1,
+        execution_lane=sandbox_lifecycle.THUNDER_TRIAL_EXECUTION_LANE,
+    )
+    session = _Session([worker, None])
+    _install_session(monkeypatch, session)
+
+    context = await sandbox_lifecycle.create_thunder_sandbox_run(
+        worker_job_id="worker-job-1",
+        worker_job_attempt=1,
+        trial_id="trial-1",
+    )
+
+    assert context.provider == "thunder"
+    ledger = session.added[0]
+    assert ledger.provider == "thunder"
+    assert ledger.state == SandboxRunState.PROVISIONING.value
+    assert ledger.external_id is None
+
+
+@pytest.mark.asyncio
+async def test_thunder_external_id_is_persisted_on_worker_and_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = SimpleNamespace(
+        status=WorkerJobStatus.RUNNING,
+        attempts=1,
+        current_worker_id="worker-1",
+        provider=None,
+        external_id=None,
+        sandbox_creating_at=None,
+    )
+    run = _run()
+    run.provider = "thunder"
+    context = _context()
+    context = sandbox_lifecycle.SandboxLaunchContext(
+        **{**context.__dict__, "provider": "thunder"}
+    )
+    session = _Session([worker, run])
+    _install_session(monkeypatch, session)
+
+    await sandbox_lifecycle.mark_environment_provisioned(
+        context=context,
+        provider="thunder",
+        external_id="sb-thunder-123",
+        worker_id="worker-1",
+    )
+
+    assert run.external_id == "sb-thunder-123"
+    assert run.state == SandboxRunState.RUNNING.value
+    assert worker.provider == "thunder"
+    assert worker.external_id == "sb-thunder-123"
+
+
+@pytest.mark.asyncio
+async def test_thunder_teardown_uses_persisted_external_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run(
+        state=SandboxRunState.TERMINATING.value, external_id="sb-thunder-123"
+    )
+    run.provider = "thunder"
+    marked: list[str] = []
+
+    async def request(_sandbox_run_id: str):
+        return run
+
+    async def mark(sandbox_run_id: str):
+        marked.append(sandbox_run_id)
+
+    async def teardown(provider: str, external_id: str) -> bool:
+        assert provider == "thunder"
+        assert external_id == "sb-thunder-123"
+        return True
+
+    import oddish.core.helpers as helpers
+
+    monkeypatch.setattr(sandbox_lifecycle, "request_sandbox_termination", request)
+    monkeypatch.setattr(sandbox_lifecycle, "mark_sandbox_terminated", mark)
+    monkeypatch.setattr(helpers, "cancel_job_by_worker", teardown)
+
+    assert await sandbox_lifecycle.terminate_sandbox_run(run.id) is True
+    assert marked == [run.id]
+
+
+@pytest.mark.asyncio
 async def test_late_provisioned_event_preserves_cancellation_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,6 +308,17 @@ async def test_ec2_claim_refuses_to_bypass_global_capacity_lease() -> None:
             worker_id="worker-1",
             queue_slot=0,
             execution_lane=sandbox_lifecycle.EC2_TRIAL_EXECUTION_LANE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_thunder_claim_refuses_to_bypass_global_capacity_lease() -> None:
+    with pytest.raises(RuntimeError, match="pre-acquired THUNDER capacity lease"):
+        await claim_single_worker_job(
+            "model-queue",
+            worker_id="worker-1",
+            queue_slot=0,
+            execution_lane=sandbox_lifecycle.THUNDER_TRIAL_EXECUTION_LANE,
         )
 
 

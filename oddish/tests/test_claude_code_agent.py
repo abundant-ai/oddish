@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from harbor.agents.installed.base import ApiOverloadedError
+from harbor.environments.base import ExecResult
+from harbor.models.agent.context import AgentContext
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
 from oddish.workers.agents import claude_code as claude_code_agent
@@ -14,6 +19,118 @@ from oddish.workers.agents.claude_code import (
     _pinned_harbor_requirement,
     convert_claude_code_stream_text_to_trajectory,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_type", [OddishClaudeCode, OddishProbeClaudeCode])
+@pytest.mark.parametrize("session_key", ["session_id", "sessionId"])
+async def test_successful_steps_resume_the_same_claude_session(
+    tmp_path, agent_type, session_key
+):
+    agent = agent_type(logs_dir=tmp_path)
+    output = "\n".join(
+        [
+            "non-JSON progress",
+            "[]",
+            json.dumps({"type": "system", session_key: "step-session"}),
+            json.dumps({"type": "result", session_key: "step-session"}),
+        ]
+    )
+
+    async def execute(*, command, **kwargs):
+        return ExecResult(
+            return_code=0,
+            stdout=output if "| claude " in command else "",
+            stderr="",
+        )
+
+    environment = SimpleNamespace(exec=AsyncMock(side_effect=execute))
+    await agent.run("Step one", environment, AgentContext())
+    for instruction in ("Step two", "Step three"):
+        await agent.resume(instruction, environment, AgentContext())
+        command = environment.exec.call_args.kwargs["command"]
+        assert "--resume step-session" in command
+        assert "--continue" not in command
+        assert "tee -a /logs/agent/claude-code.txt" in command
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stdout,stderr",
+    [
+        ('{"type":"result"}', ""),
+        ('{"session_id":"one"}', '{"sessionId":"two"}'),
+        ('{"session_id":"one","sessionId":"two"}', ""),
+    ],
+)
+async def test_success_without_a_unique_session_still_refuses_resume(
+    tmp_path, stdout, stderr
+):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    environment = SimpleNamespace(
+        exec=AsyncMock(
+            return_value=ExecResult(return_code=0, stdout=stdout, stderr=stderr)
+        )
+    )
+    await agent.run("Step one", environment, AgentContext())
+    environment.exec.reset_mock()
+    with pytest.raises(RuntimeError, match="did not emit a unique session id"):
+        await agent.resume("Step two", environment, AgentContext())
+    environment.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resumed_success_cannot_switch_to_a_different_session(tmp_path):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    environment = SimpleNamespace(
+        exec=AsyncMock(
+            return_value=ExecResult(return_code=0, stdout='{"session_id":"one"}')
+        )
+    )
+    await agent.run("Step one", environment, AgentContext())
+    environment.exec.return_value = ExecResult(
+        return_code=0, stdout='{"session_id":"two"}'
+    )
+    await agent.resume("Step two", environment, AgentContext())
+    environment.exec.reset_mock()
+    with pytest.raises(RuntimeError, match="did not emit a unique session id"):
+        await agent.resume("Step three", environment, AgentContext())
+    environment.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_run_discards_the_previous_successful_session(tmp_path):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    environment = SimpleNamespace(
+        exec=AsyncMock(
+            return_value=ExecResult(return_code=0, stdout='{"session_id":"one"}')
+        )
+    )
+    await agent.run("First task", environment, AgentContext())
+    environment.exec.return_value = ExecResult(return_code=0, stdout="")
+    await agent.run("Unrelated task", environment, AgentContext())
+    environment.exec.reset_mock()
+    with pytest.raises(RuntimeError, match="did not emit a unique session id"):
+        await agent.resume("Continue unrelated task", environment, AgentContext())
+    environment.exec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_error_still_preserves_harbor_retry_session(tmp_path):
+    agent = OddishClaudeCode(logs_dir=tmp_path)
+    environment = SimpleNamespace(
+        exec=AsyncMock(
+            return_value=ExecResult(
+                return_code=1,
+                stdout='{"type":"system","session_id":"retry-session"}\nAPI Error: Overloaded',
+            )
+        )
+    )
+    with pytest.raises(ApiOverloadedError):
+        await agent._exec(environment, "claude -p test")
+    environment.exec.return_value = ExecResult(return_code=0, stdout="")
+    await agent.resume("Continue after provider error", environment, AgentContext())
+    assert "--resume retry-session" in environment.exec.call_args.kwargs["command"]
 
 
 def test_convert_claude_code_stream_text_to_trajectory_recovers_atif():

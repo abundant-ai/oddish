@@ -33,9 +33,7 @@ async def _seed(session, trials: list[dict]) -> tuple[str, str]:
     version_id = f"tv-{suffix}"
     experiment_id = f"exp-{suffix}"
 
-    session.add(
-        ExperimentModel(id=experiment_id, name=experiment_id, org_id="org-1")
-    )
+    session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id="org-1"))
     session.add(
         TaskModel(
             id=task_id,
@@ -250,7 +248,8 @@ async def test_recompute_is_idempotent(session):
 async def test_trial_moving_backwards_leaves_its_bucket(session):
     """A retried trial is reset to RUNNING with reward and steps nulled."""
     task_id, version_id = await _seed(
-        session, [{"reward": 1.0, "total_steps": 15}, {"reward": 1.0, "total_steps": 25}]
+        session,
+        [{"reward": 1.0, "total_steps": 15}, {"reward": 1.0, "total_steps": 25}],
     )
     await refresh_task_version_model_metrics(session, [version_id])
     assert (await _row(session, version_id)).n_pass == 2
@@ -373,7 +372,7 @@ async def test_backfill_is_idempotent(session):
 
 @pytest.mark.asyncio
 async def test_recompute_takes_the_version_advisory_lock(session):
-    """The backfill calls this directly, so it cannot rely on a caller's lock.
+    """Callers may invoke this directly, so it cannot rely on a caller's lock.
 
     Without a lock, a backfill batch racing a live refresh overwrites a fresh
     row with the snapshot it aggregated moments earlier. Proven by holding the
@@ -393,8 +392,7 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         # paths contend on one lock rather than two.
         await holder.execute(
             sa_text(
-                "SELECT pg_advisory_xact_lock("
-                "hashtextextended(CAST(:v AS text), 0))"
+                "SELECT pg_advisory_xact_lock(" "hashtextextended(CAST(:v AS text), 0))"
             ),
             {"v": version_id},
         )
@@ -413,3 +411,12 @@ async def test_recompute_takes_the_version_advisory_lock(session):
         await holder.rollback()
         await holder.close()
         await session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch,limit", [(0, None), (-1, None), (10, -1)])
+async def test_backfill_rejects_invalid_batch_bounds(batch, limit):
+    from oddish.core.backfill_task_version_model_metrics import backfill
+
+    with pytest.raises(ValueError, match="batch must be positive"):
+        await backfill(batch=batch, limit=limit)

@@ -21,7 +21,8 @@ from oddish.core.delivery_progress import (
     delivery_progress_history,
     record_delivery_progress,
 )
-from oddish.core.task_findings import pre_trial_items, task_defect_items
+from oddish.core.task_findings import task_defect_items
+from oddish.core.verdict_state import is_insufficient_evidence
 from oddish.db import (
     CustomerModel,
     DeliveryManualCheckModel,
@@ -82,9 +83,9 @@ WAIVE_CHECK_PREFIX = "waive:"
 WAIVABLE_CHECKS = frozenset(DEFAULT_AUTOMATED_CHECKS) - {"no_must_fix"}
 
 _CHECK_LABELS = {
-    "pre_trial_passed": "Source review completed",
+    "pre_trial_passed": "Pre-trial audit completed",
     "min_rollouts": "Enough rollouts",
-    "verdict_ok": "No blocking defects in verdict",
+    "verdict_ok": "No blocking defects in QA verdict",
     "no_must_fix": "Every defect resolved or acknowledged",
 }
 
@@ -774,6 +775,7 @@ def _check(
     label: str | None = None,
     checked_by: str | None = None,
     checked_at: Any = None,
+    failure_labels: list[str] | None = None,
 ) -> DeliveryCheckResult:
     return DeliveryCheckResult(
         key=key,
@@ -781,6 +783,7 @@ def _check(
         label=label or _CHECK_LABELS.get(key, key),
         status="pass" if passed else "fail",
         detail=detail,
+        failure_labels=(failure_labels or []) if not passed else [],
         checked_by_user_id=checked_by,
         checked_at=checked_at,
     )
@@ -893,6 +896,7 @@ async def _compute_board(
                     TaskModel.deleted_at,
                     TaskModel.verdict,
                     TaskModel.verdict_status,
+                    TaskModel.verdict_error,
                 ),
                 load_only(
                     TaskVersionModel.id,
@@ -901,6 +905,7 @@ async def _compute_board(
                     TaskVersionModel.pre_trial,
                     TaskVersionModel.reported_findings,
                     TaskVersionModel.pre_trial_status,
+                    TaskVersionModel.pre_trial_error,
                     TaskVersionModel.content_hash,
                     TaskVersionModel.pre_trial_started_at,
                     TaskVersionModel.pre_trial_finished_at,
@@ -992,7 +997,9 @@ async def _compute_board(
         version: TaskVersionModel | None = versions.get(task.current_version_id or "")
         checks: list[DeliveryCheckResult] = []
 
-        def automated(key: str, passed: bool, detail: str) -> None:
+        def automated(
+            key: str, passed: bool, detail: str, failure_labels: list[str] | None = None
+        ) -> None:
             if not auto[key].get("enabled", True):
                 checks.append(
                     DeliveryCheckResult(
@@ -1022,12 +1029,16 @@ async def _compute_board(
                         )
                     )
                     return
-            checks.append(_check(key, passed=passed, detail=detail))
+            checks.append(
+                _check(key, passed=passed, detail=detail, failure_labels=failure_labels)
+            )
 
         defects: list[DeliveryDefect] = []
         if version is None:
             for key in DEFAULT_AUTOMATED_CHECKS:
-                automated(key, False, "task has no default version")
+                automated(
+                    key, False, "task has no default version", ["Task version missing"]
+                )
         else:
             vlabel = f"v{version.version}"
             for item in must_fix_items.get(version.id, []):
@@ -1041,11 +1052,8 @@ async def _compute_board(
                         title=item["title"],
                         source=item["source"],
                         finding_id=(
-                            str(
-                                item["finding"].get("links_to") or item["finding"]["id"]
-                            )
-                            if item["finding"].get("links_to")
-                            or item["finding"].get("id") is not None
+                            str(item["finding"]["id"])
+                            if item["finding"].get("id") is not None
                             else None
                         ),
                         file=item["finding"].get("file"),
@@ -1064,12 +1072,26 @@ async def _compute_board(
                 )
 
             audited = version.pre_trial_status == VerdictStatus.SUCCESS
+            audit_label = {
+                "pending": "Pre-trial audit queued",
+                "queued": "Pre-trial audit queued",
+                "running": "Pre-trial audit running",
+                "failed": "Pre-trial audit failed",
+            }.get(
+                version.pre_trial_status.value.lower()
+                if version.pre_trial_status
+                else "",
+                "Pre-trial audit needed",
+            )
             automated(
                 "pre_trial_passed",
                 audited,
-                f"source review completed on {vlabel}; defect checks are separate"
+                f"pre-trial audit completed on {vlabel}; defect checks are separate"
                 if audited
-                else f"source review {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                else version.pre_trial_error
+                if version.pre_trial_status == VerdictStatus.FAILED and version.pre_trial_error
+                else f"pre-trial audit {version.pre_trial_status.value.lower() if version.pre_trial_status else 'not run'} on {vlabel}; task quality not established by this review",
+                [audit_label],
             )
 
             count, agents = rollouts.get(version.id, (0, 0))
@@ -1078,31 +1100,48 @@ async def _compute_board(
             automated(
                 "min_rollouts",
                 count >= min_trials and agents >= min_agents,
-                f"{count}/{min_trials} trials, {agents}/{min_agents} agents "
-                f"on {vlabel}",
+                f"{count}/{min_trials} runs and {agents}/{min_agents} agents for verdict required.",
+                ([f"Runs: {count}/{min_trials}"] if count < min_trials else [])
+                + ([f"Agents: {agents}/{min_agents}"] if agents < min_agents else []),
             )
 
+            # Verdict failed is reserved for a QA run that did not complete;
+            # every other gap is pending work, named in the label. The task's
+            # own insufficient-evidence state outranks an older failed run.
+            qa_status = qa_statuses.get(task.id, DeliveryQAStatus())
+            if task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
+                task.verdict_error
+            ):
+                verdict_label = "Verdict pending: needs solver runs"
+                missing_detail = task.verdict_error or f"no completed QA verdict on {vlabel}"
+            elif qa_status.status == "error":
+                verdict_label, missing_detail = "Verdict failed", qa_status.detail
+            else:
+                verdict_label = {
+                    "queued": "Verdict pending: generation queued",
+                    "running": "Verdict pending: generating",
+                    "outdated": "Verdict pending: regeneration needed",
+                }.get(qa_status.status, "Verdict pending: not yet generated")
+                missing_detail = f"no completed QA verdict on {vlabel}"
             verdict = task.verdict if isinstance(task.verdict, dict) else None
             if verdict is None:
-                automated(
-                    "verdict_ok",
-                    False,
-                    f"no completed execution-review verdict on {vlabel}",
-                )
+                automated("verdict_ok", False, missing_detail, [verdict_label])
             elif latest_qa_version.get(task.id) != version.id:
                 automated(
                     "verdict_ok",
                     False,
-                    f"verdict does not cover {vlabel}; re-run QA on it",
+                    f"QA verdict does not cover {vlabel}; regenerate the QA verdict for it",
+                    [verdict_label],
                 )
             else:
                 accepted = bool(verdict.get("is_good"))
                 automated(
                     "verdict_ok",
                     accepted,
-                    "review found no blocking defects; human sign-off is separate"
+                    "QA verdict found no blocking defects; human sign-off is separate"
                     if accepted
                     else f"blocking defect: {verdict.get('primary_issue') or ''}",
+                    ["Verdict rejected"],
                 )
 
             unacknowledged = sum(1 for d in defects if not d.acknowledged)
@@ -1292,6 +1331,33 @@ async def get_delivery_board_core(
     board = await _compute_board(session, delivery, include_details=include_details)
     board.progress_history = await delivery_progress_history(session, delivery.id)
     return board
+
+
+async def get_delivery_task_core(
+    session: AsyncSession,
+    *,
+    delivery_id: str,
+    org_id: str | None,
+    task_id: str,
+) -> DeliveryTaskBoardRow:
+    """Read one member's full evidence without computing its siblings or history."""
+    delivery = await _get_delivery(session, delivery_id, org_id)
+    if delivery.status == "finalized":
+        snapshot = await session.scalar(
+            select(DeliverySnapshotModel)
+            .where(DeliverySnapshotModel.delivery_id == delivery.id)
+            .order_by(DeliverySnapshotModel.created_at.desc())
+            .limit(1)
+        )
+        if snapshot is None:
+            raise HTTPException(409, "Finalized delivery snapshot is missing")
+        board = DeliveryBoardResponse.model_validate(snapshot.snapshot["board"])
+    else:
+        board = await _compute_board(session, delivery, task_ids=[task_id])
+    row = next((row for row in board.tasks if row.task_id == task_id), None)
+    if row is None:
+        raise HTTPException(404, "Task is not in this delivery")
+    return row
 
 
 # =============================================================================
@@ -1526,9 +1592,6 @@ async def get_task_qa_history_core(
                 pre_trial_finished_at=version.pre_trial_finished_at,
                 pre_trial_error=version.pre_trial_error,
                 must_fix=len(must_fix[version.id]),
-                pre_trial_should_fix=sum(
-                    1 for i in pre_trial_items(version) if i.get("tier") == "should_fix"
-                ),
                 rollout_count=count,
                 rollout_agents=agents,
                 qa_runs=runs_by_version.get(version.id, []),

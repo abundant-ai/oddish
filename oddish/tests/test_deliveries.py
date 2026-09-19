@@ -2,6 +2,7 @@
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from test_statement_budgets import count_statements
@@ -16,6 +17,7 @@ from oddish.core.deliveries import (
     patch_delivery_core,
     set_manual_check_core,
 )
+from oddish.core.verdict_state import INSUFFICIENT_EVIDENCE_ERROR
 from oddish.db import (
     DeliverySnapshotModel,
     ExperimentModel,
@@ -284,7 +286,7 @@ async def test_must_fix_defects_block(session):
     version.pre_trial = {
         "items": [
             {"tier": "must_fix", "title": "leak"},
-            {"tier": "should_fix", "title": "The verifier misses invalid input"},
+            {"tier": "must_fix", "title": "The verifier misses invalid input"},
         ]
     }
     cheat_trial = _trial(
@@ -317,9 +319,11 @@ async def test_must_fix_defects_block(session):
     assert "3 of 3 task defects unacknowledged" in check.detail
     row = next(r for r in board.tasks if r.task_id == task.id)
     assert len(row.defects) == 3 and not any(d.acknowledged for d in row.defects)
-    assert "1 historically lower-severity findings still require" in check.detail
+    assert "historically lower-severity" not in check.detail
 
-    historical_defect = next(d for d in row.defects if d.recorded_tier == "should_fix")
+    historical_defect = next(
+        d for d in row.defects if d.title == "The verifier misses invalid input"
+    )
     await set_manual_check_core(
         session,
         delivery_id=delivery.id,
@@ -601,7 +605,7 @@ async def test_qa_history(session):
     assert [run.kind for run in history.unversioned_runs] == ["qa"]
     assert [v.version for v in history.versions] == [3, 2, 1]
     broken, latest, first = history.versions
-    assert broken.must_fix == 0 and broken.pre_trial_should_fix == 0
+    assert broken.must_fix == 0
     assert broken.findings == []
     assert broken.pre_trial_error == "docker died"
     assert [run.error for run in broken.qa_runs] == ["container OOM"]
@@ -640,7 +644,7 @@ async def test_qa_history(session):
     [
         ({"tier": None, "severity": "must_fix"}, "must_fix"),
         ({"severity": "must_fix"}, "must_fix"),
-        ({"tier": "should_fix", "severity": "must_fix"}, "should_fix"),
+        ({"tier": "optional", "severity": "must_fix"}, "optional"),
     ],
 )
 async def test_qa_history_legacy_severity(session, source, tiers, expected):
@@ -879,7 +883,7 @@ async def test_retrying_a_trial_keeps_its_must_fix_findings(session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", "optional"])
+@pytest.mark.parametrize("tier", ["must_fix", "optional"])
 async def test_signoff_requires_defect_acknowledgement(session, tier):
     task, version, _ = await _green_task(session, "deliv-ack")
     version.pre_trial = {
@@ -1234,7 +1238,7 @@ async def test_delivery_agent_count_normalizes_case_and_spacing(session):
     )
     check = _checks(board, task.id)["min_rollouts"]
     # 5 trials, but only 3 distinct agents after normalization.
-    assert "5/5 trials, 3/3 agents" in check.detail
+    assert check.detail == "5/5 runs and 3/3 agents for verdict required."
     assert check.status == "pass"
 
 
@@ -1276,8 +1280,11 @@ async def test_acceptance_does_not_bypass_delivery_minimum(
     checks = _checks(board, task.id)
     assert checks["verdict_ok"].status == "pass"
     assert checks["min_rollouts"].status == ("pass" if custom_minimum else "fail")
+    assert checks["min_rollouts"].failure_labels == (
+        [] if custom_minimum else [f"Runs: {run_count}/5", "Agents: 1/3"]
+    )
     if not custom_minimum:
-        assert f"{run_count}/5 trials, 1/3 agents" in checks["min_rollouts"].detail
+        assert checks["min_rollouts"].detail == f"{run_count}/5 runs and 1/3 agents for verdict required."
         assert not board.ready
 
 @pytest.mark.asyncio
@@ -1321,7 +1328,7 @@ async def test_completed_source_review_can_block_a_fair_agent_failure(session):
     row = board.tasks[0]
     checks = {check.key: check for check in row.checks}
     assert checks["pre_trial_passed"].status == "pass"
-    assert "source review completed" in checks["pre_trial_passed"].detail
+    assert "pre-trial audit completed" in checks["pre_trial_passed"].detail
     assert "defect checks are separate" in checks["pre_trial_passed"].detail
     assert checks["no_must_fix"].status == "fail"
     assert checks["signoff"].status == "fail"
@@ -1335,11 +1342,14 @@ async def test_completed_source_review_can_block_a_fair_agent_failure(session):
 
 @pytest.mark.asyncio
 async def test_review_failure_is_unknown_quality_not_a_defect(session):
-    task, version, _ = await _green_task(session, "review-meaning-error")
+    task, version, experiment = await _green_task(session, "review-meaning-error")
     version.pre_trial_status = VerdictStatus.FAILED
     version.pre_trial_error = "Evidence unavailable; cause not established"
     task.verdict = None
     task.verdict_status = VerdictStatus.FAILED
+    failed_qa = _trial(task, experiment, version.id, kind="qa", status=TrialStatus.FAILED)
+    failed_qa.error_message = "Insufficient evidence: no eligible solver trials"
+    session.add(failed_qa)
     await session.flush()
     delivery = await create_delivery_core(
         session,
@@ -1354,7 +1364,8 @@ async def test_review_failure_is_unknown_quality_not_a_defect(session):
     board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
     checks = _checks(board, task.id)
     assert checks["pre_trial_passed"].status == "fail"
-    assert "task quality not established" in checks["pre_trial_passed"].detail
+    assert checks["pre_trial_passed"].detail == "Evidence unavailable; cause not established"
+    assert checks["verdict_ok"].detail == failed_qa.error_message
     assert "no reported task defects" in checks["no_must_fix"].detail
     assert board.tasks[0].defects == []
     assert not board.tasks[0].ready
@@ -1500,3 +1511,112 @@ async def test_member_verdict_lookup_preserves_eligibility(session, newer_run):
         )
         history = await get_task_qa_history_core(session, task_id=task.id, org_id=ORG)
         assert history.verdict_version_id == expected.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audit_status, label",
+    [
+        (None, "Pre-trial audit needed"),
+        (VerdictStatus.QUEUED, "Pre-trial audit queued"),
+        (VerdictStatus.RUNNING, "Pre-trial audit running"),
+        (VerdictStatus.FAILED, "Pre-trial audit failed"),
+        (VerdictStatus.SUCCESS, None),
+    ],
+)
+async def test_delivery_failure_labels_identify_audit_state(
+    session, audit_status, label
+):
+    task, version, _ = await _green_task(session, "audit-label")
+    version.pre_trial_status = audit_status
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(customer="acme", name="audit-label", task_ids=[task.id]),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["pre_trial_passed"]
+    assert check.failure_labels == ([] if label is None else [label])
+    assert check.status == ("pass" if label is None else "fail")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state, label",
+    [
+        ("rejected", "Verdict rejected"),
+        ("no_evidence", "Verdict pending: needs solver runs"),
+        ("stale_failed_qa", "Verdict pending: needs solver runs"),
+        ("older_version_qa", "Verdict pending: needs solver runs"),
+        ("never", "Verdict pending: not yet generated"),
+        ("qa_failed", "Verdict failed"),
+    ],
+)
+async def test_delivery_verdict_labels_reserve_failed_for_broken_qa_runs(
+    session, state, label
+):
+    task, version, experiment = await _green_task(session, f"verdict-label-{state}")
+    if state == "rejected":
+        task.verdict = {"is_good": False, "verdict": "reject", "primary_issue": "x"}
+    else:
+        qa_trials = list(
+            await session.scalars(
+                select(TrialModel).where(
+                    TrialModel.task_id == task.id, TrialModel.kind == "qa"
+                )
+            )
+        )
+        if state == "stale_failed_qa":
+            # A failed run for this version predates the task settling without
+            # QA-eligible trials; the task's current state wins.
+            qa_trials[0].status = TrialStatus.FAILED
+            qa_trials[0].error_message = "worker crashed"
+        elif state == "older_version_qa":
+            # The only QA run belongs to the previous version.
+            newer = _version(
+                task, 2, pre_trial_status=VerdictStatus.SUCCESS, pre_trial={"items": []}
+            )
+            session.add(newer)
+            await session.flush()
+            task.current_version_id = newer.id
+        else:
+            for stale in qa_trials:
+                await session.delete(stale)
+        task.verdict = None
+        task.verdict_status = VerdictStatus.FAILED if state != "never" else None
+        task.verdict_error = {
+            "no_evidence": INSUFFICIENT_EVIDENCE_ERROR,
+            "stale_failed_qa": INSUFFICIENT_EVIDENCE_ERROR,
+            "older_version_qa": INSUFFICIENT_EVIDENCE_ERROR,
+            "qa_failed": "worker crashed",
+        }.get(state)
+        if state == "qa_failed":
+            failed_qa = _trial(
+                task, experiment, version.id, kind="qa", status=TrialStatus.FAILED
+            )
+            failed_qa.error_message = "worker crashed"
+            session.add(failed_qa)
+    await session.flush()
+    delivery = await create_delivery_core(
+        session,
+        data=DeliveryCreate(
+            customer="acme", name=f"verdict-label-{state}", task_ids=[task.id]
+        ),
+        org_id=ORG,
+        user_id="u1",
+    )
+    board = await get_delivery_board_core(session, delivery_id=delivery.id, org_id=ORG)
+    check = _checks(board, task.id)["verdict_ok"]
+    assert check.status == "fail"
+    assert check.failure_labels == [label]
+    qa = board.tasks[0].qa
+    if state in ("no_evidence", "stale_failed_qa", "older_version_qa"):
+        assert check.detail == INSUFFICIENT_EVIDENCE_ERROR
+        assert qa.status == "never"
+    if state in ("stale_failed_qa", "older_version_qa"):
+        assert qa.detail == INSUFFICIENT_EVIDENCE_ERROR
+    if state == "qa_failed":
+        assert check.detail == "worker crashed"
+        assert qa.status == "error"

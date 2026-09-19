@@ -6,9 +6,11 @@ calls, no auth layer, ``org_id=None`` (single-tenant rows).
 
 from __future__ import annotations
 
+import asyncio
+from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from oddish.core.deliveries import (
     add_delivery_tasks_core,
@@ -18,6 +20,7 @@ from oddish.core.deliveries import (
     delete_delivery_core,
     finalize_delivery_core,
     get_delivery_board_core,
+    get_delivery_task_core,
     get_task_qa_history_core,
     list_customers_core,
     list_deliveries_core,
@@ -27,6 +30,15 @@ from oddish.core.deliveries import (
     set_manual_check_core,
 )
 from oddish.core.delivery_view import delivery_page, delivery_selection
+from oddish.core.ingest.delivery_apply import (
+    DEFAULT_MAX_INVENTORY_AGE,
+    apply_plan_core,
+    list_import_receipts_core,
+    load_json_document,
+    parse_customer_map,
+    parse_plan,
+)
+from oddish.core.ingest.delivery_inventory import export_inventory_core
 from oddish.db import get_read_session, get_session
 from oddish.schemas import (
     CustomerCreate,
@@ -39,10 +51,13 @@ from oddish.schemas import (
     DeliveryResponse,
     DeliverySelectionItem,
     DeliveryTasksAdd,
+    DeliveryTaskBoardRow,
     DeliveryViewQuery,
+    HistoryImportReceipt,
     ManualCheckSet,
     QAWorkClaim,
     QAWorkPatch,
+    TaskInventoryResponse,
     TaskQAHistoryResponse,
 )
 
@@ -78,6 +93,64 @@ async def create_customer(data: CustomerCreate) -> CustomerResponse:
         customer = await create_customer_core(session, org_id=None, name=data.name)
         await session.commit()
         return CustomerResponse.model_validate(customer)
+
+
+# Declared before ``/deliveries/{delivery_id}`` so these literal paths win.
+@router.get("/deliveries/task-inventory", response_model=TaskInventoryResponse)
+async def get_task_inventory() -> TaskInventoryResponse:
+    async with get_read_session() as session:
+        inventory = await export_inventory_core(session, org_id=None)
+        return TaskInventoryResponse.model_validate(inventory)
+
+
+@router.get("/deliveries/history-imports", response_model=list[HistoryImportReceipt])
+async def list_history_imports(
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> list[HistoryImportReceipt]:
+    async with get_read_session() as session:
+        receipts = await list_import_receipts_core(session, org_id=None, limit=limit)
+        return [HistoryImportReceipt.model_validate(r) for r in receipts]
+
+
+@router.post("/deliveries/history-imports", response_model=HistoryImportReceipt)
+async def import_delivery_history(
+    plan: Annotated[UploadFile, File()],
+    inventory: Annotated[UploadFile, File()],
+    apply: Annotated[bool, Form()] = False,
+    customer: Annotated[list[str] | None, Form()] = None,
+    max_inventory_age_hours: Annotated[float | None, Form(gt=0)] = None,
+) -> HistoryImportReceipt:
+    try:
+        plan_doc, plan_hash = await asyncio.to_thread(parse_plan, await plan.read())
+        inventory_doc = await asyncio.to_thread(
+            load_json_document, await inventory.read(), "inventory"
+        )
+        customer_map = parse_customer_map(customer or [])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    async with get_session() as session:
+        try:
+            receipt = await apply_plan_core(
+                session,
+                plan=plan_doc,
+                inventory=inventory_doc,
+                org_id=None,
+                mode="apply" if apply else "preview",
+                plan_hash=plan_hash,
+                customer_map=customer_map,
+                user_id="local",
+                max_inventory_age=(
+                    timedelta(hours=max_inventory_age_hours)
+                    if max_inventory_age_hours
+                    else DEFAULT_MAX_INVENTORY_AGE
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail=f"plan is malformed: {exc}"
+            ) from exc
+        await session.commit()
+        return HistoryImportReceipt.model_validate(receipt)
 
 
 @router.get("/deliveries/{delivery_id}", response_model=DeliveryBoardResponse)
@@ -116,6 +189,16 @@ async def get_delivery_selection(
         )
         board.qa_viewer_user_id = "local"
         return delivery_selection(board, view)
+
+
+@router.get(
+    "/deliveries/{delivery_id}/tasks/{task_id}", response_model=DeliveryTaskBoardRow
+)
+async def get_delivery_task(delivery_id: str, task_id: str) -> DeliveryTaskBoardRow:
+    async with get_read_session() as session:
+        return await get_delivery_task_core(
+            session, delivery_id=delivery_id, org_id=None, task_id=task_id
+        )
 
 
 @router.patch("/deliveries/{delivery_id}", response_model=DeliveryResponse)

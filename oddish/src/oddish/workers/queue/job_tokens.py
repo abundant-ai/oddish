@@ -55,15 +55,10 @@ def hash_token(token: str) -> str:
 
 
 def s3_write_prefix_for(trial_id: str) -> str:
-    """The oddish S3 prefix that oddish's trial-artifact uploads are scoped to.
+    """Use the same deployment-scoped path as the artifact uploader."""
+    from oddish.db.storage import StorageClient
 
-    Mirrors ``StorageClient._trial_prefix`` so the scope matches where artifacts
-    are actually uploaded (``tasks/{task_id}/trials/{trial_id}/``).
-    """
-    task_id, sep, maybe_index = trial_id.rpartition("-")
-    if sep and maybe_index.isdigit() and task_id:
-        return f"tasks/{task_id}/trials/{trial_id}/"
-    return f"trials/{trial_id}/"
+    return StorageClient.trial_write_prefix(trial_id)
 
 
 def authorize_s3_key(key: str, prefix: str) -> bool:
@@ -84,7 +79,42 @@ def _agent_invokes_bedrock(agent: str | None) -> bool:
     return _agent_is_claude_code(agent) or (agent or "").strip().lower() == "single-llm"
 
 
-def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[str, str]:
+def _forced_to_direct_api(
+    is_probe: bool,
+    *,
+    agent: str,
+    model: str | None,
+    byok_env: Mapping[str, str] | None,
+) -> bool:
+    """Defer to the predicate that actually selects the transport.
+
+    ``agent_config._claude_code_forces_direct_api`` gates on an ambient
+    ``ANTHROPIC_API_KEY`` as well as the probe flag and the force-direct
+    setting. The runner asks it with any BYOK or HDO credential surfaced into
+    the environment first, so ask it under that same view here: a bundle built
+    from the bare worker environment would keep a Bedrock routing flag that the
+    runner is about to blank. Restating any part of this has drifted before,
+    so call the shared pieces.
+    """
+    from oddish.workers.harbor.agent_config import (
+        _claude_code_forces_direct_api,
+        _temporary_env,
+        surfaced_anthropic_env,
+    )
+
+    surfaced = surfaced_anthropic_env(agent=agent, model=model, agent_env=byok_env)
+    with _temporary_env(surfaced):
+        return _claude_code_forces_direct_api(is_probe)
+
+
+def scoped_model_env(
+    *,
+    agent: str,
+    model: str | None,
+    settings: Any,
+    is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
     Resolves the provider via ``settings.get_provider_for_trial`` and returns
@@ -111,12 +141,25 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         # over the direct Anthropic API as ``anthropic/<id>`` (see
         # _to_litellm_claude_model_id), so scope the matching ANTHROPIC_API_KEY
         # rather than the Bedrock routing flag they can't use.
-        if not _agent_invokes_bedrock(agent):
+        #
+        # claude-code under claude_code_force_direct_api is the same case: the
+        # runner blanks the Bedrock env and rewrites the model to the direct
+        # Anthropic id, so a bundle carrying the routing flag would contradict
+        # the transport the trial was already routed to. The flag is merged into
+        # the agent env after that blanking, which would leave the CLI asking
+        # Bedrock for an id only api.anthropic.com knows. Scope the key the
+        # trial will actually authenticate with instead.
+        if not _agent_invokes_bedrock(agent) or (
+            _agent_is_claude_code(agent)
+            and _forced_to_direct_api(
+                is_probe, agent=agent, model=model, byok_env=byok_env
+            )
+        ):
             key = getattr(settings, "anthropic_api_key", None)
             return {"ANTHROPIC_API_KEY": key} if key else {}
-        # claude-code and SingleLLMAgent invoke Bedrock with AWS credentials,
-        # not a single API key; scoping those needs STS (a future enhancement).
-        # Carry only the routing flag; dual-read keeps ambient AWS credentials.
+        # SingleLLMAgent invokes Bedrock with AWS credentials, not a single API
+        # key; scoping those needs STS (a future enhancement). Carry only the
+        # routing flag; dual-read keeps ambient AWS credentials.
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)
@@ -171,6 +214,8 @@ def build_bundle(
     *,
     agent: str,
     model: str | None,
+    is_probe: bool = False,
+    byok_env: Mapping[str, str] | None = None,
     trial_id: str,
     settings: Any,
     now: datetime,
@@ -185,7 +230,13 @@ def build_bundle(
     """
     _, token_hash = mint_token()
     bundle = JobCredentialBundle(
-        model_env=scoped_model_env(agent=agent, model=model, settings=settings),
+        model_env=scoped_model_env(
+            agent=agent,
+            model=model,
+            settings=settings,
+            is_probe=is_probe,
+            byok_env=byok_env,
+        ),
         s3_write_prefix=s3_write_prefix_for(trial_id),
         expires_at=now + timedelta(seconds=ttl_seconds),
     )

@@ -245,10 +245,6 @@ def _parse_task_archive(
     return members, texts
 
 
-def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, object]]:
-    return _parse_task_archive(archive_bytes)[0]
-
-
 def _merge_inline_contents(
     files: list[dict[str, object]], texts: dict[str, str]
 ) -> list[dict[str, object]]:
@@ -556,6 +552,15 @@ class StorageClient:
             return f"tasks/{task_id}/trials/{trial_id}/"
         return f"trials/{trial_id}/"
 
+    @classmethod
+    def trial_write_prefix(cls, trial_id: str) -> str:
+        """Isolate new artifacts while keeping historical read paths unchanged."""
+        prefix = cls._trial_prefix(trial_id)
+        namespace = settings.trial_artifact_namespace
+        if namespace:
+            return prefix.replace("trials/", f"trials/{namespace}/", 1)
+        return prefix
+
     async def upload_task_directory(self, task_id: str, local_path: Path) -> str:
         """
         Upload a task directory to S3.
@@ -732,7 +737,7 @@ class StorageClient:
             S3 key prefix for the uploaded trial
         """
         await self._ensure_client()
-        s3_prefix = self._trial_prefix(trial_id)
+        s3_prefix = self.trial_write_prefix(trial_id)
         if subprefix:
             s3_prefix = f"{s3_prefix.rstrip('/')}/{subprefix.strip('/')}/"
 
@@ -754,7 +759,7 @@ class StorageClient:
     @classmethod
     def _trial_import_archive_key(cls, trial_id: str) -> str:
         """Key for the staging tarball uploaded during ``oddish import``."""
-        prefix = cls._trial_prefix(trial_id)
+        prefix = cls.trial_write_prefix(trial_id)
         return f"{prefix}{cls._TRIAL_IMPORT_ARCHIVE_OBJECT_NAME}"
 
     async def extract_trial_import_archive(self, trial_id: str) -> int:
@@ -777,7 +782,7 @@ class StorageClient:
         """
         await self._ensure_client()
         archive_key = self._trial_import_archive_key(trial_id)
-        s3_prefix = self._trial_prefix(trial_id)
+        s3_prefix = self.trial_write_prefix(trial_id)
 
         if not await self.object_exists(archive_key):
             raise HTTPException(

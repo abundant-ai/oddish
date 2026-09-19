@@ -1,8 +1,8 @@
-"""Populate task_version_model_metrics for task versions that have no row yet.
+"""Recompute per-task-version model statistics from recorded trials.
 
-Batched and resumable: each batch commits on its own and the next run picks up
-where this one stopped, because progress is the presence of rows rather than a
-stored cursor. Safe to re-run -- a recomputed group produces an identical row.
+Each batch commits separately. Resume with --after-id using the last logged
+version ID; without it, a rerun recomputes every version from the beginning.
+Versions without eligible trials produce no statistics and do not stall paging.
 
     uv run python -m oddish.core.backfill_task_version_model_metrics --limit 500
 """
@@ -16,7 +16,6 @@ import logging
 from sqlalchemy import func, select
 
 from oddish.core.task_version_model_metrics import (
-    metrics_query,
     refresh_task_version_model_metrics,
 )
 from oddish.db import TaskVersionModel, TaskVersionModelMetricsModel, get_session
@@ -46,6 +45,8 @@ async def backfill(
     after_id: str | None = None,
 ) -> int:
     """Recompute metrics for every task version. Returns the number processed."""
+    if batch <= 0 or (limit is not None and limit < 0):
+        raise ValueError("batch must be positive and limit must be nonnegative")
     processed = 0
     cursor = after_id
     while limit is None or processed < limit:
@@ -98,6 +99,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-__all__ = ["backfill", "metrics_query"]

@@ -4,11 +4,10 @@ Each ``WorkerJobKind`` has at most one handler at a time. The dispatcher
 (see ``oddish.workers.queue.worker_job_single_job.run_single_worker_job``)
 routes every claimed row through the handler registered for its kind.
 
-``JobOutcome`` is the only shape a handler is allowed to return: either
-``success`` (with an optional small ``result_summary`` blob) or
-``failure`` (with an error message and a retryable flag). The
-``exactly-one-set`` invariant is enforced in ``__post_init__`` so a
-buggy handler can't stall a row in ``RUNNING``.
+``JobOutcome`` is the only shape a handler is allowed to return: ``success``
+(with an optional small ``result_summary`` blob), ``failure`` (with an error
+message and a retryable flag), or ``reroute`` (a request for a durable provider
+handoff). The exactly-one-set invariant is enforced in ``__post_init__``.
 """
 
 from __future__ import annotations
@@ -44,21 +43,44 @@ class JobFailure:
 
 
 @dataclass
+class JobReroute:
+    """Non-failure request to move a job onto another execution lane.
+
+    ``error_message`` carries the settled attempt's failure text for handoffs
+    that follow ordinary settlement: if the dispatcher declines the move, it
+    records that text as the ordinary retryable failure the attempt already
+    was, so the trial keeps retrying where it is instead of being failed.
+    """
+
+    target_environment: str
+    target_execution_lane: str
+    reason: str
+    retry_after_seconds: float | None = None
+    subject_attempt: int | None = None
+    error_message: str | None = None
+
+
+@dataclass
 class JobOutcome:
     """The only thing a ``JobHandler.run`` is allowed to return.
 
-    Construct with ``JobOutcome.ok(...)`` / ``JobOutcome.fail(...)`` in
-    handler code; the raw dataclass is still exposed so tests can
-    enforce shape invariants directly.
+    Construct with ``JobOutcome.ok(...)``, ``JobOutcome.fail(...)``, or
+    ``JobOutcome.reroute_to(...)`` in handler code. Persisting a reroute is a
+    separate dispatcher concern so the transition can update the domain row,
+    job row, sandbox ledger, and capacity lease atomically.
     """
 
     success: JobSuccess | None = None
     failure: JobFailure | None = None
+    reroute: JobReroute | None = None
 
     def __post_init__(self) -> None:
-        if (self.success is None) == (self.failure is None):
+        if sum(
+            value is not None for value in (self.success, self.failure, self.reroute)
+        ) != 1:
             raise ValueError(
-                "JobOutcome requires exactly one of success / failure to be set"
+                "JobOutcome requires exactly one of success / failure / reroute "
+                "to be set"
             )
 
     @classmethod
@@ -78,6 +100,28 @@ class JobOutcome:
                 error_message=error_message,
                 retryable=retryable,
                 retry_after_seconds=retry_after_seconds,
+            )
+        )
+
+    @classmethod
+    def reroute_to(
+        cls,
+        *,
+        target_environment: str,
+        target_execution_lane: str,
+        reason: str,
+        retry_after_seconds: float | None = None,
+        subject_attempt: int | None = None,
+        error_message: str | None = None,
+    ) -> "JobOutcome":
+        return cls(
+            reroute=JobReroute(
+                target_environment=target_environment,
+                target_execution_lane=target_execution_lane,
+                reason=reason,
+                retry_after_seconds=retry_after_seconds,
+                subject_attempt=subject_attempt,
+                error_message=error_message,
             )
         )
 
@@ -143,6 +187,7 @@ __all__ = [
     "JobFailure",
     "JobHandler",
     "JobOutcome",
+    "JobReroute",
     "JobSuccess",
     "NoHandlerRegisteredError",
     "clear_handlers",

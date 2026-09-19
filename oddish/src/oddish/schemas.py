@@ -35,7 +35,6 @@ from oddish.db import (
 from oddish.registry_auth import normalize_registry_host
 from oddish.runtime.ec2_policy import validate_ec2_environment_config
 
-
 # =============================================================================
 # Harbor Execution Config (wraps Harbor's native types)
 # =============================================================================
@@ -394,6 +393,10 @@ class TaskSweepSubmission(BaseModel):
             "a new task row"
         ),
     )
+    add_trials: bool = Field(
+        False,
+        description="On append, create n_trials new trials per config instead of topping up existing counts.",
+    )
     name: str | None = Field(
         None,
         description="Human-readable task name (derived from task_id if not provided)",
@@ -468,6 +471,24 @@ class TaskSweepSubmission(BaseModel):
     )
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
+    )
+    requires_gpu: bool = Field(
+        False,
+        description=(
+            "The task's task.toml requests GPUs. The API never sees the task "
+            "content, so the CLI reports this; it only informs the default "
+            "environment choice when `environment` is omitted and never changes "
+            "the GPU count the trial runs with."
+        ),
+    )
+    gpu_types: list[str] | None = Field(
+        None,
+        description=(
+            "The task.toml `[environment].gpu_types` list (acceptable GPU "
+            "types; omitted means any). Reported by the CLI with `requires_gpu` "
+            "so the default environment choice skips a backend that would "
+            "reject the task at launch. Never changes what the trial runs with."
+        ),
     )
     run_probe: bool = Field(
         False,
@@ -978,6 +999,9 @@ class TaskVersionSummary(TaskVersionRollup):
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
     pre_trial_error: str | None = None
+    # The audit trial that produced these findings; votes on a finding anchor
+    # to it. Absent on audits that predate the block_id record.
+    pre_trial_trial_id: str | None = None
     # What this audit cost. Captured at write time; absent on audits that
     # predate that (analysis_costs has no version reference to recover it from).
     pre_trial_cost_usd: float | None = None
@@ -1005,6 +1029,9 @@ class TaskCostTotals(BaseModel):
     # QA/analysis spend for this task's trials, joined through ``trials``
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
+    # CUA / verifier LLM spend (``verifier_costs``). Never folded into
+    # ``cost_usd`` or quotas. Distinct muted figure on the task tile.
+    verifier_cost_usd: float = 0.0
 
 
 class ExperimentCostTotals(BaseModel):
@@ -1059,6 +1086,19 @@ class ExperimentCostTotals(BaseModel):
     qa_cost_usd: float = 0.0
     owned_qa_cost_usd: float = 0.0
     qa_has_estimated: bool = False
+    # Completeness of recorded judge/analysis usage, not a promise that all
+    # trials or future QA have finished. Unpriced rows are never free work.
+    qa_cost_complete: bool = True
+    qa_unpriced_count: int = 0
+    qa_pending_count: int = 0
+    owned_qa_cost_complete: bool = True
+    owned_qa_unpriced_count: int = 0
+    owned_qa_pending_count: int = 0
+    # CUA / verifier LLM spend (``verifier_costs``). Same membership scopes as
+    # QA. Never folded into ``cost_usd``, ``billed_*``, or user quotas.
+    verifier_cost_usd: float = 0.0
+    owned_verifier_cost_usd: float = 0.0
+    verifier_has_estimated: bool = False
 
 
 class ExperimentPageVerdict(BaseModel):
@@ -1161,6 +1201,7 @@ class ExperimentTrialCell(BaseModel):
     name: str
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     provider: str
     queue_key: str
     status: TrialStatus
@@ -1245,6 +1286,7 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    reasoning_effort: str | None = None
     environment: str | None = Field(
         None,
         description="Execution sandbox environment recorded on the trial row.",
@@ -1362,6 +1404,9 @@ class TrialResponse(BaseModel):
     # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
     # means "not resolved by this caller": most builders never populate it.
     qa_cost_usd: float | None = None
+    # CUA / verifier LLM spend for this trial (``verifier_costs``). Same
+    # None-vs-0.0 semantics as ``qa_cost_usd``. Never included in ``cost_usd``.
+    verifier_cost_usd: float | None = None
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
@@ -1661,6 +1706,23 @@ class TaskBrowseTrial(BaseModel):
     model: str | None = None
 
 
+class TaskBrowseDelivery(BaseModel):
+    """One record of the task having been sent to a customer.
+
+    ``source`` says where the record came from: ``history`` is an imported
+    row in ``task_delivery_history`` (the delivery-metadata backfill, quoted
+    from spreadsheets and trackers), ``delivery`` is a finalized Oddish
+    delivery that contains the task. ``batch`` is the source's batch name or
+    the delivery's name; ``date`` is verbatim from the source for history
+    rows (not normalized) and the finalize date for deliveries.
+    """
+
+    customer: str
+    batch: str | None = None
+    date: str | None = None
+    source: Literal["history", "delivery"]
+
+
 class TaskBrowseItem(BaseModel):
     id: str
     name: str
@@ -1679,6 +1741,18 @@ class TaskBrowseItem(BaseModel):
     harness_count: int = 0
     skipped_count: int = 0
     pending_count: int = 0
+    # Trajectory-length distribution and distinct-harness count over the
+    # same scoped trials, from the summary row. Percentiles are None when
+    # no trial recorded a step count.
+    steps_present: int = 0
+    steps_p25: int | None = None
+    steps_p50: int | None = None
+    steps_p75: int | None = None
+    agent_count: int = 0
+    # Every customer this task is recorded as having been sent to, oldest
+    # source first. Empty means no record, which is not proof it was never
+    # sent: history coverage is partial (see the backfill docs).
+    deliveries: list[TaskBrowseDelivery] = Field(default_factory=list)
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
@@ -1693,6 +1767,8 @@ class TaskBrowseItem(BaseModel):
     # QA/analysis spend for this task's trials, joined through ``trials``
     # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
     qa_cost_usd: float = 0.0
+    # CUA / verifier LLM spend. Never folded into ``cost_usd`` or quotas.
+    verifier_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     latest_trials_truncated: bool = False
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
@@ -1747,6 +1823,12 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Customers a task can have been delivered to: every ``customers`` row
+    # plus every imported history label not yet mapped to one. Values are
+    # what the ``delivered_to`` / ``not_delivered_to`` browse filters accept.
+    delivery_customers: list[str] = Field(default_factory=list)
+    # Distinct, unretracted ``category`` assertions from the metadata import.
+    categories: list[str] = Field(default_factory=list)
     # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
@@ -1886,6 +1968,7 @@ class TaskOpenAgentModelSummary(BaseModel):
 
     agent: str
     model: str | None = None
+    reasoning_effort: str | None = None
     providers: list[str] = Field(default_factory=list)
     is_probe: bool = False
     trial_count: int = 0
@@ -1913,6 +1996,9 @@ class TaskOpenAgentModelSummary(BaseModel):
 
 class TaskOpenVersionSummary(TaskVersionRollup):
     """Selected-version fields owned by the bounded task-open resource."""
+
+    must_fix_count: int = 0
+    pre_trial_must_fix_count: int = 0
 
     user_tags: list[UserTagRef] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
@@ -1955,6 +2041,7 @@ class TaskOpenTrialRef(BaseModel):
     agent: str
     provider: str
     model: str | None = None
+    reasoning_effort: str | None = None
     kind: str = "agent"
     status: TrialStatus
     reward: float | None = None
@@ -2679,6 +2766,8 @@ class DeliveryListItem(DeliveryResponse):
 
 
 class DeliveryCheckResult(BaseModel):
+    # Short unmet requirements; absent in older finalized snapshots.
+    failure_labels: list[str] = Field(default_factory=list)
     key: str
     kind: DeliveryCheckKind
     label: str
@@ -2756,7 +2845,7 @@ class DeliveryQAStatus(BaseModel):
     ] = "never"
     trial_id: str | None = None
     finished_at: datetime | None = None
-    detail: str = "No QA result recorded"
+    detail: str = "No QA verdict recorded"
 
 
 class DeliveryTaskBoardRow(BaseModel):
@@ -2914,7 +3003,6 @@ class TaskQAHistoryVersion(BaseModel):
     # Reported defects from every source, including historical tiers;
     # kept under the existing API name for compatibility.
     must_fix: int
-    pre_trial_should_fix: int
     rollout_count: int
     rollout_agents: int
     qa_runs: list[TaskQAHistoryRun]
@@ -2922,6 +3010,56 @@ class TaskQAHistoryVersion(BaseModel):
     # recorded defect, with its original severity.
     findings: list[TaskQAHistoryFinding] = Field(default_factory=list)
     decisions: list[TaskQAHistoryDecision] = Field(default_factory=list)
+
+
+class TaskInventoryCategory(BaseModel):
+    source: str
+    value: str
+
+
+class TaskInventoryTask(BaseModel):
+    id: str
+    name: str
+    org_id: str
+    task_path: str
+    retired_at: str | None = None
+    current_version_id: str | None = None
+    current_content_hash: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    category_evidence: list[TaskInventoryCategory] = Field(default_factory=list)
+
+
+class TaskInventoryResponse(BaseModel):
+    """Current task identities of one organization, retired tasks included.
+
+    Input to the delivery metadata planner (``docs/delivery-metadata-backfill.md``).
+    """
+
+    schema_version: str
+    org_id: str
+    captured_at: str
+    tasks: list[TaskInventoryTask]
+
+
+class HistoryImportReceipt(BaseModel):
+    """One preview, apply, or rejected run of a delivery metadata plan."""
+
+    id: str
+    org_id: str
+    plan_schema: str
+    plan_hash: str
+    mode: str
+    outcome: str
+    rejection_reason: str | None = None
+    source_as_of: str | None = None
+    source_revision: str | None = None
+    inventory_captured_at: datetime | None = None
+    input_hashes: dict = Field(default_factory=dict)
+    summary: dict = Field(default_factory=dict)
+    created_by_user_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TaskQAHistoryResponse(BaseModel):

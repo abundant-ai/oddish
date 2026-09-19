@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,3 +32,41 @@ def test_get_backend_unknown_returns_none() -> None:
 def test_ordered_backends_preserves_existing_defaults() -> None:
     names = [b.name for b in ordered_backends()]
     assert names == ["daytona", "modal", "archil"]
+
+
+def test_enabled_thunder_becomes_the_gpu_default() -> None:
+    code = """
+import json
+from oddish.runtime.routing import allowed_cloud_environments, default_cloud_environment, select_backend
+from oddish.runtime.registry import ordered_backends
+print(json.dumps({
+    "registered": [backend.name for backend in ordered_backends()],
+    "allowed": sorted(environment.value for environment in allowed_cloud_environments()),
+    "gpu_selection": select_backend(requires_gpu=True, gpu_types=["H100"]).name,
+    "gpu_default": default_cloud_environment(requires_gpu=True, gpu_types=["H100"]).value,
+    "untyped_gpu_default": default_cloud_environment(requires_gpu=True).value,
+    "cpu_default": default_cloud_environment().value,
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "ODDISH_THUNDER_ENABLED": "true"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    resolved = json.loads(result.stdout.splitlines()[-1])
+    registered = resolved["registered"]
+    assert (
+        registered.index("daytona")
+        < registered.index("thunder")
+        < registered.index("modal")
+    )
+    assert "thunder" in resolved["allowed"]
+    assert resolved["gpu_selection"] == "thunder"
+    assert resolved["gpu_default"] == "thunder"
+    # A task naming no GPU type would be rejected by Harbor's Thunder
+    # environment, so it still defaults to Modal.
+    assert resolved["untyped_gpu_default"] == "modal"
+    assert resolved["cpu_default"] == "daytona"

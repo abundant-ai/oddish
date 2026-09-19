@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oddish"
-version = "0.1.13"
+version = "0.1.14"
 description = "Run Harbor tasks in the cloud with scheduling, monitoring, and persistent state"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -91,10 +91,12 @@ worker = [
     # which require the SDK API shipped in 0.192.0 and newer.
     "daytona>=0.192.0",
     "archil==0.12.0",
+    # Hosted workers orchestrate Thunder sandboxes directly. Keep this aligned
+    # with Harbor's thunder extra so cancellation can recover a sandbox by id.
+    "thunder-sandbox==0.7.3",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
-    "google-generativeai==0.8.6",
     "modal>=1.5.0",
     "dockerfile-parse>=2.0.1",
 ]
@@ -120,7 +122,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 # Mirror src/oddish/harbor-pin.toml (run scripts/sync_harbor_pin.py after edits).
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ce896ccd3b5305c5043aca6ed7a882a410c68054" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ca077e0cfffa4961d23fb2bc73f23fda71ec5794" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]
@@ -149,7 +151,6 @@ module = [
     "harbor.*",
     "asyncpg.*",
     "aioboto3.*",
-    "google.generativeai.*",
 ]
 ignore_missing_imports = true
 

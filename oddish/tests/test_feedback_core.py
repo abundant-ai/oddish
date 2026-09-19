@@ -101,3 +101,46 @@ async def test_foreign_experiment_cannot_accept_gathered_trial_feedback():
             )
 
         assert excinfo.value.status_code == 404
+
+
+async def test_task_vote_anchors_to_the_trial_and_its_experiment():
+    if not URL:
+        pytest.skip("ODDISH_DATABASE_URL not set")
+    from oddish.core.feedback import create_task_feedback_core
+    from oddish.db import get_session, init_db
+
+    await init_db()
+    async with get_session() as session:
+        experiment, trial = await _make_trial(session, run=uuid.uuid4().hex[:8])
+        row = await create_task_feedback_core(
+            session,
+            data=FeedbackCreate(
+                target="qa_action_item",
+                target_key="finding-abc",
+                vote="disagree",
+                trial_id=trial.id,
+                body="This file is not part of the task.",
+            ),
+            task_id=trial.task_id,
+            org_id=None,
+            user_id="user-1",
+        )
+        assert row.trial_id == trial.id
+        assert row.experiment_id == experiment.id
+        assert row.target_key == "finding-abc"
+
+        _, other_trial = await _make_trial(session, run=uuid.uuid4().hex[:8])
+        with pytest.raises(HTTPException, match="trial not found") as excinfo:
+            await create_task_feedback_core(
+                session,
+                data=FeedbackCreate(
+                    target="qa_verdict",
+                    target_key="GOOD_SUCCESS",
+                    vote="agree",
+                    trial_id=other_trial.id,
+                ),
+                task_id=trial.task_id,
+                org_id=None,
+                user_id=None,
+            )
+        assert excinfo.value.status_code == 404

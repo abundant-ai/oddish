@@ -8,6 +8,8 @@ it into their loops. See docs/delivery-design.md.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import httpx
@@ -620,8 +622,7 @@ def history(
         console.print(
             f"  audit: {audit.lower()} · rollouts: {version['rollout_count']} "
             f"({version['rollout_agents']} agents) · defects: "
-            f"{version['must_fix']} requiring resolution or acknowledgment "
-            f"({version['pre_trial_should_fix']} recorded should_fix in source audit)"
+            f"{version['must_fix']} requiring resolution or acknowledgment"
         )
         for run in version["qa_runs"]:
             console.print(
@@ -634,3 +635,196 @@ def history(
             console.print(
                 f"  qa run: {run['kind']} ({run.get('status') or 'pending'})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Historical delivery metadata (docs/delivery-metadata-backfill.md)
+# ---------------------------------------------------------------------------
+
+
+@delivery_app.command("inventory")
+def export_inventory(
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            dir_okay=False,
+            help="Where to write the inventory JSON. Must not exist yet.",
+        ),
+    ],
+    api_url: Annotated[str, _API_OPTION] = "",
+) -> None:
+    """Export the organization's task identities for the delivery metadata planner."""
+    if output.exists():
+        _fail(f"{output} already exists; choose a new inventory file")
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=300.0, headers=get_auth_headers()) as client:
+        inventory = _request(client, "GET", f"{api_url}/deliveries/task-inventory")
+    with output.open("x", encoding="utf-8") as handle:
+        json.dump(inventory, handle, indent=2)
+        handle.write("\n")
+    console.print(
+        f"Exported {len(inventory['tasks'])} task identities for organization "
+        f"{inventory['org_id']} to {output}"
+    )
+
+
+@delivery_app.command("import-history")
+def import_history(
+    plan: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="plan.json from the planner.",
+        ),
+    ],
+    inventory: Annotated[
+        Path,
+        typer.Option(
+            "--inventory",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="The inventory file the plan was built from.",
+        ),
+    ],
+    customer: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--customer",
+            metavar="LABEL=CUSTOMER",
+            help="Link a source customer label to an existing customer (id or "
+            "name). Repeatable.",
+        ),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Write the facts. Without it a preview receipt is recorded and "
+            "nothing else changes.",
+        ),
+    ] = False,
+    api_url: Annotated[str, _API_OPTION] = "",
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    """Preview or apply a reviewed delivery metadata plan.
+
+    Applying needs admin and a preview of the same plan from the last day.
+    """
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=900.0, headers=get_auth_headers()) as client:
+        with plan.open("rb") as plan_file, inventory.open("rb") as inventory_file:
+            receipt = _request(
+                client,
+                "POST",
+                f"{api_url}/deliveries/history-imports",
+                files={
+                    "plan": (plan.name, plan_file, "application/json"),
+                    "inventory": (inventory.name, inventory_file, "application/json"),
+                },
+                data={
+                    "apply": "true" if apply else "false",
+                    "customer": customer or [],
+                },
+            )
+    if json_output:
+        print_json(receipt)
+    else:
+        _print_receipt(receipt)
+    if receipt["outcome"] == "rejected":
+        raise typer.Exit(3)
+
+
+def _print_receipt(receipt: dict) -> None:
+    summary = receipt.get("summary") or {}
+    console.print(
+        f"[bold]{receipt['mode']}[/bold] → {receipt['outcome']} "
+        f"(receipt {receipt['id']})"
+    )
+    if receipt["outcome"] == "rejected":
+        console.print(f"[red]{receipt.get('rejection_reason')}[/red]")
+        problems = summary.get("problems") or []
+        for problem in problems:
+            console.print(f"  [red]-[/red] {problem}")
+        hidden = (summary.get("problem_count") or 0) - len(problems)
+        if hidden > 0:
+            console.print(f"  … {hidden} more")
+        return
+    console.print(
+        f"Resolved task groups: {summary.get('resolved_profiles')}; "
+        f"unresolved: {summary.get('unresolved_profiles')}; "
+        f"category conflicts left: {summary.get('category_conflicts_unresolved')}"
+    )
+    for key in ("source_records", "aliases", "assertions", "delivery_history"):
+        counts = summary.get(key) or {}
+        parts = ", ".join(
+            f"{name} {value}"
+            for name, value in counts.items()
+            if not isinstance(value, list)
+        )
+        console.print(f"  {key}: {parts}")
+    unmapped = (summary.get("delivery_history") or {}).get("customer_labels_unmapped")
+    if unmapped:
+        console.print(
+            f"  customer labels without a customer: {', '.join(unmapped)} "
+            "(link them with --customer label=name)"
+        )
+    if receipt["mode"] == "preview":
+        console.print(
+            "[dim]Nothing was written. Re-run with --apply within a day to "
+            "write these facts.[/dim]"
+        )
+
+
+@delivery_app.command("import-receipts")
+def list_import_receipts(
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 20,
+    api_url: Annotated[str, _API_OPTION] = "",
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    """List delivery metadata import receipts, newest first."""
+    api_url = api_url or get_api_url()
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        receipts = (
+            _request(
+                client,
+                "GET",
+                f"{api_url}/deliveries/history-imports",
+                params={"limit": limit},
+            )
+            or []
+        )
+    if json_output:
+        print_json(receipts)
+        return
+    if not receipts:
+        console.print("No import receipts yet.")
+        return
+    table = Table()
+    table.add_column("Created")
+    table.add_column("Mode")
+    table.add_column("Outcome")
+    table.add_column("Source as of")
+    table.add_column("Result")
+    for receipt in receipts:
+        summary = receipt.get("summary") or {}
+        if receipt["outcome"] == "rejected":
+            result = receipt.get("rejection_reason") or "rejected"
+        else:
+            history = summary.get("delivery_history") or {}
+            result = (
+                f"{summary.get('resolved_profiles', 0)} groups resolved, "
+                f"{history.get('created', 0)} history rows created"
+            )
+        table.add_row(
+            receipt["created_at"][:19].replace("T", " "),
+            receipt["mode"],
+            receipt["outcome"],
+            receipt.get("source_as_of") or "—",
+            result,
+        )
+    console.print(table)

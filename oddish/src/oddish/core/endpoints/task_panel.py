@@ -25,6 +25,17 @@ async def get_task_panel_core(
           v.content_hash, v.created_at AS version_created_at,
           v.pre_trial, v.reported_findings, lower(v.pre_trial_status::text) AS pre_trial_status,
           v.pre_trial_error,
+          COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('id', e.id, 'name', e.name) ORDER BY e.name, e.id)
+            FROM experiments e
+            WHERE e.deleted_at IS NULL
+              AND (CAST(:org_id AS text) IS NULL OR e.org_id = :org_id)
+              AND EXISTS (
+                SELECT 1 FROM trials tr WHERE tr.task_version_id = v.id
+                  AND tr.experiment_id = e.id AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+              )
+          ), '[]'::jsonb) AS experiments,
           COALESCE({VERDICT_VERSION_SQL.format(task_id="t.id", verdict="t.verdict")} = v.id, false) AS review_version_matches
         FROM tasks t
         LEFT JOIN task_versions dv ON dv.id = t.current_version_id
@@ -133,6 +144,8 @@ async def get_task_panel_core(
             ],
             pre_trial_status=row["pre_trial_status"],
             pre_trial_error=row["pre_trial_error"],
+            pre_trial_trial_id=(row["pre_trial"] or {}).get("block_id"),
+            experiments=row["experiments"],
         )
     )
     return TaskPanelResponse(

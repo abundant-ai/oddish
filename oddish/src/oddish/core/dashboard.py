@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_basis import settled_cost_columns, settled_cost_parts
+from oddish.core.verdict_state import INSUFFICIENT_EVIDENCE_PREFIX
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -304,6 +305,12 @@ def _baseline_agent_clause():
     return baseline_agent_clause(TrialModel.agent)
 
 
+def _insufficient_evidence_clause():
+    return func.coalesce(TaskModel.verdict_error, "").like(
+        f"{INSUFFICIENT_EVIDENCE_PREFIX}%"
+    )
+
+
 def _build_aggregates_for_experiment_ids(
     experiment_ids: list[str], *, org_id: str | None
 ):
@@ -347,8 +354,18 @@ def _build_aggregates_for_experiment_ids(
                     )
                 )
             ).label("verdict_needs_review"),
+            # A settled task with no QA-eligible runs is stored as a failed
+            # verdict; it needs solver runs, so it counts as pending, not failed.
             func.count(
-                case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))
+                case(
+                    (
+                        and_(
+                            TaskModel.verdict_status == VerdictStatus.FAILED,
+                            not_(_insufficient_evidence_clause()),
+                        ),
+                        1,
+                    )
+                )
             ).label("verdict_failed"),
             func.count(
                 case(
@@ -357,6 +374,10 @@ def _build_aggregates_for_experiment_ids(
                             TaskModel.run_analysis.is_(True),
                             or_(
                                 TaskModel.verdict_status.is_(None),
+                                and_(
+                                    TaskModel.verdict_status == VerdictStatus.FAILED,
+                                    _insufficient_evidence_clause(),
+                                ),
                                 TaskModel.verdict_status.in_(
                                     [
                                         VerdictStatus.PENDING,
@@ -580,26 +601,6 @@ def _first_live_task_id_for_experiment():
         .where(task_experiments.c.deleted_at.is_(None))
         .where(TaskModel.deleted_at.is_(None))
         .order_by(TaskModel.created_at.asc(), TaskModel.id.asc())
-        .limit(1)
-        .correlate(ExperimentModel)
-        .scalar_subquery()
-    )
-
-
-def _latest_live_task_id_for_experiment():
-    """Correlated subquery: newest live task id linked to the experiment row."""
-    return (
-        select(TaskModel.id)
-        .select_from(
-            task_experiments.join(
-                TaskModel,  # type: ignore[arg-type]
-                TaskModel.id == task_experiments.c.task_id,
-            )
-        )
-        .where(task_experiments.c.experiment_id == ExperimentModel.id)
-        .where(task_experiments.c.deleted_at.is_(None))
-        .where(TaskModel.deleted_at.is_(None))
-        .order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
         .limit(1)
         .correlate(ExperimentModel)
         .scalar_subquery()

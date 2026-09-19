@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from oddish.core.endpoints.task_open_aggregates import fold_task_open_groups
 from oddish.schemas import TaskOpenVersionSummary
 
@@ -10,6 +12,8 @@ NOW = datetime(2026, 8, 11, tzinfo=UTC)
 
 def _identity() -> dict[str, object]:
     return {
+        "must_fix_count": 0,
+        "pre_trial_must_fix_count": 0,
         "selected_version_id": "task-1-v1",
         "selected_version": 1,
         "selected_version_message": "first",
@@ -65,7 +69,18 @@ def test_task_open_fold_builds_exact_bounded_rollups() -> None:
     assert selected.agent_models[0].providers == ["openai"]
     assert totals.total_trials == 2
     assert totals.qa_cost_usd == 0.5
+    assert totals.verifier_cost_usd == 0.0
     assert current_counts == (2, 1)
+
+
+def test_task_open_fold_keeps_verifier_sidecar_off_agent_cost() -> None:
+    totals, _selected, _counts = fold_task_open_groups(
+        [_group()], _identity(), 0.5, 2.25
+    )
+
+    assert totals.verifier_cost_usd == pytest.approx(2.25)
+    assert totals.qa_cost_usd == pytest.approx(0.5)
+    assert totals.cost_usd == pytest.approx(0.25)
 
 
 def test_task_open_version_contract_excludes_detail_only_metadata() -> None:

@@ -117,21 +117,25 @@ class InProcessDispatcher:
         execution_lane: str,
     ) -> None:
         from oddish.core.model_concurrency import load_effective_model_concurrency_limit
-        from oddish.config import settings
         from oddish.workers.queue.queue_manager import DEFAULT_SLOT_LEASE_SECONDS
         from oddish.workers.queue.sandbox_capacity import (
             SANDBOX_CAPACITY_LEASE_SECONDS,
             acquire_sandbox_capacity_lease,
+            configured_sandbox_capacity_limit,
             release_sandbox_capacity_lease,
+        )
+        from oddish.runtime.sandbox_lifecycle import (
+            capacity_provider_for_execution_lane,
         )
 
         capacity_slot: int | None = None
+        capacity_provider = capacity_provider_for_execution_lane(execution_lane)
         release_capacity_lease = True
         try:
-            if execution_lane == "ec2_trial":
+            if capacity_provider is not None:
                 capacity_slot = await acquire_sandbox_capacity_lease(
-                    provider="ec2",
-                    limit=settings.ec2_max_concurrent_instances,
+                    provider=capacity_provider,
+                    limit=configured_sandbox_capacity_limit(capacity_provider),
                     worker_id=worker_id,
                     lease_seconds=SANDBOX_CAPACITY_LEASE_SECONDS,
                 )
@@ -161,10 +165,10 @@ class InProcessDispatcher:
                     "queue_slot": slot,
                     "harbor_variant_id": harbor_variant_id,
                 }
-                if execution_lane == "ec2_trial":
+                if capacity_provider is not None:
                     run_kwargs.update(
                         execution_lane=execution_lane,
-                        capacity_provider="ec2",
+                        capacity_provider=capacity_provider,
                         capacity_slot=capacity_slot,
                     )
                     release_capacity_lease = False
@@ -181,7 +185,7 @@ class InProcessDispatcher:
         finally:
             if capacity_slot is not None and release_capacity_lease:
                 await release_sandbox_capacity_lease(
-                    provider="ec2", slot=capacity_slot, worker_id=worker_id
+                    provider=capacity_provider, slot=capacity_slot, worker_id=worker_id
                 )
 
     async def check_active(

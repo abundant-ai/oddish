@@ -13,14 +13,22 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-from harbor.agents.utils import PROVIDER_KEYS
-from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
-from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+from harbor.models.environment_type import EnvironmentType
 
 from oddish.harbor_pin import load_harbor_pin as _load_harbor_pin
 
 logger = logging.getLogger(__name__)
+
+
+def split_provider_model_name(model_name: str) -> tuple[str | None, str]:
+    # Harbor's utility module imports LiteLLM, which fetches its pricing table
+    # during import. CLI help/version only need the settings definitions below;
+    # load model-routing dependencies when routing is actually requested.
+    from harbor.llms.utils import split_provider_model_name as split
+
+    return split(model_name)
+
 
 # Deploy-time ODDISH_GKE_* coordinate snapshot, baked into the worker image by
 # the Modal deploy (see the backend app's _GKE_COORDS_FILE). The coordinates
@@ -870,11 +878,12 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
     #
-    # Fable 5 is a Covered Model: Bedrock only serves it once the AWS
-    # account's data retention mode is set to "provider_data_share" (a
-    # one-time `PUT /data-retention` opt-in; API-only, no console UI).
+    # Fable 5 / 5.1 are Covered Models: Bedrock only serves them once the
+    # AWS account's data retention mode is set to "provider_data_share"
+    # (a one-time `PUT /data-retention` opt-in; API-only, no console UI).
     # Without it, Bedrock rejects every call with "data retention mode
     # 'default' is not available for this model".
+    "claude-fable-5-1": "global.anthropic.claude-fable-5-1",
     "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
@@ -1150,6 +1159,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
 
 
 def _normalize_model_provider(provider: str) -> str | None:
+    from harbor.agents.utils import PROVIDER_KEYS
+
     normalized = provider.strip().lower()
     if not normalized:
         return None
@@ -1194,6 +1205,8 @@ def _infer_provider_prefix(
     carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
     inference must go BELOW the gate.
     """
+    from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
@@ -1487,11 +1500,27 @@ class Settings(BaseSettings):
     # `numinous-environment`).
     numinous_enabled: bool = False
 
+    # Thunder GPU backend (opt-in). Registration is gated so deployments that
+    # do not carry TNR_API_TOKEN never advertise or route Thunder trials. Once
+    # enabled it precedes Modal in the registry and is the default GPU backend.
+    thunder_enabled: bool = False
+    thunder_max_capacity: int = 128
+    # Capacity fallback is opt-in. Its non-Thunder target is dispatched on the
+    # default lane after the source sandbox ledger is safely finalized.
+    thunder_capacity_fallback: bool = False
+    thunder_fallback_provider: str = "modal"
+    # Attempt-budget fallback: once a trial has failed this many attempts on
+    # Thunder, its next ordinary retry is scheduled on
+    # ``thunder_fallback_provider`` instead. 0 disables the handoff. Unlike the
+    # capacity gate this needs no Harbor error code: any retryable failure of
+    # a Thunder attempt counts, so the worst case is the pre-Thunder routing.
+    thunder_max_failed_attempts: int = 2
+
     # Numinous GPU lane (opt-in, separate flag). When enabled the backend
     # advertises a GpuSupport(accelerators=("H100", "H200", "A100", "L40S",
     # "A10", "RTX_4090"), max_count=8), so capability negotiation routes
     # GPU trials (SWE-marathon H100, terminal-bench GPU tasks) to Numinous
-    # ahead of Modal. GPU trials still require ``numinous_enabled=1``
+    # ahead of Thunder and Modal. GPU trials still require ``numinous_enabled=1``
     # underneath. Requires the Numinous control plane to have a GPU
     # provider wired (RunPod SECURE for dedicated, or gpu_mux for shared).
     numinous_gpu_enabled: bool = False
@@ -1672,6 +1701,7 @@ class Settings(BaseSettings):
     s3_access_key: str = ""
     s3_secret_key: str = ""
     s3_bucket: str = "data"
+    trial_artifact_namespace: str = Field(default="", pattern=r"^[A-Za-z0-9_-]*$")
     s3_region: str = "us-east-1"
 
     # Sauron S3 mirror (optional, disabled when bucket is empty).
@@ -1756,12 +1786,6 @@ class Settings(BaseSettings):
         default=None, alias="AZURE_OPENAI_API_VERSION"
     )
     azure_openai_deployments: dict[str, str] = Field(default_factory=dict)
-    # Deprecated compatibility field. Runtime routing should use
-    # ODDISH_AZURE_OPENAI_DEPLOYMENTS so each requested model maps to an
-    # explicit Azure deployment.
-    azure_openai_deployment: str | None = Field(
-        default=None, alias="AZURE_OPENAI_DEPLOYMENT"
-    )
 
     # ==========================================================================
     # Helper methods
@@ -1864,6 +1888,32 @@ class Settings(BaseSettings):
             raise ValueError("ec2_root_volume_size_gb must be greater than zero")
         if self.ec2_max_concurrent_instances <= 0:
             raise ValueError("ec2_max_concurrent_instances must be greater than zero")
+        return self
+
+    @model_validator(mode="after")
+    def validate_thunder_configuration(self) -> "Settings":
+        if self.thunder_max_capacity <= 0:
+            raise ValueError("thunder_max_capacity must be greater than zero")
+        if self.thunder_max_failed_attempts < 0:
+            raise ValueError("thunder_max_failed_attempts cannot be negative")
+        fallback_provider = self.thunder_fallback_provider.strip().lower()
+        if not fallback_provider:
+            raise ValueError("thunder_fallback_provider cannot be blank")
+        if fallback_provider == "thunder":
+            raise ValueError("thunder_fallback_provider cannot be thunder")
+        if len(fallback_provider) > 32:
+            raise ValueError("thunder_fallback_provider cannot exceed 32 characters")
+        try:
+            fallback_environment = EnvironmentType(fallback_provider)
+        except ValueError as exc:
+            raise ValueError(
+                "thunder_fallback_provider must be a Harbor environment"
+            ) from exc
+        if fallback_environment == EnvironmentType.EC2:
+            raise ValueError(
+                "thunder_fallback_provider must use the default execution lane"
+            )
+        self.thunder_fallback_provider = fallback_provider
         return self
 
     @model_validator(mode="after")

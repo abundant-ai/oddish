@@ -27,6 +27,10 @@ from oddish.db import (  # noqa: E402
     WorkerJobKind,
     WorkerJobStatus,
 )
+from oddish.core.harbor_artifacts import (  # noqa: E402
+    THUNDER_CAPACITY_UNAVAILABLE_CODE,
+)
+from oddish.config import settings  # noqa: E402
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import TrialJobHandler  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
@@ -158,6 +162,94 @@ async def test_trial_handler_threads_harbor_retry_after_hint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trial_handler_reroutes_typed_thunder_capacity_outcome(monkeypatch):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "daytona")
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RUNNING,
+        environment="thunder",
+        error_message=None,
+        attempts=9,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            retry_after_seconds=20.0,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is None
+    assert outcome.reroute is not None
+    assert outcome.reroute.target_environment == "daytona"
+    assert outcome.reroute.target_execution_lane == "default"
+    assert outcome.reroute.reason == THUNDER_CAPACITY_UNAVAILABLE_CODE
+    assert outcome.reroute.retry_after_seconds == 20.0
+    assert outcome.reroute.subject_attempt == 9
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_does_not_reroute_capacity_when_gate_is_disabled(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", False)
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        environment="thunder",
+        error_message="capacity unavailable",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            retry_after_seconds=20.0,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is None
+    assert outcome.failure is not None
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_does_not_reroute_non_capacity_thunder_error(monkeypatch):
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        environment="thunder",
+        error_message="Thunder authentication failed",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code="authentication_error",
+            retry_after_seconds=None,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is None
+    assert outcome.failure is not None
+
+
+@pytest.mark.asyncio
 async def test_trial_handler_returns_permanent_fail_on_failed_with_budget(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.FAILED,
@@ -254,3 +346,127 @@ def test_tag_project_handler_validate_payload_requires_scope_and_target():
         h.validate_payload({"mode": "direct"})
     with pytest.raises(ValueError):
         h.validate_payload({"scope": "TASK", "target_id": ""})
+
+
+# --- attempt-budget handoff -------------------------------------------------
+
+
+def _retrying_thunder_trial(*, attempts: int, environment: str = "thunder"):
+    return SimpleNamespace(
+        status=TrialStatus.RETRYING,
+        environment=environment,
+        error_message="agent timed out on attempt",
+        attempts=attempts,
+    )
+
+
+@pytest.mark.asyncio
+async def test_trial_handler_moves_retry_after_failed_thunder_attempt_budget(
+    monkeypatch,
+):
+    from oddish.workers.queue.thunder_fallback import (
+        THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON,
+    )
+
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 2)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", False)
+    events = []
+    monkeypatch.setattr(
+        handlers_module,
+        "emit_thunder_handoff_event",
+        lambda outcome, **kwargs: events.append((outcome, kwargs["handoff"])),
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(_retrying_thunder_trial(attempts=2)),
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(provider_error_code=None, retry_after_seconds=15.0),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.failure is None
+    assert outcome.reroute is not None
+    assert outcome.reroute.target_environment == "modal"
+    assert outcome.reroute.target_execution_lane == "default"
+    assert outcome.reroute.reason == THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON
+    assert outcome.reroute.subject_attempt == 2
+    assert outcome.reroute.retry_after_seconds == 15.0
+    # The settled attempt's failure text rides along so a declined handoff
+    # records exactly the retry settlement already decided on.
+    assert outcome.reroute.error_message == "agent timed out on attempt"
+    assert events == [("requested", THUNDER_ATTEMPT_BUDGET_EXHAUSTED_REASON)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "trial_row,limit",
+    [
+        (_retrying_thunder_trial(attempts=1), 2),
+        (_retrying_thunder_trial(attempts=2, environment="modal"), 2),
+        (_retrying_thunder_trial(attempts=9), 0),
+        (
+            SimpleNamespace(
+                status=TrialStatus.FAILED,
+                environment="thunder",
+                error_message="boom",
+                attempts=2,
+            ),
+            2,
+        ),
+    ],
+)
+async def test_trial_handler_keeps_ordinary_disposition_within_thunder_budget(
+    monkeypatch, trial_row, limit
+):
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", limit)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", False)
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(provider_error_code=None, retry_after_seconds=None),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is None
+    assert outcome.failure is not None
+    assert outcome.failure.retryable is (trial_row.status == TrialStatus.RETRYING)
+
+
+@pytest.mark.asyncio
+async def test_capacity_handoff_takes_precedence_over_attempt_budget(monkeypatch):
+    monkeypatch.setattr(settings, "thunder_max_failed_attempts", 1)
+    monkeypatch.setattr(settings, "thunder_capacity_fallback", True)
+    monkeypatch.setattr(settings, "thunder_fallback_provider", "modal")
+    trial_row = SimpleNamespace(
+        status=TrialStatus.RUNNING,
+        environment="thunder",
+        error_message=None,
+        attempts=3,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(
+        monkeypatch,
+        "run_trial_job",
+        result=SimpleNamespace(
+            provider_error_code=THUNDER_CAPACITY_UNAVAILABLE_CODE,
+            retry_after_seconds=None,
+        ),
+    )
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.reroute is not None
+    assert outcome.reroute.reason == THUNDER_CAPACITY_UNAVAILABLE_CODE

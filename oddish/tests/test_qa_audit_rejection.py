@@ -298,7 +298,7 @@ async def settle(trial_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tier", ["must_fix", "should_fix", None])
+@pytest.mark.parametrize("tier", ["must_fix", None])
 @pytest.mark.parametrize("run_count", [1, 3])
 async def test_same_agent_runs_store_verdict_after_qa(audit_task, tier, run_count):
     task_id, version_id, source_id, artifacts = audit_task
@@ -403,6 +403,73 @@ async def test_zero_eligible_trials_wait_for_audit_then_finish(audit_task, has_f
             )
             is None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent,reward", [("oracle", 1.0), ("oracle", 0.0), ("claude-code", 0.0)]
+)
+async def test_disabled_automatic_qa_completes_without_review(
+    audit_task, agent, reward
+):
+    task_id, version_id, source_id, _ = audit_task
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        task.run_analysis = False
+        version = await session.get(TaskVersionModel, version_id)
+        version.pre_trial = None
+        version.pre_trial_status = None
+        source = await session.get(TrialModel, source_id)
+        source.agent = agent
+        source.reward = reward
+        source.status = TrialStatus.RUNNING
+        await session.flush()
+
+        assert not (await maybe_start_task_qa_stage(session, task_id)).advanced
+        assert task.status == TaskStatus.RUNNING
+        assert task.finished_at is None
+
+        source.status = TrialStatus.SUCCESS
+        await session.flush()
+        assert (await maybe_start_task_qa_stage(session, task_id)).advanced
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
+        assert task.finished_at is not None
+        assert task.verdict is None
+        assert task.verdict_status is None
+        assert task.verdict_error is None
+        assert task.verdict_finished_at is None
+        assert (
+            await session.scalar(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.kind == "qa"
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_review_still_runs_with_automatic_qa_disabled(audit_task):
+    from oddish.core.endpoints.qa import backfill_task_analysis_core
+
+    task_id, _, source_id, _ = audit_task
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        task.run_analysis = False
+        source = await session.get(TrialModel, source_id)
+        source.agent = "oracle"
+        source.reward = 1.0
+        await session.flush()
+        await backfill_task_analysis_core(session, task_id=task_id)
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        assert task.status == TaskStatus.COMPLETED
+        assert task.verdict_status == VerdictStatus.SUCCESS
+        assert task.verdict["verdict"] == "reject"
 
 
 @pytest.mark.asyncio

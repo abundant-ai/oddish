@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence, cast
 
-
 ODDISH_TRIAL_NAME_KEY = "oddish_trial_name"
 
 
@@ -41,6 +40,9 @@ def write_trial_selection_manifest(
     return True
 
 
+THUNDER_CAPACITY_UNAVAILABLE_CODE = "sandbox_capacity_unavailable"
+
+
 @dataclass(frozen=True)
 class HarborTrajectoryMetrics:
     has_trajectory: bool = False
@@ -60,6 +62,7 @@ class HarborTrialExtraction:
     reward: float | None
     error: str | None
     exception_type: str | None
+    provider_error_code: str | None
     input_tokens: int | None
     cache_tokens: int | None
     output_tokens: int | None
@@ -119,6 +122,7 @@ def sanitize_task_result(result: dict[str, Any] | None) -> dict[str, Any] | None
     """Copy task-authored result data without Oddish-owned verifier fields."""
     sanitized = dict(result or {})
     sanitized.pop("_verifier", None)
+    sanitized.pop("_verifier_judges", None)
     return sanitized or None
 
 
@@ -197,12 +201,61 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
     return None
 
 
+# Harbor runs the verifier after an agent-phase exception. The scoring policy
+# discards its reward for these recorded provider, authentication, and transport
+# failures, even when the agent completed work before the failure. The exception
+# name alone does not establish whether the environment was changed. This list
+# defines which provider exceptions invalidate scores; it is not a general
+# classifier for sandbox, verifier, or other infrastructure failures.
+#
+# Membership is an explicit list of names rather than a subclass check against
+# Harbor's ``ApiError``. ``exception_type`` is a name persisted in Harbor's
+# ``result.json``, so the class may not exist locally for an imported run; and a
+# subclass check would silently absorb every ``ApiError`` Harbor adds later,
+# including ones that are genuine agent outcomes -- as ``AgentSafetyRefusalError``
+# already is. An unrecognized name keeps today's behavior, so the failure
+# direction of this list is a reward that survives, never a reward invented.
+#
+# Deliberately absent, because the agent's own run ended the trial and the
+# environment it leaves behind is a real result worth grading:
+#   AgentTimeoutError          -- spent the wall clock every agent is given
+#   AgentSafetyRefusalError    -- the model refused; Harbor documents this as a
+#                                 real reward-0 outcome
+#   ContextWindowExceededError -- spent its own context budget
+#   OutputTokenExceededError   -- spent its own output budget
+SCORE_INVALIDATING_EXCEPTIONS: frozenset[str] = frozenset(
+    {
+        # Credential, request, model/resource, or account-limit failures.
+        "AgentAuthenticationError",
+        "ApiClientError",
+        "ApiProviderResourceNotFoundError",
+        "ApiUsageLimitError",
+        "ModelNotFoundError",
+        # Provider or transport failures, including interrupted responses.
+        "ApiConnectionClosedError",
+        "ApiInternalServerError",
+        "ApiOverloadedError",
+        "ApiRateLimitError",
+        "ApiRequestTimeoutError",
+        "ApiResponseStalledError",
+        "NetworkConnectionError",
+        "UnknownApiError",
+    }
+)
+
+
+def invalidates_score(exception_type: str | None) -> bool:
+    """Whether a recorded provider exception invalidates this trial's score."""
+    return exception_type in SCORE_INVALIDATING_EXCEPTIONS
+
+
 def build_trial_result(
     metrics: dict[str, Any] | None,
     verifier_summary: dict[str, Any] | None,
     error: str | None,
     exception_type: str | None,
     *,
+    provider_error_code: str | None = None,
     http_status: int | None = None,
     request_id: str | None = None,
     session_id: str | None = None,
@@ -221,7 +274,8 @@ def build_trial_result(
             {
                 key: value
                 for key, value in {
-                    "http_status": http_status,
+                "provider_error_code": provider_error_code,
+                "http_status": http_status,
                     "request_id": request_id,
                     "session_id": session_id,
                     "retry_after_seconds": retry_after_seconds,
@@ -304,13 +358,28 @@ def cache_write_tokens_from_trajectory(data: object) -> int | None:
     return None
 
 
+def _is_verifier_trajectory_path(traj_path: Path) -> bool:
+    """True when this ATIF file belongs to a verifier (e.g. CUA), not the solver.
+
+    Solver cost must never be filled from ``verifier/trajectory.json``: a
+    CUA-only tree used to win ``rglob`` when no agent trajectory existed.
+    """
+    return any(part.lower() == "verifier" for part in traj_path.parts)
+
+
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
-    """Read one valid ATIF JSON object and derive its queryable metrics."""
+    """Read one valid **agent** ATIF JSON object and derive its queryable metrics.
+
+    Skips trajectories under a ``verifier/`` directory so CUA Computer1
+    usage cannot leak into ``trials.cost_usd``.
+    """
     if not path or not path.exists():
         return HarborTrajectoryMetrics()
 
     found_readable = False
     for traj_path in sorted(path.rglob("trajectory.json")):
+        if _is_verifier_trajectory_path(traj_path):
+            continue
         try:
             data = json.loads(traj_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
@@ -429,7 +498,10 @@ def _extract_reward(trial_result: Any) -> float | None:
 
 def _extract_error(
     trial_result: Any,
+    *,
+    provider: str | None = None,
 ) -> tuple[
+    str | None,
     str | None,
     str | None,
     int | None,
@@ -439,20 +511,39 @@ def _extract_error(
 ]:
     exc = getattr(trial_result, "exception_info", None)
     if exc is None:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
     exception_type = getattr(exc, "exception_type", None)
+    provider_error_code = getattr(exc, "provider_error_code", None) or getattr(
+        exc, "code", None
+    )
+    # Harbor 0.20 serializes an exception's type but does not yet have a field
+    # for provider-specific error codes. Thunder's typed CapacityError is an
+    # exact, stable SDK signal, so restore the canonical code at this boundary
+    # without inspecting the exception message.
+    if provider_error_code is None and provider == "thunder":
+        from thunder_sandbox import CapacityError
+
+        if exception_type == CapacityError.__name__:
+            provider_error_code = THUNDER_CAPACITY_UNAVAILABLE_CODE
     message = (
         getattr(exc, "exception_message", None)
         or exception_type
         or "Harbor execution error"
     )
+    http_status = getattr(exc, "http_status", None)
+    if http_status is None:
+        http_status = getattr(exc, "status", None)
+    retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+    if retry_after_seconds is None:
+        retry_after_seconds = getattr(exc, "retry_after", None)
     return (
         str(message) if message else None,
         str(exception_type) if exception_type else None,
-        getattr(exc, "http_status", None),
+        str(provider_error_code) if provider_error_code else None,
+        http_status,
         getattr(exc, "request_id", None),
         getattr(exc, "session_id", None),
-        getattr(exc, "retry_after_seconds", None),
+        retry_after_seconds,
     )
 
 
@@ -481,17 +572,19 @@ def _extract_token_cost_totals(
 def extract_trial_result_fields(
     trial_result: Any,
     *,
+    provider: str | None = None,
     trajectory: HarborTrajectoryMetrics | None = None,
 ) -> HarborTrialExtraction:
     """Flatten a Harbor TrialResult-like object into Oddish persistence fields."""
     (
         error,
         exception_type,
+        provider_error_code,
         http_status,
         request_id,
         session_id,
         retry_after_seconds,
-    ) = _extract_error(trial_result)
+    ) = _extract_error(trial_result, provider=provider)
     input_tokens, cache_tokens, output_tokens, cost_usd = _extract_token_cost_totals(
         trial_result
     )
@@ -510,6 +603,7 @@ def extract_trial_result_fields(
         reward=_extract_reward(trial_result),
         error=error,
         exception_type=exception_type,
+        provider_error_code=provider_error_code,
         input_tokens=input_tokens,
         cache_tokens=cache_tokens,
         output_tokens=output_tokens,

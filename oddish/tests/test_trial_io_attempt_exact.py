@@ -1363,3 +1363,111 @@ def test_structured_log_cache_changes_with_the_attempt_pointer(monkeypatch):
 
     assert first["verifier"]["stdout"] == "FIRST\n"
     assert second["verifier"]["stdout"] == "SECOND\n"
+
+
+def _multi_attempt_objects(root_prefix: str) -> dict[str, str]:
+    """Two settled agent attempts, the shape a retried trial leaves behind."""
+    return {
+        f"{root_prefix}attempt-1/result.json": json.dumps(
+            {"trial_results": [{"trial_name": "first-run"}]}
+        ),
+        f"{root_prefix}attempt-2/result.json": json.dumps(
+            {"trial_results": [{"trial_name": "second-run"}]}
+        ),
+    }
+
+
+def test_explicit_attempt_recovers_a_trial_inference_refuses_to_resolve():
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = _multi_attempt_objects(root_prefix)
+    storage = _Storage(objects, listed=list(objects))
+    trial = _trial(prefix=None, attempts=2)
+
+    # Without a selector the resolver fails closed on the sibling attempts.
+    unselected = asyncio.run(resolve_trial_artifact_layout(trial, storage))
+    assert unselected.mode is TrialArtifactMode.UNAVAILABLE
+
+    layout = asyncio.run(resolve_trial_artifact_layout(trial, storage, attempt=2))
+    assert layout.mode is TrialArtifactMode.EXACT
+    assert layout.attempt_prefix == f"{root_prefix}attempt-2/"
+    assert layout.artifact_prefix == f"{root_prefix}attempt-2/second-run/"
+
+
+def test_explicit_attempt_selects_the_named_attempt_not_the_latest():
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = _multi_attempt_objects(root_prefix)
+    storage = _Storage(objects, listed=list(objects))
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=None, attempts=2), storage, attempt=1
+        )
+    )
+    assert layout.mode is TrialArtifactMode.EXACT
+    assert layout.attempt_prefix == f"{root_prefix}attempt-1/"
+
+
+def test_explicit_attempt_that_does_not_exist_stays_unavailable():
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = _multi_attempt_objects(root_prefix)
+    storage = _Storage(objects, listed=list(objects))
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=None, attempts=2), storage, attempt=3
+        )
+    )
+    assert layout.mode is TrialArtifactMode.UNAVAILABLE
+    assert layout.failure_reason == "no attempt-3 directory for this trial"
+    assert storage.download_calls == []
+
+
+def test_explicit_attempt_never_reaches_another_kinds_namespace():
+    """The selector picks from kind-owned attempts only, exactly as inference does."""
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = {
+        f"{root_prefix}analysis-qa/attempt-1/result.json": json.dumps(
+            {"trial_results": [{"trial_name": "qa-run"}]}
+        ),
+        f"{root_prefix}analysis-qa/attempt-2/result.json": json.dumps(
+            {"trial_results": [{"trial_name": "qa-run-2"}]}
+        ),
+    }
+    storage = _Storage(objects, listed=list(objects))
+
+    # An agent trial naming attempt-1 must not be handed the qa namespace.
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=None, attempts=2, kind="agent"), storage, attempt=1
+        )
+    )
+    assert layout.mode is TrialArtifactMode.UNAVAILABLE
+    assert storage.download_calls == []
+
+
+def test_explicit_attempt_does_not_serve_an_unsettled_trial():
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    objects = _multi_attempt_objects(root_prefix)
+    storage = _Storage(objects, listed=list(objects))
+    running = _trial(prefix=None, attempts=2)
+    running.finished_at = None
+
+    layout = asyncio.run(resolve_trial_artifact_layout(running, storage, attempt=2))
+    assert layout.mode is TrialArtifactMode.UNAVAILABLE
+
+
+def test_explicit_attempt_is_ignored_when_a_stored_pointer_exists():
+    """A stored trial_s3_key stays authoritative; the selector cannot override it."""
+    root_prefix = "tasks/task-1/trials/task-1-7/"
+    stored = f"{root_prefix}attempt-1/"
+    objects = _multi_attempt_objects(root_prefix)
+    storage = _Storage(objects, listed=list(objects))
+
+    layout = asyncio.run(
+        resolve_trial_artifact_layout(
+            _trial(prefix=stored, attempts=2), storage, attempt=2
+        )
+    )
+    assert layout.mode is TrialArtifactMode.EXACT
+    assert layout.attempt_prefix == stored
+    assert storage.list_calls == 0

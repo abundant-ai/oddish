@@ -61,6 +61,7 @@ from oddish.core.harbor_artifacts import (
     extract_trajectory_metrics,
     extract_trial_result_fields,
     extract_verifier_metrics,
+    invalidates_score,
     write_trial_selection_manifest,
 )
 from oddish.core.idempotency import compute_sweep_idempotency_key
@@ -1209,6 +1210,8 @@ def build_sweep_payload(
     evaluation_metric: str | None = None,
     link: str | None = None,
     registry_auth: list[dict] | None = None,
+    requires_gpu: bool = False,
+    gpu_types: list[str] | None = None,
 ) -> dict:
     from oddish.cli.closed_internet import apply_closed_internet_overrides
 
@@ -1302,6 +1305,14 @@ def build_sweep_payload(
         payload["link"] = link
     if registry_auth:
         payload["registry_auth"] = registry_auth
+    if requires_gpu:
+        # The task's own GPU request, which the API cannot read from task.toml;
+        # it only informs the server-side default environment choice.
+        payload["requires_gpu"] = True
+        if gpu_types:
+            # The acceptable types, so the server skips a backend (Thunder)
+            # that would reject the task at launch.
+            payload["gpu_types"] = list(gpu_types)
 
     return payload
 
@@ -1771,10 +1782,14 @@ def trial_result_to_import_spec(
             fields.exception_type,
         )
 
+    # Match live settlement: these recorded provider failures invalidate the
+    # verifier reward, including failures after partial agent work.
+    reward = None if invalidates_score(fields.exception_type) else fields.reward
+
     # SUCCESS iff the verifier produced a reward (partial counts as
     # SUCCESS in oddish -- matches the live semantics). Otherwise the
     # execution hit an error and the row is FAILED.
-    status = "success" if fields.reward is not None else "failed"
+    status = "success" if reward is not None else "failed"
 
     def _iso(value: datetime | None) -> str | None:
         if value is None:
@@ -1785,7 +1800,7 @@ def trial_result_to_import_spec(
         "agent": agent_info.name,
         "model": model_id,
         "status": status,
-        "reward": fields.reward,
+        "reward": reward,
         "result": result_payload,
         "error_message": fields.error,
         "harbor_stage": "completed",

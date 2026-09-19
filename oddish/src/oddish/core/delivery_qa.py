@@ -14,6 +14,7 @@ from oddish.core.analysis_payload import (
     parse_analysis_payload,
     qa_trial_evidence,
 )
+from oddish.core.verdict_state import is_insufficient_evidence
 from oddish.db import (
     ACTIVE_TRIAL_STATUSES,
     TaskModel,
@@ -111,8 +112,14 @@ def evaluate_delivery_qa(
     sources: list[TrialModel],
 ) -> DeliveryQAStatus:
     result = DeliveryQAStatus(trial_id=qa.id, finished_at=qa.finished_at)
-    if version is None or qa.task_version_id != version.id:
-        result.status, result.detail = "outdated", "QA covers a different task version"
+    if task.verdict_status == VerdictStatus.FAILED and is_insufficient_evidence(
+        task.verdict_error
+    ):
+        # The task settled after this run (any version) with no QA-eligible
+        # trials, so the run's outcome no longer describes the task.
+        result.status, result.detail = "never", task.verdict_error or ""
+    elif version is None or qa.task_version_id != version.id:
+        result.status, result.detail = "outdated", "QA verdict covers a different task version"
     elif qa.status in ACTIVE_TRIAL_STATUSES:
         result.status = (
             "running"
@@ -120,22 +127,22 @@ def evaluate_delivery_qa(
             else "queued"
         )
         result.detail = (
-            "QA is running" if result.status == "running" else "QA is queued"
+            "QA verdict generation is running" if result.status == "running" else "QA verdict generation is queued"
         )
     elif qa.status != TrialStatus.SUCCESS or qa.analysis_error:
         result.status, result.detail = (
             "error",
-            qa.error_message or qa.analysis_error or "QA did not complete",
+            qa.error_message or qa.analysis_error or "QA verdict generation did not complete",
         )
     elif qa.finished_at is None:
-        result.status, result.detail = "outdated", "QA completion time was not recorded"
+        result.status, result.detail = "outdated", "QA verdict generation completion time was not recorded"
     else:
         try:
             payload = parse_analysis_payload("qa", {"analysis_payload": analysis_payload})
         except AnalysisPayloadError:
             result.status, result.detail = (
                 "outdated",
-                "QA evidence coverage was not recorded; rerun QA",
+                "QA verdict evidence coverage was not recorded; regenerate the QA verdict",
             )
             return result
         pinned = list(payload.trial_evidence + payload.baseline_evidence)
@@ -151,12 +158,12 @@ def evaluate_delivery_qa(
         ):
             result.status, result.detail = (
                 "outdated",
-                "Trials changed since QA; rerun QA",
+                "Trials changed since the QA verdict run; regenerate the QA verdict",
             )
         elif not audit_snapshot_matches(version, analysis_payload):
             result.status, result.detail = (
                 "outdated",
-                "Source audit changed since QA; rerun QA",
+                "Source audit changed since the QA verdict run; regenerate the QA verdict",
             )
         elif (
             task.verdict_status != VerdictStatus.SUCCESS
@@ -166,15 +173,18 @@ def evaluate_delivery_qa(
             or task.verdict.get("_graded_by", qa.id if payload.with_verdict else None)
             != qa.id
         ):
-            result.status, result.detail = "error", "QA produced no current verdict"
+            result.status, result.detail = (
+                "outdated",
+                "No current QA verdict was generated; regenerate the QA verdict",
+            )
         elif task.verdict.get("is_good") is True:
             result.status, result.detail = (
                 "accepted",
-                "QA accepts the current version and trials",
+                "QA verdict accepts the current version and trials",
             )
         else:
             result.status, result.detail = (
                 "needs_fixes",
-                task.verdict.get("primary_issue") or "QA rejects the current version",
+                task.verdict.get("primary_issue") or "QA verdict rejects the current version",
             )
     return result
